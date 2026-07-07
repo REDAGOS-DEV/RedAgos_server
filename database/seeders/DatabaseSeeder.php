@@ -5,6 +5,8 @@ namespace Database\Seeders;
 use App\Models\User;
 use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
 
 class DatabaseSeeder extends Seeder
 {
@@ -16,9 +18,12 @@ class DatabaseSeeder extends Seeder
     public function run(): void
     {
         User::factory()->create([
-            'name' => 'Test User',
+            'uuid' => (string) Str::uuid(),
+            'first_name' => 'Test',
+            'last_name' => 'User',
             'email' => 'test@example.com',
-            'password' => bcrypt('password'),
+            'username' => 'testuser',
+            'password' => Hash::make('password'),
         ]);
     }
 }
