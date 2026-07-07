@@ -1,58 +1,290 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# RedAgos Server
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+RedAgos Server is the Laravel API backend for the RedAgos blood request and inventory management system. It provides authentication, user data, and the database foundation for donor profiles, facilities, blood inventory, requests, billing, and payments.
 
-## About Laravel
+## Tech Stack
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+- PHP 8.3+
+- Laravel 13
+- Laravel Sanctum for API token authentication
+- MariaDB or MySQL
+- Composer
+- PHPUnit for tests
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+## Project Structure
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
-
-## Learning Laravel
-
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
-
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
-
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
-
-## Agentic Development
-
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
-
-```bash
-composer require laravel/boost --dev
-
-php artisan boost:install
+```text
+RedAgos_server/
+|-- app/
+|   |-- Http/Controllers/     # API controllers
+|   `-- Models/               # Eloquent models
+|-- database/
+|   |-- factories/            # Test and seed model factories
+|   |-- migrations/           # One migration per table
+|   `-- seeders/              # Development seed data
+|-- routes/
+|   |-- api.php               # API routes
+|   `-- web.php               # Web routes
+|-- composer.json
+`-- README.md
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+## Prerequisites
 
-## Contributing
+Make sure these are installed and available in your terminal:
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+```bash
+php --version
+composer --version
+mysql --version
+```
 
-## Code of Conduct
+Recommended versions:
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+- PHP 8.3
+- Composer 2.x
+- MariaDB/MySQL running locally on port `3306`
 
-## Security Vulnerabilities
+## Environment Setup
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+From the server project directory:
 
-## License
+```bash
+cd ~/RedAgos_server
+composer install
+cp .env.example .env
+php artisan key:generate
+```
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+Update `.env` for your local database:
+
+```env
+APP_NAME=RedAgos
+APP_ENV=local
+APP_DEBUG=true
+APP_URL=http://127.0.0.1:8000
+
+DB_CONNECTION=mysql
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_DATABASE=redagos_db
+DB_USERNAME=root
+DB_PASSWORD=
+```
+
+If your MariaDB user does not allow `root` login from localhost, create a dedicated user and use that in `.env`:
+
+```sql
+CREATE DATABASE IF NOT EXISTS redagos_db;
+CREATE USER IF NOT EXISTS 'redagos'@'localhost' IDENTIFIED BY 'password';
+GRANT ALL PRIVILEGES ON redagos_db.* TO 'redagos'@'localhost';
+FLUSH PRIVILEGES;
+```
+
+Then update:
+
+```env
+DB_USERNAME=redagos
+DB_PASSWORD=password
+```
+
+After changing `.env`, clear cached config:
+
+```bash
+php artisan config:clear
+```
+
+## Database Setup
+
+Run migrations:
+
+```bash
+php artisan migrate
+```
+
+Seed the development test user:
+
+```bash
+php artisan db:seed
+```
+
+To reset all tables and seed again:
+
+```bash
+php artisan migrate:fresh --seed
+```
+
+Use `migrate:fresh --seed` only when you are okay deleting all existing local data.
+
+## Test Login Account
+
+The default `DatabaseSeeder` creates this local test user:
+
+```text
+Email: test@example.com
+Password: password
+```
+
+The current `users` table stores names as `first_name` and `last_name`, plus `username` and `uuid`. Keep the factory, seeder, and model fillable fields aligned with that schema.
+
+## Running the API
+
+Start the Laravel development server:
+
+```bash
+php artisan serve
+```
+
+Default API base URL:
+
+```text
+http://127.0.0.1:8000/api
+```
+
+The Nuxt client should point to this value in its `.env`:
+
+```env
+API_BASE_URL=http://127.0.0.1:8000/api
+```
+
+## API Endpoints
+
+### Login
+
+```http
+POST /api/login
+```
+
+Request body:
+
+```json
+{
+  "email": "test@example.com",
+  "password": "password"
+}
+```
+
+Successful response includes the authenticated user and a Sanctum bearer token:
+
+```json
+{
+  "user": {},
+  "token": "plain-text-token",
+  "token_type": "Bearer"
+}
+```
+
+### Current User
+
+```http
+GET /api/user
+Authorization: Bearer <token>
+```
+
+This route is protected by Sanctum.
+
+## Development Commands
+
+Install dependencies:
+
+```bash
+composer install
+```
+
+Run migrations:
+
+```bash
+php artisan migrate
+```
+
+Seed data:
+
+```bash
+php artisan db:seed
+```
+
+Start server:
+
+```bash
+php artisan serve
+```
+
+Run tests:
+
+```bash
+php artisan test
+```
+
+Format code with Laravel Pint:
+
+```bash
+./vendor/bin/pint
+```
+
+Clear common caches:
+
+```bash
+php artisan optimize:clear
+```
+
+## Migration Guidelines
+
+Domain migrations are intentionally split into one file per table to follow the Single Responsibility Principle. Keep each migration focused on one table and name it clearly, for example:
+
+```text
+2026_07_06_000013_create_blood_requests_table.php
+```
+
+When adding tables with foreign keys, order the migration timestamps so parent tables run before child tables.
+
+## Authentication Notes
+
+- The backend issues Sanctum personal access tokens from `/api/login`.
+- The frontend stores the returned token in `localStorage` as `_token`.
+- Protected frontend routes should send the token as `Authorization: Bearer <token>`.
+
+## Troubleshooting
+
+### Host is not allowed to connect
+
+If MariaDB returns:
+
+```text
+SQLSTATE[HY000] [1130] Host 'localhost' is not allowed to connect
+```
+
+Use a valid database user for `localhost` or `127.0.0.1`, then clear Laravel config:
+
+```bash
+php artisan config:clear
+```
+
+### Unknown column `name` in users table
+
+The project user schema does not use a `name` column. Use:
+
+```text
+first_name
+last_name
+username
+uuid
+email
+password
+```
+
+If this happens while seeding, check `database/factories/UserFactory.php`, `database/seeders/DatabaseSeeder.php`, and `app/Models/User.php`.
+
+## Related Project
+
+Frontend client repository:
+
+```text
+../RedAgos_client
+```
+
+Run the client separately with:
+
+```bash
+cd ~/RedAgos_client
+npm run dev
+```
