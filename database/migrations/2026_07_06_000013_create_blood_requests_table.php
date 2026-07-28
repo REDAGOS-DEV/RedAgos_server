@@ -13,8 +13,6 @@ return new class extends Migration
             $table->foreignId('facility_id')->constrained()->cascadeOnUpdate()->restrictOnDelete();
             $table->foreignId('blood_type_id')->constrained('blood_types')->cascadeOnUpdate()->restrictOnDelete();
             $table->foreignId('component_id')->constrained('blood_components')->cascadeOnUpdate()->restrictOnDelete();
-            $table->string('patient_name', 150);
-            $table->string('patient_identifier', 100)->nullable();
             $table->unsignedInteger('quantity');
             $table->enum('urgency_level', ['routine', 'emergency'])->default('routine');
             $table->enum('status', ['pending', 'processing', 'partial', 'fulfilled', 'rejected', 'cancelled'])->default('pending');

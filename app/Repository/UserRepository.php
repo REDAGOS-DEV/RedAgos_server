@@ -3,13 +3,12 @@
 namespace App\Repository;
 
 use App\Models\User;
-use Illuminate\Database\Eloquent\ModelNotFoundException;
 
 class UserRepository
 {
     public function paginate(int $perPage = 15)
     {
-        return User::latest()->paginate($perPage);
+        return User::with('roles')->latest()->paginate($perPage);
     }
 
     public function create(array $payload)
@@ -19,7 +18,7 @@ class UserRepository
 
     public function findByUuid(string $uuid)
     {
-        return User::where('uuid', $uuid)->firstOrFail();
+        return User::with('roles')->where('uuid', $uuid)->firstOrFail();
     }
 
     public function findByField(string $field, $value)
@@ -31,12 +30,14 @@ class UserRepository
     {
         $model = $this->findByUuid($uuid);
         $model->update($payload);
+
         return $model;
     }
 
     public function delete(string $uuid)
     {
         $model = $this->findByUuid($uuid);
+
         return $model->delete();
     }
 
@@ -44,6 +45,15 @@ class UserRepository
     {
         $model = User::withTrashed()->where('uuid', $uuid)->firstOrFail();
         $model->restore();
+
         return $model;
+    }
+
+    /** @param array<int, int> $roleIds */
+    public function syncRoles(User $user, array $roleIds): User
+    {
+        $user->roles()->sync($roleIds);
+
+        return $user->load('roles');
     }
 }
