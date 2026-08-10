@@ -7,6 +7,11 @@ use Illuminate\Validation\Rules\Password;
 
 class RegisterDonorRequest extends FormRequest
 {
+    /**
+     * Minimum age for whole-blood donor registration in the Philippines.
+     */
+    private const MINIMUM_AGE_YEARS = 18;
+
     public function authorize(): bool
     {
         return true;
@@ -24,7 +29,7 @@ class RegisterDonorRequest extends FormRequest
             'phone' => ['required', 'string', 'regex:/^(?:\+63|63|0)9\d{9}$/', 'unique:users,phone'],
             'blood_type' => ['required', 'string', 'max:10', 'exists:blood_types,code'],
             'gender' => ['required', 'string', 'in:male,female,other,prefer_not_to_say'],
-            'birth_date' => ['required', 'date', 'before_or_equal:today'],
+            'birth_date' => ['required', 'date', 'before_or_equal:'.now()->subYears(self::MINIMUM_AGE_YEARS)->toDateString()],
             'address' => ['required', 'string', 'max:255'],
             'password' => ['required', 'confirmed', Password::min(8)->mixedCase()->numbers()],
             'terms_accepted' => ['accepted'],
@@ -53,7 +58,7 @@ class RegisterDonorRequest extends FormRequest
             'gender.in' => 'Please select a valid gender.',
             'birth_date.required' => 'Date of birth is required.',
             'birth_date.date' => 'Please enter a valid date of birth.',
-            'birth_date.before_or_equal' => 'Date of birth cannot be in the future.',
+            'birth_date.before_or_equal' => 'You must be at least '.self::MINIMUM_AGE_YEARS.' years old to register as a donor.',
             'address.required' => 'Address is required.',
             'address.max' => 'Address must not be greater than 255 characters.',
             'password.required' => 'Password is required.',

@@ -2,9 +2,12 @@
 
 namespace App\Service;
 
+use App\Enums\AccountStatus;
+use App\Enums\RoleName;
 use App\Models\User;
 use App\Repository\DonorRepository;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
@@ -12,18 +15,16 @@ use Illuminate\Validation\ValidationException;
 
 class DonorService
 {
-    private const DONOR_ROLE = 'donor';
+    private const DONOR_ROLE = RoleName::Donor->value;
 
-    private const INITIAL_ACCOUNT_STATUS = 'pending_activation';
+    private const INITIAL_ACCOUNT_STATUS = AccountStatus::PendingVerification;
 
     public function __construct(
         private readonly DonorRepository $donorRepository
-    ) {
-    }
+    ) {}
 
     /**
-     * @param array<string, mixed> $payload
-     *
+     * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
      */
     public function register(array $payload): array
@@ -43,7 +44,7 @@ class DonorService
             ]);
         }
 
-        return DB::transaction(function () use ($payload, $normalizedEmail, $normalizedPhone): array {
+        $donor = DB::transaction(function () use ($payload, $normalizedEmail, $normalizedPhone): User {
             $bloodType = $this->donorRepository->findBloodTypeByCode($payload['blood_type']);
 
             if (! $bloodType) {
@@ -61,6 +62,7 @@ class DonorService
                 'username' => $this->buildUsername($normalizedEmail),
                 'password' => Hash::make($payload['password']),
                 'account_status' => self::INITIAL_ACCOUNT_STATUS,
+                'terms_accepted_at' => now(),
             ]);
 
             $this->donorRepository->createDonorProfile([
@@ -74,15 +76,19 @@ class DonorService
             $role = $this->donorRepository->findOrCreateRoleByName(self::DONOR_ROLE);
             $this->donorRepository->attachRole($donor, $role);
 
-            return [
-                'message' => 'Donor registration submitted successfully.',
-                'data' => [
-                    'user' => $this->formatDonor(
-                        $this->donorRepository->loadDonorRegistration($donor)
-                    ),
-                ],
-            ];
+            return $donor;
         });
+
+        $donor->sendEmailVerificationNotification();
+
+        return [
+            'message' => 'Donor registration submitted successfully. Please check your email to verify your address.',
+            'data' => [
+                'user' => $this->formatDonor(
+                    $this->donorRepository->loadDonorRegistration($donor)
+                ),
+            ],
+        ];
     }
 
     /**
@@ -109,7 +115,7 @@ class DonorService
         return [
             'user' => $this->formatDonor($donor),
             'profile' => [
-                'donor_code' => 'DONOR-' . str_pad((string) $donor->id, 6, '0', STR_PAD_LEFT),
+                'donor_code' => 'DONOR-'.str_pad((string) $donor->id, 6, '0', STR_PAD_LEFT),
                 'first_name' => $donor->first_name,
                 'last_name' => $donor->last_name,
                 'email' => $donor->email,
@@ -117,7 +123,7 @@ class DonorService
                 'address' => $profile->address,
                 'date_of_birth' => $profile->birth_date?->toDateString(),
                 'blood_type' => $profile->bloodType?->code,
-                'account_status' => $donor->account_status,
+                'account_status' => $donor->account_status?->value,
             ],
             'eligibility_status' => 'pending',
             'blood_type' => $profile->bloodType?->code,
@@ -147,7 +153,7 @@ class DonorService
         return [
             'donor_id' => $dashboard['profile']['donor_code'],
             'donor_code' => $dashboard['profile']['donor_code'],
-            'full_name' => trim($donor->first_name . ' ' . $donor->last_name),
+            'full_name' => trim($donor->first_name.' '.$donor->last_name),
             'first_name' => $donor->first_name,
             'last_name' => $donor->last_name,
             'email' => $donor->email,
@@ -167,8 +173,7 @@ class DonorService
     }
 
     /**
-     * @param array<string, mixed> $payload
-     *
+     * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
      */
     public function updateProfile(User $user, array $payload): array
@@ -205,8 +210,7 @@ class DonorService
     }
 
     /**
-     * @param array<string, mixed> $payload
-     *
+     * @param  array<string, mixed>  $payload
      * @return array<string, string>
      */
     public function updatePassword(User $user, array $payload): array
@@ -227,8 +231,7 @@ class DonorService
     }
 
     /**
-     * @param array<string, mixed> $payload
-     *
+     * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
      */
     public function updateNotificationPreferences(User $user, array $payload): array
@@ -258,11 +261,11 @@ class DonorService
         $phone = preg_replace('/[\s-]+/', '', $phone) ?? $phone;
 
         if (str_starts_with($phone, '09')) {
-            return '+63' . substr($phone, 1);
+            return '+63'.substr($phone, 1);
         }
 
         if (str_starts_with($phone, '63')) {
-            return '+' . $phone;
+            return '+'.$phone;
         }
 
         return $phone;
@@ -270,7 +273,7 @@ class DonorService
 
     private function buildUsername(string $email): string
     {
-        return Str::before($email, '@') . '-' . Str::lower(Str::random(6));
+        return Str::before($email, '@').'-'.Str::lower(Str::random(6));
     }
 
     /**
@@ -299,7 +302,7 @@ class DonorService
             'last_name' => $donor->last_name,
             'email' => $donor->email,
             'phone' => $donor->phone,
-            'account_status' => $donor->account_status,
+            'account_status' => $donor->account_status?->value,
             'roles' => $donor->roles->pluck('name')->values(),
             'donor_profile' => [
                 'blood_type' => $donor->donorProfile?->bloodType?->code,
@@ -344,8 +347,7 @@ class DonorService
     }
 
     /**
-     * @param \Illuminate\Support\Collection<string, int> $monthlyCounts
-     *
+     * @param  Collection<string, int>  $monthlyCounts
      * @return array<int, array<string, mixed>>
      */
     private function formatMonthlyTrend($monthlyCounts, Carbon $now): array

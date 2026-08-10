@@ -78,7 +78,7 @@ class UserService
             'email' => $user->email,
             'phone' => $user->phone,
             'username' => $user->username,
-            'account_status' => $user->account_status,
+            'account_status' => $user->account_status?->value,
             'activated_at' => $user->activated_at?->toISOString(),
             'roles' => $user->roles->pluck('name')->values()->all(),
         ];

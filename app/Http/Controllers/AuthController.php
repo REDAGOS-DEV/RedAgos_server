@@ -2,35 +2,45 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\User;
+use App\Http\Requests\LoginRequest;
+use App\Service\AuthService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Hash;
-use Illuminate\Validation\ValidationException;
+use Illuminate\Http\Response;
 
 class AuthController extends Controller
 {
-    public function login(Request $request): JsonResponse
+    public function __construct(
+        private readonly AuthService $authService
+    ) {}
+
+    /**
+     * Authenticate a user and issue a personal access token.
+     */
+    public function login(LoginRequest $request): JsonResponse
     {
-        $credentials = $request->validate([
-            'email' => ['required', 'email'],
-            'password' => ['required', 'string'],
-        ]);
+        return response()->json(
+            $this->authService->login($request->validated())
+        );
+    }
 
-        $user = User::where('email', $credentials['email'])->first();
+    /**
+     * Revoke the access token used for the current request.
+     */
+    public function logout(Request $request): Response
+    {
+        $this->authService->logout($request->user());
 
-        if (! $user || ! Hash::check($credentials['password'], $user->password)) {
-            throw ValidationException::withMessages([
-                'email' => ['The provided credentials are incorrect.'],
-            ]);
-        }
+        return response()->noContent();
+    }
 
-        $token = $user->createToken('api-token')->plainTextToken;
+    /**
+     * Revoke every access token belonging to the authenticated user.
+     */
+    public function logoutFromAllDevices(Request $request): Response
+    {
+        $this->authService->logoutFromAllDevices($request->user());
 
-        return response()->json([
-            'user' => $user,
-            'token' => $token,
-            'token_type' => 'Bearer',
-        ]);
+        return response()->noContent();
     }
 }

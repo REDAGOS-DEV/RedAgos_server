@@ -2,8 +2,12 @@
 
 namespace App\Models;
 
-// use Illuminate\Contracts\Auth\MustVerifyEmail;
+use App\Enums\AccountStatus;
+use App\Enums\RoleName;
+use App\Notifications\ResetPasswordNotification;
+use App\Notifications\VerifyEmailNotification;
 use Database\Factories\UserFactory;
+use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -24,12 +28,20 @@ use Laravel\Sanctum\HasApiTokens;
     'password',
     'account_status',
     'activated_at',
+    'terms_accepted_at',
 ])]
 #[Hidden(['password', 'remember_token'])]
-class User extends Authenticatable
+class User extends Authenticatable implements MustVerifyEmail
 {
     /** @use HasFactory<UserFactory> */
     use HasApiTokens, HasFactory, Notifiable, SoftDeletes;
+
+    /**
+     * @var array<string, string>
+     */
+    protected $attributes = [
+        'account_status' => AccountStatus::PendingVerification->value,
+    ];
 
     /**
      * Get the attributes that should be cast.
@@ -41,6 +53,8 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'activated_at' => 'datetime',
+            'terms_accepted_at' => 'datetime',
+            'account_status' => AccountStatus::class,
             'password' => 'hashed',
         ];
     }
@@ -53,5 +67,29 @@ class User extends Authenticatable
     public function donorProfile(): HasOne
     {
         return $this->hasOne(DonorProfile::class, 'donor_id');
+    }
+
+    /**
+     * Determine whether the user holds the given role.
+     */
+    public function hasRole(RoleName $role): bool
+    {
+        return $this->roles->contains('name', $role->value);
+    }
+
+    /**
+     * Send the SPA-addressed email verification notification.
+     */
+    public function sendEmailVerificationNotification(): void
+    {
+        $this->notify(new VerifyEmailNotification);
+    }
+
+    /**
+     * Send the SPA-addressed password reset notification.
+     */
+    public function sendPasswordResetNotification($token): void
+    {
+        $this->notify(new ResetPasswordNotification($token));
     }
 }

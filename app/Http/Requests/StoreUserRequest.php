@@ -2,7 +2,9 @@
 
 namespace App\Http\Requests;
 
+use App\Enums\AccountStatus;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\Rules\Password;
 
 class StoreUserRequest extends FormRequest
@@ -20,7 +22,7 @@ class StoreUserRequest extends FormRequest
             'phone' => ['nullable', 'string', 'max:20', 'unique:users,phone'],
             'username' => ['required', 'string', 'max:150', 'unique:users,username'],
             'password' => ['required', 'confirmed', Password::min(8)->mixedCase()->numbers()],
-            'account_status' => ['sometimes', 'in:pending_activation,active,inactive,suspended'],
+            'account_status' => ['sometimes', Rule::enum(AccountStatus::class)],
             'activated_at' => ['nullable', 'date'],
             'roles' => ['required', 'array', 'min:1'], 'roles.*' => ['string', 'exists:roles,name'],
         ];
