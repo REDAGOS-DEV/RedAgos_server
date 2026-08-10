@@ -3,13 +3,19 @@
 namespace App\Service;
 
 use App\Enums\AccountStatus;
+use App\Enums\EligibilityStatus;
 use App\Enums\RoleName;
+use App\Models\DonorProfile;
 use App\Models\User;
 use App\Repository\DonorRepository;
+use App\Repository\EligibilityRepository;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
@@ -20,7 +26,9 @@ class DonorService
     private const INITIAL_ACCOUNT_STATUS = AccountStatus::PendingVerification;
 
     public function __construct(
-        private readonly DonorRepository $donorRepository
+        private readonly DonorRepository $donorRepository,
+        private readonly EligibilityRepository $eligibilityRepository,
+        private readonly EligibilityRuleEvaluator $eligibilityRuleEvaluator
     ) {}
 
     /**
@@ -109,8 +117,7 @@ class DonorService
         $upcomingAppointment = $this->donorRepository->findUpcomingAppointment($donor->id, $now);
         $recentDonations = $this->donorRepository->recentDonations($donor->id);
         $monthlyCounts = $this->donorRepository
-            ->monthlyCompletedDonationCounts($donor->id, $now->copy()->subMonths(11)->startOfMonth(), $now->copy()->endOfMonth())
-            ->pluck('total', 'month_key');
+            ->monthlyCompletedDonationCounts($donor->id, $now->copy()->subMonths(11)->startOfMonth(), $now->copy()->endOfMonth());
 
         return [
             'user' => $this->formatDonor($donor),
@@ -125,7 +132,7 @@ class DonorService
                 'blood_type' => $profile->bloodType?->code,
                 'account_status' => $donor->account_status?->value,
             ],
-            'eligibility_status' => 'pending',
+            'eligibility_status' => $this->eligibilityStatus($donor->id)->value,
             'blood_type' => $profile->bloodType?->code,
             'total_donations' => $this->donorRepository->countCompletedDonations($donor->id),
             'upcoming_appointment' => $this->formatAppointment($upcomingAppointment),
@@ -166,8 +173,9 @@ class DonorService
             'avatar_url' => $profile->profile_image_path,
             'eligibility_status' => $dashboard['eligibility_status'],
             'total_donations' => $dashboard['total_donations'],
-            'last_donation_date' => $profile->last_donation_date?->toDateString(),
-            'next_eligible_date' => null,
+            'last_donation_date' => $this->lastDonationDate($profile)?->toDateString(),
+            'next_eligible_date' => $this->eligibilityRuleEvaluator
+                ->nextEligibleDate($this->lastDonationDate($profile))?->toDateString(),
             'notification_preferences' => $profile->notification_preferences ?: $this->defaultNotificationPreferences(),
         ];
     }
@@ -254,6 +262,113 @@ class DonorService
             'message' => 'Notification preferences updated successfully.',
             'notification_preferences' => $preferences,
         ];
+    }
+
+    /**
+     * Store a new profile photo and return its signed URL.
+     *
+     * @return array<string, mixed>
+     */
+    public function updateAvatar(User $user, UploadedFile $avatar): array
+    {
+        $donor = $this->donorRepository->loadDashboardUser($user);
+        $profile = $donor->donorProfile;
+
+        if (! $profile) {
+            throw ValidationException::withMessages([
+                'donor' => ['The authenticated user does not have a donor profile.'],
+            ]);
+        }
+
+        $previousPath = $profile->profile_image_path;
+        $path = $avatar->store('avatars', 'local');
+
+        $this->donorRepository->updateDonorProfile($profile, ['profile_image_path' => $path]);
+
+        if ($previousPath && Storage::disk('local')->exists($previousPath)) {
+            Storage::disk('local')->delete($previousPath);
+        }
+
+        return [
+            'message' => 'Profile photo updated successfully.',
+            'avatar_url' => URL::temporarySignedRoute(
+                'donors.avatar.show',
+                now()->addMinutes(30),
+                ['user' => $donor->uuid]
+            ),
+        ];
+    }
+
+    /**
+     * Close the donor's account, pseudonymising personal data.
+     *
+     * Donation records are deliberately retained for clinical traceability;
+     * only the identifying fields on the user and profile are cleared.
+     *
+     * @return array<string, string>
+     */
+    public function deleteAccount(User $user): array
+    {
+        $donor = $this->donorRepository->loadDashboardUser($user);
+        $profile = $donor->donorProfile;
+
+        DB::transaction(function () use ($donor, $profile): void {
+            $anonymousSuffix = Str::lower(Str::random(12));
+
+            if ($profile) {
+                $this->eligibilityRepository->revokeQrTokens($profile->donor_id);
+                $this->donorRepository->updateDonorProfile($profile, [
+                    'address' => null,
+                    'valid_id_number' => null,
+                    'profile_image_path' => null,
+                ]);
+                $profile->delete();
+            }
+
+            $this->donorRepository->updateUser($donor, [
+                'first_name' => 'Deleted',
+                'last_name' => 'Donor',
+                'email' => "deleted-{$anonymousSuffix}@redagos.invalid",
+                'phone' => null,
+                'username' => "deleted-{$anonymousSuffix}",
+                'account_status' => AccountStatus::Deactivated,
+            ]);
+
+            $donor->tokens()->delete();
+            $donor->delete();
+        });
+
+        return [
+            'message' => 'Your account has been closed. Donation records are retained for traceability.',
+        ];
+    }
+
+    /**
+     * Resolve the donor's current eligibility state from their latest screening.
+     */
+    private function eligibilityStatus(int $donorId): EligibilityStatus
+    {
+        $screening = $this->eligibilityRepository->latestScreening($donorId);
+
+        if (! $screening) {
+            return EligibilityStatus::Pending;
+        }
+
+        if ($screening->result === EligibilityStatus::Eligible && ! $screening->valid_until->isFuture()) {
+            return EligibilityStatus::Expired;
+        }
+
+        return $screening->result;
+    }
+
+    /**
+     * Get the donor's last completed donation date, preferring donation records
+     * over the denormalised value on the profile.
+     */
+    private function lastDonationDate(DonorProfile $profile): ?Carbon
+    {
+        return $this->eligibilityRepository->lastCompletedDonationAt($profile->donor_id)
+            ?? $profile->last_donation_date;
     }
 
     private function normalizePhilippinePhone(string $phone): string

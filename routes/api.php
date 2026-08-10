@@ -1,7 +1,12 @@
 <?php
 
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\BookingCatalogController;
+use App\Http\Controllers\DonorAppointmentController;
 use App\Http\Controllers\DonorDashboardController;
+use App\Http\Controllers\DonorDonationController;
+use App\Http\Controllers\DonorEligibilityController;
+use App\Http\Controllers\DonorNotificationController;
 use App\Http\Controllers\DonorProfileController;
 use App\Http\Controllers\DonorRegistrationController;
 use App\Http\Controllers\EmailVerificationController;
@@ -44,6 +49,48 @@ Route::middleware('auth:sanctum')->group(function (): void {
     Route::post('/donors/password', [DonorProfileController::class, 'updatePassword']);
     Route::patch('/donors/notification-preferences', [DonorProfileController::class, 'updateNotificationPreferences']);
 });
+
+Route::middleware(['auth:sanctum', 'role:donor'])->prefix('donors')->group(function (): void {
+    Route::get('/eligibility/questions', [DonorEligibilityController::class, 'questions']);
+    Route::get('/eligibility/prefill', [DonorEligibilityController::class, 'prefill']);
+    Route::get('/eligibility', [DonorEligibilityController::class, 'status']);
+    Route::post('/eligibility/screening', [DonorEligibilityController::class, 'submit'])
+        ->middleware('throttle:5,60');
+
+    Route::get('/qr-code', [DonorEligibilityController::class, 'qrCode']);
+    Route::post('/qr-code/refresh', [DonorEligibilityController::class, 'refreshQrCode'])
+        ->middleware('throttle:10,60');
+
+    Route::get('/appointments', [DonorAppointmentController::class, 'index']);
+    Route::post('/appointments', [DonorAppointmentController::class, 'store']);
+    Route::patch('/appointments/{appointment}', [DonorAppointmentController::class, 'update'])
+        ->whereNumber('appointment');
+    Route::delete('/appointments/{appointment}', [DonorAppointmentController::class, 'destroy'])
+        ->whereNumber('appointment');
+
+    Route::get('/donations', [DonorDonationController::class, 'index']);
+
+    Route::get('/notifications', [DonorNotificationController::class, 'index']);
+    Route::get('/notifications/unread-count', [DonorNotificationController::class, 'unreadCount']);
+    Route::post('/notifications/mark-all-read', [DonorNotificationController::class, 'markAllAsRead']);
+    Route::patch('/notifications/{notification}', [DonorNotificationController::class, 'update'])
+        ->whereUuid('notification');
+
+    Route::post('/avatar', [DonorProfileController::class, 'updateAvatar']);
+    Route::delete('/account', [DonorProfileController::class, 'destroy']);
+});
+
+Route::get('/donors/{user}/avatar', [DonorProfileController::class, 'showAvatar'])
+    ->middleware('signed')
+    ->name('donors.avatar.show');
+
+Route::middleware('auth:sanctum')->group(function (): void {
+    Route::get('/blood-centers', [BookingCatalogController::class, 'bloodCenters']);
+    Route::get('/blood-drives', [BookingCatalogController::class, 'bloodDrives']);
+    Route::get('/time-slots', [BookingCatalogController::class, 'timeSlots']);
+});
+
+Route::get('/support/contact-info', fn () => response()->json(config('donation.support')));
 
 Route::middleware(['auth:sanctum', 'role:admin', 'throttle:60,1'])->prefix('users')->group(function (): void {
     Route::get('/', [UserController::class, 'index']);

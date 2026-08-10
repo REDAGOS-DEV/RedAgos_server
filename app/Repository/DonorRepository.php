@@ -126,15 +126,24 @@ class DonorRepository
             ->get();
     }
 
+    /**
+     * Count completed donations per calendar month, keyed as YYYY-MM.
+     *
+     * Grouping happens in PHP rather than SQL because the previous
+     * DATE_FORMAT() expression was MySQL-only and broke on any other driver.
+     * The range is bounded to a single donor over twelve months, so the row
+     * count is trivial.
+     *
+     * @return Collection<string, int>
+     */
     public function monthlyCompletedDonationCounts(int $donorId, Carbon $from, Carbon $to): Collection
     {
         return DB::table('donations')
             ->where('donor_id', $donorId)
             ->where('status', 'completed')
             ->whereBetween('donation_date', [$from, $to])
-            ->groupBy('month_key')
-            ->orderBy('month_key')
-            ->selectRaw("DATE_FORMAT(donation_date, '%Y-%m') as month_key, COUNT(*) as total")
-            ->get();
+            ->pluck('donation_date')
+            ->groupBy(fn (string $date): string => Carbon::parse($date)->format('Y-m'))
+            ->map(fn (Collection $dates): int => $dates->count());
     }
 }

@@ -21,6 +21,11 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
+        $this->call([
+            EligibilityQuestionSeeder::class,
+            FacilitySeeder::class,
+        ]);
+
         foreach (RoleName::cases() as $role) {
             Role::firstOrCreate(['name' => $role->value]);
         }
