@@ -80,6 +80,9 @@ class AppointmentRepository
 
     /**
      * Count active bookings for one specific slot, locking the rows for update.
+     *
+     * PostgreSQL rejects FOR UPDATE alongside an aggregate (SQLSTATE 0A000), so
+     * the locked rows are selected and counted in PHP instead of via count(*).
      */
     public function lockedSlotCount(int $facilityId, Carbon $slot): int
     {
@@ -88,11 +91,14 @@ class AppointmentRepository
             ->where('appointment_datetime', $slot)
             ->active()
             ->lockForUpdate()
+            ->get(['id'])
             ->count();
     }
 
     /**
      * Count active registrations for a drive, locking the rows for update.
+     *
+     * Same PostgreSQL constraint as lockedSlotCount().
      */
     public function lockedDriveCount(int $eventId): int
     {
@@ -100,6 +106,7 @@ class AppointmentRepository
             ->where('event_id', $eventId)
             ->active()
             ->lockForUpdate()
+            ->get(['id'])
             ->count();
     }
 

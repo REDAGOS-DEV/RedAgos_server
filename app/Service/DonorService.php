@@ -164,6 +164,9 @@ class DonorService
             'first_name' => $donor->first_name,
             'last_name' => $donor->last_name,
             'email' => $donor->email,
+            // Changing the address revokes verification, so the client needs to
+            // see the current state rather than assume it stayed verified.
+            'email_verified' => $donor->hasVerifiedEmail(),
             'phone' => $donor->phone,
             'contact_number' => $donor->phone,
             'birth_date' => $profile->birth_date?->toDateString(),
@@ -196,13 +199,25 @@ class DonorService
             ]);
         }
 
-        DB::transaction(function () use ($donor, $profile, $bloodType, $payload): void {
+        $email = Str::lower(trim($payload['email']));
+
+        // A verification link is signed against sha1() of the address it was
+        // issued for, so changing the address silently invalidates any link
+        // still in the donor's inbox and leaves the new address unproven.
+        // Revoke the verification and issue a link for the new address.
+        $emailChanged = $email !== $donor->email;
+
+        DB::transaction(function () use ($donor, $profile, $bloodType, $payload, $email, $emailChanged): void {
             $this->donorRepository->updateUser($donor, [
                 'first_name' => trim($payload['first_name']),
                 'last_name' => trim($payload['last_name']),
-                'email' => Str::lower(trim($payload['email'])),
+                'email' => $email,
                 'phone' => $this->normalizePhilippinePhone($payload['phone']),
             ]);
+
+            if ($emailChanged) {
+                $this->donorRepository->markEmailUnverified($donor);
+            }
 
             $this->donorRepository->updateDonorProfile($profile, [
                 'blood_type_id' => $bloodType->id,
@@ -211,8 +226,15 @@ class DonorService
             ]);
         });
 
+        // Sent after the commit so a rolled-back update never mails a live link.
+        if ($emailChanged) {
+            $donor->sendEmailVerificationNotification();
+        }
+
         return [
-            'message' => 'Donor profile updated successfully.',
+            'message' => $emailChanged
+                ? 'Donor profile updated successfully. Please check your new email address to verify it.'
+                : 'Donor profile updated successfully.',
             'data' => $this->profile($donor->refresh()),
         ];
     }

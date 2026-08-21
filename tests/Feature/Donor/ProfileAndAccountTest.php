@@ -8,8 +8,10 @@ use App\Models\Donation;
 use App\Models\DonorQrToken;
 use App\Models\EligibilityScreening;
 use App\Models\User;
+use App\Notifications\VerifyEmailNotification;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
@@ -242,5 +244,88 @@ class ProfileAndAccountTest extends TestCase
     {
         $this->postJson('/api/donors/avatar')->assertUnauthorized();
         $this->deleteJson('/api/donors/account')->assertUnauthorized();
+    }
+
+    public function test_changing_the_email_address_revokes_the_existing_verification(): void
+    {
+        Notification::fake();
+
+        $this->assertTrue($this->donor->hasVerifiedEmail());
+
+        $this->actingAs($this->donor)
+            ->patchJson('/api/donors/profile', $this->profilePayload(['email' => 'moved@example.com']))
+            ->assertOk()
+            ->assertJsonPath('data.email_verified', false);
+
+        $donor = $this->donor->fresh();
+
+        $this->assertSame('moved@example.com', $donor->email);
+        $this->assertNull($donor->email_verified_at);
+    }
+
+    public function test_changing_the_email_address_sends_a_link_for_the_new_address(): void
+    {
+        Notification::fake();
+
+        $this->actingAs($this->donor)
+            ->patchJson('/api/donors/profile', $this->profilePayload(['email' => 'MOVED@Example.com ']))
+            ->assertOk();
+
+        // Ang notifiable kay ang donor mismo, so ang link kay gi-pirmahan batok
+        // sa na-normalize nga address — dili sa daan.
+        Notification::assertSentTo(
+            $this->donor,
+            VerifyEmailNotification::class,
+            fn ($notification, $channels, $notifiable) => $notifiable->getEmailForVerification() === 'moved@example.com'
+        );
+    }
+
+    public function test_updating_a_profile_without_touching_the_email_keeps_the_verification(): void
+    {
+        Notification::fake();
+
+        $this->actingAs($this->donor)
+            ->patchJson('/api/donors/profile', $this->profilePayload(['first_name' => 'Renamed']))
+            ->assertOk()
+            ->assertJsonPath('data.email_verified', true);
+
+        $this->assertNotNull($this->donor->fresh()->email_verified_at);
+        Notification::assertNothingSent();
+    }
+
+    public function test_an_unverified_donor_cannot_book_after_changing_their_email(): void
+    {
+        Notification::fake();
+
+        $this->actingAs($this->donor)
+            ->patchJson('/api/donors/profile', $this->profilePayload(['email' => 'moved@example.com']))
+            ->assertOk();
+
+        // Ang na-revoke nga verification kay dapat mo-sirado sab sa QR mint,
+        // kay `hasVerifiedEmail()` ra man ang gi-gate sa maong feature.
+        $this->assertFalse($this->donor->fresh()->hasVerifiedEmail());
+    }
+
+    /**
+     * Build a full profile payload; every field is required by the endpoint.
+     *
+     * @param  array<string, mixed>  $overrides
+     * @return array<string, mixed>
+     */
+    private function profilePayload(array $overrides = []): array
+    {
+        $profile = $this->donor->donorProfile;
+
+        return array_merge([
+            'first_name' => $this->donor->first_name,
+            'last_name' => $this->donor->last_name,
+            'email' => $this->donor->email,
+            'phone' => $this->donor->phone,
+            'birth_date' => $profile->birth_date instanceof \DateTimeInterface
+                ? $profile->birth_date->format('Y-m-d')
+                : (string) $profile->birth_date,
+            'blood_type' => $profile->bloodType->code,
+            'address' => $profile->address,
+        ], $overrides);
     }
 }

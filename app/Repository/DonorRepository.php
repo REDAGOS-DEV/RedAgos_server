@@ -74,6 +74,19 @@ class DonorRepository
         return $user;
     }
 
+    /**
+     * Revoke email verification after the address on the account changed.
+     *
+     * `email_verified_at` is deliberately not fillable, so this cannot go
+     * through updateUser().
+     */
+    public function markEmailUnverified(User $user): User
+    {
+        $user->forceFill(['email_verified_at' => null])->save();
+
+        return $user;
+    }
+
     public function updateDonorProfile(DonorProfile $profile, array $payload): DonorProfile
     {
         $profile->update($payload);

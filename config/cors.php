@@ -23,7 +23,22 @@ return [
         array_map('trim', explode(',', (string) env('CORS_ALLOWED_ORIGINS', (string) env('FRONTEND_URL', 'http://localhost:3000'))))
     )),
 
-    'allowed_origins_patterns' => [],
+    /*
+    | Development only. Allows any RFC1918 private-network origin so that
+    | cross-device testing survives a LAN IP change (hotspot 172.x, home
+    | Wi-Fi 192.168.x) without editing .env. Off by default outside local —
+    | enabling it in production requires setting the flag explicitly.
+    */
+    'allowed_origins_patterns' => array_values(array_filter([
+        env('CORS_ALLOW_PRIVATE_NETWORK', env('APP_ENV') === 'local')
+            ? '#^http://(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}'
+                .'|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}'
+                .'|192\.168\.\d{1,3}\.\d{1,3}'
+                .'|localhost|127\.0\.0\.1)'
+                .':\d{1,5}$#'
+            : null,
+    ])),
+
 
     'allowed_headers' => ['*'],
 
