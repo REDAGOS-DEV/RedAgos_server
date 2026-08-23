@@ -2,8 +2,10 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\ListUsersRequest;
+use App\Http\Requests\StoreUserRequest;
+use App\Http\Requests\UpdateUserRequest;
 use App\Service\UserService;
-use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 
 class UserController extends Controller
@@ -15,34 +17,37 @@ class UserController extends Controller
         $this->userService = $userService;
     }
 
-    public function index(Request $request)
+    public function index(ListUsersRequest $request): JsonResponse
     {
-        return $this->userService->listUser($request->input('per_page', 15));
+        return response()->json(
+            $this->userService->listUser($request->integer('per_page', 15))
+        );
     }
 
-    public function store(Request $request)
+    public function store(StoreUserRequest $request): JsonResponse
     {
-        return $this->userService->createUser($request->all());
+        return response()->json($this->userService->createUser($request->validated()), 201);
     }
 
-    public function show(string $uuid)
+    public function show(string $uuid): JsonResponse
     {
-        return $this->userService->getUser($uuid);
+        return response()->json($this->userService->getUser($uuid));
     }
 
-    public function update(Request $request, string $uuid)
+    public function update(UpdateUserRequest $request, string $uuid): JsonResponse
     {
-        return $this->userService->updateUser($uuid, $request->all());
+        return response()->json($this->userService->updateUser($uuid, $request->validated()));
     }
 
-    public function destroy(string $uuid)
+    public function destroy(string $uuid): JsonResponse
     {
         $this->userService->deleteUser($uuid);
+
         return response()->json(['message' => 'Deleted successfully'], 200);
     }
-    
-    public function restore(string $uuid)
+
+    public function restore(string $uuid): JsonResponse
     {
-        return $this->userService->restoreUser($uuid);
+        return response()->json($this->userService->restoreUser($uuid));
     }
 }
