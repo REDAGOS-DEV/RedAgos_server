@@ -33,7 +33,8 @@ class ReferenceDataTest extends TestCase
 
     public function test_it_returns_blood_types_and_components(): void
     {
-        BloodType::factory()->create(['code' => 'O-', 'label' => 'O-']);
+        // Idempotent: DonorProfileFactory also creates random blood types.
+        BloodType::firstOrCreate(['code' => 'O-'], ['label' => 'O-']);
         $this->seed(BloodComponentSeeder::class);
 
         $staff = User::factory()->bloodCenterStaff()->create();
