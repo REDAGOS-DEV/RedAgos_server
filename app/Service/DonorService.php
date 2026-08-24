@@ -9,6 +9,7 @@ use App\Models\DonorProfile;
 use App\Models\User;
 use App\Repository\DonorRepository;
 use App\Repository\EligibilityRepository;
+use App\Support\AccountIdentity;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
@@ -395,22 +396,12 @@ class DonorService
 
     private function normalizePhilippinePhone(string $phone): string
     {
-        $phone = preg_replace('/[\s-]+/', '', $phone) ?? $phone;
-
-        if (str_starts_with($phone, '09')) {
-            return '+63'.substr($phone, 1);
-        }
-
-        if (str_starts_with($phone, '63')) {
-            return '+'.$phone;
-        }
-
-        return $phone;
+        return AccountIdentity::normalizePhilippinePhone($phone);
     }
 
     private function buildUsername(string $email): string
     {
-        return Str::before($email, '@').'-'.Str::lower(Str::random(6));
+        return AccountIdentity::buildUsername($email);
     }
 
     /**
