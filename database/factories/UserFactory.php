@@ -5,6 +5,7 @@ namespace Database\Factories;
 use App\Enums\AccountStatus;
 use App\Enums\RoleName;
 use App\Models\DonorProfile;
+use App\Models\Facility;
 use App\Models\Role;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Factories\Factory;
@@ -100,5 +101,41 @@ class UserFactory extends Factory
             ->afterCreating(function (User $user): void {
                 DonorProfile::factory()->create(['donor_id' => $user->id]);
             });
+    }
+
+    /**
+     * Create approved blood-centre staff: a facility, the role, and a post.
+     *
+     * Defaults to an approved facility because that is the state most tests
+     * need. Pass an explicit facility to exercise pending, rejected or
+     * suspended. Calling this with ->count(n) attaches every user to the same
+     * facility, which is what a real centre looks like.
+     */
+    public function bloodCenterStaff(?Facility $facility = null): static
+    {
+        $facility ??= Facility::factory()->approved()->create();
+
+        return $this->state(fn (array $attributes): array => [
+            'facility_id' => $facility->id,
+            'position' => 'Medical Technologist',
+        ])->withRole(RoleName::BloodCenter);
+    }
+
+    /**
+     * Create a blood-centre applicant exactly as registration leaves them:
+     * attached to a facility, stamped as its registration contact, holding no
+     * role at all.
+     */
+    public function bloodCenterApplicant(?Facility $facility = null): static
+    {
+        $facility ??= Facility::factory()->pendingApproval()->create();
+
+        return $this->state(fn (array $attributes): array => [
+            'facility_id' => $facility->id,
+            'position' => 'Medical Technologist',
+        ])->afterCreating(function (User $user) use ($facility): void {
+            $facility->registration_contact_user_id = $user->id;
+            $facility->save();
+        });
     }
 }

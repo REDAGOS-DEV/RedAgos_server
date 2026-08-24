@@ -11,6 +11,7 @@ use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
@@ -29,7 +30,10 @@ use Laravel\Sanctum\HasApiTokens;
     'account_status',
     'activated_at',
     'terms_accepted_at',
+    'employee_id',
+    'position',
 ])]
+
 #[Hidden(['password', 'remember_token'])]
 class User extends Authenticatable implements MustVerifyEmail
 {
@@ -67,6 +71,18 @@ class User extends Authenticatable implements MustVerifyEmail
     public function donorProfile(): HasOne
     {
         return $this->hasOne(DonorProfile::class, 'donor_id');
+    }
+
+    /**
+     * The facility this staff account belongs to.
+     *
+     * Null for donors and administrators. Every facility-scoped query resolves
+     * through this rather than through request input, so there is no IDOR
+     * surface.
+     */
+    public function facility(): BelongsTo
+    {
+        return $this->belongsTo(Facility::class);
     }
 
     /**

@@ -30,6 +30,12 @@ class AuthorizationSweepTest extends TestCase
             'update donor password' => ['post', '/api/donors/password'],
             'notification preferences' => ['patch', '/api/donors/notification-preferences'],
             'admin user list' => ['get', '/api/users'],
+            'blood center registration status' => ['get', '/api/blood-center/registration-status'],
+            'blood center resubmit' => ['post', '/api/blood-center/registration/resubmit'],
+            'blood center profile' => ['get', '/api/blood-center/profile'],
+            'blood center password' => ['post', '/api/blood-center/password'],
+            'blood center reference data' => ['get', '/api/blood-center/reference-data'],
+            'admin facility registrations' => ['get', '/api/admin/facility-registrations'],
         ];
     }
 
@@ -66,5 +72,6 @@ class AuthorizationSweepTest extends TestCase
         $this->postJson('/api/forgot-password', [])->assertStatus(422);
         $this->postJson('/api/reset-password', [])->assertStatus(422);
         $this->postJson('/api/donors/register', [])->assertStatus(422);
+        $this->postJson('/api/blood-center/register', [])->assertStatus(422);
     }
 }

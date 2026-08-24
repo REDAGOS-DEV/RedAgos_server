@@ -1,6 +1,9 @@
 <?php
 
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\BloodCenterProfileController;
+use App\Http\Controllers\BloodCenterReferenceController;
+use App\Http\Controllers\BloodCenterRegistrationController;
 use App\Http\Controllers\BookingCatalogController;
 use App\Http\Controllers\DonorAppointmentController;
 use App\Http\Controllers\DonorDashboardController;
@@ -10,6 +13,7 @@ use App\Http\Controllers\DonorNotificationController;
 use App\Http\Controllers\DonorProfileController;
 use App\Http\Controllers\DonorRegistrationController;
 use App\Http\Controllers\EmailVerificationController;
+use App\Http\Controllers\FacilityRegistrationController;
 use App\Http\Controllers\PasswordResetController;
 use App\Http\Controllers\UserController;
 use App\Http\Resources\UserResource;
@@ -91,6 +95,49 @@ Route::middleware('auth:sanctum')->group(function (): void {
 });
 
 Route::get('/support/contact-info', fn () => response()->json(config('donation.support')));
+
+// Blood Center — public registration. Issues no token and attaches no role.
+Route::post('/blood-center/register', [BloodCenterRegistrationController::class, 'register'])
+    ->middleware('throttle:5,1');
+
+// Blood Center — applicant. No role held yet, so these are guarded by
+// authentication alone; resubmission ownership is enforced in the service.
+Route::middleware('auth:sanctum')->prefix('blood-center')->group(function (): void {
+    Route::get('/registration-status', [BloodCenterRegistrationController::class, 'status']);
+    Route::post('/registration/resubmit', [BloodCenterRegistrationController::class, 'resubmit'])
+        ->middleware('throttle:5,60');
+});
+
+// Blood Center — role only. Deliberately outside the operational gate so a
+// suspended or unverified user can still see why they are blocked and change
+// their own password.
+Route::middleware(['auth:sanctum', 'role:blood_center'])->prefix('blood-center')->group(function (): void {
+    Route::get('/profile', [BloodCenterProfileController::class, 'show']);
+    Route::patch('/profile', [BloodCenterProfileController::class, 'update']);
+    Route::put('/profile', [BloodCenterProfileController::class, 'update']);
+    Route::post('/password', [BloodCenterProfileController::class, 'updatePassword']);
+});
+
+// Blood Center — operational. Everything that touches real data attaches here,
+// including every endpoint Module 2 will add.
+Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
+    ->prefix('blood-center')->group(function (): void {
+        Route::get('/reference-data', [BloodCenterReferenceController::class, 'index']);
+    });
+
+// Admin — facility registration review.
+Route::middleware(['auth:sanctum', 'role:admin', 'throttle:60,1'])
+    ->prefix('admin/facility-registrations')->group(function (): void {
+        Route::get('/', [FacilityRegistrationController::class, 'index']);
+        Route::post('/{facility}/approve', [FacilityRegistrationController::class, 'approve'])
+            ->whereNumber('facility');
+        Route::post('/{facility}/reject', [FacilityRegistrationController::class, 'reject'])
+            ->whereNumber('facility');
+        Route::post('/{facility}/suspend', [FacilityRegistrationController::class, 'suspend'])
+            ->whereNumber('facility');
+        Route::post('/{facility}/reinstate', [FacilityRegistrationController::class, 'reinstate'])
+            ->whereNumber('facility');
+    });
 
 Route::middleware(['auth:sanctum', 'role:admin', 'throttle:60,1'])->prefix('users')->group(function (): void {
     Route::get('/', [UserController::class, 'index']);

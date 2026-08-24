@@ -1,5 +1,6 @@
 <?php
 
+use App\Enums\BloodUnitStatus;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
@@ -15,7 +16,7 @@ return new class extends Migration
             $table->foreignId('blood_type_id')->constrained('blood_types')->cascadeOnUpdate()->restrictOnDelete();
             $table->foreignId('donation_id')->constrained('donations')->cascadeOnUpdate()->restrictOnDelete();
             $table->date('expiry_date');
-            $table->enum('status', ['available', 'reserved', 'issued', 'expired', 'discarded'])->default('available');
+            $table->enum('status', BloodUnitStatus::values())->default(BloodUnitStatus::Available->value);
             $table->timestamps();
 
             $table->index(['facility_id', 'blood_type_id', 'component_id', 'status']);

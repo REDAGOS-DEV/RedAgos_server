@@ -2,6 +2,7 @@
 
 namespace App\Service;
 
+use App\Enums\FacilityStatus;
 use App\Enums\RoleName;
 use App\Http\Resources\UserResource;
 use App\Models\User;
@@ -39,7 +40,7 @@ class AuthService
         $requestedRole = $this->guardRequestedRole($user, $payload['role'] ?? null);
 
         return [
-            'user' => UserResource::make($user->load(['roles', 'donorProfile.bloodType']))->resolve(),
+            'user' => UserResource::make($user->load(['roles', 'donorProfile.bloodType', 'facility']))->resolve(),
             'token' => $this->authRepository->issueToken($user, $this->tokenName($requestedRole)),
             'token_type' => 'Bearer',
             'must_verify_email' => ! $user->hasVerifiedEmail(),
@@ -178,14 +179,44 @@ class AuthService
             return null;
         }
 
-        if (! $user->hasRole($role)) {
-            throw new HttpResponseException(response()->json([
-                'message' => 'This account cannot sign in from this portal.',
-                'code' => 'role_mismatch',
-            ], 403));
+        if ($user->hasRole($role)) {
+            return $role;
         }
 
-        return $role;
+        // An organisation awaiting approval, or one that was rejected, holds no
+        // role yet by design. Refusing outright would leave it unable to read
+        // its own status or resubmit, so authentication succeeds and a generic
+        // token is issued. The role is still genuinely absent, so the role:
+        // middleware keeps refusing every protected route — authentication
+        // succeeds, authorization does not.
+        if ($this->isUnapprovedOrganisationApplicant($user, $role)) {
+            return null;
+        }
+
+        throw new HttpResponseException(response()->json([
+            'message' => 'This account cannot sign in from this portal.',
+            'code' => 'role_mismatch',
+        ], 403));
+    }
+
+    /**
+     * Determine whether this is an organisation applicant still awaiting a
+     * decision on its facility.
+     *
+     * Deliberately narrow: only the two organisation roles qualify, so a donor
+     * signing in through the wrong portal is still refused.
+     */
+    private function isUnapprovedOrganisationApplicant(User $user, RoleName $role): bool
+    {
+        if (! in_array($role, [RoleName::BloodCenter, RoleName::BloodBank], true)) {
+            return false;
+        }
+
+        return $user->facility !== null && in_array(
+            $user->facility->status,
+            [FacilityStatus::PendingApproval, FacilityStatus::Rejected],
+            true
+        );
     }
 
     /**

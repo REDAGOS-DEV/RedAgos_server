@@ -38,6 +38,15 @@ class UserResource extends JsonResource
                 'donorProfile',
                 fn () => $this->donorProfile?->bloodType?->code
             ),
+            'facility' => $this->whenLoaded(
+                'facility',
+                fn () => $this->facility ? [
+                    'id' => $this->facility->id,
+                    'facility_name' => $this->facility->name,
+                    'address' => $this->facility->address,
+                    'status' => $this->facility->status?->value,
+                ] : null
+            ),
         ];
     }
 }
