@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\BloodCenterInventoryController;
 use App\Http\Controllers\BloodCenterProfileController;
 use App\Http\Controllers\BloodCenterReferenceController;
 use App\Http\Controllers\BloodCenterRegistrationController;
@@ -118,11 +119,25 @@ Route::middleware(['auth:sanctum', 'role:blood_center'])->prefix('blood-center')
     Route::post('/password', [BloodCenterProfileController::class, 'updatePassword']);
 });
 
-// Blood Center — operational. Everything that touches real data attaches here,
-// including every endpoint Module 2 will add.
+// Blood Center — operational. Everything that touches real data attaches here:
+// reference data, and the inventory endpoints Module 3 added.
 Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
     ->prefix('blood-center')->group(function (): void {
         Route::get('/reference-data', [BloodCenterReferenceController::class, 'index']);
+
+        Route::get('/inventory', [BloodCenterInventoryController::class, 'index']);
+
+        // Declared bef ore /inventory/{unit}: the parameter is a string and
+        // would otherwise swallow 'summary'.
+        Route::get('/inventory/summary', [BloodCenterInventoryController::class, 'summary']);
+
+        Route::post('/inventory', [BloodCenterInventoryController::class, 'store']);
+
+        Route::patch('/inventory/{unit}', [BloodCenterInventoryController::class, 'update'])
+            ->where('unit', '[A-Za-z0-9\-]+');
+
+        Route::post('/inventory/{unit}/discard', [BloodCenterInventoryController::class, 'discard'])
+            ->where('unit', '[A-Za-z0-9\-]+');
     });
 
 // Admin — facility registration review.

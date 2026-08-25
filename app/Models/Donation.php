@@ -51,7 +51,13 @@ class Donation extends Model
     }
 
     /**
-     * Limit the query to donations that reached collection.
+     * Limit the query to donations cleared for issue.
+     *
+     * `completed` means testing is finished and the blood may reach a patient —
+     * `tested` is the separate, earlier status. The two are not the same, and
+     * this docblock previously said "reached collection" while the query
+     * filtered on `completed`. Blood-unit intake gates on this distinction; see
+     * the donation-status entry in docs/IMPLEMENTATION_DECISIONS.md.
      */
     public function scopeCompleted(Builder $query): Builder
     {

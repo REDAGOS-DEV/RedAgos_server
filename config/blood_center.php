@@ -4,6 +4,26 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Operational Timezone
+    |--------------------------------------------------------------------------
+    |
+    | The clock every date comparison in inventory resolves through: the expiry
+    | sweep, the expiry_date validation rules, and days_remaining in the
+    | listing. They must not each ask a different clock.
+    |
+    | Expiry is a date, and a date is only meaningful in a timezone. Under UTC,
+    | Manila's 00:00-08:00 is still "yesterday", so a sweep scheduled for 00:30
+    | Manila would compute the previous day and expire everything a day late.
+    | Every named institution in the study is in Davao City, so one value serves
+    | all of them; this is the single function to change if that stops being
+    | true.
+    |
+    */
+
+    'timezone' => env('BLOOD_CENTER_TIMEZONE', 'Asia/Manila'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Storage Locations
     |--------------------------------------------------------------------------
     |
