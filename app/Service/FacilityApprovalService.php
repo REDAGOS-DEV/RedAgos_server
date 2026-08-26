@@ -58,6 +58,7 @@ class FacilityApprovalService
             $locked->save();
 
             $this->grantRoleToStaff($locked);
+            $this->ensureSupervisor($locked);
 
             return $locked;
         });
@@ -181,6 +182,7 @@ class FacilityApprovalService
             // so reinstatement self-heals any account that ended up attached to
             // the facility without the role.
             $this->grantRoleToStaff($locked);
+            $this->ensureSupervisor($locked);
 
             return $locked;
         });
@@ -263,6 +265,30 @@ class FacilityApprovalService
         foreach ($this->bloodCenterRepository->staffForFacility($facility->id) as $staff) {
             $this->bloodCenterRepository->attachRole($staff, RoleName::BloodCenter->value);
         }
+    }
+
+    /**
+     * Ensure the newly approved facility has someone who can manage its staff.
+     *
+     * Without this the first account through the door holds the blood_center
+     * role but not staff.manage, so an approved centre would have nobody able
+     * to create colleagues or assign them departments. Skipped when a
+     * supervisor already exists, so reinstating a suspended facility does not
+     * promote a second one.
+     */
+    private function ensureSupervisor(Facility $facility): void
+    {
+        $staff = $this->bloodCenterRepository->staffForFacility($facility->id);
+
+        if ($staff->isEmpty() || $staff->contains(fn (User $member): bool => $member->is_supervisor)) {
+            return;
+        }
+
+        $supervisor = $staff->firstWhere('id', $facility->registration_contact_user_id)
+            ?? $staff->sortBy('id')->first();
+
+        $supervisor->is_supervisor = true;
+        $supervisor->save();
     }
 
     /**

@@ -121,22 +121,32 @@ Route::middleware(['auth:sanctum', 'role:blood_center'])->prefix('blood-center')
 
 // Blood Center — operational. Everything that touches real data attaches here:
 // reference data, and the inventory endpoints Module 3 added.
+//
+// The group carries what every route shares; the department ability is per
+// route, because they differ. `can:` takes one ability, so a pipe-separated
+// list would be read as a single ability nobody holds.
 Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
     ->prefix('blood-center')->group(function (): void {
-        Route::get('/reference-data', [BloodCenterReferenceController::class, 'index']);
+        Route::get('/reference-data', [BloodCenterReferenceController::class, 'index'])
+            ->middleware('can:reference.view');
 
-        Route::get('/inventory', [BloodCenterInventoryController::class, 'index']);
+        Route::get('/inventory', [BloodCenterInventoryController::class, 'index'])
+            ->middleware('can:inventory.view');
 
-        // Declared bef ore /inventory/{unit}: the parameter is a string and
+        // Declared before /inventory/{unit}: the parameter is a string and
         // would otherwise swallow 'summary'.
-        Route::get('/inventory/summary', [BloodCenterInventoryController::class, 'summary']);
+        Route::get('/inventory/summary', [BloodCenterInventoryController::class, 'summary'])
+            ->middleware('can:inventory.view');
 
-        Route::post('/inventory', [BloodCenterInventoryController::class, 'store']);
+        Route::post('/inventory', [BloodCenterInventoryController::class, 'store'])
+            ->middleware('can:inventory.create');
 
         Route::patch('/inventory/{unit}', [BloodCenterInventoryController::class, 'update'])
+            ->middleware('can:inventory.update')
             ->where('unit', '[A-Za-z0-9\-]+');
 
         Route::post('/inventory/{unit}/discard', [BloodCenterInventoryController::class, 'discard'])
+            ->middleware('can:inventory.discard')
             ->where('unit', '[A-Za-z0-9\-]+');
     });
 
@@ -165,7 +175,10 @@ Route::middleware(['auth:sanctum', 'role:admin', 'throttle:60,1'])->prefix('user
 });
 
 Route::get('/user', function (Request $request) {
+    // facility is eager-loaded because the blood-centre client reads the
+    // facility name and status straight off this payload; without it the
+    // resource omits the key and the portal header renders blank.
     return UserResource::make(
-        $request->user()->load(['roles', 'donorProfile.bloodType'])
+        $request->user()->load(['roles', 'donorProfile.bloodType', 'facility'])
     );
 })->middleware('auth:sanctum');

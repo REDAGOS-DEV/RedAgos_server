@@ -3,6 +3,7 @@
 namespace Database\Factories;
 
 use App\Enums\AccountStatus;
+use App\Enums\Department;
 use App\Enums\RoleName;
 use App\Models\DonorProfile;
 use App\Models\Facility;
@@ -111,13 +112,39 @@ class UserFactory extends Factory
      * suspended. Calling this with ->count(n) attaches every user to the same
      * facility, which is what a real centre looks like.
      */
-    public function bloodCenterStaff(?Facility $facility = null): static
+    public function bloodCenterStaff(?Facility $facility = null, ?Department $department = null): static
+    {
+        $facility ??= Facility::factory()->approved()->create();
+
+        // Defaults to Inventory because that is the only department with
+        // implemented endpoints, so a test that just wants "some approved
+        // blood-centre staff" gets an account that can actually reach them.
+        $department ??= Department::Inventory;
+
+        return $this->state(fn (array $attributes): array => [
+            'facility_id' => $facility->id,
+            'position' => 'Medical Technologist',
+            'department' => $department,
+            'is_supervisor' => false,
+        ])->withRole(RoleName::BloodCenter);
+    }
+
+    /**
+     * Create a blood-centre supervisor: the management level, holding every ability.
+     *
+     * Passing a department produces a working supervisor. Leaving it null
+     * produces a management-only one. Neither narrows what they may do — the
+     * department only records where they sit.
+     */
+    public function bloodCenterSupervisor(?Facility $facility = null, ?Department $department = null): static
     {
         $facility ??= Facility::factory()->approved()->create();
 
         return $this->state(fn (array $attributes): array => [
             'facility_id' => $facility->id,
-            'position' => 'Medical Technologist',
+            'position' => 'Blood Center Supervisor',
+            'department' => $department,
+            'is_supervisor' => true,
         ])->withRole(RoleName::BloodCenter);
     }
 
