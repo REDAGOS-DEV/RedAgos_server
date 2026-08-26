@@ -2,6 +2,7 @@
 
 namespace App\Repository;
 
+use App\Enums\Department;
 use App\Enums\FacilityStatus;
 use App\Models\BloodComponent;
 use App\Models\BloodType;
@@ -55,17 +56,25 @@ class BloodCenterRepository
     /**
      * Create a staff user attached to a facility.
      *
-     * facility_id is assigned directly: it is the facility-isolation boundary,
-     * so no mass-assignment path may reach it.
+     * facility_id, department and is_supervisor are all assigned directly
+     * rather than filled: the first is the facility-isolation boundary and the
+     * other two decide what the account may do, so no mass-assignment path may
+     * reach any of them.
      *
      * @param  array<string, mixed>  $attributes
      */
-    public function createStaffUser(array $attributes, Facility $facility): User
-    {
+    public function createStaffUser(
+        array $attributes,
+        Facility $facility,
+        ?Department $department = null,
+        bool $isSupervisor = false
+    ): User {
         $user = new User;
 
         $user->fill($attributes);
         $user->facility_id = $facility->id;
+        $user->department = $department;
+        $user->is_supervisor = $isSupervisor;
         $user->save();
 
         return $user;

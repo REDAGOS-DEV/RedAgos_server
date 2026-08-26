@@ -5,6 +5,7 @@ use App\Http\Controllers\BloodCenterInventoryController;
 use App\Http\Controllers\BloodCenterProfileController;
 use App\Http\Controllers\BloodCenterReferenceController;
 use App\Http\Controllers\BloodCenterRegistrationController;
+use App\Http\Controllers\BloodCenterStaffController;
 use App\Http\Controllers\BookingCatalogController;
 use App\Http\Controllers\DonorAppointmentController;
 use App\Http\Controllers\DonorDashboardController;
@@ -148,6 +149,19 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         Route::post('/inventory/{unit}/discard', [BloodCenterInventoryController::class, 'discard'])
             ->middleware('can:inventory.discard')
             ->where('unit', '[A-Za-z0-9\-]+');
+
+        // Roster management, held by the supervisor alone. staff.manage says
+        // the caller may manage staff; StaffService is what scopes every
+        // lookup to their own facility.
+        Route::middleware('can:staff.manage')->prefix('staff')->group(function (): void {
+            Route::get('/', [BloodCenterStaffController::class, 'index']);
+            Route::post('/', [BloodCenterStaffController::class, 'store']);
+            Route::get('/{uuid}', [BloodCenterStaffController::class, 'show'])->whereUuid('uuid');
+            Route::patch('/{uuid}', [BloodCenterStaffController::class, 'update'])->whereUuid('uuid');
+            Route::put('/{uuid}', [BloodCenterStaffController::class, 'update'])->whereUuid('uuid');
+            Route::delete('/{uuid}', [BloodCenterStaffController::class, 'destroy'])->whereUuid('uuid');
+            Route::post('/{uuid}/restore', [BloodCenterStaffController::class, 'restore'])->whereUuid('uuid');
+        });
     });
 
 // Admin — facility registration review.
