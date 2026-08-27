@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\DonationStatus;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -24,13 +25,14 @@ class Donation extends Model
      * @var array<string, mixed>
      */
     protected $attributes = [
-        'status' => 'registered',
+        'status' => DonationStatus::Registered->value,
     ];
 
     protected function casts(): array
     {
         return [
             'donation_date' => 'datetime',
+            'status' => DonationStatus::class,
             'volume_ml' => 'integer',
         ];
     }
@@ -61,6 +63,6 @@ class Donation extends Model
      */
     public function scopeCompleted(Builder $query): Builder
     {
-        return $query->where('status', 'completed');
+        return $query->where('status', DonationStatus::Completed);
     }
 }

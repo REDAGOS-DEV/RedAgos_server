@@ -3,6 +3,7 @@
 namespace App\Service;
 
 use App\Enums\BloodUnitStatus;
+use App\Enums\DonationStatus;
 use App\Models\BloodUnit;
 use App\Models\Donation;
 use App\Models\User;
@@ -33,12 +34,15 @@ class InventoryService
     /**
      * The donation status that may become issuable stock.
      *
+     * Kept as the named gate even though DonationStatus::isIssuable() is what
+     * the check calls, so that grepping for the intake rule still lands here.
      * Confirmed as "tested and cleared for issue" — see the donation-status
      * entry in docs/IMPLEMENTATION_DECISIONS.md. If that confirmation is ever
-     * overturned, this constant is the gate, but the module would then also
-     * need a quarantine state before units could be created available.
+     * overturned, isIssuable() is the single place to change, but the module
+     * would then also need a quarantine state before units could be created
+     * available.
      */
-    private const ISSUABLE_DONATION_STATUS = 'completed';
+    private const ISSUABLE_DONATION_STATUS = DonationStatus::Completed;
 
     public function __construct(
         private readonly InventoryRepository $inventoryRepository,
@@ -250,7 +254,7 @@ class InventoryService
         $donation = $this->inventoryRepository->lockDonation((int) $payload['donation_id'], $facilityId)
             ?? throw $this->refuse(404, 'donation_not_found', 'This donation was not found at your facility.');
 
-        if ($donation->status !== self::ISSUABLE_DONATION_STATUS) {
+        if (! $donation->status->isIssuable()) {
             throw $this->refuse(
                 409,
                 'donation_not_completed',
