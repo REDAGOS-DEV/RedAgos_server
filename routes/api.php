@@ -4,6 +4,7 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\BloodCenterCollectionController;
 use App\Http\Controllers\BloodCenterDonorController;
 use App\Http\Controllers\BloodCenterInventoryController;
+use App\Http\Controllers\BloodCenterLaboratoryController;
 use App\Http\Controllers\BloodCenterProfileController;
 use App\Http\Controllers\BloodCenterReferenceController;
 use App\Http\Controllers\BloodCenterRegistrationController;
@@ -197,6 +198,25 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
 
             Route::post('/{donation}/collection', [BloodCenterCollectionController::class, 'recordCollection'])
                 ->middleware('can:donations.record')->whereNumber('donation');
+        });
+
+        // Laboratory/Processing — the only place `completed` can be written,
+        // and `completed` is what blood-unit intake gates on.
+        Route::prefix('laboratory')->group(function (): void {
+            Route::get('/queue', [BloodCenterLaboratoryController::class, 'index'])
+                ->middleware('can:lab.view');
+
+            Route::get('/donations/{donation}', [BloodCenterLaboratoryController::class, 'show'])
+                ->middleware('can:lab.view')->whereNumber('donation');
+
+            Route::post('/donations/{donation}/results', [BloodCenterLaboratoryController::class, 'recordResult'])
+                ->middleware('can:lab.record_result')->whereNumber('donation');
+
+            Route::post('/donations/{donation}/components', [BloodCenterLaboratoryController::class, 'declareComponents'])
+                ->middleware('can:lab.record_result')->whereNumber('donation');
+
+            Route::patch('/donations/{donation}/status', [BloodCenterLaboratoryController::class, 'updateStatus'])
+                ->middleware('can:lab.update_status')->whereNumber('donation');
         });
 
         // Roster management, held by the supervisor alone. staff.manage says

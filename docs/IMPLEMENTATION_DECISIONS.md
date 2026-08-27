@@ -202,3 +202,64 @@ even though it is absent from its field list.
 donation cannot record why. The paper requires a recorded reason for a rejected
 *request* but says nothing about a rejected donation. Decide before building the
 Donor/Collection module.
+
+---
+
+## Laboratory/Processing schema (Phase 5, module 2)
+
+**DECISION:** Two new tables carry what the laboratory records, neither of
+which appears in the Capstone data dictionary:
+
+- `donation_test_results` — one row per donation (unique `donation_id`). Holds
+  the screening outcome (`passed | reactive | inconclusive`), the blood type the
+  laboratory typed, who entered it, when, and free-text notes. A correction
+  edits the row rather than adding a second, so there is never an ambiguity
+  about which result cleared the blood.
+- `donation_components` — which components the donation was separated into and
+  how many bags of each, unique on `(donation_id, component_id)`. This is the
+  declaration blood-unit intake is constrained to.
+
+**DECIDED BY:** The project owner, on 2026-08-27, as the schema needed to
+implement the Laboratory responsibilities in `docs/BLOOD-CENTER.md`.
+
+**CAPSTONE GAP:** The paper describes no laboratory department and defines no
+table for screening results or component yield. Its `donation` table carries no
+status column either (recorded above). These tables are additions required by
+the finalised organisational structure, not paper requirements.
+
+**SCOPE BOUNDARY:** RedAgos does not perform the assay. `donation_test_results`
+records what a qualified professional reported; `recorded_by` names the staff
+member who entered the record, not the professional who produced it. Nothing in
+`LaboratoryService` computes, infers or derives a result.
+
+**DECISION (blood-type mismatch):** If the type the laboratory reads off the bag
+differs from the donor profile, recording the result is refused with
+`blood_type_mismatch` rather than either value silently winning. A person's
+blood type does not change, so a mismatch means one of the two records is wrong,
+and `blood_units.blood_type_id` is derived from the donor profile — letting it
+through would put a unit into stock labelled with a type the laboratory did not
+read. Correcting the donor profile is a Donor/Collection action.
+
+**DECISION (what `completed` requires):** A donation may only be cleared for
+issue when it is `tested`, has a recorded result of `passed`, and has a declared
+component breakdown. A `reactive` or `inconclusive` donation can never reach
+`completed` by any route, and `completed` is what blood-unit intake gates on —
+so this is the rule that keeps untested blood away from a patient.
+
+**DECISION (intake constraint):** `InventoryService` now refuses a unit whose
+component the laboratory did not declare for that donation (422 on the field),
+and refuses an intake that would exceed the declared quantity (409
+`exceeds_declared_quantity`). The count includes units already recorded, so the
+limit holds across separate intakes rather than only within one request. This
+resolves the CURRENT IMPLEMENTATION CONFLICT recorded under "Who records blood
+component information".
+
+**CONSEQUENCE:** The donor-to-inventory chain is now closed end to end, proved
+by `DonationToInventoryChainTest`. Before Laboratory existed nothing wrote
+`completed`, so the finished inventory module was unreachable: no code path
+could produce a donation it would accept.
+
+**UNRESOLVED:** `donations` still has no `rejection_reason` column, so neither a
+collection-side nor a laboratory-side rejection records why. The notes field on
+`donation_test_results` covers the laboratory case in practice but is not a
+structured reason.
