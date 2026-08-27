@@ -24,6 +24,7 @@ class DatabaseSeeder extends Seeder
         $this->call([
             EligibilityQuestionSeeder::class,
             FacilitySeeder::class,
+            BloodComponentSeeder::class,
         ]);
 
         foreach (RoleName::cases() as $role) {

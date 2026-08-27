@@ -34,9 +34,25 @@ class UserResource extends JsonResource
                 fn () => $this->roles->pluck('name')->values()->all(),
                 []
             ),
+            'department' => $this->department?->value,
+            'department_label' => $this->department?->label(),
+            'is_supervisor' => (bool) $this->is_supervisor,
+            // Mirrored to the client so it can render the right navigation.
+            // This is presentation only — every ability is re-checked by the
+            // `can:` middleware on the route that uses it.
+            'permissions' => $this->abilities(),
             'blood_type' => $this->whenLoaded(
                 'donorProfile',
                 fn () => $this->donorProfile?->bloodType?->code
+            ),
+            'facility' => $this->whenLoaded(
+                'facility',
+                fn () => $this->facility ? [
+                    'id' => $this->facility->id,
+                    'facility_name' => $this->facility->name,
+                    'address' => $this->facility->address,
+                    'status' => $this->facility->status?->value,
+                ] : null
             ),
         ];
     }

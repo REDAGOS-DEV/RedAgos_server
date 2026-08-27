@@ -227,6 +227,42 @@ Clear common caches:
 php artisan optimize:clear
 ```
 
+## Scheduled Tasks
+
+The blood-unit expiry sweep (`inventory:expire-units`) moves past-expiry units off the shelf. It is
+registered in `routes/console.php` and runs at 00:30 `Asia/Manila`.
+
+**Installing the scheduler is a release requirement, not an optimisation.** If nothing invokes it,
+past-expiry units keep reporting as `available` and the API is confidently wrong about issuable
+stock.
+
+Server — one cron entry, which is all Laravel ever needs:
+
+```bash
+* * * * * cd /path/to/RedAgos_server && php artisan schedule:run >> /dev/null 2>&1
+```
+
+On a managed platform (Laravel Cloud and similar), enable that platform's scheduler for the app
+instead; it invokes `schedule:run` on the same minute cadence. Do not add a second cron.
+
+Local development:
+
+```bash
+php artisan schedule:work          # run the scheduler in the foreground
+php artisan inventory:expire-units # or run the sweep by hand
+```
+
+Verify after deploying:
+
+```bash
+php artisan schedule:list   # inventory:expire-units, 30 0 * * *, next due in Manila time
+php artisan schedule:test   # run a scheduled task on demand
+```
+
+Verify it stayed running: the sweep writes an `inventory.expiry_swept` row to `audit_logs` on
+**every** run, including ones that expire nothing. The absence of yesterday's row is proof the
+scheduler is down, rather than proof it was a quiet day.
+
 ## Migration Guidelines
 
 Domain migrations are intentionally split into one file per table to follow the Single Responsibility Principle. Keep each migration focused on one table and name it clearly, for example:

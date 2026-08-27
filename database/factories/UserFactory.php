@@ -3,8 +3,10 @@
 namespace Database\Factories;
 
 use App\Enums\AccountStatus;
+use App\Enums\Department;
 use App\Enums\RoleName;
 use App\Models\DonorProfile;
+use App\Models\Facility;
 use App\Models\Role;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Factories\Factory;
@@ -100,5 +102,67 @@ class UserFactory extends Factory
             ->afterCreating(function (User $user): void {
                 DonorProfile::factory()->create(['donor_id' => $user->id]);
             });
+    }
+
+    /**
+     * Create approved blood-centre staff: a facility, the role, and a post.
+     *
+     * Defaults to an approved facility because that is the state most tests
+     * need. Pass an explicit facility to exercise pending, rejected or
+     * suspended. Calling this with ->count(n) attaches every user to the same
+     * facility, which is what a real centre looks like.
+     */
+    public function bloodCenterStaff(?Facility $facility = null, ?Department $department = null): static
+    {
+        $facility ??= Facility::factory()->approved()->create();
+
+        // Defaults to Inventory because that is the only department with
+        // implemented endpoints, so a test that just wants "some approved
+        // blood-centre staff" gets an account that can actually reach them.
+        $department ??= Department::Inventory;
+
+        return $this->state(fn (array $attributes): array => [
+            'facility_id' => $facility->id,
+            'position' => 'Medical Technologist',
+            'department' => $department,
+            'is_supervisor' => false,
+        ])->withRole(RoleName::BloodCenter);
+    }
+
+    /**
+     * Create a blood-centre supervisor: the management level, holding every ability.
+     *
+     * Passing a department produces a working supervisor. Leaving it null
+     * produces a management-only one. Neither narrows what they may do — the
+     * department only records where they sit.
+     */
+    public function bloodCenterSupervisor(?Facility $facility = null, ?Department $department = null): static
+    {
+        $facility ??= Facility::factory()->approved()->create();
+
+        return $this->state(fn (array $attributes): array => [
+            'facility_id' => $facility->id,
+            'position' => 'Blood Center Supervisor',
+            'department' => $department,
+            'is_supervisor' => true,
+        ])->withRole(RoleName::BloodCenter);
+    }
+
+    /**
+     * Create a blood-centre applicant exactly as registration leaves them:
+     * attached to a facility, stamped as its registration contact, holding no
+     * role at all.
+     */
+    public function bloodCenterApplicant(?Facility $facility = null): static
+    {
+        $facility ??= Facility::factory()->pendingApproval()->create();
+
+        return $this->state(fn (array $attributes): array => [
+            'facility_id' => $facility->id,
+            'position' => 'Medical Technologist',
+        ])->afterCreating(function (User $user) use ($facility): void {
+            $facility->registration_contact_user_id = $user->id;
+            $facility->save();
+        });
     }
 }

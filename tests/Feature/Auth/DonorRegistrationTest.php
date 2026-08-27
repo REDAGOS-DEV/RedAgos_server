@@ -20,7 +20,9 @@ class DonorRegistrationTest extends TestCase
     {
         parent::setUp();
 
-        BloodType::factory()->code('O+')->create();
+        // Idempotent: DonorProfileFactory also creates random blood types from an
+        // eight-element pool, so an explicit create collides whenever they match.
+        BloodType::firstOrCreate(['code' => 'O+'], ['label' => 'O+']);
     }
 
     /**

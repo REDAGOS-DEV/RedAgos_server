@@ -120,7 +120,9 @@ class SensitiveDataExposureTest extends TestCase
 
     public function test_the_registration_response_does_not_echo_the_password(): void
     {
-        BloodType::factory()->code('O+')->create();
+        // Idempotent: DonorProfileFactory also creates random blood types from an
+        // eight-element pool, so an explicit create collides whenever they match.
+        BloodType::firstOrCreate(['code' => 'O+'], ['label' => 'O+']);
 
         $body = $this->postJson('/api/donors/register', [
             'first_name' => 'Juan',

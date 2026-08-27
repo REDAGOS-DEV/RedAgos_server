@@ -3,14 +3,17 @@
 namespace App\Models;
 
 use App\Enums\AccountStatus;
+use App\Enums\Department;
 use App\Enums\RoleName;
 use App\Notifications\ResetPasswordNotification;
 use App\Notifications\VerifyEmailNotification;
+use App\Support\DepartmentPermissions;
 use Database\Factories\UserFactory;
 use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
@@ -29,7 +32,10 @@ use Laravel\Sanctum\HasApiTokens;
     'account_status',
     'activated_at',
     'terms_accepted_at',
+    'employee_id',
+    'position',
 ])]
+
 #[Hidden(['password', 'remember_token'])]
 class User extends Authenticatable implements MustVerifyEmail
 {
@@ -55,6 +61,8 @@ class User extends Authenticatable implements MustVerifyEmail
             'activated_at' => 'datetime',
             'terms_accepted_at' => 'datetime',
             'account_status' => AccountStatus::class,
+            'department' => Department::class,
+            'is_supervisor' => 'boolean',
             'password' => 'hashed',
         ];
     }
@@ -70,11 +78,49 @@ class User extends Authenticatable implements MustVerifyEmail
     }
 
     /**
+     * The facility this staff account belongs to.
+     *
+     * Null for donors and administrators. Every facility-scoped query resolves
+     * through this rather than through request input, so there is no IDOR
+     * surface.
+     */
+    public function facility(): BelongsTo
+    {
+        return $this->belongsTo(Facility::class);
+    }
+
+    /**
      * Determine whether the user holds the given role.
      */
     public function hasRole(RoleName $role): bool
     {
         return $this->roles->contains('name', $role->value);
+    }
+
+    /**
+     * Get every ability this account holds through its department or the management level.
+     *
+     * This is what the `can:` route middleware resolves against, and what the
+     * client mirrors to decide which navigation to render. The server remains
+     * the only real gate; the client copy is presentation.
+     *
+     * @return array<int, string>
+     */
+    public function abilities(): array
+    {
+        return DepartmentPermissions::for($this);
+    }
+
+    /**
+     * Determine whether the user works in the given department.
+     *
+     * Deliberately independent of is_supervisor: this answers "where do they
+     * work", not "what may they do". Use abilities() for the latter, because a
+     * supervisor holds every ability whatever their department says.
+     */
+    public function worksIn(Department $department): bool
+    {
+        return $this->department === $department;
     }
 
     /**

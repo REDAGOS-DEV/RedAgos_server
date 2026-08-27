@@ -2,6 +2,7 @@
 
 namespace Database\Seeders;
 
+use App\Enums\FacilityStatus;
 use App\Models\Facility;
 use App\Models\FacilityType;
 use Illuminate\Database\Console\Seeds\WithoutModelEvents;
@@ -26,18 +27,33 @@ class FacilitySeeder extends Seeder
         ];
 
         foreach ($centers as [$name, $address, $hours, $startsAt, $endsAt]) {
-            Facility::updateOrCreate(
-                ['facility_type_id' => $bloodCenter->id, 'name' => $name],
-                [
-                    'address' => $address,
-                    'operating_hours' => $hours,
-                    'is_accepting_donations' => true,
-                    'slot_capacity' => 4,
-                    'slot_interval_minutes' => 30,
-                    'slots_start_at' => $startsAt,
-                    'slots_end_at' => $endsAt,
-                ]
-            );
+            // facilities soft-deletes and carries unique(facility_type_id, name),
+            // so a trashed row must be restored rather than re-inserted.
+            $facility = Facility::withTrashed()->firstOrNew([
+                'facility_type_id' => $bloodCenter->id,
+                'name' => $name,
+            ]);
+
+            if ($facility->trashed()) {
+                $facility->restore();
+            }
+
+            $facility->fill([
+                'address' => $address,
+                'operating_hours' => $hours,
+                'is_accepting_donations' => true,
+                'slot_capacity' => 4,
+                'slot_interval_minutes' => 30,
+                'slots_start_at' => $startsAt,
+                'slots_end_at' => $endsAt,
+            ]);
+
+            // status is not mass-assignable by design, so it is set directly.
+            // These are the centres donors already book against; they are
+            // approved by definition rather than by the fail-closed default.
+            $facility->status = FacilityStatus::Approved;
+
+            $facility->save();
         }
     }
 }
