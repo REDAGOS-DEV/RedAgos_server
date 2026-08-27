@@ -2,10 +2,13 @@
 
 namespace App\Models;
 
+use App\Enums\DonationStatus;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class Donation extends Model
 {
@@ -24,13 +27,14 @@ class Donation extends Model
      * @var array<string, mixed>
      */
     protected $attributes = [
-        'status' => 'registered',
+        'status' => DonationStatus::Registered->value,
     ];
 
     protected function casts(): array
     {
         return [
             'donation_date' => 'datetime',
+            'status' => DonationStatus::class,
             'volume_ml' => 'integer',
         ];
     }
@@ -51,6 +55,30 @@ class Donation extends Model
     }
 
     /**
+     * The screening outcome the laboratory recorded, if any.
+     */
+    public function testResult(): HasOne
+    {
+        return $this->hasOne(DonationTestResult::class);
+    }
+
+    /**
+     * The components the laboratory separated this donation into.
+     */
+    public function components(): HasMany
+    {
+        return $this->hasMany(DonationComponent::class);
+    }
+
+    /**
+     * The physical bags inventory has recorded against this donation.
+     */
+    public function bloodUnits(): HasMany
+    {
+        return $this->hasMany(BloodUnit::class);
+    }
+
+    /**
      * Limit the query to donations cleared for issue.
      *
      * `completed` means testing is finished and the blood may reach a patient —
@@ -61,6 +89,6 @@ class Donation extends Model
      */
     public function scopeCompleted(Builder $query): Builder
     {
-        return $query->where('status', 'completed');
+        return $query->where('status', DonationStatus::Completed);
     }
 }

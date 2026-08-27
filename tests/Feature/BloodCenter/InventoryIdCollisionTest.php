@@ -7,6 +7,7 @@ use App\Models\BloodComponent;
 use App\Models\BloodType;
 use App\Models\BloodUnit;
 use App\Models\Donation;
+use App\Models\DonationComponent;
 use App\Models\DonorProfile;
 use App\Models\User;
 use App\Repository\InventoryRepository;
@@ -74,6 +75,17 @@ class InventoryIdCollisionTest extends TestCase
             'donor_id' => $this->donorProfile->donor_id,
             'status' => 'completed',
         ]);
+
+        // The laboratory's declaration of what this donation was separated
+        // into. Intake is constrained to it, so without this row there is
+        // nothing inventory is allowed to book in. Quantity is generous
+        // because several of these tests record more than one unit.
+        DonationComponent::factory()->quantity(10)->create([
+            'donation_id' => $this->donation->id,
+            'component_id' => $this->component->id,
+            'declared_by' => $this->staff->id,
+        ]);
+
     }
 
     public function test_intake_asks_for_the_donation_row_lock(): void

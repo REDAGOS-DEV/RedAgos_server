@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 class DonorProfile extends Model
@@ -44,5 +45,21 @@ class DonorProfile extends Model
     public function bloodType(): BelongsTo
     {
         return $this->belongsTo(BloodType::class);
+    }
+
+    /**
+     * Every appointment this donor has booked, at any facility.
+     */
+    public function appointments(): HasMany
+    {
+        return $this->hasMany(DonationAppointment::class, 'donor_id', 'donor_id');
+    }
+
+    /**
+     * Every donation recorded for this donor, at any facility.
+     */
+    public function donations(): HasMany
+    {
+        return $this->hasMany(Donation::class, 'donor_id', 'donor_id');
     }
 }

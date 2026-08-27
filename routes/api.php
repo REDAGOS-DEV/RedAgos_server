@@ -1,7 +1,10 @@
 <?php
 
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\BloodCenterCollectionController;
+use App\Http\Controllers\BloodCenterDonorController;
 use App\Http\Controllers\BloodCenterInventoryController;
+use App\Http\Controllers\BloodCenterLaboratoryController;
 use App\Http\Controllers\BloodCenterProfileController;
 use App\Http\Controllers\BloodCenterReferenceController;
 use App\Http\Controllers\BloodCenterRegistrationController;
@@ -149,6 +152,72 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         Route::post('/inventory/{unit}/discard', [BloodCenterInventoryController::class, 'discard'])
             ->middleware('can:inventory.discard')
             ->where('unit', '[A-Za-z0-9\-]+');
+
+        // Donor/Collection — the counter. Donors are not owned by a facility,
+        // so DonorDirectoryService is what decides whether a caller sees a full
+        // record or the standardised cross-facility summary.
+        Route::prefix('donors')->group(function (): void {
+            Route::get('/', [BloodCenterDonorController::class, 'index'])
+                ->middleware('can:donors.view');
+
+            // Declared before /{uuid}: 'lookup' would otherwise be read as one.
+            Route::get('/lookup', [BloodCenterDonorController::class, 'lookup'])
+                ->middleware('can:donors.view');
+
+            Route::post('/', [BloodCenterDonorController::class, 'store'])
+                ->middleware('can:donors.manage');
+
+            Route::get('/{uuid}', [BloodCenterDonorController::class, 'show'])
+                ->middleware('can:donors.view')->whereUuid('uuid');
+
+            Route::get('/{uuid}/history', [BloodCenterDonorController::class, 'history'])
+                ->middleware('can:donors.view')->whereUuid('uuid');
+        });
+
+        Route::get('/collection/queue', [BloodCenterCollectionController::class, 'queue'])
+            ->middleware('can:appointments.view');
+
+        Route::post('/collection/verify-qr', [BloodCenterCollectionController::class, 'verifyQr'])
+            ->middleware(['can:appointments.verify', 'throttle:60,1']);
+
+        Route::post('/appointments/{appointment}/check-in', [BloodCenterCollectionController::class, 'checkIn'])
+            ->middleware('can:appointments.verify')->whereNumber('appointment');
+
+        Route::post('/appointments/{appointment}/no-show', [BloodCenterCollectionController::class, 'noShow'])
+            ->middleware('can:appointments.verify')->whereNumber('appointment');
+
+        Route::prefix('donations')->group(function (): void {
+            Route::get('/', [BloodCenterCollectionController::class, 'index'])
+                ->middleware('can:donations.view');
+
+            Route::post('/', [BloodCenterCollectionController::class, 'store'])
+                ->middleware('can:donations.record');
+
+            Route::patch('/{donation}/status', [BloodCenterCollectionController::class, 'updateStatus'])
+                ->middleware('can:donations.record')->whereNumber('donation');
+
+            Route::post('/{donation}/collection', [BloodCenterCollectionController::class, 'recordCollection'])
+                ->middleware('can:donations.record')->whereNumber('donation');
+        });
+
+        // Laboratory/Processing — the only place `completed` can be written,
+        // and `completed` is what blood-unit intake gates on.
+        Route::prefix('laboratory')->group(function (): void {
+            Route::get('/queue', [BloodCenterLaboratoryController::class, 'index'])
+                ->middleware('can:lab.view');
+
+            Route::get('/donations/{donation}', [BloodCenterLaboratoryController::class, 'show'])
+                ->middleware('can:lab.view')->whereNumber('donation');
+
+            Route::post('/donations/{donation}/results', [BloodCenterLaboratoryController::class, 'recordResult'])
+                ->middleware('can:lab.record_result')->whereNumber('donation');
+
+            Route::post('/donations/{donation}/components', [BloodCenterLaboratoryController::class, 'declareComponents'])
+                ->middleware('can:lab.record_result')->whereNumber('donation');
+
+            Route::patch('/donations/{donation}/status', [BloodCenterLaboratoryController::class, 'updateStatus'])
+                ->middleware('can:lab.update_status')->whereNumber('donation');
+        });
 
         // Roster management, held by the supervisor alone. staff.manage says
         // the caller may manage staff; StaffService is what scopes every

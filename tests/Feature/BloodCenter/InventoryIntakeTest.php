@@ -9,6 +9,7 @@ use App\Models\BloodComponent;
 use App\Models\BloodType;
 use App\Models\BloodUnit;
 use App\Models\Donation;
+use App\Models\DonationComponent;
 use App\Models\DonorProfile;
 use App\Models\Facility;
 use App\Models\User;
@@ -52,6 +53,17 @@ class InventoryIntakeTest extends TestCase
             'donor_id' => $this->donorProfile->donor_id,
             'status' => 'completed',
         ]);
+
+        // The laboratory's declaration of what this donation was separated
+        // into. Intake is constrained to it, so without this row there is
+        // nothing inventory is allowed to book in. Quantity is generous
+        // because several of these tests record more than one unit.
+        DonationComponent::factory()->quantity(10)->create([
+            'donation_id' => $this->donation->id,
+            'component_id' => $this->component->id,
+            'declared_by' => $this->staff->id,
+        ]);
+
     }
 
     public function test_a_completed_donation_yields_units_carrying_the_donors_blood_type(): void

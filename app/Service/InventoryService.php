@@ -3,6 +3,7 @@
 namespace App\Service;
 
 use App\Enums\BloodUnitStatus;
+use App\Enums\DonationStatus;
 use App\Models\BloodUnit;
 use App\Models\Donation;
 use App\Models\User;
@@ -33,12 +34,15 @@ class InventoryService
     /**
      * The donation status that may become issuable stock.
      *
+     * Kept as the named gate even though DonationStatus::isIssuable() is what
+     * the check calls, so that grepping for the intake rule still lands here.
      * Confirmed as "tested and cleared for issue" — see the donation-status
      * entry in docs/IMPLEMENTATION_DECISIONS.md. If that confirmation is ever
-     * overturned, this constant is the gate, but the module would then also
-     * need a quarantine state before units could be created available.
+     * overturned, isIssuable() is the single place to change, but the module
+     * would then also need a quarantine state before units could be created
+     * available.
      */
-    private const ISSUABLE_DONATION_STATUS = 'completed';
+    private const ISSUABLE_DONATION_STATUS = DonationStatus::Completed;
 
     public function __construct(
         private readonly InventoryRepository $inventoryRepository,
@@ -250,7 +254,7 @@ class InventoryService
         $donation = $this->inventoryRepository->lockDonation((int) $payload['donation_id'], $facilityId)
             ?? throw $this->refuse(404, 'donation_not_found', 'This donation was not found at your facility.');
 
-        if ($donation->status !== self::ISSUABLE_DONATION_STATUS) {
+        if (! $donation->status->isIssuable()) {
             throw $this->refuse(
                 409,
                 'donation_not_completed',
@@ -259,6 +263,8 @@ class InventoryService
         }
 
         $bloodTypeId = $this->requireDonorBloodType($donation);
+
+        $this->guardAgainstLaboratoryDeclaration($donation, $payload['units']);
 
         $prefix = $this->generatedIdPrefix($facilityId, $donation->id);
         $sequence = $this->nextSequence($donation->id, $prefix);
@@ -455,6 +461,68 @@ class InventoryService
     private function isUniqueViolation(QueryException $exception): bool
     {
         return in_array($exception->errorInfo[0] ?? null, ['23000', '23505'], true);
+    }
+
+    /**
+     * Refuse units the laboratory never said this donation yielded.
+     *
+     * Laboratory declares which components a donation was separated into and
+     * how many bags of each; inventory records the units from that declaration.
+     * Without this check `component_id` is free text validated only against the
+     * component table, so a bag could be booked in as a component that was
+     * never produced — see "Who records blood component information" in
+     * docs/IMPLEMENTATION_DECISIONS.md.
+     *
+     * Counts existing units too, so the limit holds across several intakes
+     * rather than only within one request.
+     *
+     * @param  array<int, array<string, mixed>>  $entries
+     */
+    private function guardAgainstLaboratoryDeclaration(Donation $donation, array $entries): void
+    {
+        $declared = $donation->components()->pluck('quantity', 'component_id');
+
+        if ($declared->isEmpty()) {
+            throw $this->refuse(
+                409,
+                'components_not_declared',
+                'The laboratory has not recorded what this donation was separated into, so its units cannot be booked in.'
+            );
+        }
+
+        $alreadyRecorded = $donation->bloodUnits()
+            ->selectRaw('component_id, count(*) as total')
+            ->groupBy('component_id')
+            ->pluck('total', 'component_id');
+
+        $requested = [];
+
+        foreach ($entries as $index => $entry) {
+            $componentId = (int) $entry['component_id'];
+
+            if (! $declared->has($componentId)) {
+                throw ValidationException::withMessages([
+                    "units.{$index}.component_id" => ['The laboratory did not record this component for this donation.'],
+                ]);
+            }
+
+            $requested[$componentId] = ($requested[$componentId] ?? 0) + 1;
+        }
+
+        foreach ($requested as $componentId => $count) {
+            $limit = (int) $declared->get($componentId);
+            $used = (int) ($alreadyRecorded->get($componentId) ?? 0);
+
+            if ($used + $count > $limit) {
+                $remaining = max(0, $limit - $used);
+
+                throw $this->refuse(
+                    409,
+                    'exceeds_declared_quantity',
+                    "The laboratory declared {$limit} unit(s) of this component for this donation; {$remaining} may still be recorded."
+                );
+            }
+        }
     }
 
     /**

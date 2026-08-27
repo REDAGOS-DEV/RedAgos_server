@@ -128,7 +128,26 @@ class User extends Authenticatable implements MustVerifyEmail
      */
     public function sendEmailVerificationNotification(): void
     {
+        // A donor registered at the counter may hold no address. Notifying them
+        // would build a signed URL around a null and fail at the mailer, so the
+        // send is skipped rather than guarded at every call site.
+        if ($this->email === null) {
+            return;
+        }
+
         $this->notify(new VerifyEmailNotification);
+    }
+
+    /**
+     * Determine whether this account can be reached by any email-based flow.
+     *
+     * Verification, password reset and login all match on a supplied address,
+     * and `WHERE email = ?` never matches NULL, so an email-less donor is
+     * unreachable by all three. This makes that explicit where it matters.
+     */
+    public function hasEmailAddress(): bool
+    {
+        return $this->email !== null;
     }
 
     /**
