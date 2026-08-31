@@ -3,6 +3,8 @@
 namespace Tests\Feature\BloodCenter;
 
 use App\Enums\Department;
+use App\Enums\IdentityStatus;
+use App\Enums\ValidIdType;
 use App\Models\Donation;
 use App\Models\DonationAppointment;
 use App\Models\DonorProfile;
@@ -126,6 +128,29 @@ class DonorDirectoryTest extends TestCase
             ->assertJsonPath('scope', 'own_facility')
             ->assertJsonPath('restricted', false)
             ->assertJsonStructure(['address', 'valid_id_number', 'donations_at_this_facility']);
+    }
+
+    public function test_an_own_facility_donor_shows_identity_status_but_never_the_document(): void
+    {
+        $mine = $this->donorAt($this->facility);
+        DonorProfile::where('donor_id', $mine->id)->update([
+            'valid_id_type' => ValidIdType::DriversLicense->value,
+            'valid_id_image_path' => 'identity-documents/secret.jpg',
+            'identity_status' => IdentityStatus::Verified->value,
+        ]);
+
+        $body = $this->actingAs($this->staff)
+            ->getJson("/api/blood-center/donors/{$mine->uuid}")
+            ->assertOk()
+            ->assertJsonPath('identity_status', IdentityStatus::Verified->value)
+            ->assertJsonPath('valid_id_type', ValidIdType::DriversLicense->value)
+            ->getContent();
+
+        // Status and type tell staff the ID was checked. The photograph itself
+        // is for the administrator who reviewed it; staff match the physical
+        // card at the counter.
+        $this->assertStringNotContainsString('valid_id_image_path', $body);
+        $this->assertStringNotContainsString('secret.jpg', $body);
     }
 
     public function test_detailed_history_is_refused_for_another_facilitys_donor(): void

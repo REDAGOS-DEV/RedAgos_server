@@ -4,6 +4,7 @@ namespace App\Service;
 
 use App\Enums\AccountStatus;
 use App\Enums\EligibilityStatus;
+use App\Enums\IdentityStatus;
 use App\Enums\RoleName;
 use App\Models\DonorProfile;
 use App\Models\User;
@@ -15,16 +16,23 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use Throwable;
 
 class DonorService
 {
     private const DONOR_ROLE = RoleName::Donor->value;
 
     private const INITIAL_ACCOUNT_STATUS = AccountStatus::PendingVerification;
+
+    /**
+     * Where identity documents live on the private disk.
+     */
+    private const IDENTITY_DOCUMENT_DIRECTORY = 'identity-documents';
 
     public function __construct(
         private readonly DonorRepository $donorRepository,
@@ -80,6 +88,13 @@ class DonorService
                 'gender' => $payload['gender'],
                 'birth_date' => $payload['birth_date'],
                 'address' => trim($payload['address']),
+
+                // Optional, and deliberately not a submission: a number with no
+                // document is nothing an administrator can review. It exists so
+                // the counter can find this donor by the ID they present, and
+                // identity_status stays unsubmitted until a photo arrives.
+                'valid_id_type' => $payload['valid_id_type'] ?? null,
+                'valid_id_number' => $payload['valid_id_number'] ?? null,
             ]);
 
             $role = $this->donorRepository->findOrCreateRoleByName(self::DONOR_ROLE);
@@ -181,6 +196,105 @@ class DonorService
             'next_eligible_date' => $this->eligibilityRuleEvaluator
                 ->nextEligibleDate($this->lastDonationDate($profile))?->toDateString(),
             'notification_preferences' => $profile->notification_preferences ?: $this->defaultNotificationPreferences(),
+            'identity' => $this->formatIdentity($donor, $profile),
+        ];
+    }
+
+    /**
+     * Present the donor's own identity submission.
+     *
+     * The number is shown in full because the donor owns it; the image is given
+     * as the path of the authenticated route that streams it, never a signed
+     * URL and never the storage path.
+     *
+     * @return array<string, mixed>
+     */
+    private function formatIdentity(User $donor, DonorProfile $profile): array
+    {
+        $status = $profile->identity_status ?? IdentityStatus::Unsubmitted;
+
+        return [
+            'status' => $status->value,
+            'valid_id_type' => $profile->valid_id_type?->value,
+            'valid_id_type_label' => $profile->valid_id_type?->label(),
+            'valid_id_number' => $profile->valid_id_number,
+            'submitted_at' => $profile->identity_submitted_at?->toIso8601String(),
+            'reviewed_at' => $profile->identity_reviewed_at?->toIso8601String(),
+            'rejection_reason' => $profile->identity_rejection_reason,
+            'submission_version' => (int) $profile->identity_submission_version,
+            'image_url' => $profile->valid_id_image_path
+                ? '/donors/'.$donor->uuid.'/identity-image'
+                : null,
+        ];
+    }
+
+    /**
+     * Store a submitted identity document and queue it for administrator review.
+     *
+     * The file is written before the transaction and removed again if the
+     * transaction fails, so a rolled-back submission never leaves an orphan on
+     * disk; the previous document is deleted only once the new path is
+     * committed, so a failure never strands the row pointing at a file that has
+     * already been removed.
+     *
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    public function submitIdentity(User $user, array $payload, UploadedFile $image): array
+    {
+        $donor = $this->donorRepository->loadDashboardUser($user);
+
+        if (! $donor->donorProfile) {
+            throw ValidationException::withMessages([
+                'donor' => ['The authenticated user does not have a donor profile.'],
+            ]);
+        }
+
+        $newPath = $image->store(self::IDENTITY_DOCUMENT_DIRECTORY, 'local');
+
+        try {
+            $previousPath = DB::transaction(function () use ($donor, $payload, $newPath): ?string {
+                // Locked for the same reason the administrator's decision locks
+                // it: without this a donor can swap the document out from under
+                // a review that is already in progress.
+                $locked = $this->donorRepository->lockDonorProfile($donor->id);
+                $status = $locked->identity_status ?? IdentityStatus::Unsubmitted;
+
+                if (! $status->acceptsSubmission()) {
+                    throw ValidationException::withMessages([
+                        'valid_id_image' => ['Your ID has already been verified and cannot be replaced.'],
+                    ]);
+                }
+
+                $previousPath = $locked->valid_id_image_path;
+
+                $this->donorRepository->updateDonorProfile($locked, [
+                    'valid_id_type' => $payload['valid_id_type'],
+                    'valid_id_number' => $payload['valid_id_number'],
+                    'valid_id_image_path' => $newPath,
+                    'identity_status' => IdentityStatus::Pending,
+                    'identity_submitted_at' => now(),
+                    'identity_submission_version' => $locked->identity_submission_version + 1,
+                    'identity_reviewed_at' => null,
+                    'identity_reviewed_by' => null,
+                    'identity_rejection_reason' => null,
+                ]);
+
+                return $previousPath;
+            });
+        } catch (Throwable $exception) {
+            Storage::disk('local')->delete($newPath);
+
+            throw $exception;
+        }
+
+        if ($previousPath !== null && $previousPath !== $newPath) {
+            Storage::disk('local')->delete($previousPath);
+        }
+
+        return [
+            'message' => 'Your ID has been submitted for review.',
+            'data' => $this->profile($donor->refresh()),
         ];
     }
 
@@ -335,6 +449,10 @@ class DonorService
         $donor = $this->donorRepository->loadDashboardUser($user);
         $profile = $donor->donorProfile;
 
+        // Captured before the transaction clears the column, and deleted only
+        // after it commits.
+        $identityImagePath = $profile?->valid_id_image_path;
+
         DB::transaction(function () use ($donor, $profile): void {
             $anonymousSuffix = Str::lower(Str::random(12));
 
@@ -342,7 +460,14 @@ class DonorService
                 $this->eligibilityRepository->revokeQrTokens($profile->donor_id);
                 $this->donorRepository->updateDonorProfile($profile, [
                     'address' => null,
+                    'valid_id_type' => null,
                     'valid_id_number' => null,
+                    'valid_id_image_path' => null,
+                    'identity_status' => IdentityStatus::Unsubmitted,
+                    'identity_submitted_at' => null,
+                    'identity_reviewed_at' => null,
+                    'identity_reviewed_by' => null,
+                    'identity_rejection_reason' => null,
                     'profile_image_path' => null,
                 ]);
                 $profile->delete();
@@ -360,6 +485,20 @@ class DonorService
             $donor->tokens()->delete();
             $donor->delete();
         });
+
+        // After the commit, and never allowed to fail the closure: the account is
+        // already closed, so a storage error here is an orphaned file to clean up
+        // later rather than a reason to tell the donor their request did not work.
+        if ($identityImagePath !== null) {
+            try {
+                Storage::disk('local')->delete($identityImagePath);
+            } catch (Throwable $exception) {
+                Log::warning('Could not delete identity document after account closure.', [
+                    'donor_id' => $donor->id,
+                    'exception' => $exception->getMessage(),
+                ]);
+            }
+        }
 
         return [
             'message' => 'Your account has been closed. Donation records are retained for traceability.',

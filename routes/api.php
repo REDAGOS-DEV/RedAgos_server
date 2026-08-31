@@ -14,6 +14,7 @@ use App\Http\Controllers\DonorAppointmentController;
 use App\Http\Controllers\DonorDashboardController;
 use App\Http\Controllers\DonorDonationController;
 use App\Http\Controllers\DonorEligibilityController;
+use App\Http\Controllers\DonorIdentityVerificationController;
 use App\Http\Controllers\DonorNotificationController;
 use App\Http\Controllers\DonorProfileController;
 use App\Http\Controllers\DonorRegistrationController;
@@ -40,6 +41,13 @@ Route::post('/reset-password', [PasswordResetController::class, 'reset'])
 Route::post('/email/verify', [EmailVerificationController::class, 'verify'])
     ->middleware(['signed', 'throttle:6,1'])
     ->name('verification.verify');
+
+// Public by necessity: login is refused until the address is verified, so
+// somebody who never received the mail has no token to authenticate the
+// resend below with. The reply never reveals whether the address exists.
+Route::post('/email/resend-verification', [EmailVerificationController::class, 'resendForGuest'])
+    ->middleware('throttle:3,10')
+    ->name('verification.resend');
 
 Route::middleware('auth:sanctum')->group(function (): void {
     Route::post('/logout', [AuthController::class, 'logout']);
@@ -86,12 +94,26 @@ Route::middleware(['auth:sanctum', 'role:donor'])->prefix('donors')->group(funct
         ->whereUuid('notification');
 
     Route::post('/avatar', [DonorProfileController::class, 'updateAvatar']);
+
+    // Throttled like the other write endpoints here: an identity document is a
+    // file upload, and resubmission is meant to be occasional.
+    Route::post('/identity', [DonorProfileController::class, 'submitIdentity'])
+        ->middleware('throttle:6,1');
+
     Route::delete('/account', [DonorProfileController::class, 'destroy']);
 });
 
 Route::get('/donors/{user}/avatar', [DonorProfileController::class, 'showAvatar'])
     ->middleware('signed')
     ->name('donors.avatar.show');
+
+// Authenticated rather than signed, unlike the avatar above: a link that opens a
+// government ID without credentials would be forwardable, and would leave nobody
+// to record in the audit trail. DonorProfilePolicy decides who may look.
+Route::get('/donors/{uuid}/identity-image', [DonorProfileController::class, 'showIdentityImage'])
+    ->middleware(['auth:sanctum', 'throttle:30,1'])
+    ->whereUuid('uuid')
+    ->name('donors.identity-image.show');
 
 Route::middleware('auth:sanctum')->group(function (): void {
     Route::get('/blood-centers', [BookingCatalogController::class, 'bloodCenters']);
@@ -245,6 +267,19 @@ Route::middleware(['auth:sanctum', 'role:admin', 'throttle:60,1'])
             ->whereNumber('facility');
         Route::post('/{facility}/reinstate', [FacilityRegistrationController::class, 'reinstate'])
             ->whereNumber('facility');
+    });
+
+// Named deliberately, unlike the routes around them: DonorIdentityDecisionRequest
+// branches on routeIs() to require a reason on reject and refuse one on approve,
+// and routeIs() returns false for an unnamed route.
+Route::middleware(['auth:sanctum', 'role:admin', 'throttle:60,1'])
+    ->prefix('admin/donor-identities')->group(function (): void {
+        Route::get('/', [DonorIdentityVerificationController::class, 'index'])
+            ->name('admin.donor-identities.index');
+        Route::post('/{uuid}/approve', [DonorIdentityVerificationController::class, 'approve'])
+            ->whereUuid('uuid')->name('admin.donor-identities.approve');
+        Route::post('/{uuid}/reject', [DonorIdentityVerificationController::class, 'reject'])
+            ->whereUuid('uuid')->name('admin.donor-identities.reject');
     });
 
 Route::middleware(['auth:sanctum', 'role:admin', 'throttle:60,1'])->prefix('users')->group(function (): void {

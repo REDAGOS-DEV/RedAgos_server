@@ -3,6 +3,7 @@
 namespace App\Service;
 
 use App\Enums\AccountStatus;
+use App\Enums\IdentityStatus;
 use App\Enums\RoleName;
 use App\Models\Donation;
 use App\Models\Facility;
@@ -251,6 +252,11 @@ class DonorDirectoryService
             'address' => $profile?->address,
             'gender' => $profile?->gender,
             'valid_id_number' => $profile?->valid_id_number,
+            // Status and type only. The document itself is reachable solely
+            // through the authenticated route, which blood-centre staff are not
+            // authorised for: they match the physical card at the counter.
+            'valid_id_type' => $profile?->valid_id_type?->value,
+            'identity_status' => ($profile?->identity_status ?? IdentityStatus::Unsubmitted)->value,
             'account_status' => $donor->account_status?->value,
             'email_verified' => $donor->hasVerifiedEmail(),
             'donations_at_this_facility' => $this->donorDirectoryRepository

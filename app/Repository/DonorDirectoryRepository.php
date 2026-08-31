@@ -7,6 +7,7 @@ use App\Enums\RoleName;
 use App\Models\Donation;
 use App\Models\DonationAppointment;
 use App\Models\User;
+use App\Support\AccountIdentity;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
@@ -77,9 +78,11 @@ class DonorDirectoryRepository
             'donor_code' => ($id = $this->donorCodeToId($value)) === null ? null : $query->whereKey($id)->first(),
             'email' => $query->where('email', mb_strtolower(trim($value)))->first(),
             'phone' => $query->where('phone', trim($value))->first(),
+            // Normalised on the way in as well as the way out: the stored value
+            // has no case or separators, so a raw card number never matches.
             'valid_id_number' => $query->whereHas(
                 'donorProfile',
-                fn (Builder $p) => $p->where('valid_id_number', trim($value))
+                fn (Builder $p) => $p->where('valid_id_number', AccountIdentity::normalizeValidIdNumber($value) ?? $value)
             )->first(),
             default => null,
         };

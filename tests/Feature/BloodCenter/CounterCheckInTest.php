@@ -218,8 +218,56 @@ class CounterCheckInTest extends TestCase
         // The decision that made users.email nullable: a counter-registered
         // donor is identified by the ID they presented, not by an inbox.
         $this->assertNull($donor->email);
-        $this->assertSame('PH-DL-12345', DonorProfile::where('donor_id', $donor->id)->value('valid_id_number'));
+
+        // Stored normalised, not as it was typed: the column is unique and is
+        // what every lookup compares against, so "PH-DL-12345" and "phdl12345"
+        // have to reach the same donor rather than two.
+        $this->assertSame('PHDL12345', DonorProfile::where('donor_id', $donor->id)->value('valid_id_number'));
         Notification::assertNothingSent();
+    }
+
+    public function test_a_walk_in_is_found_by_the_id_as_it_is_printed_on_the_card(): void
+    {
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/donors', [
+                'first_name' => 'Juan',
+                'last_name' => 'Dela Cruz',
+                'valid_id_number' => 'PH-DL-12345',
+                'birth_date' => now()->subYears(30)->toDateString(),
+            ])
+            ->assertCreated();
+
+        // Normalising the stored value only helps if the search is normalised
+        // too. Staff type the ID exactly as it appears on the card.
+        $this->actingAs($this->staff)
+            ->getJson('/api/blood-center/donors/lookup?type=valid_id_number&value=PH-DL-12345')
+            ->assertOk()
+            ->assertJsonPath('full_name', 'Juan Dela Cruz');
+
+        $this->actingAs($this->staff)
+            ->getJson('/api/blood-center/donors/lookup?type=valid_id_number&value=phdl12345')
+            ->assertOk()
+            ->assertJsonPath('full_name', 'Juan Dela Cruz');
+    }
+
+    public function test_two_spellings_of_one_id_are_refused_at_the_counter(): void
+    {
+        $payload = [
+            'first_name' => 'Juan',
+            'last_name' => 'Dela Cruz',
+            'valid_id_number' => 'PH-DL-12345',
+            'birth_date' => now()->subYears(30)->toDateString(),
+        ];
+
+        $this->actingAs($this->staff)->postJson('/api/blood-center/donors', $payload)->assertCreated();
+
+        // Same card, typed differently by a different member of staff. Without
+        // normalisation this creates a second record and forks the donor's
+        // donation history, which breaks the 56-day interval check.
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/donors', [...$payload, 'valid_id_number' => 'ph dl 12345'])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('valid_id_number');
     }
 
     public function test_a_valid_id_is_required(): void

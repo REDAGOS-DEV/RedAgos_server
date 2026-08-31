@@ -139,6 +139,66 @@ class EmailVerificationTest extends TestCase
         $this->postJson('/api/email/verification-notification')->assertUnauthorized();
     }
 
+    public function test_a_guest_can_request_another_verification_email_by_address(): void
+    {
+        $user = User::factory()->unverified()->create(['email' => 'pending@example.com']);
+        Notification::fake();
+
+        $this->postJson('/api/email/resend-verification', ['email' => '  PENDING@Example.com '])
+            ->assertOk()
+            ->assertJsonPath(
+                'message',
+                'If that address is registered and still unverified, a new verification link is on its way.'
+            );
+
+        Notification::assertSentTo($user, VerifyEmailNotification::class);
+    }
+
+    public function test_a_guest_resend_reveals_nothing_about_an_unknown_or_verified_address(): void
+    {
+        User::factory()->create(['email' => 'verified@example.com']);
+        Notification::fake();
+
+        $unknown = $this->postJson('/api/email/resend-verification', ['email' => 'nobody@example.com'])
+            ->assertOk();
+
+        $verified = $this->postJson('/api/email/resend-verification', ['email' => 'verified@example.com'])
+            ->assertOk();
+
+        $this->assertSame($unknown->json('message'), $verified->json('message'));
+        Notification::assertNothingSent();
+    }
+
+    public function test_a_guest_resend_sends_nothing_for_a_suspended_account(): void
+    {
+        User::factory()->unverified()->suspended()->create(['email' => 'suspended@example.com']);
+        Notification::fake();
+
+        $this->postJson('/api/email/resend-verification', ['email' => 'suspended@example.com'])
+            ->assertOk();
+
+        Notification::assertNothingSent();
+    }
+
+    public function test_a_guest_resend_requires_a_valid_email_address(): void
+    {
+        $this->postJson('/api/email/resend-verification', ['email' => 'not-an-email'])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('email');
+    }
+
+    public function test_a_guest_resend_is_throttled(): void
+    {
+        foreach (range(1, 3) as $attempt) {
+            $this->postJson('/api/email/resend-verification', ['email' => 'pending@example.com'])
+                ->assertOk();
+        }
+
+        $this->postJson('/api/email/resend-verification', ['email' => 'pending@example.com'])
+            ->assertStatus(429)
+            ->assertHeader('Retry-After');
+    }
+
     public function test_the_verification_link_points_at_the_frontend_application(): void
     {
         config(['app.frontend_url' => 'http://localhost:3000']);

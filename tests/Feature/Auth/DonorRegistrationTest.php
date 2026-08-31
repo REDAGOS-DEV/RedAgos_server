@@ -283,7 +283,7 @@ class DonorRegistrationTest extends TestCase
             ->assertHeader('Retry-After');
     }
 
-    public function test_a_newly_registered_donor_can_log_in_before_verifying(): void
+    public function test_a_newly_registered_donor_cannot_log_in_before_verifying(): void
     {
         Notification::fake();
 
@@ -294,7 +294,26 @@ class DonorRegistrationTest extends TestCase
             'password' => 'Password123',
             'role' => 'donor',
         ])
-            ->assertOk()
-            ->assertJsonPath('must_verify_email', true);
+            ->assertStatus(403)
+            ->assertJsonPath('code', 'email_not_verified');
+    }
+
+    public function test_a_newly_registered_donor_can_log_in_once_the_link_is_followed(): void
+    {
+        Notification::fake();
+
+        $this->postJson('/api/donors/register', $this->payload())->assertCreated();
+
+        $donor = User::where('email', 'juan@example.com')->firstOrFail();
+        $actionUrl = (new VerifyEmailNotification)->toMail($donor)->actionUrl;
+
+        $this->postJson('/api/email/verify'.substr($actionUrl, strpos($actionUrl, '?')))
+            ->assertOk();
+
+        $this->postJson('/api/login', [
+            'email' => 'juan@example.com',
+            'password' => 'Password123',
+            'role' => 'donor',
+        ])->assertOk();
     }
 }
