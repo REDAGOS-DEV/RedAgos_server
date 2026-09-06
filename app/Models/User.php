@@ -7,6 +7,7 @@ use App\Enums\Department;
 use App\Enums\RoleName;
 use App\Notifications\ResetPasswordNotification;
 use App\Notifications\VerifyEmailNotification;
+use App\Support\AdminPrivileges;
 use App\Support\DepartmentPermissions;
 use Database\Factories\UserFactory;
 use Illuminate\Contracts\Auth\MustVerifyEmail;
@@ -34,6 +35,8 @@ use Laravel\Sanctum\HasApiTokens;
     'terms_accepted_at',
     'employee_id',
     'position',
+    'is_super_admin',
+    'admin_privileges',
 ])]
 
 #[Hidden(['password', 'remember_token'])]
@@ -63,6 +66,8 @@ class User extends Authenticatable implements MustVerifyEmail
             'account_status' => AccountStatus::class,
             'department' => Department::class,
             'is_supervisor' => 'boolean',
+            'is_super_admin' => 'boolean',
+            'admin_privileges' => 'array',
             'password' => 'hashed',
         ];
     }
@@ -108,7 +113,10 @@ class User extends Authenticatable implements MustVerifyEmail
      */
     public function abilities(): array
     {
-        return DepartmentPermissions::for($this);
+        return array_values(array_unique([
+            ...DepartmentPermissions::for($this),
+            ...AdminPrivileges::for($this),
+        ]));
     }
 
     /**

@@ -86,9 +86,45 @@ class UserFactory extends Factory
      */
     public function withRole(RoleName $role): static
     {
-        return $this->afterCreating(function (User $user) use ($role): void {
+        $factory = $this;
+
+        /*
+         * An admin made here is the unrestricted one.
+         *
+         * Before admin privileges existed, role:admin was the whole grant and
+         * every admin could do everything, which is the shape every existing
+         * test was written against. Setting the flag keeps that true rather
+         * than leaving each of those tests to 403 on a privilege the test never
+         * mentions. Use scopedAdmin() to build the narrowed kind.
+         */
+        if ($role === RoleName::Admin) {
+            $factory = $factory->state(fn (): array => ['is_super_admin' => true]);
+        }
+
+        return $factory->afterCreating(function (User $user) use ($role): void {
             $user->roles()->syncWithoutDetaching([
                 Role::firstOrCreate(['name' => $role->value])->id,
+            ]);
+        });
+    }
+
+    /**
+     * Create an admin holding exactly the privileges given, and nothing else.
+     *
+     * The counterpart to withRole(Admin): this is the account the `can:` guards
+     * on the admin routes exist for. Passing an empty list produces an admin
+     * awaiting assignment, which fails closed.
+     *
+     * @param  array<int, string>  $privileges
+     */
+    public function scopedAdmin(array $privileges): static
+    {
+        return $this->state(fn (): array => [
+            'is_super_admin' => false,
+            'admin_privileges' => $privileges,
+        ])->afterCreating(function (User $user): void {
+            $user->roles()->syncWithoutDetaching([
+                Role::firstOrCreate(['name' => RoleName::Admin->value])->id,
             ]);
         });
     }

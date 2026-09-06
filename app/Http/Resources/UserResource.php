@@ -2,6 +2,7 @@
 
 namespace App\Http\Resources;
 
+use App\Support\AdminPrivileges;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -37,6 +38,18 @@ class UserResource extends JsonResource
             'department' => $this->department?->value,
             'department_label' => $this->department?->label(),
             'is_supervisor' => (bool) $this->is_supervisor,
+            'is_super_admin' => (bool) $this->is_super_admin,
+            // The raw grant, separate from `permissions` below. An unrestricted
+            // admin holds every privilege without any of them being stored, so
+            // the account form needs the stored list to show what was actually
+            // ticked rather than what the flag implies.
+            'admin_privileges' => AdminPrivileges::for($this->resource),
+            // The preset name the stored list matches, or null for "Custom".
+            // Derived, never stored — a stored name could disagree with the
+            // list the gate reads, and then the screen would be lying.
+            'admin_role' => $this->is_super_admin
+                ? 'super_admin'
+                : AdminPrivileges::presetFor($this->admin_privileges ?? []),
             // Mirrored to the client so it can render the right navigation.
             // This is presentation only — every ability is re-checked by the
             // `can:` middleware on the route that uses it.

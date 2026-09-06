@@ -4,6 +4,7 @@ namespace App\Service;
 
 use App\Models\Role;
 use App\Repository\UserRepository;
+use App\Support\AdminPrivileges;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -81,6 +82,14 @@ class UserService
             'account_status' => $user->account_status?->value,
             'activated_at' => $user->activated_at?->toISOString(),
             'roles' => $user->roles->pluck('name')->values()->all(),
+            // Resolved, not raw: a super admin holds every privilege without
+            // any of them being stored, so echoing the column back would tell
+            // the caller an account it just created can do nothing.
+            'is_super_admin' => (bool) $user->is_super_admin,
+            'admin_privileges' => AdminPrivileges::for($user),
+            'admin_role' => $user->is_super_admin
+                ? 'super_admin'
+                : AdminPrivileges::presetFor($user->admin_privileges ?? []),
         ];
     }
 }

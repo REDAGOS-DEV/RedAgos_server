@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\AdminPrivilegeController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\BloodCenterCollectionController;
 use App\Http\Controllers\BloodCenterDonorController;
@@ -251,25 +252,34 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
 // Admin — facility management. This is the only place a blood centre or a
 // hospital blood bank is created, which is why the whole group sits behind
 // role:admin rather than carrying a public entry point beside it.
+// `can:` narrows what role:admin used to hand out wholesale. role:admin stays
+// in front of it as the cheap check that keeps non-admins out of the group at
+// all; the privilege decides which admins get which route.
 Route::middleware(['auth:sanctum', 'role:admin', 'throttle:60,1'])
     ->prefix('admin/facilities')->group(function (): void {
-        Route::get('/', [FacilityManagementController::class, 'index']);
-        Route::post('/', [FacilityManagementController::class, 'store']);
+        Route::get('/', [FacilityManagementController::class, 'index'])
+            ->middleware('can:admin.facility.manage');
+        Route::post('/', [FacilityManagementController::class, 'store'])
+            ->middleware('can:admin.facility.manage');
 
         // Legacy: facilities left in pending_approval by the removed public
         // registration flow. Their records are preserved rather than deleted,
         // so the Super Admin needs these to clear them by hand. Nothing created
         // today ever lands in that state.
+        //
+        // Guarded by approve rather than manage: deciding on an application and
+        // maintaining a facility record are separate grants, and an auditor who
+        // may read the list must not be able to wave one through.
         Route::post('/{facility}/approve', [FacilityApprovalController::class, 'approve'])
-            ->whereNumber('facility');
+            ->whereNumber('facility')->middleware('can:admin.facility.approve');
         Route::post('/{facility}/reject', [FacilityApprovalController::class, 'reject'])
-            ->whereNumber('facility');
+            ->whereNumber('facility')->middleware('can:admin.facility.approve');
     });
 
 // Named deliberately, unlike the routes around them: DonorIdentityDecisionRequest
 // branches on routeIs() to require a reason on reject and refuse one on approve,
 // and routeIs() returns false for an unnamed route.
-Route::middleware(['auth:sanctum', 'role:admin', 'throttle:60,1'])
+Route::middleware(['auth:sanctum', 'role:admin', 'can:admin.donor_identity.verify', 'throttle:60,1'])
     ->prefix('admin/donor-identities')->group(function (): void {
         Route::get('/', [DonorIdentityVerificationController::class, 'index'])
             ->name('admin.donor-identities.index');
@@ -279,7 +289,17 @@ Route::middleware(['auth:sanctum', 'role:admin', 'throttle:60,1'])
             ->whereUuid('uuid')->name('admin.donor-identities.reject');
     });
 
-Route::middleware(['auth:sanctum', 'role:admin', 'throttle:60,1'])->prefix('users')->group(function (): void {
+// The catalogue behind the account form. Guarded by the same privilege as the
+// form itself, so an admin who cannot create accounts cannot enumerate what
+// privileges exist either.
+Route::middleware(['auth:sanctum', 'role:admin', 'can:admin.accounts.manage', 'throttle:60,1'])
+    ->get('admin/privileges', [AdminPrivilegeController::class, 'index']);
+
+// Creating a user is how an admin account comes into existence, so this group
+// is what admin.accounts.manage actually protects. A scoped admin reaching it
+// without the privilege could otherwise mint itself an unrestricted account and
+// make every other guard here decorative.
+Route::middleware(['auth:sanctum', 'role:admin', 'can:admin.accounts.manage', 'throttle:60,1'])->prefix('users')->group(function (): void {
     Route::get('/', [UserController::class, 'index']);
     Route::post('/', [UserController::class, 'store']);
     Route::get('/{uuid}', [UserController::class, 'show'])->whereUuid('uuid');
