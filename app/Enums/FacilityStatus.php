@@ -2,6 +2,13 @@
 
 namespace App\Enums;
 
+/**
+ * The states a facility record can be in.
+ *
+ * There is no suspended state. A facility is created active by a Super Admin
+ * and stays that way; pending_approval and rejected exist only for the records
+ * left behind by the removed public registration flow.
+ */
 enum FacilityStatus: string
 {
     case PendingApproval = 'pending_approval';
@@ -9,8 +16,6 @@ enum FacilityStatus: string
     case Approved = 'approved';
 
     case Rejected = 'rejected';
-
-    case Suspended = 'suspended';
 
     /**
      * Determine whether a facility in this state may act on real data.
@@ -27,7 +32,6 @@ enum FacilityStatus: string
     {
         return match ($this) {
             self::Approved => null,
-            self::Suspended => 'facility_suspended',
             self::PendingApproval, self::Rejected => 'facility_not_approved',
         };
     }
@@ -39,7 +43,6 @@ enum FacilityStatus: string
     {
         return match ($this) {
             self::Approved => null,
-            self::Suspended => 'This facility has been suspended. Please contact the administrator.',
             self::PendingApproval => 'This facility is still awaiting administrator approval.',
             self::Rejected => 'This facility registration was not approved.',
         };

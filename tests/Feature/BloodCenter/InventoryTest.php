@@ -225,15 +225,15 @@ class InventoryTest extends TestCase
             ->assertJsonStructure(['totals', 'by_blood_type', 'by_component', 'near_expiry', 'as_of']);
     }
 
-    public function test_a_suspended_facility_is_refused(): void
+    public function test_an_unapproved_facility_is_refused(): void
     {
-        $facility = Facility::factory()->suspended()->create();
+        $facility = Facility::factory()->rejected()->create();
         $staff = User::factory()->bloodCenterStaff($facility)->create();
 
         $this->actingAs($staff)
             ->getJson('/api/blood-center/inventory')
             ->assertForbidden()
-            ->assertJsonPath('code', 'facility_suspended');
+            ->assertJsonPath('code', 'facility_not_approved');
     }
 
     public function test_an_unverified_account_is_refused(): void

@@ -7,7 +7,6 @@ use App\Http\Controllers\BloodCenterInventoryController;
 use App\Http\Controllers\BloodCenterLaboratoryController;
 use App\Http\Controllers\BloodCenterProfileController;
 use App\Http\Controllers\BloodCenterReferenceController;
-use App\Http\Controllers\BloodCenterRegistrationController;
 use App\Http\Controllers\BloodCenterStaffController;
 use App\Http\Controllers\BookingCatalogController;
 use App\Http\Controllers\DonorAppointmentController;
@@ -19,7 +18,8 @@ use App\Http\Controllers\DonorNotificationController;
 use App\Http\Controllers\DonorProfileController;
 use App\Http\Controllers\DonorRegistrationController;
 use App\Http\Controllers\EmailVerificationController;
-use App\Http\Controllers\FacilityRegistrationController;
+use App\Http\Controllers\FacilityApprovalController;
+use App\Http\Controllers\FacilityManagementController;
 use App\Http\Controllers\PasswordResetController;
 use App\Http\Controllers\UserController;
 use App\Http\Resources\UserResource;
@@ -123,17 +123,10 @@ Route::middleware('auth:sanctum')->group(function (): void {
 
 Route::get('/support/contact-info', fn () => response()->json(config('donation.support')));
 
-// Blood Center — public registration. Issues no token and attaches no role.
-Route::post('/blood-center/register', [BloodCenterRegistrationController::class, 'register'])
-    ->middleware('throttle:5,1');
-
-// Blood Center — applicant. No role held yet, so these are guarded by
-// authentication alone; resubmission ownership is enforced in the service.
-Route::middleware('auth:sanctum')->prefix('blood-center')->group(function (): void {
-    Route::get('/registration-status', [BloodCenterRegistrationController::class, 'status']);
-    Route::post('/registration/resubmit', [BloodCenterRegistrationController::class, 'resubmit'])
-        ->middleware('throttle:5,60');
-});
+// There is deliberately no public facility registration route here. Blood
+// centres and hospital blood banks are created by a Super Admin through
+// POST /api/admin/facilities and nowhere else, so an unauthenticated caller has
+// no path to a facility account whatever payload they send.
 
 // Blood Center — role only. Deliberately outside the operational gate so a
 // suspended or unverified user can still see why they are blocked and change
@@ -255,17 +248,21 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         });
     });
 
-// Admin — facility registration review.
+// Admin — facility management. This is the only place a blood centre or a
+// hospital blood bank is created, which is why the whole group sits behind
+// role:admin rather than carrying a public entry point beside it.
 Route::middleware(['auth:sanctum', 'role:admin', 'throttle:60,1'])
-    ->prefix('admin/facility-registrations')->group(function (): void {
-        Route::get('/', [FacilityRegistrationController::class, 'index']);
-        Route::post('/{facility}/approve', [FacilityRegistrationController::class, 'approve'])
+    ->prefix('admin/facilities')->group(function (): void {
+        Route::get('/', [FacilityManagementController::class, 'index']);
+        Route::post('/', [FacilityManagementController::class, 'store']);
+
+        // Legacy: facilities left in pending_approval by the removed public
+        // registration flow. Their records are preserved rather than deleted,
+        // so the Super Admin needs these to clear them by hand. Nothing created
+        // today ever lands in that state.
+        Route::post('/{facility}/approve', [FacilityApprovalController::class, 'approve'])
             ->whereNumber('facility');
-        Route::post('/{facility}/reject', [FacilityRegistrationController::class, 'reject'])
-            ->whereNumber('facility');
-        Route::post('/{facility}/suspend', [FacilityRegistrationController::class, 'suspend'])
-            ->whereNumber('facility');
-        Route::post('/{facility}/reinstate', [FacilityRegistrationController::class, 'reinstate'])
+        Route::post('/{facility}/reject', [FacilityApprovalController::class, 'reject'])
             ->whereNumber('facility');
     });
 

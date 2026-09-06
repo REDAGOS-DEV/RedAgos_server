@@ -143,9 +143,9 @@ class StaffIsolationTest extends TestCase
             ->assertOk();
     }
 
-    public function test_a_supervisor_whose_facility_is_suspended_is_refused(): void
+    public function test_a_supervisor_whose_facility_is_unapproved_is_refused(): void
     {
-        $facility = Facility::factory()->suspended()->create();
+        $facility = Facility::factory()->rejected()->create();
         $supervisor = User::factory()->bloodCenterSupervisor($facility)->create();
 
         // facility.operational runs before the ability, so roster management
@@ -153,6 +153,6 @@ class StaffIsolationTest extends TestCase
         $this->actingAs($supervisor)
             ->getJson('/api/blood-center/staff')
             ->assertForbidden()
-            ->assertJsonPath('code', 'facility_suspended');
+            ->assertJsonPath('code', 'facility_not_approved');
     }
 }

@@ -19,8 +19,9 @@ class Facility extends Model
      *
      * status, approved_at, approved_by, rejection_reason, resubmitted_at and
      * registration_contact_user_id decide whether an organisation may touch
-     * real blood stock, so no mass-assignment path may reach them. The approval
-     * and registration services set them by direct assignment.
+     * real blood stock, so no mass-assignment path may reach them.
+     * FacilityRepository and FacilityApprovalService set them by direct
+     * assignment, from the authenticated administrator rather than the request.
      */
     protected $fillable = [
         'facility_type_id',
@@ -46,7 +47,8 @@ class Facility extends Model
         // Fail closed. The column default is 'approved' so the facilities that
         // already existed before approval was introduced stay usable, but any
         // facility this application constructs starts unapproved unless a
-        // service says otherwise.
+        // service says otherwise. FacilityRepository is that service: a
+        // Super Admin creating a facility approves it in the same breath.
         'status' => FacilityStatus::PendingApproval->value,
         'is_accepting_donations' => true,
         'slot_capacity' => 4,
@@ -97,9 +99,14 @@ class Facility extends Model
     }
 
     /**
-     * The one user permitted to resubmit a rejected registration.
+     * The account that speaks for this facility.
+     *
+     * Created alongside the facility by a Super Admin and given the supervisor
+     * level, so it is the one account guaranteed to be able to staff the
+     * portal. The column keeps its historical name from when facilities
+     * self-registered; the meaning is unchanged.
      */
-    public function registrationContact(): BelongsTo
+    public function primaryAccount(): BelongsTo
     {
         return $this->belongsTo(User::class, 'registration_contact_user_id');
     }

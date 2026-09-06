@@ -3,183 +3,159 @@
 namespace Tests\Feature\BloodCenter;
 
 use App\Enums\FacilityStatus;
+use App\Enums\RoleName;
 use App\Models\Facility;
 use App\Models\User;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
+/**
+ * The resubmission flow is gone, and the records it produced are not.
+ *
+ * This file used to cover an applicant correcting a rejected registration.
+ * There is no applicant now — facilities are created by a Super Admin — so what
+ * matters is the other half of that change: the blood centres already sitting
+ * in the queue when the flow was removed must keep their rows, and the Super
+ * Admin must be able to clear them by hand rather than by a data migration.
+ */
 class RegistrationResubmissionTest extends TestCase
 {
     use LazilyRefreshDatabase;
 
-    /**
-     * @param  array<string, mixed>  $overrides
-     * @return array<string, mixed>
-     */
-    private function payload(Facility $facility, array $overrides = []): array
+    private function admin(): User
     {
-        return array_merge([
-            'center_name' => $facility->name,
-            // The same DOH licence the organisation actually holds — a real
-            // applicant does not get a new one because it was turned down.
-            'doh_license_number' => $facility->doh_license_number,
-            'contact_person' => 'Maria Santos',
-            'address' => 'Quirino Ave, Davao City',
-            'description' => 'Corrected details.',
-        ], $overrides);
+        return User::factory()->withRole(RoleName::Admin)->create();
     }
 
-    public function test_the_registration_contact_can_resubmit_with_the_same_license(): void
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function removedApplicantRoutes(): array
+    {
+        return [
+            'registration status' => ['get', '/api/blood-center/registration-status'],
+            'resubmit' => ['post', '/api/blood-center/registration/resubmit'],
+        ];
+    }
+
+    #[DataProvider('removedApplicantRoutes')]
+    public function test_the_applicant_routes_are_gone_even_for_the_applicant(string $method, string $uri): void
     {
         $facility = Facility::factory()->rejected()->create();
         $applicant = User::factory()->bloodCenterApplicant($facility)->create();
 
-        $this->actingAs($applicant)
-            ->postJson('/api/blood-center/registration/resubmit', $this->payload($facility))
-            ->assertOk()
-            ->assertJsonPath('facility.status', FacilityStatus::PendingApproval->value);
+        $this->actingAs($applicant)->json($method, $uri)->assertNotFound();
 
-        $facility->refresh();
-
-        $this->assertSame(FacilityStatus::PendingApproval, $facility->status);
-        $this->assertNull($facility->rejection_reason);
-        $this->assertNotNull($facility->resubmitted_at);
+        // The record is untouched by the attempt.
+        $this->assertSame(FacilityStatus::Rejected, $facility->fresh()->status);
     }
 
-    public function test_a_different_user_at_the_same_facility_cannot_resubmit(): void
+    public function test_a_pending_registration_from_before_the_change_is_preserved(): void
     {
-        $facility = Facility::factory()->rejected()->create();
-        User::factory()->bloodCenterApplicant($facility)->create();
-        $colleague = User::factory()->create(['facility_id' => $facility->id]);
+        $facility = Facility::factory()->pendingApproval()->create([
+            'name' => 'Legacy Applicant Center',
+            'doh_license_number' => 'DOH-BC-LEGACY-1',
+        ]);
+        $applicant = User::factory()->bloodCenterApplicant($facility)->create();
 
-        $this->actingAs($colleague)
-            ->postJson('/api/blood-center/registration/resubmit', $this->payload($facility))
-            ->assertForbidden()
-            ->assertJsonPath('code', 'not_registration_contact');
+        // Nothing sweeps these away: the row, its applicant and the link
+        // between them all survive.
+        $this->assertDatabaseHas('facilities', [
+            'id' => $facility->id,
+            'doh_license_number' => 'DOH-BC-LEGACY-1',
+            'status' => FacilityStatus::PendingApproval->value,
+            'registration_contact_user_id' => $applicant->id,
+        ]);
 
-        $this->assertSame(FacilityStatus::Rejected, $facility->refresh()->status);
+        $this->assertDatabaseHas('users', [
+            'id' => $applicant->id,
+            'facility_id' => $facility->id,
+        ]);
     }
 
-    public function test_a_user_cannot_touch_another_facilitys_registration(): void
+    public function test_a_legacy_pending_registration_is_still_listed_for_the_super_admin(): void
     {
-        $victim = Facility::factory()->rejected()->create();
-        User::factory()->bloodCenterApplicant($victim)->create();
+        Facility::factory()->pendingApproval()->create(['name' => 'Legacy Applicant Center']);
 
-        $outsiderFacility = Facility::factory()->rejected()->create();
-        $outsider = User::factory()->bloodCenterApplicant($outsiderFacility)->create();
+        $names = array_column(
+            $this->actingAs($this->admin())
+                ->getJson('/api/admin/facilities?status=pending_approval')
+                ->assertOk()
+                ->json('data'),
+            'name'
+        );
 
-        // The endpoint resolves the facility from the token, never from input,
-        // so there is no id for an outsider to tamper with — their resubmission
-        // only ever moves their own facility.
-        $this->actingAs($outsider)
-            ->postJson('/api/blood-center/registration/resubmit', $this->payload($outsiderFacility))
-            ->assertOk();
-
-        $this->assertSame(FacilityStatus::Rejected, $victim->refresh()->status);
+        $this->assertContains('Legacy Applicant Center', $names);
     }
 
-    public function test_resubmitting_a_pending_registration_is_refused(): void
+    public function test_the_super_admin_can_resolve_a_legacy_pending_registration_by_approving_it(): void
     {
         $facility = Facility::factory()->pendingApproval()->create();
         $applicant = User::factory()->bloodCenterApplicant($facility)->create();
 
-        $this->actingAs($applicant)
-            ->postJson('/api/blood-center/registration/resubmit', $this->payload($facility))
-            ->assertStatus(409)
-            ->assertJsonPath('code', 'facility_not_rejected');
+        $this->actingAs($this->admin())
+            ->postJson("/api/admin/facilities/{$facility->id}/approve")
+            ->assertOk()
+            ->assertJsonPath('facility.status', FacilityStatus::Approved->value);
+
+        $applicant = $applicant->fresh();
+
+        $this->assertTrue($applicant->hasRole(RoleName::BloodCenter));
+        $this->assertTrue($applicant->is_supervisor);
     }
 
-    public function test_resubmitting_an_approved_registration_is_refused(): void
+    public function test_the_super_admin_can_resolve_a_legacy_pending_registration_by_rejecting_it(): void
     {
-        $facility = Facility::factory()->approved()->create();
+        $facility = Facility::factory()->pendingApproval()->create();
         $applicant = User::factory()->bloodCenterApplicant($facility)->create();
 
-        $this->actingAs($applicant)
-            ->postJson('/api/blood-center/registration/resubmit', $this->payload($facility))
-            ->assertStatus(409)
-            ->assertJsonPath('code', 'facility_not_rejected');
+        $this->actingAs($this->admin())
+            ->postJson("/api/admin/facilities/{$facility->id}/reject", [
+                'reason' => 'Superseded by an administrator-created record.',
+            ])
+            ->assertOk();
+
+        // Rejected, not deleted: the record stays readable.
+        $this->assertSame(FacilityStatus::Rejected, $facility->fresh()->status);
+        $this->assertFalse($applicant->fresh()->hasRole(RoleName::BloodCenter));
     }
 
-    public function test_the_status_endpoint_reports_whether_resubmission_is_possible(): void
+    public function test_a_legacy_applicant_is_told_why_it_cannot_sign_in(): void
     {
-        $facility = Facility::factory()->rejected()->create();
-        $contact = User::factory()->bloodCenterApplicant($facility)->create();
-        $colleague = User::factory()->create(['facility_id' => $facility->id]);
-
-        $this->actingAs($contact)
-            ->getJson('/api/blood-center/registration-status')
-            ->assertOk()
-            ->assertJsonPath('can_resubmit', true)
-            ->assertJsonPath('facility.status', FacilityStatus::Rejected->value)
-            ->assertJsonPath('facility.rejection_reason', 'The DOH licence could not be verified.');
-
-        // The UI must not offer a button the API would refuse.
-        $this->actingAs($colleague)
-            ->getJson('/api/blood-center/registration-status')
-            ->assertOk()
-            ->assertJsonPath('can_resubmit', false);
-    }
-
-    public function test_a_fresh_registration_reusing_a_rejected_license_is_still_refused(): void
-    {
-        $facility = Facility::factory()->rejected()->create(['doh_license_number' => 'DOH-BC-2026-00412']);
-        User::factory()->bloodCenterApplicant($facility)->create();
-
-        // A stranger must not be able to claim a rejected facility by quoting
-        // its licence number.
-        $this->postJson('/api/blood-center/register', [
-            'center_name' => 'Impostor Blood Center',
-            'doh_license_number' => 'DOH-BC-2026-00412',
-            'contact_first_name' => 'Not',
-            'contact_last_name' => 'Maria',
-            'position' => 'Administrator',
-            'email' => 'impostor@example.ph',
-            'phone' => '09189999999',
-            'address' => 'Elsewhere',
-            'password' => 'SecurePass1',
-            'password_confirmation' => 'SecurePass1',
-        ])->assertStatus(422)->assertJsonValidationErrors('doh_license_number');
-    }
-
-    public function test_resubmission_validates_its_fields(): void
-    {
-        $facility = Facility::factory()->rejected()->create();
-        $applicant = User::factory()->bloodCenterApplicant($facility)->create();
-
-        $this->actingAs($applicant)
-            ->postJson('/api/blood-center/registration/resubmit', [])
-            ->assertStatus(422)
-            ->assertJsonValidationErrors(['center_name', 'doh_license_number', 'contact_person', 'address']);
-    }
-
-    public function test_a_user_without_a_facility_gets_a_clear_error(): void
-    {
-        $this->actingAs(User::factory()->create())
-            ->getJson('/api/blood-center/registration-status')
-            ->assertNotFound()
-            ->assertJsonPath('code', 'facility_missing');
-    }
-
-    public function test_the_applicant_endpoints_reject_unauthenticated_callers(): void
-    {
-        $this->getJson('/api/blood-center/registration-status')->assertUnauthorized();
-        $this->postJson('/api/blood-center/registration/resubmit', [])->assertUnauthorized();
-    }
-
-    public function test_the_status_endpoint_returns_the_details_needed_to_resubmit(): void
-    {
-        $facility = Facility::factory()->rejected()->create([
-            'address' => 'Quirino Ave, Davao City',
+        $facility = Facility::factory()->pendingApproval()->create();
+        User::factory()->bloodCenterApplicant($facility)->create([
+            'email' => 'legacy@example.ph',
         ]);
-        $contact = User::factory()->bloodCenterApplicant($facility)->create();
 
-        // The resubmission form has to send these back, so the status endpoint
-        // must supply them.
-        $this->actingAs($contact)
-            ->getJson('/api/blood-center/registration-status')
+        // There is no status screen to send them to any more, so the refusal
+        // has to carry the explanation itself.
+        $this->postJson('/api/login', [
+            'email' => 'legacy@example.ph',
+            'password' => 'password',
+            'role' => 'blood-center',
+        ])
+            ->assertForbidden()
+            ->assertJsonPath('code', 'facility_not_activated');
+    }
+
+    public function test_a_legacy_applicant_whose_facility_is_approved_can_sign_in(): void
+    {
+        $facility = Facility::factory()->pendingApproval()->create();
+        User::factory()->bloodCenterApplicant($facility)->create([
+            'email' => 'legacy@example.ph',
+        ]);
+
+        $this->actingAs($this->admin())
+            ->postJson("/api/admin/facilities/{$facility->id}/approve")
+            ->assertOk();
+
+        $this->postJson('/api/login', [
+            'email' => 'legacy@example.ph',
+            'password' => 'password',
+            'role' => 'blood-center',
+        ])
             ->assertOk()
-            ->assertJsonPath('facility.doh_license_number', $facility->doh_license_number)
-            ->assertJsonPath('facility.contact_person', $facility->contact_person)
-            ->assertJsonPath('facility.address', 'Quirino Ave, Davao City');
+            ->assertJsonPath('user.facility.status', FacilityStatus::Approved->value);
     }
 }

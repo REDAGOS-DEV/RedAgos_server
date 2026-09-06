@@ -3,56 +3,21 @@
 namespace App\Repository;
 
 use App\Enums\Department;
-use App\Enums\FacilityStatus;
 use App\Models\BloodComponent;
 use App\Models\BloodType;
 use App\Models\Facility;
-use App\Models\FacilityType;
 use App\Models\Role;
 use App\Models\User;
-use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Collection;
 
+/**
+ * Persistence for one blood centre acting on its own data.
+ *
+ * Creating a facility is not here: that belongs to FacilityRepository, which
+ * serves the Super Admin acting across all of them.
+ */
 class BloodCenterRepository
 {
-    /**
-     * The canonical facility type every blood-centre registration is filed under.
-     */
-    private const FACILITY_TYPE = 'blood_center';
-
-    /**
-     * Get the id of the canonical blood-centre facility type.
-     *
-     * Public because RegisterBloodCenterRequest needs it to scope the centre
-     * name uniqueness rule to the same index the table carries,
-     * unique(facility_type_id, name).
-     */
-    public function bloodCenterTypeId(): int
-    {
-        return FacilityType::firstOrCreate(['name' => self::FACILITY_TYPE])->id;
-    }
-
-    /**
-     * Create a facility from a registration, awaiting approval.
-     *
-     * facility_type_id is resolved here rather than read from the payload, so a
-     * client cannot file itself under a different organisation type. status is
-     * assigned directly because it is deliberately not mass-assignable.
-     *
-     * @param  array<string, mixed>  $attributes
-     */
-    public function createFacility(array $attributes): Facility
-    {
-        $facility = new Facility;
-
-        $facility->fill($attributes);
-        $facility->facility_type_id = $this->bloodCenterTypeId();
-        $facility->status = FacilityStatus::PendingApproval;
-        $facility->save();
-
-        return $facility;
-    }
-
     /**
      * Create a staff user attached to a facility.
      *
@@ -81,17 +46,6 @@ class BloodCenterRepository
     }
 
     /**
-     * Record the one user permitted to resubmit this facility's registration.
-     */
-    public function setRegistrationContact(Facility $facility, User $user): Facility
-    {
-        $facility->registration_contact_user_id = $user->id;
-        $facility->save();
-
-        return $facility;
-    }
-
-    /**
      * Re-read a facility under a row lock for a decision that must not race.
      *
      * Two administrators approving at the same moment would otherwise both
@@ -103,20 +57,6 @@ class BloodCenterRepository
             ->whereKey($facilityId)
             ->lockForUpdate()
             ->first();
-    }
-
-    /**
-     * List facility registrations in a given state, newest first.
-     *
-     * @return LengthAwarePaginator<int, Facility>
-     */
-    public function registrationsByStatus(FacilityStatus $status, int $perPage): LengthAwarePaginator
-    {
-        return Facility::query()
-            ->with(['facilityType', 'registrationContact', 'approver'])
-            ->where('status', $status)
-            ->orderByDesc('created_at')
-            ->paginate($perPage);
     }
 
     /**

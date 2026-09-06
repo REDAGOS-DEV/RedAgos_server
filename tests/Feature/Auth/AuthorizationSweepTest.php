@@ -32,12 +32,11 @@ class AuthorizationSweepTest extends TestCase
             'update donor password' => ['post', '/api/donors/password'],
             'notification preferences' => ['patch', '/api/donors/notification-preferences'],
             'admin user list' => ['get', '/api/users'],
-            'blood center registration status' => ['get', '/api/blood-center/registration-status'],
-            'blood center resubmit' => ['post', '/api/blood-center/registration/resubmit'],
             'blood center profile' => ['get', '/api/blood-center/profile'],
             'blood center password' => ['post', '/api/blood-center/password'],
             'blood center reference data' => ['get', '/api/blood-center/reference-data'],
-            'admin facility registrations' => ['get', '/api/admin/facility-registrations'],
+            'admin facility list' => ['get', '/api/admin/facilities'],
+            'admin facility create' => ['post', '/api/admin/facilities'],
         ];
     }
 
@@ -144,6 +143,31 @@ class AuthorizationSweepTest extends TestCase
         $this->postJson('/api/forgot-password', [])->assertStatus(422);
         $this->postJson('/api/reset-password', [])->assertStatus(422);
         $this->postJson('/api/donors/register', [])->assertStatus(422);
-        $this->postJson('/api/blood-center/register', [])->assertStatus(422);
+    }
+
+    /**
+     * Donor registration is the only self-service account creation left.
+     *
+     * Both facility types are onboarded by a Super Admin, so a public caller
+     * must find no route at all rather than a validation error that suggests
+     * one exists behind the right payload.
+     *
+     * @return array<string, array{string, string}>
+     */
+    public static function removedPublicFacilityRoutes(): array
+    {
+        return [
+            'blood center register' => ['post', '/api/blood-center/register'],
+            'blood center registration status' => ['get', '/api/blood-center/registration-status'],
+            'blood center resubmit' => ['post', '/api/blood-center/registration/resubmit'],
+            'blood bank register' => ['post', '/api/blood-bank/register'],
+            'facility register' => ['post', '/api/facilities/register'],
+        ];
+    }
+
+    #[DataProvider('removedPublicFacilityRoutes')]
+    public function test_public_facility_registration_routes_do_not_exist(string $method, string $uri): void
+    {
+        $this->json($method, $uri)->assertNotFound();
     }
 }

@@ -28,7 +28,7 @@ class FacilityApprovalTest extends TestCase
         $admin = $this->admin();
 
         $this->actingAs($admin)
-            ->postJson("/api/admin/facility-registrations/{$facility->id}/approve")
+            ->postJson("/api/admin/facilities/{$facility->id}/approve")
             ->assertOk()
             ->assertJsonPath('facility.status', FacilityStatus::Approved->value);
 
@@ -47,7 +47,7 @@ class FacilityApprovalTest extends TestCase
         $colleague = User::factory()->create(['facility_id' => $facility->id]);
 
         $this->actingAs($this->admin())
-            ->postJson("/api/admin/facility-registrations/{$facility->id}/approve")
+            ->postJson("/api/admin/facilities/{$facility->id}/approve")
             ->assertOk();
 
         // A centre with several staff is approved once, not once per person.
@@ -61,11 +61,11 @@ class FacilityApprovalTest extends TestCase
         $admin = $this->admin();
 
         $this->actingAs($admin)
-            ->postJson("/api/admin/facility-registrations/{$facility->id}/approve")
+            ->postJson("/api/admin/facilities/{$facility->id}/approve")
             ->assertOk();
 
         $this->actingAs($admin)
-            ->postJson("/api/admin/facility-registrations/{$facility->id}/approve")
+            ->postJson("/api/admin/facilities/{$facility->id}/approve")
             ->assertStatus(409)
             ->assertJsonPath('code', 'facility_not_pending');
     }
@@ -76,7 +76,7 @@ class FacilityApprovalTest extends TestCase
         $applicant = User::factory()->bloodCenterApplicant($facility)->create();
 
         $this->actingAs($this->admin())
-            ->postJson("/api/admin/facility-registrations/{$facility->id}/reject", [
+            ->postJson("/api/admin/facilities/{$facility->id}/reject", [
                 'reason' => 'The DOH licence number does not match our records.',
             ])
             ->assertOk()
@@ -94,7 +94,7 @@ class FacilityApprovalTest extends TestCase
         $facility = Facility::factory()->pendingApproval()->create();
 
         $this->actingAs($this->admin())
-            ->postJson("/api/admin/facility-registrations/{$facility->id}/reject", [])
+            ->postJson("/api/admin/facilities/{$facility->id}/reject", [])
             ->assertStatus(422)
             ->assertJsonValidationErrors('reason');
     }
@@ -104,58 +104,37 @@ class FacilityApprovalTest extends TestCase
         $facility = Facility::factory()->approved()->create();
 
         $this->actingAs($this->admin())
-            ->postJson("/api/admin/facility-registrations/{$facility->id}/reject", ['reason' => 'Too late.'])
+            ->postJson("/api/admin/facilities/{$facility->id}/reject", ['reason' => 'Too late.'])
             ->assertStatus(409)
             ->assertJsonPath('code', 'facility_not_pending');
     }
 
-    public function test_an_admin_can_suspend_an_approved_facility(): void
+    /**
+     * Suspension and reinstatement were removed, state and all.
+     *
+     * FacilityStatus no longer has a suspended case, so this is not a hidden
+     * button — there is no route to hit and no state for it to write.
+     *
+     * @return array<string, array{string}>
+     */
+    public static function removedLifecycleActions(): array
     {
-        $facility = Facility::factory()->approved()->create();
-        $staff = User::factory()->bloodCenterStaff($facility)->create();
-
-        $this->actingAs($this->admin())
-            ->postJson("/api/admin/facility-registrations/{$facility->id}/suspend", [
-                'reason' => 'Under investigation.',
-            ])
-            ->assertOk()
-            ->assertJsonPath('facility.status', FacilityStatus::Suspended->value);
-
-        // The role stays attached on purpose: suspension is enforced by the
-        // operational middleware reading status, not by tearing down roles.
-        $this->assertTrue($staff->fresh()->hasRole(RoleName::BloodCenter));
+        return [
+            'suspend' => ['suspend'],
+            'reinstate' => ['reinstate'],
+        ];
     }
 
-    public function test_suspending_a_pending_facility_is_refused(): void
-    {
-        $facility = Facility::factory()->pendingApproval()->create();
-
-        $this->actingAs($this->admin())
-            ->postJson("/api/admin/facility-registrations/{$facility->id}/suspend", ['reason' => 'No.'])
-            ->assertStatus(409)
-            ->assertJsonPath('code', 'facility_not_approved');
-    }
-
-    public function test_an_admin_can_reinstate_a_suspended_facility(): void
-    {
-        $facility = Facility::factory()->suspended()->create();
-
-        $this->actingAs($this->admin())
-            ->postJson("/api/admin/facility-registrations/{$facility->id}/reinstate")
-            ->assertOk()
-            ->assertJsonPath('facility.status', FacilityStatus::Approved->value);
-
-        $this->assertNull($facility->refresh()->rejection_reason);
-    }
-
-    public function test_reinstating_an_approved_facility_is_refused(): void
+    #[DataProvider('removedLifecycleActions')]
+    public function test_the_lifecycle_endpoints_are_gone(string $action): void
     {
         $facility = Facility::factory()->approved()->create();
 
         $this->actingAs($this->admin())
-            ->postJson("/api/admin/facility-registrations/{$facility->id}/reinstate")
-            ->assertStatus(409)
-            ->assertJsonPath('code', 'facility_not_suspended');
+            ->postJson("/api/admin/facilities/{$facility->id}/{$action}", ['reason' => 'No.'])
+            ->assertNotFound();
+
+        $this->assertSame(FacilityStatus::Approved, $facility->refresh()->status);
     }
 
     /**
@@ -166,8 +145,6 @@ class FacilityApprovalTest extends TestCase
         return [
             'approve' => ['approve', []],
             'reject' => ['reject', ['reason' => 'No.']],
-            'suspend' => ['suspend', ['reason' => 'No.']],
-            'reinstate' => ['reinstate', []],
         ];
     }
 
@@ -180,14 +157,14 @@ class FacilityApprovalTest extends TestCase
         $facility = Facility::factory()->pendingApproval()->create();
 
         // role_user is many-to-many, so one account can hold admin and still be
-        // attached to a facility. The guard runs before the status check, which
-        // is why suspend and reinstate get 403 rather than 409 here.
+        // attached to a facility. The guard runs before the status check, so a
+        // self-decision is refused on its own terms.
         $admin = User::factory()->withRole(RoleName::Admin)->create([
             'facility_id' => $facility->id,
         ]);
 
         $this->actingAs($admin)
-            ->postJson("/api/admin/facility-registrations/{$facility->id}/{$action}", $payload)
+            ->postJson("/api/admin/facilities/{$facility->id}/{$action}", $payload)
             ->assertForbidden()
             ->assertJsonPath('code', 'self_approval_forbidden');
 
@@ -202,34 +179,42 @@ class FacilityApprovalTest extends TestCase
         $applicant = User::factory()->bloodCenterApplicant($facility)->create();
 
         $this->actingAs($this->admin())
-            ->postJson("/api/admin/facility-registrations/{$facility->id}/approve")
+            ->postJson("/api/admin/facilities/{$facility->id}/approve")
             ->assertOk();
 
         Notification::assertSentTo($applicant, FacilityRegistrationDecision::class);
     }
 
-    public function test_the_review_queue_lists_pending_registrations_by_default(): void
+    /**
+     * Facility Management is a directory, not a review queue.
+     *
+     * The page it replaced defaulted to pending_approval because pending was
+     * the only thing an administrator did there. Listing every facility is the
+     * point now, and a legacy pending row is one entry among them rather than
+     * the whole list.
+     */
+    public function test_the_facility_list_shows_every_facility_by_default(): void
     {
         Facility::factory()->pendingApproval()->create(['name' => 'Pending Center']);
         Facility::factory()->approved()->create(['name' => 'Approved Center']);
 
         $response = $this->actingAs($this->admin())
-            ->getJson('/api/admin/facility-registrations')
+            ->getJson('/api/admin/facilities')
             ->assertOk();
 
         $names = array_column($response->json('data'), 'name');
 
         $this->assertContains('Pending Center', $names);
-        $this->assertNotContains('Approved Center', $names);
+        $this->assertContains('Approved Center', $names);
     }
 
-    public function test_the_review_queue_can_filter_by_status(): void
+    public function test_the_facility_list_can_filter_by_status(): void
     {
         Facility::factory()->pendingApproval()->create(['name' => 'Pending Center']);
         Facility::factory()->rejected()->create(['name' => 'Rejected Center']);
 
         $response = $this->actingAs($this->admin())
-            ->getJson('/api/admin/facility-registrations?status=rejected')
+            ->getJson('/api/admin/facilities?status=rejected')
             ->assertOk();
 
         $names = array_column($response->json('data'), 'name');
@@ -238,10 +223,10 @@ class FacilityApprovalTest extends TestCase
         $this->assertNotContains('Pending Center', $names);
     }
 
-    public function test_the_review_queue_rejects_an_unknown_status(): void
+    public function test_the_facility_list_rejects_an_unknown_status(): void
     {
         $this->actingAs($this->admin())
-            ->getJson('/api/admin/facility-registrations?status=bogus')
+            ->getJson('/api/admin/facilities?status=bogus')
             ->assertStatus(422)
             ->assertJsonValidationErrors('status');
     }
@@ -251,9 +236,9 @@ class FacilityApprovalTest extends TestCase
         $facility = Facility::factory()->pendingApproval()->create();
         $donor = User::factory()->donor()->create();
 
-        $this->actingAs($donor)->getJson('/api/admin/facility-registrations')->assertForbidden();
+        $this->actingAs($donor)->getJson('/api/admin/facilities')->assertForbidden();
         $this->actingAs($donor)
-            ->postJson("/api/admin/facility-registrations/{$facility->id}/approve")
+            ->postJson("/api/admin/facilities/{$facility->id}/approve")
             ->assertForbidden();
     }
 
@@ -263,7 +248,7 @@ class FacilityApprovalTest extends TestCase
         $staff = User::factory()->bloodCenterStaff()->create();
 
         $this->actingAs($staff)
-            ->postJson("/api/admin/facility-registrations/{$facility->id}/approve")
+            ->postJson("/api/admin/facilities/{$facility->id}/approve")
             ->assertForbidden();
     }
 
@@ -271,7 +256,7 @@ class FacilityApprovalTest extends TestCase
     {
         $facility = Facility::factory()->pendingApproval()->create();
 
-        $this->getJson('/api/admin/facility-registrations')->assertUnauthorized();
-        $this->postJson("/api/admin/facility-registrations/{$facility->id}/approve")->assertUnauthorized();
+        $this->getJson('/api/admin/facilities')->assertUnauthorized();
+        $this->postJson("/api/admin/facilities/{$facility->id}/approve")->assertUnauthorized();
     }
 }
