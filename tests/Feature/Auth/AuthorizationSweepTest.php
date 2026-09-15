@@ -37,6 +37,24 @@ class AuthorizationSweepTest extends TestCase
             'blood center reference data' => ['get', '/api/blood-center/reference-data'],
             'admin facility list' => ['get', '/api/admin/facilities'],
             'admin facility create' => ['post', '/api/admin/facilities'],
+            'hospital availability search' => ['get', '/api/hospital/availability'],
+            'hospital eligible facilities' => ['get', '/api/hospital/facilities'],
+            'hospital request list' => ['get', '/api/hospital/blood-requests'],
+            'hospital request create' => ['post', '/api/hospital/blood-requests'],
+            'hospital request show' => ['get', '/api/hospital/blood-requests/1'],
+            'hospital request cancel' => ['post', '/api/hospital/blood-requests/1/cancel'],
+            'hospital confirm receipt' => ['post', '/api/hospital/blood-requests/1/confirm-receipt'],
+            'hospital notifications' => ['get', '/api/hospital/notifications'],
+            'centre incoming queue' => ['get', '/api/blood-center/blood-requests'],
+            'centre queue summary' => ['get', '/api/blood-center/blood-requests/summary'],
+            'centre request review' => ['get', '/api/blood-center/blood-requests/1'],
+            'centre allocate' => ['post', '/api/blood-center/blood-requests/1/allocate'],
+            'centre reject' => ['post', '/api/blood-center/blood-requests/1/reject'],
+            'centre release holds' => ['post', '/api/blood-center/blood-requests/1/release-holds'],
+            'centre release' => ['post', '/api/blood-center/blood-requests/1/release'],
+            'centre billing show' => ['get', '/api/blood-center/billings/1'],
+            'centre record payment' => ['post', '/api/blood-center/billings/1/payments'],
+            'centre notifications' => ['get', '/api/blood-center/notifications'],
         ];
     }
 
@@ -81,6 +99,15 @@ class AuthorizationSweepTest extends TestCase
             'record units' => ['post', '/api/blood-center/inventory', 'inventory.create'],
             'update unit' => ['patch', '/api/blood-center/inventory/RA1-1-01', 'inventory.update'],
             'discard unit' => ['post', '/api/blood-center/inventory/RA1-1-01/discard', 'inventory.discard'],
+            'incoming queue' => ['get', '/api/blood-center/blood-requests', 'requests.view'],
+            'queue summary' => ['get', '/api/blood-center/blood-requests/summary', 'requests.view'],
+            'request review' => ['get', '/api/blood-center/blood-requests/1', 'requests.view'],
+            'allocate units' => ['post', '/api/blood-center/blood-requests/1/allocate', 'requests.approve'],
+            'reject request' => ['post', '/api/blood-center/blood-requests/1/reject', 'requests.approve'],
+            'release holds' => ['post', '/api/blood-center/blood-requests/1/release-holds', 'requests.approve'],
+            'release units' => ['post', '/api/blood-center/blood-requests/1/release', 'requests.release'],
+            'billing show' => ['get', '/api/blood-center/billings/1', 'billing.view'],
+            'record payment' => ['post', '/api/blood-center/billings/1/payments', 'billing.record_payment'],
         ];
     }
 

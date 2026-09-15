@@ -2,9 +2,11 @@
 
 namespace App\Repository;
 
+use App\Enums\AllocationStatus;
 use App\Enums\BloodUnitStatus;
 use App\Models\BloodUnit;
 use App\Models\Donation;
+use App\Models\RequestAllocation;
 use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
@@ -278,6 +280,158 @@ class InventoryRepository
         return BloodUnit::query()
             ->where('status', BloodUnitStatus::Available)
             ->whereDate('expiry_date', '<', $operationalDate);
+    }
+
+    /**
+     * Lock the next issuable units for a request, first-expiring-first.
+     *
+     * The heart of allocation. Every predicate that decides whether a unit may
+     * be held is re-asserted here, under the lock, rather than trusted from an
+     * earlier read: between a staff member seeing availability and pressing
+     * allocate, another facility's request may have taken the bag, the nightly
+     * sweep may have expired it, or someone may have discarded it.
+     *
+     * The claiming-allocation check is a subquery rather than a join so a unit
+     * with a cancelled hold still qualifies — giving up a hold returns the bag
+     * to stock, and it has to be reachable again.
+     *
+     * FEFO is applied here and not left to the caller: issuing the newest bag
+     * while an older one expires on the shelf is the waste the rule exists to
+     * prevent.
+     *
+     * Must be called inside a transaction.
+     *
+     * @return Collection<int, BloodUnit>
+     */
+    public function lockAvailableUnitsFefo(
+        int $facilityId,
+        int $bloodTypeId,
+        int $componentId,
+        int $limit,
+        string $operationalDate
+    ): Collection {
+        if ($limit < 1) {
+            return new Collection;
+        }
+
+        return BloodUnit::query()
+            ->forFacility($facilityId)
+            ->where('blood_type_id', $bloodTypeId)
+            ->where('component_id', $componentId)
+            ->where('status', BloodUnitStatus::Available)
+            ->whereDate('expiry_date', '>=', $operationalDate)
+            ->whereNotExists(function ($query) {
+                $query->selectRaw('1')
+                    ->from('request_allocations')
+                    ->whereColumn('request_allocations.unit_id', 'blood_units.id')
+                    ->whereIn('request_allocations.status', AllocationStatus::claimingValues());
+            })
+            ->fefo()
+            ->limit($limit)
+            ->lockForUpdate()
+            ->get();
+    }
+
+    /**
+     * Flip locked units to reserved, returning how many rows actually moved.
+     *
+     * The status predicate is repeated in the WHERE rather than relying on the
+     * lock alone, so the statement stays correct if the lock is ever refactored
+     * away, and the affected-row count stays a usable reconciliation signal.
+     * The caller compares it against what it locked and aborts on a mismatch.
+     *
+     * @param  array<int, string>  $unitIds
+     */
+    public function markReserved(array $unitIds): int
+    {
+        if ($unitIds === []) {
+            return 0;
+        }
+
+        return BloodUnit::query()
+            ->whereIn('id', $unitIds)
+            ->where('status', BloodUnitStatus::Available)
+            ->update(['status' => BloodUnitStatus::Reserved->value]);
+    }
+
+    /**
+     * Flip reserved units to issued, returning how many rows actually moved.
+     *
+     * @param  array<int, string>  $unitIds
+     */
+    public function markIssued(array $unitIds): int
+    {
+        if ($unitIds === []) {
+            return 0;
+        }
+
+        return BloodUnit::query()
+            ->whereIn('id', $unitIds)
+            ->where('status', BloodUnitStatus::Reserved)
+            ->update(['status' => BloodUnitStatus::Issued->value]);
+    }
+
+    /**
+     * Return reserved units to available stock, for a hold being given up.
+     *
+     * @param  array<int, string>  $unitIds
+     */
+    public function markAvailable(array $unitIds): int
+    {
+        if ($unitIds === []) {
+            return 0;
+        }
+
+        return BloodUnit::query()
+            ->whereIn('id', $unitIds)
+            ->where('status', BloodUnitStatus::Reserved)
+            ->update(['status' => BloodUnitStatus::Available->value]);
+    }
+
+    /**
+     * Lock holds whose units have passed their expiry while still reserved.
+     *
+     * The sweep cannot expire a reserved unit directly — its status says it is
+     * promised to a request, and flipping it to expired underneath that promise
+     * would leave an allocation pointing at stock nobody can issue. The hold has
+     * to be given up first, which is what this finds.
+     *
+     * Must be called inside a transaction.
+     *
+     * @return Collection<int, RequestAllocation>
+     */
+    public function lockExpiredHolds(string $operationalDate): Collection
+    {
+        return RequestAllocation::query()
+            ->where('request_allocations.status', AllocationStatus::Allocated->value)
+            ->whereExists(function ($query) use ($operationalDate): void {
+                $query->selectRaw('1')
+                    ->from('blood_units')
+                    ->whereColumn('blood_units.id', 'request_allocations.unit_id')
+                    ->where('blood_units.status', BloodUnitStatus::Reserved->value)
+                    ->whereDate('blood_units.expiry_date', '<', $operationalDate);
+            })
+            ->lockForUpdate()
+            ->get();
+    }
+
+    /**
+     * Lock specific units belonging to a facility, whatever their status.
+     *
+     * @param  array<int, string>  $unitIds
+     * @return Collection<int, BloodUnit>
+     */
+    public function lockUnits(array $unitIds, int $facilityId): Collection
+    {
+        if ($unitIds === []) {
+            return new Collection;
+        }
+
+        return BloodUnit::query()
+            ->forFacility($facilityId)
+            ->whereIn('id', $unitIds)
+            ->lockForUpdate()
+            ->get();
     }
 
     /**

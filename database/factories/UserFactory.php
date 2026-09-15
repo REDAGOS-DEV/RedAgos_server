@@ -185,6 +185,26 @@ class UserFactory extends Factory
     }
 
     /**
+     * Create approved hospital blood-bank staff: the requester side of the workflow.
+     *
+     * No department is set, and that is correct rather than an omission: the
+     * department matrix charters the four departments of a blood centre, and a
+     * blood bank has none of them. Its staff are authorised by role and by
+     * their facility being approved, which is what the /hospital routes check.
+     */
+    public function bloodBankStaff(?Facility $facility = null): static
+    {
+        $facility ??= Facility::factory()->bloodBank()->approved()->create();
+
+        return $this->state(fn (array $attributes): array => [
+            'facility_id' => $facility->id,
+            'position' => 'Medical Technologist',
+            'department' => null,
+            'is_supervisor' => false,
+        ])->withRole(RoleName::BloodBank);
+    }
+
+    /**
      * Create a blood-centre applicant exactly as registration leaves them:
      * attached to a facility, stamped as its registration contact, holding no
      * role at all.

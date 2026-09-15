@@ -91,6 +91,34 @@ class Facility extends Model
     }
 
     /**
+     * The blood stock held at this facility.
+     */
+    public function bloodUnits(): HasMany
+    {
+        return $this->hasMany(BloodUnit::class);
+    }
+
+    /**
+     * Requests this facility raised against other facilities.
+     *
+     * Named for the direction it travels. The unqualified "blood requests of a
+     * facility" is ambiguous — every facility has two sets — so neither set is
+     * given the plain name.
+     */
+    public function outgoingBloodRequests(): HasMany
+    {
+        return $this->hasMany(BloodRequest::class, 'facility_id');
+    }
+
+    /**
+     * Requests other facilities addressed to this one. The incoming queue.
+     */
+    public function incomingBloodRequests(): HasMany
+    {
+        return $this->hasMany(BloodRequest::class, 'target_facility_id');
+    }
+
+    /**
      * The administrator who approved this facility, if any.
      */
     public function approver(): BelongsTo

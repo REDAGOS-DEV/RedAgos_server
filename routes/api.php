@@ -2,12 +2,14 @@
 
 use App\Http\Controllers\AdminPrivilegeController;
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\BloodCenterBillingController;
 use App\Http\Controllers\BloodCenterCollectionController;
 use App\Http\Controllers\BloodCenterDonorController;
 use App\Http\Controllers\BloodCenterInventoryController;
 use App\Http\Controllers\BloodCenterLaboratoryController;
 use App\Http\Controllers\BloodCenterProfileController;
 use App\Http\Controllers\BloodCenterReferenceController;
+use App\Http\Controllers\BloodCenterRequestController;
 use App\Http\Controllers\BloodCenterStaffController;
 use App\Http\Controllers\BookingCatalogController;
 use App\Http\Controllers\DonorAppointmentController;
@@ -21,6 +23,9 @@ use App\Http\Controllers\DonorRegistrationController;
 use App\Http\Controllers\EmailVerificationController;
 use App\Http\Controllers\FacilityApprovalController;
 use App\Http\Controllers\FacilityManagementController;
+use App\Http\Controllers\FacilityNotificationController;
+use App\Http\Controllers\HospitalAvailabilityController;
+use App\Http\Controllers\HospitalBloodRequestController;
 use App\Http\Controllers\PasswordResetController;
 use App\Http\Controllers\UserController;
 use App\Http\Resources\UserResource;
@@ -169,6 +174,65 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             ->middleware('can:inventory.discard')
             ->where('unit', '[A-Za-z0-9\-]+');
 
+        // Incoming blood requests. The abilities these carry have existed in
+        // DepartmentPermissions since the RBAC foundation landed with nothing
+        // consuming them; these are the routes they were declared for.
+        //
+        // Reading and deciding are separated: requests.view lists and reviews,
+        // requests.approve decides, requests.release dispatches. Splitting them
+        // means a centre can let a junior triage the queue without also letting
+        // them send blood out of the building.
+        Route::prefix('blood-requests')->group(function (): void {
+            Route::get('/', [BloodCenterRequestController::class, 'index'])
+                ->middleware('can:requests.view');
+
+            // Declared before /{bloodRequest}, which is numeric-constrained and
+            // would not match "summary" anyway, but the order documents intent.
+            Route::get('/summary', [BloodCenterRequestController::class, 'summary'])
+                ->middleware('can:requests.view');
+
+            Route::get('/{bloodRequest}', [BloodCenterRequestController::class, 'show'])
+                ->middleware('can:requests.view')
+                ->whereNumber('bloodRequest');
+
+            Route::post('/{bloodRequest}/allocate', [BloodCenterRequestController::class, 'allocate'])
+                ->middleware('can:requests.approve')
+                ->whereNumber('bloodRequest');
+
+            Route::post('/{bloodRequest}/reject', [BloodCenterRequestController::class, 'reject'])
+                ->middleware('can:requests.approve')
+                ->whereNumber('bloodRequest');
+
+            // Giving a hold back is an approval-level decision, not a release:
+            // nothing leaves the building, the units simply return to stock.
+            Route::post('/{bloodRequest}/release-holds', [BloodCenterRequestController::class, 'releaseHolds'])
+                ->middleware('can:requests.approve')
+                ->whereNumber('bloodRequest');
+
+            Route::post('/{bloodRequest}/release', [BloodCenterRequestController::class, 'release'])
+                ->middleware('can:requests.release')
+                ->whereNumber('bloodRequest');
+        });
+
+        // Billing. Inventory holds billing.view read-only so release can check
+        // whether anything is owed without being able to alter the answer;
+        // recording money is the Billing department's alone.
+        Route::prefix('billings')->group(function (): void {
+            Route::get('/{bloodRequest}', [BloodCenterBillingController::class, 'show'])
+                ->middleware('can:billing.view')
+                ->whereNumber('bloodRequest');
+
+            Route::post('/{bloodRequest}/payments', [BloodCenterBillingController::class, 'storePayment'])
+                ->middleware('can:billing.record_payment')
+                ->whereNumber('bloodRequest');
+        });
+
+        Route::get('/notifications', [FacilityNotificationController::class, 'index']);
+        Route::get('/notifications/unread-count', [FacilityNotificationController::class, 'unreadCount']);
+        Route::post('/notifications/mark-all-read', [FacilityNotificationController::class, 'markAllAsRead']);
+        Route::patch('/notifications/{notification}', [FacilityNotificationController::class, 'update'])
+            ->whereUuid('notification');
+
         // Donor/Collection — the counter. Donors are not owned by a facility,
         // so DonorDirectoryService is what decides whether a caller sees a full
         // record or the standardised cross-facility summary.
@@ -280,6 +344,55 @@ Route::middleware(['auth:sanctum', 'role:admin', 'throttle:60,1'])
     });
 
 // Named deliberately, unlike the routes around them: DonorIdentityDecisionRequest
+// Hospital Blood Bank — the requester side of the blood request workflow.
+//
+// Guarded by role and the operational gate, with no `can:` ability. That is
+// deliberate and worth explaining, because every blood-centre route above does
+// carry one. Abilities exist here to separate the four departments *within* a
+// blood centre, which is what docs/BLOOD-CENTER.md charters. A hospital blood
+// bank has no departments — users.department is null for all of its staff — and
+// every one of its accounts does the same job, so there is nothing for an
+// ability to separate. Adding one would also mean resolving the facility's type
+// inside User::abilities(), which App\Support\AdminPrivileges documents as
+// forbidden: that method runs on every gate check and every serialised user,
+// and must not touch a relation.
+//
+// facility.operational carries the rest of the weight. Despite the middleware
+// class being named for the blood centre, its checks are role-agnostic —
+// verified email, a linked facility, and that facility approved — which is
+// exactly the gate a requester needs.
+Route::middleware(['auth:sanctum', 'role:blood_bank', 'facility.operational'])
+    ->prefix('hospital')->group(function (): void {
+        Route::get('/availability', [HospitalAvailabilityController::class, 'index']);
+        Route::get('/facilities', [HospitalAvailabilityController::class, 'facilities']);
+
+        Route::get('/blood-requests', [HospitalBloodRequestController::class, 'index']);
+        Route::post('/blood-requests', [HospitalBloodRequestController::class, 'store']);
+
+        // Declared before the {bloodRequest} route below, which would otherwise
+        // swallow "track" and then fail to match it as an integer.
+        Route::get('/blood-requests/track/{reference}', [HospitalBloodRequestController::class, 'track'])
+            ->where('reference', '[A-Za-z0-9\-]+');
+
+        Route::get('/blood-requests/{bloodRequest}', [HospitalBloodRequestController::class, 'show'])
+            ->whereNumber('bloodRequest');
+        Route::post('/blood-requests/{bloodRequest}/cancel', [HospitalBloodRequestController::class, 'cancel'])
+            ->whereNumber('bloodRequest');
+
+        // Receipt is confirmed by the receiving facility and nobody else. The
+        // centre that dispatched the units cannot assert on the hospital's
+        // behalf that they arrived, which is why this sits on the requester
+        // side of the API rather than beside the release endpoint.
+        Route::post('/blood-requests/{bloodRequest}/confirm-receipt', [HospitalBloodRequestController::class, 'confirmReceipt'])
+            ->whereNumber('bloodRequest');
+
+        Route::get('/notifications', [FacilityNotificationController::class, 'index']);
+        Route::get('/notifications/unread-count', [FacilityNotificationController::class, 'unreadCount']);
+        Route::post('/notifications/mark-all-read', [FacilityNotificationController::class, 'markAllAsRead']);
+        Route::patch('/notifications/{notification}', [FacilityNotificationController::class, 'update'])
+            ->whereUuid('notification');
+    });
+
 // branches on routeIs() to require a reason on reject and refuse one on approve,
 // and routeIs() returns false for an unnamed route.
 Route::middleware(['auth:sanctum', 'role:admin', 'can:admin.donor_identity.verify', 'throttle:60,1'])

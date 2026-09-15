@@ -7,6 +7,8 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class BloodUnit extends Model
 {
@@ -62,6 +64,26 @@ class BloodUnit extends Model
     public function donation(): BelongsTo
     {
         return $this->belongsTo(Donation::class);
+    }
+
+    /**
+     * Every hold ever placed on this unit, including ones given up.
+     */
+    public function allocations(): HasMany
+    {
+        return $this->hasMany(RequestAllocation::class, 'unit_id');
+    }
+
+    /**
+     * The hold that currently claims this unit, if any.
+     *
+     * At most one can exist: a partial unique index over unit_id restricted to
+     * the claiming statuses enforces it in the database, so this is a hasOne
+     * rather than "the latest of several".
+     */
+    public function activeAllocation(): HasOne
+    {
+        return $this->hasOne(RequestAllocation::class, 'unit_id')->claiming();
     }
 
     /**
