@@ -29,6 +29,7 @@ class UpdateLaboratoryStatusRequest extends FormRequest
                 DonationStatus::Completed->value,
                 DonationStatus::Rejected->value,
             ])],
+            'rejection_reason' => ['sometimes', 'nullable', 'string', 'max:255'],
         ];
     }
 

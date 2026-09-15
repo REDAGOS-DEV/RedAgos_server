@@ -156,6 +156,53 @@ class LaboratoryProcessingTest extends TestCase
             ->assertJsonPath('code', 'blood_type_mismatch');
     }
 
+    public function test_a_passed_result_fills_in_a_donor_who_had_no_blood_type(): void
+    {
+        $profile = $this->donation->donorProfile;
+        $profile->update(['blood_type_id' => null]);
+
+        $this->recordResult()->assertCreated();
+
+        // Without this a counter-registered walk-in is stuck: inventory derives
+        // a unit's type from the profile and refuses the donation as
+        // donor_blood_type_missing, so it could never become stock.
+        $this->assertSame($this->bloodType->id, $profile->fresh()->blood_type_id);
+    }
+
+    public function test_filling_in_a_blood_type_is_audit_logged(): void
+    {
+        $this->donation->donorProfile->update(['blood_type_id' => null]);
+
+        $this->recordResult()->assertCreated();
+
+        $this->assertDatabaseHas('audit_logs', [
+            'actor_id' => $this->lab->id,
+            'action' => 'donor.blood_type_verified',
+        ]);
+    }
+
+    public function test_a_reactive_result_does_not_fill_in_a_missing_blood_type(): void
+    {
+        $profile = $this->donation->donorProfile;
+        $profile->update(['blood_type_id' => null]);
+
+        $this->recordResult(['result' => 'reactive'])->assertCreated();
+
+        // A bag that came back reactive is not a reliable typing to adopt.
+        $this->assertNull($profile->fresh()->blood_type_id);
+    }
+
+    public function test_a_blood_type_already_on_file_is_never_overwritten(): void
+    {
+        $profile = $this->donation->donorProfile;
+        $original = $profile->blood_type_id;
+
+        $this->recordResult()->assertCreated();
+
+        $this->assertSame($original, $profile->fresh()->blood_type_id);
+        $this->assertDatabaseMissing('audit_logs', ['action' => 'donor.blood_type_verified']);
+    }
+
     public function test_the_full_chain_clears_a_donation_for_issue(): void
     {
         $this->recordResult()->assertCreated();

@@ -60,8 +60,8 @@ class DonationToInventoryChainTest extends TestCase
             ->json('data.id');
 
         $this->actingAs($this->collection)
-            ->patchJson("/api/blood-center/donations/{$donationId}/status", ['status' => 'screening'])
-            ->assertOk();
+            ->postJson("/api/blood-center/donations/{$donationId}/screening", ['outcome' => 'qualified'])
+            ->assertCreated();
 
         $this->actingAs($this->collection)
             ->postJson("/api/blood-center/donations/{$donationId}/collection", ['volume_ml' => 450])
@@ -223,7 +223,7 @@ class DonationToInventoryChainTest extends TestCase
             ->json('data.id');
 
         $this->actingAs($this->collection)
-            ->patchJson("/api/blood-center/donations/{$id}/status", ['status' => 'screening']);
+            ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'qualified']);
 
         $this->actingAs($this->collection)
             ->postJson("/api/blood-center/donations/{$id}/collection", ['volume_ml' => 450]);

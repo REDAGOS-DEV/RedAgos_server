@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Donor;
 
+use App\Enums\AppointmentStatus;
 use App\Enums\RoleName;
 use App\Models\Donation;
 use App\Models\DonationAppointment;
@@ -9,7 +10,12 @@ use App\Models\EligibilityScreening;
 use App\Models\Facility;
 use App\Models\MobileEvent;
 use App\Models\User;
+use App\Notifications\AppointmentScheduled;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Notification;
+use Mockery;
+use RuntimeException;
 use Tests\TestCase;
 
 class AppointmentTest extends TestCase
@@ -51,6 +57,97 @@ class AppointmentTest extends TestCase
             ->assertJsonPath('status', 'scheduled')
             ->assertJsonPath('appointment_type', 'walk_in')
             ->assertJsonPath('facility_name', $this->center->name);
+
+        $this->assertSame(1, DonationAppointment::count());
+    }
+
+    public function test_booking_emails_the_donor_their_appointment_details(): void
+    {
+        config(['app.frontend_url' => 'http://localhost:3000']);
+        Notification::fake();
+
+        $date = now()->addWeek();
+
+        $this->actingAs($this->donor)
+            ->postJson('/api/donors/appointments', $this->payload([
+                'date' => $date->toDateString(),
+                'time_slot' => '09:00',
+            ]))
+            ->assertCreated();
+
+        $appointment = DonationAppointment::sole();
+
+        Notification::assertSentTo(
+            $this->donor,
+            AppointmentScheduled::class,
+            function (AppointmentScheduled $notification) use ($appointment, $date): bool {
+                $mail = $notification->toMail($this->donor);
+                $body = implode(' ', array_merge($mail->introLines, $mail->outroLines));
+
+                return $mail->subject === 'Your RedAgos appointment on '.$date->format('j M Y')
+                    && str_contains($body, $date->format('l, j F Y'))
+                    && str_contains($body, '9:00 AM')
+                    && str_contains($body, $this->center->name)
+                    && str_contains($body, $this->center->address)
+                    && str_contains($body, '#'.$appointment->id)
+                    && $mail->actionUrl === 'http://localhost:3000/donor/appointments';
+            }
+        );
+    }
+
+    public function test_a_mobile_drive_confirmation_names_the_drive_venue(): void
+    {
+        Notification::fake();
+
+        $drive = MobileEvent::factory()->create(['facility_id' => $this->center->id]);
+
+        $this->actingAs($this->donor)
+            ->postJson('/api/donors/appointments', [
+                'type' => 'mobile',
+                'drive_id' => $drive->id,
+                'time_slot' => '09:00',
+            ])
+            ->assertCreated();
+
+        Notification::assertSentTo(
+            $this->donor,
+            AppointmentScheduled::class,
+            function (AppointmentScheduled $notification) use ($drive): bool {
+                $body = implode(' ', $notification->toMail($this->donor)->introLines);
+
+                return str_contains($body, $drive->name)
+                    && str_contains($body, $drive->location);
+            }
+        );
+    }
+
+    public function test_a_booked_appointment_is_listed_in_the_donors_notifications(): void
+    {
+        $this->actingAs($this->donor)
+            ->postJson('/api/donors/appointments', $this->payload())
+            ->assertCreated();
+
+        $this->actingAs($this->donor)
+            ->getJson('/api/donors/notifications')
+            ->assertOk()
+            ->assertJsonCount(1, 'notifications')
+            ->assertJsonPath('notifications.0.category', 'reminder')
+            ->assertJsonPath('notifications.0.title', 'Appointment booked')
+            ->assertJsonPath('notifications.0.action_route', '/donor/appointments');
+    }
+
+    public function test_a_failing_mailer_does_not_fail_the_booking(): void
+    {
+        // The slot is already held by the time the confirmation is sent, so a
+        // mailer outage must not read to the donor as a failed booking.
+        Notification::shouldReceive('send')->andThrow(new RuntimeException('mailer down'));
+        Log::shouldReceive('warning')
+            ->once()
+            ->with('Could not send the appointment confirmation.', Mockery::type('array'));
+
+        $this->actingAs($this->donor)
+            ->postJson('/api/donors/appointments', $this->payload())
+            ->assertCreated();
 
         $this->assertSame(1, DonationAppointment::count());
     }
@@ -252,7 +349,7 @@ class AppointmentTest extends TestCase
             ->assertOk()
             ->assertJsonPath('status', 'cancelled');
 
-        $this->assertSame('cancelled', DonationAppointment::find($response->json('id'))->status);
+        $this->assertSame(AppointmentStatus::Cancelled, DonationAppointment::find($response->json('id'))->status);
         $this->assertSame(1, DonationAppointment::count());
     }
 
@@ -268,7 +365,7 @@ class AppointmentTest extends TestCase
             ->deleteJson('/api/donors/appointments/'.$appointment->id)
             ->assertForbidden();
 
-        $this->assertSame('scheduled', $appointment->fresh()->status);
+        $this->assertSame(AppointmentStatus::Scheduled, $appointment->fresh()->status);
     }
 
     public function test_a_donor_cannot_reschedule_another_donors_appointment(): void

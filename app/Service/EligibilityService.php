@@ -63,7 +63,7 @@ class EligibilityService
             'blood_type' => $profile->bloodType?->code,
             'age' => $this->evaluator->ageFromBirthDate($profile->birth_date),
             'last_donation_date' => $this->eligibilityRepository
-                ->lastCompletedDonationAt($profile->donor_id)?->toDateString(),
+                ->lastBloodDrawnAt($profile->donor_id)?->toDateString(),
         ];
     }
 
@@ -76,7 +76,7 @@ class EligibilityService
     {
         $profile = $this->requireDonorProfile($user);
         $latest = $this->eligibilityRepository->latestScreening($profile->donor_id);
-        $lastDonationAt = $this->eligibilityRepository->lastCompletedDonationAt($profile->donor_id);
+        $lastDonationAt = $this->eligibilityRepository->lastBloodDrawnAt($profile->donor_id);
 
         return [
             'eligibility_status' => $this->resolveStatus($latest)->value,
@@ -116,7 +116,7 @@ class EligibilityService
             $this->guardNoUnexpiredScreening($profile->donor_id);
         }
 
-        $lastDonationAt = $this->eligibilityRepository->lastCompletedDonationAt($profile->donor_id);
+        $lastDonationAt = $this->eligibilityRepository->lastBloodDrawnAt($profile->donor_id);
         $weightKg = isset($payload['vitals']['weight']) ? (int) $payload['vitals']['weight'] : null;
 
         $evaluation = $this->evaluator->evaluate(

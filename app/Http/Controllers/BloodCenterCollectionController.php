@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Requests\ListDonationsRequest;
 use App\Http\Requests\RecordCollectionRequest;
+use App\Http\Requests\RecordScreeningRequest;
 use App\Http\Requests\StoreDonationRequest;
 use App\Http\Requests\UpdateDonationStatusRequest;
 use App\Http\Requests\VerifyDonorQrRequest;
@@ -88,7 +89,23 @@ class BloodCenterCollectionController extends Controller
     public function updateStatus(UpdateDonationStatusRequest $request, int $donation): JsonResponse
     {
         return response()->json(
-            $this->collectionService->advance($request->user(), $donation, $request->validated('status'))
+            $this->collectionService->advance(
+                $request->user(),
+                $donation,
+                $request->validated('status'),
+                $request->validated()
+            )
+        );
+    }
+
+    /**
+     * Record the on-site screening outcome against a donation.
+     */
+    public function recordScreening(RecordScreeningRequest $request, int $donation): JsonResponse
+    {
+        return response()->json(
+            $this->collectionService->recordScreening($request->user(), $donation, $request->validated()),
+            201
         );
     }
 

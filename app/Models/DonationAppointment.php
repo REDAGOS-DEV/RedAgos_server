@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\AppointmentStatus;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -10,11 +11,6 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class DonationAppointment extends Model
 {
     use HasFactory;
-
-    /**
-     * Appointment states that still hold a slot.
-     */
-    public const ACTIVE_STATUSES = ['scheduled', 'confirmed'];
 
     protected $fillable = [
         'donor_id',
@@ -28,13 +24,14 @@ class DonationAppointment extends Model
      * @var array<string, mixed>
      */
     protected $attributes = [
-        'status' => 'scheduled',
+        'status' => AppointmentStatus::Scheduled->value,
     ];
 
     protected function casts(): array
     {
         return [
             'appointment_datetime' => 'datetime',
+            'status' => AppointmentStatus::class,
         ];
     }
 
@@ -58,6 +55,6 @@ class DonationAppointment extends Model
      */
     public function scopeActive(Builder $query): Builder
     {
-        return $query->whereIn('status', self::ACTIVE_STATUSES);
+        return $query->whereIn('status', AppointmentStatus::activeValues());
     }
 }

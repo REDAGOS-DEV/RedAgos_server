@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Donor;
 
+use App\Enums\DonationStatus;
 use App\Enums\EligibilityStatus;
 use App\Enums\RoleName;
 use App\Models\AuditLog;
@@ -215,17 +216,52 @@ class EligibilityScreeningTest extends TestCase
             ->assertJsonPath('result', 'eligible');
     }
 
-    public function test_the_interval_ignores_donations_that_were_not_completed(): void
+    public function test_the_interval_ignores_a_donor_turned_away_before_anything_was_drawn(): void
     {
         Donation::factory()->rejected()->create([
             'donor_id' => $this->donor->id,
             'donation_date' => now()->subDay(),
         ]);
 
+        // Nothing came out of their arm, so nothing is protecting them from
+        // donating today.
         $this->actingAs($this->donor)
             ->postJson('/api/donors/eligibility/screening', $this->payload())
             ->assertCreated()
             ->assertJsonPath('result', 'eligible');
+    }
+
+    public function test_the_interval_counts_a_donation_drawn_and_then_rejected(): void
+    {
+        Donation::factory()->rejectedAfterCollection(now()->subDay()->toDateString())->create([
+            'donor_id' => $this->donor->id,
+        ]);
+
+        // The bag was reactive and never reached a patient, but 450 mL still
+        // left this donor yesterday. Keying the interval on `completed` used to
+        // miss exactly this case.
+        $this->actingAs($this->donor)
+            ->postJson('/api/donors/eligibility/screening', $this->payload())
+            ->assertCreated()
+            ->assertJsonPath('result', 'deferred')
+            ->assertJsonPath('deferral_reasons.0.code', 'below_min_interval');
+    }
+
+    public function test_the_interval_counts_a_donation_still_waiting_on_the_laboratory(): void
+    {
+        Donation::factory()->create([
+            'donor_id' => $this->donor->id,
+            'donation_date' => now()->subDay(),
+            'status' => DonationStatus::Collected,
+        ]);
+
+        // Yesterday's draw sits at `collected` until the laboratory clears it,
+        // which can be days. The donor is not eligible again in the meantime.
+        $this->actingAs($this->donor)
+            ->postJson('/api/donors/eligibility/screening', $this->payload())
+            ->assertCreated()
+            ->assertJsonPath('result', 'deferred')
+            ->assertJsonPath('deferral_reasons.0.code', 'below_min_interval');
     }
 
     public function test_a_self_declared_last_donation_date_cannot_bypass_the_interval(): void

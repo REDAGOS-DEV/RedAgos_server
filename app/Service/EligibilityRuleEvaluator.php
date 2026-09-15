@@ -34,7 +34,7 @@ class EligibilityRuleEvaluator
         Collection $questions,
         array $answers,
         ?int $weightKg,
-        ?Carbon $lastCompletedDonationAt
+        ?Carbon $lastBloodDrawnAt
     ): array {
         $reasons = [];
         $age = $this->ageFromBirthDate($profile->birth_date);
@@ -47,7 +47,7 @@ class EligibilityRuleEvaluator
             $reasons[] = DeferralReason::BelowMinimumWeight;
         }
 
-        if ($this->isWithinDonationInterval($lastCompletedDonationAt)) {
+        if ($this->isWithinDonationInterval($lastBloodDrawnAt)) {
             $reasons[] = DeferralReason::BelowMinimumInterval;
         }
 
@@ -71,21 +71,21 @@ class EligibilityRuleEvaluator
     /**
      * Determine the earliest date the donor may donate again.
      */
-    public function nextEligibleDate(?Carbon $lastCompletedDonationAt): ?Carbon
+    public function nextEligibleDate(?Carbon $lastBloodDrawnAt): ?Carbon
     {
-        return $lastCompletedDonationAt?->copy()->addDays($this->intervalDays())->startOfDay();
+        return $lastBloodDrawnAt?->copy()->addDays($this->intervalDays())->startOfDay();
     }
 
     /**
      * Determine whether the donation interval has not yet elapsed.
      */
-    public function isWithinDonationInterval(?Carbon $lastCompletedDonationAt): bool
+    public function isWithinDonationInterval(?Carbon $lastBloodDrawnAt): bool
     {
-        if ($lastCompletedDonationAt === null) {
+        if ($lastBloodDrawnAt === null) {
             return false;
         }
 
-        return $lastCompletedDonationAt->copy()->addDays($this->intervalDays())->isFuture();
+        return $lastBloodDrawnAt->copy()->addDays($this->intervalDays())->isFuture();
     }
 
     /**

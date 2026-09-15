@@ -2,10 +2,12 @@
 
 namespace App\Repository;
 
+use App\Enums\AppointmentStatus;
 use App\Enums\DonationStatus;
 use App\Models\BloodCollection;
 use App\Models\Donation;
 use App\Models\DonationAppointment;
+use App\Models\DonationScreening;
 use App\Models\DonorQrToken;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
@@ -93,7 +95,7 @@ class CollectionRepository
             ->where('donor_id', $donorId)
             ->where('facility_id', $facilityId)
             ->whereDate('appointment_datetime', $date)
-            ->whereIn('status', ['scheduled', 'confirmed'])
+            ->whereIn('status', AppointmentStatus::activeValues())
             ->orderBy('appointment_datetime')
             ->first();
     }
@@ -126,7 +128,7 @@ class CollectionRepository
     public function findDonation(int $donationId, int $facilityId): ?Donation
     {
         return Donation::query()
-            ->with(['donorProfile.donor', 'donorProfile.bloodType', 'appointment'])
+            ->with(['donorProfile.donor', 'donorProfile.bloodType', 'appointment', 'screening'])
             ->where('id', $donationId)
             ->where('facility_id', $facilityId)
             ->first();
@@ -141,7 +143,7 @@ class CollectionRepository
     public function paginateDonations(int $facilityId, array $filters, int $perPage)
     {
         return Donation::query()
-            ->with(['donorProfile.donor', 'donorProfile.bloodType'])
+            ->with(['donorProfile.donor', 'donorProfile.bloodType', 'screening'])
             ->where('facility_id', $facilityId)
             ->when(
                 isset($filters['status']),
@@ -182,5 +184,30 @@ class CollectionRepository
     public function collectionExists(int $donationId): bool
     {
         return BloodCollection::query()->where('donation_id', $donationId)->exists();
+    }
+
+    /**
+     * Record or correct the on-site screening outcome for a donation.
+     *
+     * `donation_screenings.donation_id` is unique, so a correction edits the
+     * existing row rather than adding a second — there is never an ambiguity
+     * about which assessment let the donor proceed.
+     *
+     * @param  array<string, mixed>  $attributes
+     */
+    public function upsertScreening(int $donationId, array $attributes): DonationScreening
+    {
+        return DonationScreening::updateOrCreate(
+            ['donation_id' => $donationId],
+            $attributes
+        );
+    }
+
+    /**
+     * Determine whether a screening has already been recorded for a donation.
+     */
+    public function screeningExists(int $donationId): bool
+    {
+        return DonationScreening::query()->where('donation_id', $donationId)->exists();
     }
 }

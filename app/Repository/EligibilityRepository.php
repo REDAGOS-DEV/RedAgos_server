@@ -73,12 +73,24 @@ class EligibilityRepository
     }
 
     /**
-     * Get the completion date of the donor's most recent completed donation.
+     * Get the date blood was last actually drawn from this donor.
+     *
+     * Keyed on the existence of a `blood_collections` row, not on
+     * `status = completed`. The 56-day interval exists to protect the donor's
+     * body from a second draw too soon, so what matters is whether a bag came
+     * out of their arm — not whether the laboratory has since cleared it for
+     * issue, which can be days later and may never happen at all.
+     *
+     * Filtering on `completed` got both ends of that wrong: a donor who gave
+     * blood this morning read as never having donated, and a donation rejected
+     * for a reactive result stopped counting even though the draw was real.
+     * A donation rejected at screening has no collection row, so it correctly
+     * does not count.
      */
-    public function lastCompletedDonationAt(int $donorId): ?Carbon
+    public function lastBloodDrawnAt(int $donorId): ?Carbon
     {
         $donationDate = Donation::where('donor_id', $donorId)
-            ->completed()
+            ->whereHas('collection')
             ->max('donation_date');
 
         return $donationDate ? Carbon::parse($donationDate) : null;

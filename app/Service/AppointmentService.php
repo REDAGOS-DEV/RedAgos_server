@@ -2,17 +2,21 @@
 
 namespace App\Service;
 
+use App\Enums\AppointmentStatus;
 use App\Models\DonationAppointment;
 use App\Models\DonorProfile;
 use App\Models\Facility;
 use App\Models\MobileEvent;
 use App\Models\User;
+use App\Notifications\AppointmentScheduled;
 use App\Repository\AppointmentRepository;
 use App\Repository\EligibilityRepository;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
+use Throwable;
 
 class AppointmentService
 {
@@ -143,11 +147,15 @@ class AppointmentService
                 'facility_id' => $facilityId,
                 'event_id' => $eventId,
                 'appointment_datetime' => $slot,
-                'status' => 'scheduled',
+                'status' => AppointmentStatus::Scheduled,
             ]);
         });
 
-        return $this->format($appointment->load(['facility', 'mobileEvent']));
+        $appointment->load(['facility', 'mobileEvent']);
+
+        $this->sendConfirmation($user, $appointment);
+
+        return $this->format($appointment);
     }
 
     /**
@@ -199,9 +207,29 @@ class AppointmentService
         $this->guardMutable($appointment);
         $this->guardChangeWindow($appointment);
 
-        $this->appointmentRepository->update($appointment, ['status' => 'cancelled']);
+        $this->appointmentRepository->update($appointment, ['status' => AppointmentStatus::Cancelled]);
 
         return $this->format($appointment->load(['facility', 'mobileEvent']));
+    }
+
+    /**
+     * Email the donor their appointment details, and file the in-app copy.
+     *
+     * After the commit, and never allowed to fail the booking: the slot is
+     * already held, so a mailer error here is a message to chase up rather
+     * than a reason to tell the donor their appointment did not go through.
+     */
+    private function sendConfirmation(User $user, DonationAppointment $appointment): void
+    {
+        try {
+            $user->notify(new AppointmentScheduled($appointment));
+        } catch (Throwable $exception) {
+            Log::warning('Could not send the appointment confirmation.', [
+                'donor_id' => $user->id,
+                'appointment_id' => $appointment->id,
+                'exception' => $exception->getMessage(),
+            ]);
+        }
     }
 
     /**
@@ -268,7 +296,7 @@ class AppointmentService
      */
     private function guardDonationInterval(DonorProfile $profile, Carbon $slot): void
     {
-        $lastDonationAt = $this->eligibilityRepository->lastCompletedDonationAt($profile->donor_id);
+        $lastDonationAt = $this->eligibilityRepository->lastBloodDrawnAt($profile->donor_id);
         $nextEligible = $this->evaluator->nextEligibleDate($lastDonationAt);
 
         if ($nextEligible === null || $slot->greaterThanOrEqualTo($nextEligible)) {
@@ -355,7 +383,7 @@ class AppointmentService
      */
     private function guardMutable(DonationAppointment $appointment): void
     {
-        if (in_array($appointment->status, DonationAppointment::ACTIVE_STATUSES, true)) {
+        if ($appointment->status->holdsSlot()) {
             return;
         }
 
@@ -468,11 +496,12 @@ class AppointmentService
             'appointment_datetime' => $appointment->appointment_datetime->toIso8601String(),
             'date' => $appointment->appointment_datetime->toDateString(),
             'time' => $appointment->appointment_datetime->format('H:i'),
-            'status' => $appointment->status,
+            'status' => $appointment->status->value,
+            'status_label' => $appointment->status->label(),
             'appointment_type' => $appointment->event_id ? 'mobile' : 'walk_in',
             'facility_name' => $appointment->facility?->name,
             'drive_name' => $appointment->mobileEvent?->name,
-            'can_cancel' => in_array($appointment->status, DonationAppointment::ACTIVE_STATUSES, true)
+            'can_cancel' => $appointment->status->holdsSlot()
                 && $appointment->appointment_datetime->greaterThan(
                     now()->addHours((int) config('donation.cancellation_window_hours'))
                 ),

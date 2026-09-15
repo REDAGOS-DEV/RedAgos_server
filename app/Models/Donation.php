@@ -21,6 +21,7 @@ class Donation extends Model
         'donation_date',
         'status',
         'volume_ml',
+        'rejection_reason',
     ];
 
     /**
@@ -52,6 +53,22 @@ class Donation extends Model
     public function appointment(): BelongsTo
     {
         return $this->belongsTo(DonationAppointment::class, 'appointment_id');
+    }
+
+    /**
+     * The on-site screening the facility recorded, if any.
+     */
+    public function screening(): HasOne
+    {
+        return $this->hasOne(DonationScreening::class);
+    }
+
+    /**
+     * The record of the bag actually being drawn, if it was.
+     */
+    public function collection(): HasOne
+    {
+        return $this->hasOne(BloodCollection::class);
     }
 
     /**

@@ -212,6 +212,9 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             Route::patch('/{donation}/status', [BloodCenterCollectionController::class, 'updateStatus'])
                 ->middleware('can:donations.record')->whereNumber('donation');
 
+            Route::post('/{donation}/screening', [BloodCenterCollectionController::class, 'recordScreening'])
+                ->middleware('can:donations.record')->whereNumber('donation');
+
             Route::post('/{donation}/collection', [BloodCenterCollectionController::class, 'recordCollection'])
                 ->middleware('can:donations.record')->whereNumber('donation');
         });

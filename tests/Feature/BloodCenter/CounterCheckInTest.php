@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\BloodCenter;
 
+use App\Enums\AppointmentStatus;
 use App\Enums\Department;
 use App\Models\DonationAppointment;
 use App\Models\DonorProfile;
@@ -198,7 +199,7 @@ class CounterCheckInTest extends TestCase
             ->postJson("/api/blood-center/appointments/{$foreign->id}/check-in")
             ->assertNotFound();
 
-        $this->assertSame('scheduled', $foreign->fresh()->status);
+        $this->assertSame(AppointmentStatus::Scheduled, $foreign->fresh()->status);
     }
 
     public function test_a_walk_in_is_registered_with_a_valid_id_and_no_email(): void

@@ -2,6 +2,8 @@
 
 namespace App\Repository;
 
+use App\Enums\AppointmentStatus;
+use App\Enums\DonationStatus;
 use App\Enums\IdentityStatus;
 use App\Models\BloodType;
 use App\Models\DonorProfile;
@@ -141,7 +143,7 @@ class DonorRepository
     {
         return DB::table('donations')
             ->where('donor_id', $donorId)
-            ->where('status', 'completed')
+            ->where('status', DonationStatus::Completed->value)
             ->count();
     }
 
@@ -150,7 +152,7 @@ class DonorRepository
         return DB::table('donation_appointments')
             ->join('facilities', 'facilities.id', '=', 'donation_appointments.facility_id')
             ->where('donation_appointments.donor_id', $donorId)
-            ->whereIn('donation_appointments.status', ['scheduled', 'confirmed'])
+            ->whereIn('donation_appointments.status', AppointmentStatus::activeValues())
             ->where('donation_appointments.appointment_datetime', '>=', $now)
             ->orderBy('donation_appointments.appointment_datetime')
             ->select([
@@ -196,7 +198,7 @@ class DonorRepository
     {
         return DB::table('donations')
             ->where('donor_id', $donorId)
-            ->where('status', 'completed')
+            ->where('status', DonationStatus::Completed->value)
             ->whereBetween('donation_date', [$from, $to])
             ->pluck('donation_date')
             ->groupBy(fn (string $date): string => Carbon::parse($date)->format('Y-m'))

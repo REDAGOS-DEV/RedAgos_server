@@ -2,6 +2,7 @@
 
 namespace Database\Factories;
 
+use App\Enums\AppointmentStatus;
 use App\Models\DonationAppointment;
 use App\Models\DonorProfile;
 use App\Models\Facility;
@@ -24,7 +25,7 @@ class DonationAppointmentFactory extends Factory
             'facility_id' => Facility::factory(),
             'event_id' => null,
             'appointment_datetime' => now()->addWeek()->setTime(9, 0),
-            'status' => 'scheduled',
+            'status' => AppointmentStatus::Scheduled,
         ];
     }
 
@@ -34,7 +35,27 @@ class DonationAppointmentFactory extends Factory
     public function cancelled(): static
     {
         return $this->state(fn (array $attributes): array => [
-            'status' => 'cancelled',
+            'status' => AppointmentStatus::Cancelled,
+        ]);
+    }
+
+    /**
+     * Indicate that the donor has arrived and been checked in.
+     */
+    public function confirmed(): static
+    {
+        return $this->state(fn (array $attributes): array => [
+            'status' => AppointmentStatus::Confirmed,
+        ]);
+    }
+
+    /**
+     * Indicate that the appointment has been closed out.
+     */
+    public function completed(): static
+    {
+        return $this->state(fn (array $attributes): array => [
+            'status' => AppointmentStatus::Completed,
         ]);
     }
 }

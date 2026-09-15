@@ -69,7 +69,9 @@ class LaboratoryService
         $facility = $this->requireFacility($staff);
         $result = TestResult::from($payload['result']);
 
-        $donation = DB::transaction(function () use ($staff, $facility, $donationId, $payload, $result): Donation {
+        $bloodTypeAdopted = false;
+
+        $donation = DB::transaction(function () use ($staff, $facility, $donationId, $payload, $result, &$bloodTypeAdopted): Donation {
             $locked = $this->lockOrFail($donationId, $facility);
 
             // Results belong to a donation the counter has finished with. A
@@ -92,6 +94,8 @@ class LaboratoryService
                 'notes' => isset($payload['notes']) ? trim((string) $payload['notes']) : null,
             ]);
 
+            $bloodTypeAdopted = $this->adoptVerifiedBloodType($locked, (int) $payload['blood_type_id'], $result);
+
             // Recording a result is what moves a donation to `tested`. It stays
             // there — clearing it for issue is a separate, deliberate act.
             $locked->status = DonationStatus::Tested;
@@ -104,6 +108,13 @@ class LaboratoryService
             'facility_id' => $facility->id,
             'result' => $result->value,
         ]);
+
+        if ($bloodTypeAdopted) {
+            $this->auditLogger->record($staff, 'donor.blood_type_verified', $donation, [
+                'facility_id' => $facility->id,
+                'blood_type_id' => (int) $payload['blood_type_id'],
+            ]);
+        }
 
         return [
             'message' => 'Screening result recorded.',
@@ -165,14 +176,16 @@ class LaboratoryService
     /**
      * Clear a donation for issue, or reject it.
      *
+     * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
      */
-    public function updateStatus(User $staff, int $donationId, string $status): array
+    public function updateStatus(User $staff, int $donationId, string $status, array $payload = []): array
     {
         $facility = $this->requireFacility($staff);
         $target = DonationStatus::from($status);
+        $reason = isset($payload['rejection_reason']) ? trim((string) $payload['rejection_reason']) : null;
 
-        $donation = DB::transaction(function () use ($facility, $donationId, $target): Donation {
+        $donation = DB::transaction(function () use ($facility, $donationId, $target, $reason): Donation {
             $locked = $this->lockOrFail($donationId, $facility);
 
             match ($target) {
@@ -186,6 +199,11 @@ class LaboratoryService
             };
 
             $locked->status = $target;
+
+            if ($target === DonationStatus::Rejected) {
+                $locked->rejection_reason = $reason;
+            }
+
             $locked->save();
 
             return $locked;
@@ -193,6 +211,7 @@ class LaboratoryService
 
         $this->auditLogger->record($staff, 'laboratory.donation_'.$target->value, $donation, [
             'facility_id' => $facility->id,
+            'rejection_reason' => $target === DonationStatus::Rejected ? $reason : null,
         ]);
 
         return [
@@ -259,6 +278,55 @@ class LaboratoryService
                 "This donation is already {$donation->status->label()}."
             );
         }
+
+        // A donation the counter has not finished with is not the laboratory's
+        // to reject: turning a donor away before they have been screened is a
+        // Donor/Collection decision, and only that department closes the
+        // appointment the donor booked.
+        if (! in_array($donation->status, [DonationStatus::Collected, DonationStatus::Tested], true)) {
+            throw $this->refuse(
+                409,
+                'donation_not_collected',
+                "A donation that is {$donation->status->label()} is not the laboratory's to reject."
+            );
+        }
+    }
+
+    /**
+     * Write a newly determined blood type onto a donor profile that had none.
+     *
+     * Only fills a blank, and only from a `passed` result. It overwrites
+     * nothing, so it does not disturb the mismatch rule next door: a profile
+     * that already carries a type still wins a disagreement by refusing the
+     * result outright, and correcting it stays a Donor/Collection action.
+     *
+     * Without this a donor registered at the counter without a blood type was
+     * stuck: the laboratory could type their bag, but the type never reached
+     * the profile, and `blood_units.blood_type_id` derives from the profile —
+     * so inventory refused the donation with `donor_blood_type_missing` and the
+     * donation could never become stock.
+     *
+     * A `reactive` or `inconclusive` result is not a reliable typing, so it
+     * leaves the profile blank.
+     *
+     * @return bool Whether the profile was actually filled in.
+     */
+    private function adoptVerifiedBloodType(Donation $donation, int $typedBloodTypeId, TestResult $result): bool
+    {
+        if (! $result->clearsForIssue()) {
+            return false;
+        }
+
+        $profile = $donation->donorProfile;
+
+        if ($profile === null || $profile->blood_type_id !== null) {
+            return false;
+        }
+
+        $profile->blood_type_id = $typedBloodTypeId;
+        $profile->save();
+
+        return true;
     }
 
     /**
@@ -300,6 +368,7 @@ class LaboratoryService
             'status_label' => $donation->status?->label(),
             'owning_department' => $donation->status?->owningDepartment()?->value,
             'volume_ml' => $donation->volume_ml,
+            'rejection_reason' => $donation->rejection_reason,
             'donor' => $donation->donorProfile?->donor ? [
                 'uuid' => $donation->donorProfile->donor->uuid,
                 'donor_code' => 'DONOR-'.str_pad((string) $donation->donorProfile->donor->id, 6, '0', STR_PAD_LEFT),

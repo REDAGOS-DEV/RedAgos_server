@@ -3,6 +3,7 @@
 namespace App\Service;
 
 use App\Enums\AccountStatus;
+use App\Enums\AppointmentStatus;
 use App\Enums\EligibilityStatus;
 use App\Enums\IdentityStatus;
 use App\Enums\RoleName;
@@ -529,7 +530,7 @@ class DonorService
      */
     private function lastDonationDate(DonorProfile $profile): ?Carbon
     {
-        return $this->eligibilityRepository->lastCompletedDonationAt($profile->donor_id)
+        return $this->eligibilityRepository->lastBloodDrawnAt($profile->donor_id)
             ?? $profile->last_donation_date;
     }
 
@@ -589,10 +590,15 @@ class DonorService
             return null;
         }
 
+        // A raw query-builder row, so `status` arrives as a string rather than
+        // through the model's enum cast.
+        $status = AppointmentStatus::tryFrom((string) $appointment->status);
+
         return [
             'id' => $appointment->id,
             'appointment_datetime' => $appointment->appointment_datetime,
             'status' => $appointment->status,
+            'status_label' => $status?->label(),
             'appointment_type' => 'booked',
             'facility_name' => $appointment->facility_name,
         ];

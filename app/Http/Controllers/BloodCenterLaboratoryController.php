@@ -68,7 +68,12 @@ class BloodCenterLaboratoryController extends Controller
     public function updateStatus(UpdateLaboratoryStatusRequest $request, int $donation): JsonResponse
     {
         return response()->json(
-            $this->laboratoryService->updateStatus($request->user(), $donation, $request->validated('status'))
+            $this->laboratoryService->updateStatus(
+                $request->user(),
+                $donation,
+                $request->validated('status'),
+                $request->validated()
+            )
         );
     }
 }
