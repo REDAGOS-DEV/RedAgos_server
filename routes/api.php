@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\AdminBloodComponentController;
 use App\Http\Controllers\AdminPrivilegeController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\BloodCenterBillingController;
@@ -162,6 +163,14 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         // would otherwise swallow 'summary'.
         Route::get('/inventory/summary', [BloodCenterInventoryController::class, 'summary'])
             ->middleware('can:inventory.view');
+
+        // Also declared before /inventory/{unit}, for the same reason as the
+        // line above: the unit parameter is a string, so this path would
+        // otherwise be read as a unit id. Gated on inventory.create rather than
+        // inventory.view because it is a worklist for the people who book stock
+        // in, not a report.
+        Route::get('/inventory/intake-queue', [BloodCenterInventoryController::class, 'intakeQueue'])
+            ->middleware('can:inventory.create');
 
         Route::post('/inventory', [BloodCenterInventoryController::class, 'store'])
             ->middleware('can:inventory.create');
@@ -403,6 +412,18 @@ Route::middleware(['auth:sanctum', 'role:admin', 'can:admin.donor_identity.verif
             ->whereUuid('uuid')->name('admin.donor-identities.approve');
         Route::post('/{uuid}/reject', [DonorIdentityVerificationController::class, 'reject'])
             ->whereUuid('uuid')->name('admin.donor-identities.reject');
+    });
+
+// Component shelf life is what every blood unit's expiry date is derived from,
+// and blood_components carries no facility_id — one row serves the whole
+// network. It is therefore set here, by a platform admin, rather than by a
+// blood-centre supervisor who would be changing every other centre's expiry
+// dates without knowing it.
+Route::middleware(['auth:sanctum', 'role:admin', 'can:admin.components.manage', 'throttle:60,1'])
+    ->prefix('admin/blood-components')->group(function (): void {
+        Route::get('/', [AdminBloodComponentController::class, 'index']);
+        Route::patch('/{component}', [AdminBloodComponentController::class, 'update'])
+            ->whereNumber('component');
     });
 
 // The catalogue behind the account form. Guarded by the same privilege as the

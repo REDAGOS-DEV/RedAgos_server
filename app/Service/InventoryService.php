@@ -72,6 +72,70 @@ class InventoryService
      *
      * @return array<string, mixed>
      */
+    /**
+     * Donations cleared for issue that still have units to book in.
+     *
+     * The laboratory hands a donation over by setting it `completed`; this is
+     * the other side of that handover. It exists as its own endpoint because
+     * Inventory holds `donations.view` but not `lab.view`, so the laboratory
+     * queue is closed to them, and because neither that queue nor
+     * GET /blood-center/donations carries the declaration ledger this needs.
+     *
+     * @return LengthAwarePaginator<int, array<string, mixed>>
+     */
+    public function intakeQueue(User $user, int $perPage): LengthAwarePaginator
+    {
+        $facilityId = $this->requireFacilityId($user);
+
+        return $this->inventoryRepository
+            ->paginateIntakeQueue($facilityId, $perPage)
+            ->through(fn (Donation $donation): array => $this->formatIntake($donation));
+    }
+
+    /**
+     * One donation as the intake screen needs it.
+     *
+     * @return array<string, mixed>
+     */
+    private function formatIntake(Donation $donation): array
+    {
+        $ledger = $this->declarationLedger($donation);
+        $components = $donation->components->keyBy('component_id');
+
+        $rows = [];
+
+        foreach ($ledger as $componentId => $row) {
+            $component = $components->get($componentId)?->component;
+
+            $rows[] = [
+                ...$row,
+                'component' => $component?->name,
+                // The intake screen refuses a component with no shelf life
+                // rather than letting someone type an expiry out of the air,
+                // so it has to know before offering the row.
+                'shelf_life_days' => $component?->shelf_life_days,
+                'shelf_life_configured' => (bool) $component?->hasShelfLife(),
+            ];
+        }
+
+        return [
+            'donation_id' => $donation->id,
+            'donation_date' => $donation->donation_date?->toISOString(),
+            'volume_ml' => $donation->volume_ml,
+            'donor' => $donation->donorProfile?->donor ? [
+                'donor_code' => 'DONOR-'.str_pad((string) $donation->donorProfile->donor->id, 6, '0', STR_PAD_LEFT),
+                'full_name' => trim($donation->donorProfile->donor->first_name.' '.$donation->donorProfile->donor->last_name),
+                // The type on the profile, which is what intake stamps onto
+                // every unit. Shown so staff can see it matches the bag.
+                'blood_type' => $donation->donorProfile->bloodType?->code,
+            ] : null,
+            'components' => $rows,
+            'declared_units' => array_sum(array_column($ledger, 'declared')),
+            'recorded_units' => array_sum(array_column($ledger, 'recorded')),
+            'outstanding_units' => array_sum(array_column($ledger, 'outstanding')),
+        ];
+    }
+
     public function summary(User $user): array
     {
         $facilityId = $this->requireFacilityId($user);
@@ -480,9 +544,9 @@ class InventoryService
      */
     private function guardAgainstLaboratoryDeclaration(Donation $donation, array $entries): void
     {
-        $declared = $donation->components()->pluck('quantity', 'component_id');
+        $ledger = $this->declarationLedger($donation);
 
-        if ($declared->isEmpty()) {
+        if ($ledger === []) {
             throw $this->refuse(
                 409,
                 'components_not_declared',
@@ -490,17 +554,12 @@ class InventoryService
             );
         }
 
-        $alreadyRecorded = $donation->bloodUnits()
-            ->selectRaw('component_id, count(*) as total')
-            ->groupBy('component_id')
-            ->pluck('total', 'component_id');
-
         $requested = [];
 
         foreach ($entries as $index => $entry) {
             $componentId = (int) $entry['component_id'];
 
-            if (! $declared->has($componentId)) {
+            if (! isset($ledger[$componentId])) {
                 throw ValidationException::withMessages([
                     "units.{$index}.component_id" => ['The laboratory did not record this component for this donation.'],
                 ]);
@@ -510,19 +569,51 @@ class InventoryService
         }
 
         foreach ($requested as $componentId => $count) {
-            $limit = (int) $declared->get($componentId);
-            $used = (int) ($alreadyRecorded->get($componentId) ?? 0);
+            $row = $ledger[$componentId];
 
-            if ($used + $count > $limit) {
-                $remaining = max(0, $limit - $used);
-
+            if ($count > $row['outstanding']) {
                 throw $this->refuse(
                     409,
                     'exceeds_declared_quantity',
-                    "The laboratory declared {$limit} unit(s) of this component for this donation; {$remaining} may still be recorded."
+                    "The laboratory declared {$row['declared']} unit(s) of this component for this donation; {$row['outstanding']} may still be recorded."
                 );
             }
         }
+    }
+
+    /**
+     * What the laboratory declared for a donation, against what is already in.
+     *
+     * The single source for both the intake queue and the guard above. They
+     * must not each count this themselves: a screen that offered a unit the
+     * guard then refused would send staff back and forth with a 409 and no way
+     * to tell which of the two was wrong.
+     *
+     * @return array<int, array{component_id: int, declared: int, recorded: int, outstanding: int}>
+     */
+    private function declarationLedger(Donation $donation): array
+    {
+        $declared = $donation->components()->pluck('quantity', 'component_id');
+
+        $recorded = $donation->bloodUnits()
+            ->selectRaw('component_id, count(*) as total')
+            ->groupBy('component_id')
+            ->pluck('total', 'component_id');
+
+        $ledger = [];
+
+        foreach ($declared as $componentId => $quantity) {
+            $used = (int) ($recorded->get($componentId) ?? 0);
+
+            $ledger[(int) $componentId] = [
+                'component_id' => (int) $componentId,
+                'declared' => (int) $quantity,
+                'recorded' => $used,
+                'outstanding' => max(0, (int) $quantity - $used),
+            ];
+        }
+
+        return $ledger;
     }
 
     /**

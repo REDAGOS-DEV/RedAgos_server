@@ -48,7 +48,14 @@ class RegisterDonorRequest extends FormRequest
             'last_name' => ['required', 'string', 'max:150'],
             'email' => ['required', 'string', 'email:rfc', 'max:150', 'unique:users,email'],
             'phone' => ['required', 'string', 'regex:/^(?:\+63|63|0)9\d{9}$/', 'unique:users,phone'],
-            'blood_type' => ['required', 'string', 'max:10', 'exists:blood_types,code'],
+            // Optional: plenty of first-time donors genuinely do not know their
+            // type, and forcing the field only makes them guess. A guess is
+            // worse than a blank, because the laboratory back-fill in
+            // LaboratoryService only fills a *null* type — a wrong guess is
+            // never corrected and instead refuses the donation later with
+            // `blood_type_mismatch`. Left empty, the donor's first cleared
+            // donation records it for them.
+            'blood_type' => ['nullable', 'string', 'max:10', 'exists:blood_types,code'],
             'gender' => ['required', 'string', 'in:male,female,other,prefer_not_to_say'],
             'birth_date' => ['required', 'date', 'before_or_equal:'.now()->subYears(self::MINIMUM_AGE_YEARS)->toDateString()],
             'address' => ['required', 'string', 'max:255'],
@@ -84,7 +91,6 @@ class RegisterDonorRequest extends FormRequest
             'phone.required' => 'Phone number is required.',
             'phone.regex' => 'Please enter a valid Philippine mobile number.',
             'phone.unique' => 'This phone number is already registered.',
-            'blood_type.required' => 'Blood type is required.',
             'blood_type.exists' => 'Please select a valid blood type.',
             'gender.required' => 'Gender is required.',
             'gender.in' => 'Please select a valid gender.',

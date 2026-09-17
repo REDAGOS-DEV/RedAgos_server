@@ -3,6 +3,7 @@
 namespace Tests\Feature\BloodCenter;
 
 use App\Enums\BloodUnitStatus;
+use App\Enums\Department;
 use App\Enums\RoleName;
 use App\Models\AuditLog;
 use App\Models\BloodComponent;
@@ -286,6 +287,107 @@ class InventoryIntakeTest extends TestCase
         // and collide with this class's pinned O+ about one time in eight.
         $this->actingAs(User::factory()->withRole(RoleName::Donor)->create())
             ->postJson('/api/blood-center/inventory', $this->payload())
+            ->assertForbidden();
+    }
+
+    // --- the intake queue -------------------------------------------------
+
+    public function test_the_intake_queue_lists_a_cleared_donation_with_its_outstanding_units(): void
+    {
+        $response = $this->actingAs($this->staff)
+            ->getJson('/api/blood-center/inventory/intake-queue')
+            ->assertOk()
+            ->assertJsonPath('data.0.donation_id', $this->donation->id)
+            ->assertJsonPath('data.0.declared_units', 10)
+            ->assertJsonPath('data.0.recorded_units', 0)
+            ->assertJsonPath('data.0.outstanding_units', 10);
+
+        // The component row carries the shelf life, because the screen refuses
+        // a component that has none rather than inviting an invented expiry.
+        $this->assertSame($this->component->id, $response->json('data.0.components.0.component_id'));
+        $this->assertArrayHasKey('shelf_life_configured', $response->json('data.0.components.0'));
+    }
+
+    public function test_recording_units_reduces_what_the_queue_reports_as_outstanding(): void
+    {
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/inventory', $this->payload())
+            ->assertCreated();
+
+        $this->actingAs($this->staff)
+            ->getJson('/api/blood-center/inventory/intake-queue')
+            ->assertOk()
+            ->assertJsonPath('data.0.recorded_units', 1)
+            ->assertJsonPath('data.0.outstanding_units', 9);
+    }
+
+    /**
+     * The queue and the guard have to agree: a donation that is fully booked in
+     * must disappear rather than sit there offering units the guard refuses.
+     */
+    public function test_a_fully_recorded_donation_leaves_the_queue(): void
+    {
+        $units = [];
+
+        for ($i = 0; $i < 10; $i++) {
+            $units[] = [
+                'component_id' => $this->component->id,
+                'expiry_date' => $this->inDays(30),
+            ];
+        }
+
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/inventory', [
+                'donation_id' => $this->donation->id,
+                'units' => $units,
+            ])
+            ->assertCreated();
+
+        $this->actingAs($this->staff)
+            ->getJson('/api/blood-center/inventory/intake-queue')
+            ->assertOk()
+            ->assertJsonCount(0, 'data');
+
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/inventory', $this->payload())
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'exceeds_declared_quantity');
+    }
+
+    public function test_a_donation_the_laboratory_has_not_cleared_is_not_in_the_queue(): void
+    {
+        $this->donation->update(['status' => 'collected']);
+
+        $this->actingAs($this->staff)
+            ->getJson('/api/blood-center/inventory/intake-queue')
+            ->assertOk()
+            ->assertJsonCount(0, 'data');
+    }
+
+    public function test_the_queue_shows_only_the_callers_own_facility(): void
+    {
+        $other = User::factory()->bloodCenterStaff()->create();
+
+        $this->actingAs($other)
+            ->getJson('/api/blood-center/inventory/intake-queue')
+            ->assertOk()
+            ->assertJsonCount(0, 'data');
+    }
+
+    /**
+     * inventory.create, not inventory.view: this is a worklist for the people
+     * who book stock in. Collection and Laboratory both hold inventory.view.
+     */
+    public function test_a_department_that_cannot_record_stock_cannot_read_the_queue(): void
+    {
+        $lab = User::factory()->bloodCenterStaff()->create([
+            'facility_id' => $this->facilityId,
+            'department' => Department::Laboratory,
+            'is_supervisor' => false,
+        ]);
+
+        $this->actingAs($lab)
+            ->getJson('/api/blood-center/inventory/intake-queue')
             ->assertForbidden();
     }
 

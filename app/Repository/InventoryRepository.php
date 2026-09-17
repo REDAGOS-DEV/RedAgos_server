@@ -4,6 +4,7 @@ namespace App\Repository;
 
 use App\Enums\AllocationStatus;
 use App\Enums\BloodUnitStatus;
+use App\Enums\DonationStatus;
 use App\Models\BloodUnit;
 use App\Models\Donation;
 use App\Models\RequestAllocation;
@@ -77,6 +78,39 @@ class InventoryRepository
      *
      * Must be called inside a transaction.
      */
+    /**
+     * Donations this facility has cleared for issue that still owe units.
+     *
+     * "Still owes units" is decided by comparing totals rather than by walking
+     * each component, which is sound only because recordUnits() refuses to book
+     * more of a component than the laboratory declared: per-component recorded
+     * can never exceed declared, so equal totals mean every component is
+     * complete. If that guard is ever relaxed, this has to become a
+     * per-component comparison.
+     *
+     * A discarded unit still counts as recorded — it was booked in once, and
+     * discarding it does not entitle anyone to book another bag in its place.
+     *
+     * @return LengthAwarePaginator<int, Donation>
+     */
+    public function paginateIntakeQueue(int $facilityId, int $perPage): LengthAwarePaginator
+    {
+        return Donation::query()
+            ->with(['donorProfile.donor', 'donorProfile.bloodType', 'testResult.bloodType', 'components.component'])
+            ->where('facility_id', $facilityId)
+            ->where('status', DonationStatus::Completed->value)
+            ->whereRaw(
+                '(select coalesce(sum(quantity), 0) from donation_components where donation_components.donation_id = donations.id)'
+                .' > (select count(*) from blood_units where blood_units.donation_id = donations.id)'
+            )
+            // Oldest first: a bag that has been sitting since yesterday is the
+            // one closest to its expiry, so it is the one to shelve next.
+            ->orderBy('donation_date')
+            ->orderBy('id')
+            ->paginate($perPage)
+            ->withQueryString();
+    }
+
     public function lockDonation(int $donationId, int $facilityId): ?Donation
     {
         return Donation::query()

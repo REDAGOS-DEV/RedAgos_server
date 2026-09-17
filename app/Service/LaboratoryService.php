@@ -139,11 +139,16 @@ class LaboratoryService
         $donation = DB::transaction(function () use ($staff, $facility, $donationId, $payload): Donation {
             $locked = $this->lockOrFail($donationId, $facility);
 
-            if ($locked->status !== DonationStatus::Tested) {
+            // Separating the unit and testing a sample are two things the bench
+            // does at the same time, so neither waits on the other to be
+            // recorded. The order is re-imposed where it actually matters, in
+            // guardReadyToComplete(): a unit cannot be cleared for issue until
+            // both a passing result and a breakdown exist.
+            if (! in_array($locked->status, [DonationStatus::Collected, DonationStatus::Tested], true)) {
                 throw $this->refuse(
                     409,
-                    'donation_not_tested',
-                    'Record the screening result before declaring components.'
+                    'donation_not_collected',
+                    "A donation that is {$locked->status->label()} is not ready for processing."
                 );
             }
 

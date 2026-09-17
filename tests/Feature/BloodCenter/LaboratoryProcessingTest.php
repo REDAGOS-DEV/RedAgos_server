@@ -254,11 +254,38 @@ class LaboratoryProcessingTest extends TestCase
             ->assertJsonPath('code', 'components_missing');
     }
 
-    public function test_components_cannot_be_declared_before_a_result(): void
+    public function test_components_can_be_declared_before_a_result(): void
     {
-        $this->declareComponents()
+        // Testing and processing are worked in parallel at the bench, so
+        // neither recording waits on the other.
+        $this->declareComponents()->assertCreated();
+
+        $this->assertSame(DonationStatus::Collected, $this->donation->fresh()->status);
+    }
+
+    public function test_components_declared_first_still_do_not_clear_a_donation(): void
+    {
+        $this->declareComponents()->assertCreated();
+
+        // The two branches only join here: without a result there is nothing
+        // saying this blood is safe to issue.
+        $this->complete()
             ->assertStatus(409)
             ->assertJsonPath('code', 'donation_not_tested');
+
+        $this->recordResult()->assertCreated();
+        $this->complete()->assertOk();
+
+        $this->assertSame(DonationStatus::Completed, $this->donation->fresh()->status);
+    }
+
+    public function test_components_cannot_be_declared_before_the_counter_has_finished(): void
+    {
+        $this->donation->update(['status' => DonationStatus::Screening]);
+
+        $this->declareComponents()
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'donation_not_collected');
     }
 
     public function test_the_same_component_cannot_be_declared_twice(): void

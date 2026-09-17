@@ -63,12 +63,21 @@ class DonorService
         }
 
         $donor = DB::transaction(function () use ($payload, $normalizedEmail, $normalizedPhone): User {
-            $bloodType = $this->donorRepository->findBloodTypeByCode($payload['blood_type']);
+            // A donor who does not know their type registers without one. The
+            // profile column is nullable for exactly this, and the laboratory
+            // fills it from the first cleared donation.
+            $bloodTypeId = null;
 
-            if (! $bloodType) {
-                throw ValidationException::withMessages([
-                    'blood_type' => ['Please select a valid blood type.'],
-                ]);
+            if (filled($payload['blood_type'] ?? null)) {
+                $bloodType = $this->donorRepository->findBloodTypeByCode($payload['blood_type']);
+
+                if (! $bloodType) {
+                    throw ValidationException::withMessages([
+                        'blood_type' => ['Please select a valid blood type.'],
+                    ]);
+                }
+
+                $bloodTypeId = $bloodType->id;
             }
 
             $donor = $this->donorRepository->createDonor([
@@ -85,7 +94,7 @@ class DonorService
 
             $this->donorRepository->createDonorProfile([
                 'donor_id' => $donor->id,
-                'blood_type_id' => $bloodType->id,
+                'blood_type_id' => $bloodTypeId,
                 'gender' => $payload['gender'],
                 'birth_date' => $payload['birth_date'],
                 'address' => trim($payload['address']),
@@ -307,12 +316,22 @@ class DonorService
     {
         $donor = $this->donorRepository->loadDashboardUser($user);
         $profile = $donor->donorProfile;
-        $bloodType = $this->donorRepository->findBloodTypeByCode($payload['blood_type']);
 
-        if (! $profile || ! $bloodType) {
+        if (! $profile) {
             throw ValidationException::withMessages([
                 'donor' => ['Unable to update this donor profile.'],
             ]);
+        }
+
+        $bloodTypeId = null;
+
+        if (filled($payload['blood_type'] ?? null)) {
+            $bloodType = $this->donorRepository->findBloodTypeByCode($payload['blood_type'])
+                ?? throw ValidationException::withMessages([
+                    'blood_type' => ['Please select a valid blood type.'],
+                ]);
+
+            $bloodTypeId = $bloodType->id;
         }
 
         $email = Str::lower(trim($payload['email']));
@@ -323,7 +342,7 @@ class DonorService
         // Revoke the verification and issue a link for the new address.
         $emailChanged = $email !== $donor->email;
 
-        DB::transaction(function () use ($donor, $profile, $bloodType, $payload, $email, $emailChanged): void {
+        DB::transaction(function () use ($donor, $profile, $bloodTypeId, $payload, $email, $emailChanged): void {
             $this->donorRepository->updateUser($donor, [
                 'first_name' => trim($payload['first_name']),
                 'last_name' => trim($payload['last_name']),
@@ -336,7 +355,7 @@ class DonorService
             }
 
             $this->donorRepository->updateDonorProfile($profile, [
-                'blood_type_id' => $bloodType->id,
+                'blood_type_id' => $bloodTypeId,
                 'birth_date' => $payload['birth_date'],
                 'address' => trim($payload['address']),
             ]);

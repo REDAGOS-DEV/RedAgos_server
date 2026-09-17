@@ -236,6 +236,27 @@ class DonorRegistrationTest extends TestCase
             ->assertJsonValidationErrors('terms_accepted');
     }
 
+    public function test_a_donor_who_does_not_know_their_blood_type_can_register_without_one(): void
+    {
+        Notification::fake();
+
+        $this->postJson('/api/donors/register', $this->payload(['blood_type' => null]))
+            ->assertCreated();
+
+        $donor = User::where('email', 'juan@example.com')->firstOrFail();
+
+        // Null, not a default. The laboratory fills this in from the first
+        // cleared donation; anything stored here now would be a guess.
+        $this->assertNull($donor->donorProfile->blood_type_id);
+    }
+
+    public function test_an_invalid_blood_type_is_still_rejected(): void
+    {
+        $this->postJson('/api/donors/register', $this->payload(['blood_type' => 'Z+']))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('blood_type');
+    }
+
     public function test_an_invalid_gender_is_rejected(): void
     {
         $this->postJson('/api/donors/register', $this->payload(['gender' => 'unknown']))
@@ -252,7 +273,6 @@ class DonorRegistrationTest extends TestCase
                 'last_name',
                 'email',
                 'phone',
-                'blood_type',
                 'gender',
                 'birth_date',
                 'address',

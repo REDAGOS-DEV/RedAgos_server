@@ -63,6 +63,15 @@ final class AdminPrivileges
             'label' => 'Admin Accounts',
             'description' => 'Create admin accounts and assign privileges.',
         ],
+        // Platform-level rather than per-facility on purpose: blood_components
+        // carries no facility_id and a globally unique name, so shelf life is
+        // one clinical constant shared by every centre on the network. A
+        // facility supervisor editing it would silently change everyone else's
+        // expiry dates.
+        'admin.components.manage' => [
+            'label' => 'Blood Components',
+            'description' => 'Set component shelf life and storage temperature.',
+        ],
     ];
 
     /**

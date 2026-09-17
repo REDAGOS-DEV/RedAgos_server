@@ -41,6 +41,16 @@ class BloodCenterInventoryController extends Controller
     }
 
     /**
+     * List donations cleared for issue that still have units to book in.
+     */
+    public function intakeQueue(Request $request): JsonResponse
+    {
+        return response()->json(
+            $this->inventoryService->intakeQueue($request->user(), $request->integer('per_page', 15))
+        );
+    }
+
+    /**
      * Record collected units against a completed donation.
      */
     public function store(StoreBloodUnitsRequest $request): JsonResponse
