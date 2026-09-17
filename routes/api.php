@@ -1,10 +1,10 @@
 <?php
 
-use App\Http\Controllers\AdminBloodComponentController;
 use App\Http\Controllers\AdminPrivilegeController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\BloodCenterBillingController;
 use App\Http\Controllers\BloodCenterCollectionController;
+use App\Http\Controllers\BloodCenterComponentController;
 use App\Http\Controllers\BloodCenterDonorController;
 use App\Http\Controllers\BloodCenterInventoryController;
 use App\Http\Controllers\BloodCenterLaboratoryController;
@@ -155,6 +155,18 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
     ->prefix('blood-center')->group(function (): void {
         Route::get('/reference-data', [BloodCenterReferenceController::class, 'index'])
             ->middleware('can:reference.view');
+
+        // Shelf life and price, held per facility. Every department reads these
+        // through reference-data above, but only a supervisor sets them:
+        // center.configure is a MANAGEMENT ability, so no department grants it.
+        // They are facility-scoped rather than network-wide because one centre
+        // must not be able to change another's expiry dates, or switch on the
+        // payment-before-release gate for a facility that never set a price.
+        Route::prefix('blood-components')->middleware('can:center.configure')->group(function (): void {
+            Route::get('/', [BloodCenterComponentController::class, 'index']);
+            Route::patch('/{component}', [BloodCenterComponentController::class, 'update'])
+                ->whereNumber('component');
+        });
 
         Route::get('/inventory', [BloodCenterInventoryController::class, 'index'])
             ->middleware('can:inventory.view');
@@ -412,18 +424,6 @@ Route::middleware(['auth:sanctum', 'role:admin', 'can:admin.donor_identity.verif
             ->whereUuid('uuid')->name('admin.donor-identities.approve');
         Route::post('/{uuid}/reject', [DonorIdentityVerificationController::class, 'reject'])
             ->whereUuid('uuid')->name('admin.donor-identities.reject');
-    });
-
-// Component shelf life is what every blood unit's expiry date is derived from,
-// and blood_components carries no facility_id — one row serves the whole
-// network. It is therefore set here, by a platform admin, rather than by a
-// blood-centre supervisor who would be changing every other centre's expiry
-// dates without knowing it.
-Route::middleware(['auth:sanctum', 'role:admin', 'can:admin.components.manage', 'throttle:60,1'])
-    ->prefix('admin/blood-components')->group(function (): void {
-        Route::get('/', [AdminBloodComponentController::class, 'index']);
-        Route::patch('/{component}', [AdminBloodComponentController::class, 'update'])
-            ->whereNumber('component');
     });
 
 // The catalogue behind the account form. Guarded by the same privilege as the

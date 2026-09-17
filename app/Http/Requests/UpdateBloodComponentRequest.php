@@ -13,13 +13,14 @@ class UpdateBloodComponentRequest extends FormRequest
 
     /**
      * Both fields are nullable, and null is a real answer: it means "no
-     * clinically approved value yet", which is the state every component ships
-     * in. Clearing a shelf life is therefore allowed, and inventory intake goes
-     * back to refusing that component rather than falling back to a default.
+     * approved value yet for this facility", which is the state every component
+     * starts in. Clearing a shelf life is therefore allowed, and stock intake
+     * goes back to refusing that component rather than defaulting an expiry.
      *
-     * The bounds are sanity limits on what a human can type, not clinical
-     * guidance. 3650 days is ten years, comfortably past frozen plasma; nothing
-     * in this application decides what a correct shelf life is.
+     * The bounds are sanity limits on what a human can type, not clinical or
+     * commercial guidance. 3650 days is ten years, comfortably past frozen
+     * plasma; nothing in this application decides what a correct shelf life or
+     * a correct price is.
      *
      * @return array<string, mixed>
      */
@@ -27,7 +28,11 @@ class UpdateBloodComponentRequest extends FormRequest
     {
         return [
             'shelf_life_days' => ['present', 'nullable', 'integer', 'min:1', 'max:3650'],
-            'storage_temperature' => ['sometimes', 'nullable', 'string', 'max:50'],
+
+            // Zero is meaningful and distinct from null: it is what the
+            // subsidised pricing in BillingService already assumes, and it
+            // leaves the payment-before-release gate off.
+            'price' => ['sometimes', 'nullable', 'numeric', 'min:0', 'max:1000000'],
         ];
     }
 
@@ -39,6 +44,7 @@ class UpdateBloodComponentRequest extends FormRequest
         return [
             'shelf_life_days.present' => 'Send a shelf life, or null to leave it unconfigured.',
             'shelf_life_days.min' => 'A shelf life of less than one day cannot be recorded.',
+            'price.min' => 'A price cannot be negative.',
         ];
     }
 }

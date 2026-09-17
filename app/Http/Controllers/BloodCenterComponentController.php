@@ -5,23 +5,24 @@ namespace App\Http\Controllers;
 use App\Http\Requests\UpdateBloodComponentRequest;
 use App\Service\BloodComponentService;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 
-class AdminBloodComponentController extends Controller
+class BloodCenterComponentController extends Controller
 {
     public function __construct(
         private readonly BloodComponentService $bloodComponentService
     ) {}
 
     /**
-     * List the component catalogue and which entries are still unconfigured.
+     * List this facility's component settings.
      */
-    public function index(): JsonResponse
+    public function index(Request $request): JsonResponse
     {
-        return response()->json($this->bloodComponentService->index());
+        return response()->json($this->bloodComponentService->index($request->user()));
     }
 
     /**
-     * Set one component's shelf life and storage temperature.
+     * Set this facility's shelf life and price for one component.
      */
     public function update(UpdateBloodComponentRequest $request, int $component): JsonResponse
     {

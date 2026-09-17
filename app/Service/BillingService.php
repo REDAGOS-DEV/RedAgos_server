@@ -8,6 +8,7 @@ use App\Models\Billing;
 use App\Models\BloodRequest;
 use App\Models\Payment;
 use App\Models\User;
+use App\Repository\BloodComponentRepository;
 use Illuminate\Http\Exceptions\HttpResponseException;
 
 /**
@@ -16,15 +17,17 @@ use Illuminate\Http\Exceptions\HttpResponseException;
  * Blood requests are presently funded by government subsidy, so every
  * statement this raises comes to zero and is settled on creation. That is a
  * pricing fact, not an architectural one: the charge is computed from
- * blood_components.price, which is seeded at zero today. Populating that column
- * turns the release gate on by itself, with no change here or in
+ * the fulfilling facility's own price for the component, which is unset today.
+ * Setting it turns the release gate on by itself, with no change here or in
  * FulfillmentService — which is why the gate is written and tested now rather
- * than deferred until money appears.
+ * than deferred until money appears. It is held per facility so that one centre
+ * pricing its components cannot start blocking releases at the other three.
  */
 class BillingService
 {
     public function __construct(
-        private readonly AuditLogger $auditLogger
+        private readonly AuditLogger $auditLogger,
+        private readonly BloodComponentRepository $bloodComponentRepository
     ) {}
 
     /**
@@ -38,7 +41,17 @@ class BillingService
      */
     public function syncFor(BloodRequest $request, User $actor, int $claimedUnits): Billing
     {
-        $unitPrice = (float) ($request->component?->price ?? 0);
+        // Priced by the facility fulfilling the request, not by the shared
+        // blood_components row. target_facility_id, never facility_id: the
+        // former is who was asked and supplies the blood, the latter is the
+        // hospital that asked. An unset price is zero, which leaves the
+        // payment-before-release gate off — so one centre setting a price can
+        // no longer start blocking releases at another.
+        $unitPrice = $request->target_facility_id === null
+            ? 0.0
+            : (float) ($this->bloodComponentRepository
+                ->setting((int) $request->target_facility_id, (int) $request->component_id)
+                ?->price ?? 0);
         $total = round($unitPrice * $claimedUnits, 2);
 
         $billing = $request->billing()->first();

@@ -6,6 +6,7 @@ use App\Enums\BloodUnitStatus;
 use App\Models\BloodComponent;
 use App\Models\BloodType;
 use App\Models\Facility;
+use App\Models\FacilityBloodComponent;
 use App\Models\User;
 use Database\Seeders\BloodComponentSeeder;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
@@ -67,18 +68,53 @@ class ReferenceDataTest extends TestCase
 
     public function test_a_configured_shelf_life_is_reported(): void
     {
-        BloodComponent::factory()->withShelfLife(42)->create(['name' => 'Packed RBC']);
-
+        $component = BloodComponent::factory()->create(['name' => 'Packed RBC']);
         $staff = User::factory()->bloodCenterStaff()->create();
+
+        // Set against this facility, not the shared catalogue row: four
+        // facilities share that row, so a value written there would be read by
+        // all of them.
+        FacilityBloodComponent::create([
+            'facility_id' => $staff->facility_id,
+            'component_id' => $component->id,
+            'shelf_life_days' => 42,
+        ]);
 
         $response = $this->actingAs($staff)
             ->getJson('/api/blood-center/reference-data')
             ->assertOk();
 
-        $component = collect($response->json('components'))->firstWhere('name', 'Packed RBC');
+        $row = collect($response->json('components'))->firstWhere('name', 'Packed RBC');
 
-        $this->assertSame(42, $component['shelf_life_days']);
-        $this->assertTrue($component['shelf_life_configured']);
+        $this->assertSame(42, $row['shelf_life_days']);
+        $this->assertTrue($row['shelf_life_configured']);
+    }
+
+    /**
+     * The whole reason these settings are per facility: one centre's shelf life
+     * must not become another centre's, because it decides when their units
+     * expire.
+     */
+    public function test_another_facilitys_shelf_life_is_not_reported_here(): void
+    {
+        $component = BloodComponent::factory()->create(['name' => 'Packed RBC']);
+        $staff = User::factory()->bloodCenterStaff()->create();
+        $elsewhere = User::factory()->bloodCenterStaff()->create();
+
+        FacilityBloodComponent::create([
+            'facility_id' => $elsewhere->facility_id,
+            'component_id' => $component->id,
+            'shelf_life_days' => 42,
+        ]);
+
+        $response = $this->actingAs($staff)
+            ->getJson('/api/blood-center/reference-data')
+            ->assertOk();
+
+        $row = collect($response->json('components'))->firstWhere('name', 'Packed RBC');
+
+        $this->assertNull($row['shelf_life_days']);
+        $this->assertFalse($row['shelf_life_configured']);
     }
 
     public function test_the_statuses_are_projected_from_the_enum(): void

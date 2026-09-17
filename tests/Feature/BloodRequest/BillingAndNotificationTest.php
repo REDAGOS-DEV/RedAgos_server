@@ -12,6 +12,7 @@ use App\Models\BloodUnit;
 use App\Models\Donation;
 use App\Models\DonorProfile;
 use App\Models\Facility;
+use App\Models\FacilityBloodComponent;
 use App\Models\User;
 use App\Notifications\BloodRequestSubmitted;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
@@ -44,6 +45,21 @@ class BillingAndNotificationTest extends TestCase
     private BloodComponent $component;
 
     private DonorProfile $donorProfile;
+
+    /**
+     * Price the component at the centre that fulfils these requests.
+     *
+     * Not on the shared blood_components row: price is held per facility, so
+     * that one centre pricing its components cannot switch the
+     * payment-before-release gate on for every other centre on the network.
+     */
+    private function priceComponent(float $amount): void
+    {
+        FacilityBloodComponent::updateOrCreate(
+            ['facility_id' => $this->centre->id, 'component_id' => $this->component->id],
+            ['price' => $amount]
+        );
+    }
 
     protected function setUp(): void
     {
@@ -94,7 +110,7 @@ class BillingAndNotificationTest extends TestCase
 
     public function test_a_cash_payment_settles_a_priced_statement(): void
     {
-        $this->component->update(['price' => 500]);
+        $this->priceComponent(500);
         $request = $this->allocatedRequest(2);
 
         $this->actingAs($this->billingStaff)
@@ -109,7 +125,7 @@ class BillingAndNotificationTest extends TestCase
 
     public function test_a_part_payment_leaves_the_statement_partial(): void
     {
-        $this->component->update(['price' => 500]);
+        $this->priceComponent(500);
         $request = $this->allocatedRequest(2);
 
         $this->actingAs($this->billingStaff)
@@ -124,7 +140,7 @@ class BillingAndNotificationTest extends TestCase
 
     public function test_settling_a_statement_unblocks_release(): void
     {
-        $this->component->update(['price' => 500]);
+        $this->priceComponent(500);
         $request = $this->allocatedRequest(1);
 
         $this->actingAs($this->inventoryStaff)
@@ -146,7 +162,7 @@ class BillingAndNotificationTest extends TestCase
 
     public function test_a_gcash_payment_requires_its_reference(): void
     {
-        $this->component->update(['price' => 500]);
+        $this->priceComponent(500);
         $request = $this->allocatedRequest(1);
 
         $this->actingAs($this->billingStaff)
@@ -160,7 +176,7 @@ class BillingAndNotificationTest extends TestCase
 
     public function test_a_failed_payment_does_not_count_toward_settlement(): void
     {
-        $this->component->update(['price' => 500]);
+        $this->priceComponent(500);
         $request = $this->allocatedRequest(1);
 
         $this->actingAs($this->billingStaff)
@@ -177,7 +193,7 @@ class BillingAndNotificationTest extends TestCase
 
     public function test_the_statement_grows_when_more_units_are_held(): void
     {
-        $this->component->update(['price' => 500]);
+        $this->priceComponent(500);
         $request = $this->allocatedRequest(1, askedFor: 3);
 
         $this->actingAs($this->inventoryStaff)

@@ -14,6 +14,7 @@ use App\Models\BloodUnit;
 use App\Models\Donation;
 use App\Models\DonorProfile;
 use App\Models\Facility;
+use App\Models\FacilityBloodComponent;
 use App\Models\RequestAllocation;
 use App\Models\User;
 use App\Notifications\BloodRequestDecided;
@@ -270,7 +271,14 @@ class AllocateUnitsTest extends TestCase
 
     public function test_a_priced_component_produces_an_unpaid_statement(): void
     {
-        $this->component->update(['price' => 750.00]);
+        // Priced at the centre that fulfils the request, not on the shared
+        // blood_components row — price is held per facility so that one centre
+        // cannot switch the payment-before-release gate on for the others.
+        FacilityBloodComponent::create([
+            'facility_id' => $this->centre->id,
+            'component_id' => $this->component->id,
+            'price' => 750.00,
+        ]);
         $request = $this->incomingRequest(2);
         $this->stock(2);
 

@@ -6,13 +6,16 @@ use App\Enums\BloodUnitStatus;
 use App\Enums\DonationStatus;
 use App\Models\BloodUnit;
 use App\Models\Donation;
+use App\Models\FacilityBloodComponent;
 use App\Models\User;
+use App\Repository\BloodComponentRepository;
 use App\Repository\InventoryRepository;
 use App\Support\OperationalDay;
 use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Exceptions\HttpResponseException;
+use Illuminate\Support\Collection as SupportCollection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -46,6 +49,7 @@ class InventoryService
 
     public function __construct(
         private readonly InventoryRepository $inventoryRepository,
+        private readonly BloodComponentRepository $bloodComponentRepository,
         private readonly AuditLogger $auditLogger
     ) {}
 
@@ -87,17 +91,22 @@ class InventoryService
     {
         $facilityId = $this->requireFacilityId($user);
 
+        // Resolved once for the page rather than per donation: shelf life is a
+        // property of this facility's configuration, not of a donation.
+        $settings = $this->bloodComponentRepository->settingsFor($facilityId);
+
         return $this->inventoryRepository
             ->paginateIntakeQueue($facilityId, $perPage)
-            ->through(fn (Donation $donation): array => $this->formatIntake($donation));
+            ->through(fn (Donation $donation): array => $this->formatIntake($donation, $settings));
     }
 
     /**
      * One donation as the intake screen needs it.
      *
+     * @param  SupportCollection<int, FacilityBloodComponent>  $settings
      * @return array<string, mixed>
      */
-    private function formatIntake(Donation $donation): array
+    private function formatIntake(Donation $donation, SupportCollection $settings): array
     {
         $ledger = $this->declarationLedger($donation);
         $components = $donation->components->keyBy('component_id');
@@ -106,15 +115,17 @@ class InventoryService
 
         foreach ($ledger as $componentId => $row) {
             $component = $components->get($componentId)?->component;
+            $setting = $settings->get($componentId);
 
             $rows[] = [
                 ...$row,
                 'component' => $component?->name,
                 // The intake screen refuses a component with no shelf life
                 // rather than letting someone type an expiry out of the air,
-                // so it has to know before offering the row.
-                'shelf_life_days' => $component?->shelf_life_days,
-                'shelf_life_configured' => (bool) $component?->hasShelfLife(),
+                // so it has to know before offering the row. Read from this
+                // facility's settings, never the shared catalogue row.
+                'shelf_life_days' => $setting?->shelf_life_days,
+                'shelf_life_configured' => $setting?->hasShelfLife() ?? false,
             ];
         }
 

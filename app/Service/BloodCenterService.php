@@ -8,6 +8,7 @@ use App\Models\BloodType;
 use App\Models\Facility;
 use App\Models\User;
 use App\Repository\BloodCenterRepository;
+use App\Repository\BloodComponentRepository;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\ValidationException;
@@ -22,7 +23,8 @@ use Illuminate\Validation\ValidationException;
 class BloodCenterService
 {
     public function __construct(
-        private readonly BloodCenterRepository $bloodCenterRepository
+        private readonly BloodCenterRepository $bloodCenterRepository,
+        private readonly BloodComponentRepository $bloodComponentRepository
     ) {}
 
     /**
@@ -118,6 +120,7 @@ class BloodCenterService
         // Guaranteed non-null: this only runs behind facility.operational, which
         // refuses a caller without an approved facility.
         $facility = $this->requireFacility($user);
+        $settings = $this->bloodComponentRepository->settingsFor($facility->id);
 
         return [
             'blood_types' => $this->bloodCenterRepository->bloodTypes()
@@ -127,16 +130,24 @@ class BloodCenterService
                     'label' => $type->label,
                 ])->all(),
 
+            // Shelf life and price come from this facility's own settings, not
+            // from the shared blood_components row: four facilities share that
+            // catalogue, so a value read off it would be another centre's.
             'components' => $this->bloodCenterRepository->components()
-                ->map(fn (BloodComponent $component): array => [
-                    'id' => $component->id,
-                    'name' => $component->name,
-                    'shelf_life_days' => $component->shelf_life_days,
-                    'storage_temperature' => $component->storage_temperature,
-                    // Surfaced so the UI can disable stock entry outright rather
-                    // than let someone record a unit with an invented expiry.
-                    'shelf_life_configured' => $component->hasShelfLife(),
-                ])->all(),
+                ->map(function (BloodComponent $component) use ($settings): array {
+                    $setting = $settings->get($component->id);
+
+                    return [
+                        'id' => $component->id,
+                        'name' => $component->name,
+                        'shelf_life_days' => $setting?->shelf_life_days,
+                        'price' => $setting?->price === null ? null : (float) $setting->price,
+                        'storage_temperature' => $component->storage_temperature,
+                        // Surfaced so the UI can disable stock entry outright rather
+                        // than let someone record a unit with an invented expiry.
+                        'shelf_life_configured' => $setting?->hasShelfLife() ?? false,
+                    ];
+                })->all(),
 
             // Projected from the PHP enum, never from a runtime schema lookup,
             // so the payload is identical on MySQL, Postgres and Supabase.
