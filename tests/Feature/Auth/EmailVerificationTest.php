@@ -17,6 +17,10 @@ class EmailVerificationTest extends TestCase
 
     /**
      * Build the signed verification query string the SPA forwards to the API.
+     *
+     * `absolute: false` mirrors VerifyEmailNotification: the route validates
+     * with `signed:relative`, because the request never arrives on the host the
+     * link was signed for.
      */
     private function signedQuery(User $user, ?string $hash = null): string
     {
@@ -26,7 +30,8 @@ class EmailVerificationTest extends TestCase
             [
                 'id' => $user->getKey(),
                 'hash' => $hash ?? sha1($user->getEmailForVerification()),
-            ]
+            ],
+            absolute: false
         );
 
         return substr($url, strpos($url, '?'));
@@ -225,6 +230,39 @@ class EmailVerificationTest extends TestCase
         $query = substr($actionUrl, strpos($actionUrl, '?'));
 
         $this->postJson('/api/email/verify'.$query)->assertOk();
+
+        $this->assertTrue($user->fresh()->hasVerifiedEmail());
+    }
+
+    /**
+     * The link must survive arriving on a different host than it was signed for.
+     *
+     * This is the case every other test here missed. They post to the same host
+     * APP_URL names, so an absolute signature matched and the suite stayed
+     * green — while no real request ever does that. The SPA posts to its own
+     * origin and the dev proxy forwards with the Host rewritten to
+     * 127.0.0.1:8000, and through a tunnel TLS terminates upstream so the
+     * request arrives as http. Both changed `$request->url()`, both made the
+     * absolute signature fail, and every donor was told their brand-new link
+     * had expired.
+     */
+    public function test_the_emailed_link_verifies_when_the_api_is_reached_on_another_host(): void
+    {
+        config([
+            'app.url' => 'https://api.redagos.test',
+            'app.frontend_url' => 'https://app.redagos.test',
+        ]);
+
+        $user = User::factory()->unverified()->create();
+
+        $actionUrl = (new VerifyEmailNotification)->toMail($user)->actionUrl;
+        $query = substr($actionUrl, strpos($actionUrl, '?'));
+
+        // What the proxy hands Laravel: the right path, a different scheme and
+        // host entirely. Passed as an absolute URL so the test request really
+        // carries that host — `$request->url()` is what the signature is
+        // checked against, and it is the whole point of this test.
+        $this->postJson('http://127.0.0.1:8000/api/email/verify'.$query)->assertOk();
 
         $this->assertTrue($user->fresh()->hasVerifiedEmail());
     }

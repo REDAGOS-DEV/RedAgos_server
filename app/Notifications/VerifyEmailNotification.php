@@ -43,6 +43,15 @@ class VerifyEmailNotification extends Notification
      *
      * The query string is forwarded verbatim because Laravel validates the
      * signature against the raw, order-sensitive query string of the request.
+     *
+     * Signed relative to the path, not absolutely. An absolute signature covers
+     * the scheme and host too, and the API is never reached on the host it
+     * signed for: in development the SPA posts to its own origin and Nitro
+     * proxies to 127.0.0.1:8000 with the Host rewritten, and through a tunnel
+     * TLS terminates upstream so the request arrives as http. Either way the
+     * host in `$request->url()` differs from APP_URL and every link is rejected
+     * as an invalid signature. The path and query are what actually carry the
+     * claim, and `signed:relative` on the route validates exactly those.
      */
     protected function verificationUrl(MustVerifyEmail $notifiable): string
     {
@@ -53,7 +62,7 @@ class VerifyEmailNotification extends Notification
                 'id' => $notifiable->getKey(),
                 'hash' => sha1($notifiable->getEmailForVerification()),
             ],
-            absolute: true
+            absolute: false
         );
 
         return rtrim((string) config('app.frontend_url'), '/')

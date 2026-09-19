@@ -45,8 +45,13 @@ Route::post('/reset-password', [PasswordResetController::class, 'reset'])
     ->middleware('throttle:6,1')
     ->name('password.reset');
 
+// `signed:relative`, not `signed`: an absolute signature also covers the scheme
+// and host, and this endpoint is never reached on the host it was signed for —
+// the SPA posts to its own origin and the dev proxy rewrites the Host, and a
+// tunnel terminates TLS upstream so the request arrives as http. The path and
+// query carry the claim; VerifyEmailNotification signs exactly those.
 Route::post('/email/verify', [EmailVerificationController::class, 'verify'])
-    ->middleware(['signed', 'throttle:6,1'])
+    ->middleware(['signed:relative', 'throttle:6,1'])
     ->name('verification.verify');
 
 // Public by necessity: login is refused until the address is verified, so
