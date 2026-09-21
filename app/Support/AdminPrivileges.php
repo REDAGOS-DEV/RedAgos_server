@@ -88,11 +88,6 @@ final class AdminPrivileges
             'admin.donor_identity.verify',
             'admin.donor.view',
         ],
-        'network_admin' => [
-            'admin.facility.approve',
-            'admin.facility.manage',
-            'admin.reports.export',
-        ],
         'auditor' => [
             'admin.donor.view',
             'admin.reports.export',
