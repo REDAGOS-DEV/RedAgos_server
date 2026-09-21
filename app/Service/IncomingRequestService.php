@@ -127,6 +127,11 @@ class IncomingRequestService
                     'id' => $item->component_id,
                     'name' => $item->component?->name,
                 ],
+                // What the line asked for, beside what can answer it. Without
+                // this the reviewer sees a stock figure with nothing to judge
+                // it against, which on a multi-component request is worse than
+                // no figure at all.
+                'requested' => $item->quantity,
                 'available' => $available,
                 'outstanding' => $outstanding,
                 'can_fully_cover' => $available >= $outstanding,

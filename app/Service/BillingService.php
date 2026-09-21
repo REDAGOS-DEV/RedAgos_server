@@ -9,6 +9,8 @@ use App\Models\BloodRequest;
 use App\Models\Payment;
 use App\Models\User;
 use App\Repository\BloodComponentRepository;
+use Illuminate\Contracts\Pagination\LengthAwarePaginator;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Exceptions\HttpResponseException;
 
 /**
@@ -70,10 +72,12 @@ class BillingService
             return $billing;
         }
 
-        // A voided statement is left alone. Voiding is a deliberate act saying
-        // nothing is owed on this request, and silently reviving it because
-        // another unit was allocated would undo somebody's decision.
-        if ($billing->status === BillingStatus::Void) {
+        // A statement settled by decision is left alone. Voiding says it
+        // should never have existed; subsidy says the government met the cost.
+        // Either way somebody decided nothing is owed, and silently re-pricing
+        // because another unit was allocated would undo that — and would
+        // re-block release on a request already cleared to go.
+        if ($billing->status->isSettledByDecision()) {
             return $billing;
         }
 
@@ -149,6 +153,128 @@ class BillingService
         }
 
         return round($total, 2);
+    }
+
+    /**
+     * List the statements raised against one facility's incoming requests.
+     *
+     * Scoped through the request's target facility, exactly as show() is: a
+     * statement belongs to the centre that raised it, and billing staff at one
+     * centre have no business reading another's.
+     *
+     * @param  array<string, mixed>  $filters
+     * @return LengthAwarePaginator<int, array<string, mixed>>
+     */
+    public function list(int $facilityId, array $filters, int $perPage): LengthAwarePaginator
+    {
+        return Billing::query()
+            ->whereHas('request', fn (Builder $query) => $query->addressedTo($facilityId))
+            ->with(['request.requestingFacility', 'request.items.component', 'request.bloodType'])
+            ->when(
+                isset($filters['status']),
+                fn (Builder $query): Builder => $query->where('status', $filters['status'])
+            )
+            ->when(
+                isset($filters['outstanding']) && $filters['outstanding'],
+                fn (Builder $query): Builder => $query->outstanding()
+            )
+            ->when(
+                isset($filters['search']),
+                fn (Builder $query): Builder => $query->whereHas(
+                    'request',
+                    fn (Builder $request): Builder => $request->where(
+                        'reference_number', 'like', '%'.$filters['search'].'%'
+                    )
+                )
+            )
+            ->latest('billing_date')
+            ->paginate($perPage)
+            ->through(fn (Billing $billing): array => $this->formatWithRequest($billing));
+    }
+
+    /**
+     * Project a statement together with enough of its request to be actionable.
+     *
+     * The billing queue is a list of statements, but a billing officer settles
+     * them by reading the request: whose it is, what was asked for, and how
+     * much of it is held. Those come from the request, not the statement.
+     *
+     * @return array<string, mixed>
+     */
+    public function formatWithRequest(Billing $billing): array
+    {
+        $request = $billing->request;
+
+        return $this->format($billing) + [
+            'request' => $request ? [
+                'id' => $request->id,
+                'reference_number' => $request->reference_number,
+                'status' => $request->status->value,
+                'status_label' => $request->status->label(),
+                'requesting_facility' => $request->requestingFacility?->name,
+                'blood_type' => $request->bloodType?->code,
+                'quantity' => $request->quantity,
+                'urgency_level' => $request->urgency_level->value,
+                'is_emergency' => $request->urgency_level->isPrioritised(),
+                'components' => $request->items
+                    ->map(fn ($item): string => trim(($item->component?->name ?? 'Component').' x'.$item->quantity))
+                    ->all(),
+                'request_date' => $request->request_date?->toIso8601String(),
+            ] : null,
+        ];
+    }
+
+    /**
+     * Meet a statement from the government subsidy rather than charging for it.
+     *
+     * Zeroes the balance and clears the request for release without recording a
+     * payment, because none was taken. Any money already collected is left
+     * alone: a part-paid statement that is then subsidised has a refund to
+     * settle outside this system, and quietly deleting the payment rows would
+     * destroy the only record that it was ever received.
+     *
+     * @return array<string, mixed>
+     */
+    public function applySubsidy(User $actor, Billing $billing, ?string $reason = null): array
+    {
+        if ($billing->status === BillingStatus::Subsidised) {
+            throw $this->refuse(
+                409,
+                'billing_already_subsidised',
+                'This statement is already covered by the government subsidy.'
+            );
+        }
+
+        if ($billing->status === BillingStatus::Void) {
+            throw $this->refuse(
+                409,
+                'billing_void',
+                'This statement has been voided and cannot be subsidised.'
+            );
+        }
+
+        $charged = (float) $billing->total_amount;
+        $collected = $this->collectedFor($billing);
+
+        $billing->total_amount = 0;
+        $billing->status = BillingStatus::Subsidised;
+        $billing->save();
+
+        $this->auditLogger->record($actor, 'billing.subsidised', $billing, array_filter([
+            'request_id' => $billing->request_id,
+            // The figure that was waived, kept because the statement no longer
+            // carries it and a subsidy nobody can size cannot be reported on.
+            'amount_waived' => $charged,
+            'already_collected' => $collected,
+            'reason' => $reason,
+        ], fn ($value): bool => $value !== null));
+
+        return [
+            'message' => $collected > 0.0
+                ? 'Statement covered by the government subsidy. Payments already recorded are unchanged.'
+                : 'Statement covered by the government subsidy.',
+            'billing' => $this->format($billing->fresh()),
+        ];
     }
 
     /**
@@ -231,6 +357,10 @@ class BillingService
             'status' => $billing->status->value,
             'status_label' => $billing->status->label(),
             'is_zero_rated' => $billing->isZeroRated(),
+            'is_subsidised' => $billing->status === BillingStatus::Subsidised,
+            // Distinguishes "nothing was owed" from "the money came in", which
+            // a status alone cannot once a subsidy zeroes the total.
+            'represents_collected_money' => $billing->status->representsCollectedMoney(),
             'clears_release' => $billing->clearsRelease(),
             'billing_date' => $billing->billing_date?->toIso8601String(),
         ];

@@ -2,6 +2,7 @@
 
 namespace App\Repository;
 
+use App\Enums\AllocationStatus;
 use App\Models\BloodRequest;
 use App\Models\Facility;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
@@ -234,6 +235,27 @@ class BloodRequestRepository
             ->when(
                 isset($filters['search']),
                 fn (Builder $query): Builder => $query->where('reference_number', 'like', '%'.$filters['search'].'%')
+            )
+            // The dispatch queue: requests with stock held but not yet sent.
+            // Expressed as a filter rather than left to the client, which could
+            // only narrow the page it happened to be shown.
+            ->when(
+                isset($filters['awaiting_release']) && $filters['awaiting_release'],
+                fn (Builder $query): Builder => $query->whereHas(
+                    'allocations',
+                    fn (Builder $allocations): Builder => $allocations->where('status', AllocationStatus::Allocated->value)
+                )
+            )
+            // Requests with units dispatched that the hospital has not yet
+            // confirmed arrived.
+            ->when(
+                isset($filters['awaiting_receipt']) && $filters['awaiting_receipt'],
+                fn (Builder $query): Builder => $query->whereHas(
+                    'allocations',
+                    fn (Builder $allocations): Builder => $allocations
+                        ->where('status', AllocationStatus::Released->value)
+                        ->whereNull('received_at')
+                )
             );
     }
 }

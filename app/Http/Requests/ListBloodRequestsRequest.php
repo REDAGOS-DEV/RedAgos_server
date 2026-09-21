@@ -34,6 +34,8 @@ class ListBloodRequestsRequest extends FormRequest
             'blood_type_id' => ['sometimes', 'integer', 'exists:blood_types,id'],
             'component_id' => ['sometimes', 'integer', 'exists:blood_components,id'],
             'search' => ['sometimes', 'string', 'max:40'],
+            'awaiting_release' => ['sometimes', 'boolean'],
+            'awaiting_receipt' => ['sometimes', 'boolean'],
             'per_page' => ['sometimes', 'integer', 'min:1', 'max:100'],
         ];
     }

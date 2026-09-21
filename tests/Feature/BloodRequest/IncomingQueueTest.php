@@ -137,6 +137,10 @@ class IncomingQueueTest extends TestCase
             ->getJson("/api/blood-center/blood-requests/{$request->id}")
             ->assertOk()
             ->assertJsonPath('inventory.lines.0.available', 5)
+            // The line says what it asked for beside what can answer it; a
+            // stock figure with nothing to judge it against is not a review.
+            ->assertJsonPath('inventory.lines.0.requested', 3)
+            ->assertJsonPath('inventory.lines.0.can_fully_cover', true)
             ->assertJsonPath('inventory.outstanding', 3)
             ->assertJsonPath('inventory.can_fully_cover', true)
             ->assertJsonPath('inventory.can_cover_now', 3)
@@ -152,6 +156,8 @@ class IncomingQueueTest extends TestCase
             ->getJson("/api/blood-center/blood-requests/{$request->id}")
             ->assertOk()
             ->assertJsonPath('inventory.lines.0.available', 2)
+            ->assertJsonPath('inventory.lines.0.requested', 6)
+            ->assertJsonPath('inventory.lines.0.can_fully_cover', false)
             ->assertJsonPath('inventory.can_fully_cover', false)
             ->assertJsonPath('inventory.can_cover_now', 2);
     }

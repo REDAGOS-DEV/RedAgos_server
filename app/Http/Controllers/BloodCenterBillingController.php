@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\ApplySubsidyRequest;
+use App\Http\Requests\ListBillingsRequest;
 use App\Http\Requests\RecordPaymentRequest;
 use App\Models\Billing;
 use App\Models\BloodRequest;
@@ -24,6 +26,22 @@ class BloodCenterBillingController extends Controller
     ) {}
 
     /**
+     * List the statements raised against this facility's incoming requests.
+     */
+    public function index(ListBillingsRequest $request): JsonResponse
+    {
+        $filters = $request->validated();
+
+        return response()->json(
+            $this->billingService->list(
+                (int) $request->user()->facility_id,
+                $filters,
+                (int) ($filters['per_page'] ?? 15)
+            )
+        );
+    }
+
+    /**
      * Show the statement for one of this facility's incoming requests.
      */
     public function show(Request $request, int $bloodRequest): JsonResponse
@@ -43,6 +61,22 @@ class BloodCenterBillingController extends Controller
         return response()->json(
             $this->billingService->recordPayment($request->user(), $billing, $request->validated()),
             201
+        );
+    }
+
+    /**
+     * Meet a statement from the government subsidy instead of charging for it.
+     */
+    public function storeSubsidy(ApplySubsidyRequest $request, int $bloodRequest): JsonResponse
+    {
+        $billing = $this->billingForFacility($bloodRequest, $request->user()->facility_id);
+
+        return response()->json(
+            $this->billingService->applySubsidy(
+                $request->user(),
+                $billing,
+                $request->validated()['reason'] ?? null
+            )
         );
     }
 

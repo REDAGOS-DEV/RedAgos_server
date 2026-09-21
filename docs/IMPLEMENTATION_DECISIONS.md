@@ -340,3 +340,60 @@ of donors provided, screened/unscreened counts, remarks, and the received-by
 and extracted-by signatures with their timestamps — is printed blank and filled
 in on paper. Capturing it would mean a handover step at the blood centre that
 no module currently charters.
+
+## Government subsidy on a blood request statement
+
+**DECISION (subsidy is a decision, not a price of zero):** `BillingStatus` gains
+a `Subsidised` case. A statement is still raised at the fulfilling facility's
+own component price when stock is reserved; billing staff then either record a
+payment or apply the subsidy, which writes the balance to zero and clears the
+request for release. It clears release exactly as `Paid` does.
+
+**WHY NOT reuse `Paid`:** "nothing was owed" and "the money was collected" are
+different facts, and `Billing`'s own docblock already warned that reports
+"should not claim the network collected fees it never charged". With a zero
+total and a `Paid` status those two cases are indistinguishable. A statement
+raised at zero because the component carries no price stays `Paid` — nothing
+was waived, there was simply nothing to charge.
+
+**WHY NOT `Void`:** voiding says the statement should never have existed. A
+subsidised statement was correctly raised and correctly settled.
+
+**DECISION (who decides, and when):** Billing staff, on the statement, behind
+`billing.record_payment` — waiving a charge and taking money for one both
+decide that nothing further is owed, and both release blood. Inventory staff
+approving a request do not make a billing decision.
+
+**CONSEQUENCE:** `BillingService::syncFor()` now skips any statement settled by
+decision, not just voided ones. Allocating further units against a subsidised
+request must not revive a balance somebody waived, nor re-block a release
+already cleared.
+
+**DECISION (money already collected survives a later subsidy):** Payments are
+left in place when a part-paid statement is subsidised. Deleting them would
+destroy the only record the money was received; the refund is settled outside
+this system. The waived amount and anything already collected are both written
+to the audit log, because the statement itself no longer carries them.
+
+**UNRESOLVED:** The hospital has no view of its own statement. There is no
+`/hospital/.../billing` route, and `useBloodRequestBilling.js` calls endpoints
+that do not exist. A requester currently learns what was charged, or that the
+subsidy covered it, only by being told.
+
+## Fulfillment: the three states a unit actually has
+
+**DECISION:** The blood-centre fulfillment screen tracks
+`allocated -> released -> received` and nothing else. The eight-stage pipeline
+the page previously drew — Preparing, Quality Check, Ready for Dispatch,
+Dispatched, Delivered, Completed — exists in no table, was driven by a mocked
+`$fetch`, and with mocks off called `/blood-center/fulfillment*` routes that
+were never served.
+
+**CONSEQUENCE:** Quality control before dispatch is not represented. If it needs
+to be, it is a Laboratory concern with its own states, not a relabelling of
+`allocated`.
+
+**DECISION (receipt stays with the requester):** Confirming arrival is done from
+the hospital's request page. The dispatching centre cannot assert on the
+hospital's behalf that blood arrived, which is why the endpoint has always sat
+on the requester side of the API.

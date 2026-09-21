@@ -253,11 +253,24 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         // whether anything is owed without being able to alter the answer;
         // recording money is the Billing department's alone.
         Route::prefix('billings')->group(function (): void {
+            // Declared before /{bloodRequest}, which is numeric-constrained and
+            // so would not swallow this, but the specific route stays first to
+            // match how /summary and /track are placed elsewhere.
+            Route::get('/', [BloodCenterBillingController::class, 'index'])
+                ->middleware('can:billing.view');
+
             Route::get('/{bloodRequest}', [BloodCenterBillingController::class, 'show'])
                 ->middleware('can:billing.view')
                 ->whereNumber('bloodRequest');
 
             Route::post('/{bloodRequest}/payments', [BloodCenterBillingController::class, 'storePayment'])
+                ->middleware('can:billing.record_payment')
+                ->whereNumber('bloodRequest');
+
+            // Waiving a charge settles a statement, so it sits behind the same
+            // ability as taking money for one: both decide that nothing more
+            // is owed, and both release blood.
+            Route::post('/{bloodRequest}/subsidy', [BloodCenterBillingController::class, 'storeSubsidy'])
                 ->middleware('can:billing.record_payment')
                 ->whereNumber('bloodRequest');
         });
