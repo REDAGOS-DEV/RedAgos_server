@@ -15,11 +15,20 @@ class BloodComponentSeederTest extends TestCase
     {
         $this->seed(BloodComponentSeeder::class);
 
-        foreach (['Whole Blood', 'Packed RBC', 'Fresh Frozen Plasma', 'Platelets', 'Cryoprecipitate'] as $name) {
+        // The six the DOH Blood Request Form prints indication codes for.
+        // Washed RBC joined the list with the request form: the form carries a
+        // WP block for it, and a component the form names but the table does
+        // not hold cannot be requested.
+        $components = [
+            'Whole Blood', 'Packed RBC', 'Fresh Frozen Plasma',
+            'Platelets', 'Cryoprecipitate', 'Washed RBC',
+        ];
+
+        foreach ($components as $name) {
             $this->assertDatabaseHas('blood_components', ['name' => $name]);
         }
 
-        $this->assertSame(5, BloodComponent::count());
+        $this->assertSame(6, BloodComponent::count());
     }
 
     public function test_re_running_it_does_not_duplicate(): void
@@ -27,7 +36,7 @@ class BloodComponentSeederTest extends TestCase
         $this->seed(BloodComponentSeeder::class);
         $this->seed(BloodComponentSeeder::class);
 
-        $this->assertSame(5, BloodComponent::count());
+        $this->assertSame(6, BloodComponent::count());
     }
 
     public function test_it_restores_a_soft_deleted_component_instead_of_colliding(): void
@@ -35,13 +44,13 @@ class BloodComponentSeederTest extends TestCase
         $this->seed(BloodComponentSeeder::class);
 
         BloodComponent::where('name', 'Platelets')->firstOrFail()->delete();
-        $this->assertSame(4, BloodComponent::count());
+        $this->assertSame(5, BloodComponent::count());
 
         // updateOrCreate() would not see the trashed row, would fall through to
         // an insert, and would hit the unique name index.
         $this->seed(BloodComponentSeeder::class);
 
-        $this->assertSame(5, BloodComponent::count());
+        $this->assertSame(6, BloodComponent::count());
         $this->assertDatabaseHas('blood_components', ['name' => 'Platelets', 'deleted_at' => null]);
     }
 

@@ -6,6 +6,7 @@ use App\Http\Controllers\BloodCenterBillingController;
 use App\Http\Controllers\BloodCenterCollectionController;
 use App\Http\Controllers\BloodCenterComponentController;
 use App\Http\Controllers\BloodCenterDonorController;
+use App\Http\Controllers\BloodCenterDriveController;
 use App\Http\Controllers\BloodCenterInventoryController;
 use App\Http\Controllers\BloodCenterLaboratoryController;
 use App\Http\Controllers\BloodCenterProfileController;
@@ -27,6 +28,7 @@ use App\Http\Controllers\FacilityManagementController;
 use App\Http\Controllers\FacilityNotificationController;
 use App\Http\Controllers\HospitalAvailabilityController;
 use App\Http\Controllers\HospitalBloodRequestController;
+use App\Http\Controllers\HospitalReferenceController;
 use App\Http\Controllers\PasswordResetController;
 use App\Http\Controllers\UserController;
 use App\Http\Resources\UserResource;
@@ -217,6 +219,13 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             Route::get('/summary', [BloodCenterRequestController::class, 'summary'])
                 ->middleware('can:requests.view');
 
+            // Declared before /{bloodRequest}, which is numeric-constrained and
+            // so would not swallow this, but keeping the specific route first
+            // matches how /summary and /track are placed elsewhere.
+            Route::get('/{bloodRequest}/form', [BloodCenterRequestController::class, 'form'])
+                ->middleware('can:requests.view')
+                ->whereNumber('bloodRequest');
+
             Route::get('/{bloodRequest}', [BloodCenterRequestController::class, 'show'])
                 ->middleware('can:requests.view')
                 ->whereNumber('bloodRequest');
@@ -278,6 +287,16 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
 
             Route::get('/{uuid}/history', [BloodCenterDonorController::class, 'history'])
                 ->middleware('can:donors.view')->whereUuid('uuid');
+        });
+
+        // Mobile drives. The donor-facing GET /blood-drives is a read-only view
+        // over the same rows; this is the only place they are written.
+        Route::prefix('drives')->group(function (): void {
+            Route::get('/', [BloodCenterDriveController::class, 'index'])
+                ->middleware('can:drives.view');
+
+            Route::post('/', [BloodCenterDriveController::class, 'store'])
+                ->middleware('can:drives.manage');
         });
 
         Route::get('/collection/queue', [BloodCenterCollectionController::class, 'queue'])
@@ -389,6 +408,8 @@ Route::middleware(['auth:sanctum', 'role:admin', 'throttle:60,1'])
 // exactly the gate a requester needs.
 Route::middleware(['auth:sanctum', 'role:blood_bank', 'facility.operational'])
     ->prefix('hospital')->group(function (): void {
+        Route::get('/reference-data', [HospitalReferenceController::class, 'index']);
+
         Route::get('/availability', [HospitalAvailabilityController::class, 'index']);
         Route::get('/facilities', [HospitalAvailabilityController::class, 'facilities']);
 
@@ -399,6 +420,9 @@ Route::middleware(['auth:sanctum', 'role:blood_bank', 'facility.operational'])
         // swallow "track" and then fail to match it as an integer.
         Route::get('/blood-requests/track/{reference}', [HospitalBloodRequestController::class, 'track'])
             ->where('reference', '[A-Za-z0-9\-]+');
+
+        Route::get('/blood-requests/{bloodRequest}/form', [HospitalBloodRequestController::class, 'form'])
+            ->whereNumber('bloodRequest');
 
         Route::get('/blood-requests/{bloodRequest}', [HospitalBloodRequestController::class, 'show'])
             ->whereNumber('bloodRequest');

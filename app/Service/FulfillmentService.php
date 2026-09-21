@@ -170,6 +170,11 @@ class FulfillmentService
     {
         $received = $request->allocations()->claiming()->whereNotNull('received_at')->count();
 
+        // quantity sums the request's lines, so they have to be loaded before
+        // it is read. loadMissing rather than load: the caller usually has them
+        // already and reloading would throw away the lock-time state.
+        $request->loadMissing('items');
+
         if ($received >= $request->quantity) {
             $request->status = BloodRequestStatus::Fulfilled;
             $request->fulfilled_at = now();

@@ -14,6 +14,7 @@ use App\Models\DonorProfile;
 use App\Models\Facility;
 use App\Models\User;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Support\Arr;
 use Tests\TestCase;
 
 /**
@@ -135,7 +136,7 @@ class IncomingQueueTest extends TestCase
         $this->actingAs($this->staff)
             ->getJson("/api/blood-center/blood-requests/{$request->id}")
             ->assertOk()
-            ->assertJsonPath('inventory.available', 5)
+            ->assertJsonPath('inventory.lines.0.available', 5)
             ->assertJsonPath('inventory.outstanding', 3)
             ->assertJsonPath('inventory.can_fully_cover', true)
             ->assertJsonPath('inventory.can_cover_now', 3)
@@ -150,7 +151,7 @@ class IncomingQueueTest extends TestCase
         $this->actingAs($this->staff)
             ->getJson("/api/blood-center/blood-requests/{$request->id}")
             ->assertOk()
-            ->assertJsonPath('inventory.available', 2)
+            ->assertJsonPath('inventory.lines.0.available', 2)
             ->assertJsonPath('inventory.can_fully_cover', false)
             ->assertJsonPath('inventory.can_cover_now', 2);
     }
@@ -206,7 +207,10 @@ class IncomingQueueTest extends TestCase
             ->raisedBy($this->hospital)
             ->addressedTo($this->centre)
             ->forStock($this->bloodType, $this->component, $overrides['quantity'] ?? 2)
-            ->create($overrides);
+            // quantity is not a column any more, it is the line's. forStock
+            // above has already applied it, so passing it on to create() would
+            // try to write a column that no longer exists.
+            ->create(Arr::except($overrides, 'quantity'));
     }
 
     private function stock(int $count): void

@@ -10,6 +10,7 @@ use App\Service\BloodRequestService;
 use App\Service\FulfillmentService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Response;
 
 /**
  * The requester side: a hospital blood bank raising and tracking its requests.
@@ -33,6 +34,14 @@ class HospitalBloodRequestController extends Controller
                 $request->validated()['allocation_ids'] ?? null
             )
         );
+    }
+
+    /**
+     * Download this request as the DOH Blood Request Form.
+     */
+    public function form(Request $request, int $bloodRequest): Response
+    {
+        return $this->bloodRequestService->form($request->user(), $bloodRequest);
     }
 
     /**

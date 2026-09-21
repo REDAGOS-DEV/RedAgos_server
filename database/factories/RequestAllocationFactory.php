@@ -32,11 +32,21 @@ class RequestAllocationFactory extends Factory
 
     /**
      * Attach the allocation to a specific request and unit.
+     *
+     * The line is resolved from the request rather than asked for. A hold that
+     * names no line is invisible to the per-component coverage counts, so a
+     * test building one by hand would see allocation refuse to believe its own
+     * fixtures. Where the unit's component matches a line, that line is used;
+     * otherwise the request's first.
      */
     public function holding(BloodRequest $request, BloodUnit $unit): static
     {
+        $lines = $request->items()->orderBy('id')->get();
+        $line = $lines->firstWhere('component_id', $unit->component_id) ?? $lines->first();
+
         return $this->state(fn (array $attributes): array => [
             'request_id' => $request->id,
+            'request_item_id' => $line?->id,
             'unit_id' => $unit->id,
         ]);
     }

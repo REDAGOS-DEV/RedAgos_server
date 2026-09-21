@@ -263,3 +263,80 @@ could produce a donation it would accept.
 collection-side nor a laboratory-side rejection records why. The notes field on
 `donation_test_results` covers the laboratory case in practice but is not a
 structured reason.
+
+## Blood request form (DOH Blood Request Form, Adult)
+
+**SOURCE:** A copy of the Philippine DOH *Blood Request Form (For ADULT)* was
+supplied as the document a blood request must produce. The paper does not
+contain this form, so everything below is an implementation decision, not a
+Capstone 1 requirement. `CAPSTONE_CONTEXT.md` does record "patient information
+in blood requests" as a REQUIREMENT, and the patient columns close that gap.
+
+**DECISION (request purpose):** `blood_requests.request_purpose` is either
+`patient_transfusion` or `replenishment`, and is a separate axis from
+`urgency_level`. The two must never be merged: a restock can be STAT and a
+named-patient transfusion can be routine, and one column cannot express both.
+A transfusion carries patient identity; a replenishment restocks the
+requester's own shelves and carries none, so the form's patient block prints
+blank and the purpose is stated on the sheet instead.
+
+**DECISION (patient fields captured):** Surname, first name, middle name, age
+and sex only, plus the existing `blood_type_id`, which serves as the patient's
+blood type on a transfusion and the requested unit type on a restock. The
+form's remaining patient-block fields — attending physician, ward, room number,
+hospital number, clinical diagnosis and previous-transfusion history — are
+**not** captured and print as ruled blanks for handwriting. Capturing them was
+considered and deferred; adding them later is additive.
+
+**DECISION (one request, several components):** `blood_requests.component_id`
+and `blood_requests.quantity` moved to `blood_request_items`, one row per
+component, each with its own quantity and indication code. The form is a
+checklist that permits several components on one sheet, and the previous grain
+forced three components to become three requests with three reference numbers.
+The header's `quantity` is now an accessor summing the lines rather than a
+stored column, because a stored copy would be a second source of truth — the
+same rule this file already applies to inventory summaries.
+
+**CONSEQUENCE:** `request_allocations.request_item_id` names which line a held
+unit answers. Without it there is no way to say how much of the platelet line
+is covered, and `BillingService` cannot price a hold whose component it cannot
+name. Allocation now computes outstanding per line and walks the lines in form
+order; billing totals per line at the fulfilling facility's own component
+prices.
+
+**DECISION (indication codes):** The form's 27 codes (WB, R, WP, P, C, F) live
+in the `App\Enums\IndicationCode` enum, not a seeded table. They are fixed
+national reference data, not a per-facility setting. Each code is tied to its
+component by **name**, because `blood_components.name` is unique and is what
+`BloodComponentSeeder` seeds by. `GET /api/hospital/reference-data` projects
+them so the client cannot drift into offering a code the API would reject.
+
+**DECISION (indication is conditionally required):** An indication is required
+only for the six components the form prints codes for. A component outside that
+set has no box to tick, and demanding one would make it unrequestable. The six
+"Others" codes additionally require free text, because the form says they
+trigger a review of the indication, which cannot happen against a blank.
+
+**DECISION (Washed RBC):** Added to `BloodComponentSeeder`. The form carries a
+WP block for it and a component the form names but the table does not hold
+cannot be requested.
+
+**DECISION (ROUTINE / STAT is a label):** `urgency_level` keeps its
+`routine | emergency` values. The form and the request UI display STAT for
+`emergency`. Renaming the enum would have touched the triage scope, the
+emergency banner on both portals, the submission notification and their tests,
+to no behavioural gain.
+
+**DECISION (rendered server-side):** `barryvdh/laravel-dompdf` renders
+`resources/views/pdf/blood-request-form.blade.php`, streamed as an attachment
+from `GET /api/hospital/blood-requests/{id}/form` and
+`GET /api/blood-center/blood-requests/{id}/form`. One `BloodRequestFormService`
+serves both, so the requesting hospital and the fulfilling centre cannot hold
+two copies of a clinical document that disagree. Nothing is written to storage:
+the form is derived from the request and re-renders identically on demand.
+
+**UNRESOLVED:** The handover half of the form — type of crossmatching, number
+of donors provided, screened/unscreened counts, remarks, and the received-by
+and extracted-by signatures with their timestamps — is printed blank and filled
+in on paper. Capturing it would mean a handover step at the blood centre that
+no module currently charters.

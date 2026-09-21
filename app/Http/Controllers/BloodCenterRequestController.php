@@ -11,6 +11,7 @@ use App\Service\IncomingRequestService;
 use App\Service\RequestAllocationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Response;
 
 /**
  * The fulfilling side: a blood centre's incoming queue and what it may do with it.
@@ -22,6 +23,14 @@ class BloodCenterRequestController extends Controller
         private readonly RequestAllocationService $requestAllocationService,
         private readonly FulfillmentService $fulfillmentService
     ) {}
+
+    /**
+     * Download this incoming request as the DOH Blood Request Form.
+     */
+    public function form(Request $request, int $bloodRequest): Response
+    {
+        return $this->incomingRequestService->form($request->user(), $bloodRequest);
+    }
 
     /**
      * List requests addressed to this facility, emergencies first.
@@ -60,11 +69,14 @@ class BloodCenterRequestController extends Controller
      */
     public function allocate(AllocateUnitsRequest $request, int $bloodRequest): JsonResponse
     {
+        $validated = $request->validated();
+
         return response()->json(
             $this->requestAllocationService->allocate(
                 $request->user(),
                 $bloodRequest,
-                $request->validated()['quantity'] ?? null
+                $validated['quantity'] ?? null,
+                $validated['request_item_id'] ?? null
             )
         );
     }

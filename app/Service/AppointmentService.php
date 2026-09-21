@@ -60,7 +60,7 @@ class AppointmentService
                 'date' => $event->event_date->toDateString(),
                 'registered' => (int) $event->registered,
                 'total_slots' => $event->max_capacity,
-                'status' => $this->driveStatus($event),
+                'status' => $event->status(),
             ])
             ->all();
     }
@@ -475,15 +475,6 @@ class AppointmentService
         }
 
         return $times;
-    }
-
-    private function driveStatus(MobileEvent $event): string
-    {
-        if ($event->max_capacity !== null && (int) $event->registered >= $event->max_capacity) {
-            return 'Full';
-        }
-
-        return $event->event_date->isToday() ? 'Open' : 'Upcoming';
     }
 
     /**

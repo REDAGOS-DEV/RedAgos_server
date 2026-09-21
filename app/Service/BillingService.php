@@ -37,22 +37,17 @@ class BillingService
      * request that grows from two held units to five needs its one statement
      * to grow with it rather than a second statement it cannot have.
      *
+     * The held count is read from the allocations rather than passed in. Once a
+     * request can ask for several components at different prices, a bare number
+     * of units no longer determines what is owed — five units of platelets and
+     * five of packed cells are two different totals.
+     *
      * Must be called inside the allocating transaction.
      */
-    public function syncFor(BloodRequest $request, User $actor, int $claimedUnits): Billing
+    public function syncFor(BloodRequest $request, User $actor): Billing
     {
-        // Priced by the facility fulfilling the request, not by the shared
-        // blood_components row. target_facility_id, never facility_id: the
-        // former is who was asked and supplies the blood, the latter is the
-        // hospital that asked. An unset price is zero, which leaves the
-        // payment-before-release gate off — so one centre setting a price can
-        // no longer start blocking releases at another.
-        $unitPrice = $request->target_facility_id === null
-            ? 0.0
-            : (float) ($this->bloodComponentRepository
-                ->setting((int) $request->target_facility_id, (int) $request->component_id)
-                ?->price ?? 0);
-        $total = round($unitPrice * $claimedUnits, 2);
+        $claimedUnits = $this->claimedPerComponent($request);
+        $total = $this->totalFor($request, $claimedUnits);
 
         $billing = $request->billing()->first();
 
@@ -68,7 +63,7 @@ class BillingService
             $this->auditLogger->record($actor, 'billing.raised', $billing, [
                 'request_id' => $request->id,
                 'total_amount' => $total,
-                'units' => $claimedUnits,
+                'units' => array_sum($claimedUnits),
                 'subsidised' => $total === 0.0,
             ]);
 
@@ -92,10 +87,68 @@ class BillingService
             'request_id' => $request->id,
             'total_amount' => $total,
             'collected' => $collected,
-            'units' => $claimedUnits,
+            'units' => array_sum($claimedUnits),
         ]);
 
         return $billing;
+    }
+
+    /**
+     * Count the units currently claimed against each of a request's components.
+     *
+     * Keyed by component id rather than line id: two lines cannot name the same
+     * component, and the price is a property of the component.
+     *
+     * @return array<int, int>
+     */
+    private function claimedPerComponent(BloodRequest $request): array
+    {
+        $lineComponents = $request->items->pluck('component_id', 'id');
+
+        return $request->allocations()->claiming()
+            ->groupBy('request_item_id')
+            ->selectRaw('request_item_id, COUNT(*) as held')
+            ->pluck('held', 'request_item_id')
+            ->reduce(function (array $carry, $held, $itemId) use ($lineComponents): array {
+                $componentId = $lineComponents[$itemId] ?? null;
+
+                if ($componentId !== null) {
+                    $carry[$componentId] = ($carry[$componentId] ?? 0) + (int) $held;
+                }
+
+                return $carry;
+            }, []);
+    }
+
+    /**
+     * Price a request's held units at the fulfilling facility's own rates.
+     *
+     * Priced by the facility fulfilling the request, not by the shared
+     * blood_components row. target_facility_id, never facility_id: the former
+     * is who was asked and supplies the blood, the latter is the hospital that
+     * asked. An unset price is zero, which leaves the payment-before-release
+     * gate off — so one centre setting a price can no longer start blocking
+     * releases at another.
+     *
+     * @param  array<int, int>  $claimedUnits
+     */
+    private function totalFor(BloodRequest $request, array $claimedUnits): float
+    {
+        if ($request->target_facility_id === null) {
+            return 0.0;
+        }
+
+        $total = 0.0;
+
+        foreach ($claimedUnits as $componentId => $units) {
+            $unitPrice = (float) ($this->bloodComponentRepository
+                ->setting((int) $request->target_facility_id, (int) $componentId)
+                ?->price ?? 0);
+
+            $total += $unitPrice * $units;
+        }
+
+        return round($total, 2);
     }
 
     /**

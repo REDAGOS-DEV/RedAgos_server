@@ -3,8 +3,10 @@
 namespace App\Models;
 
 use App\Enums\BloodRequestStatus;
+use App\Enums\RequestPurpose;
 use App\Enums\UrgencyLevel;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -18,6 +20,11 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * is who asked, target_facility_id is who was asked. Every scope and relation
  * here names which one it means, because a query that confuses them would show
  * one facility another's requests.
+ *
+ * What was asked for lives on the lines, not here. A request can tick several
+ * components on one DOH form, each with its own indication and unit count, so
+ * component and quantity moved to blood_request_items and the quantity below
+ * is a sum of them rather than a column.
  */
 class BloodRequest extends Model
 {
@@ -28,9 +35,13 @@ class BloodRequest extends Model
         'facility_id',
         'target_facility_id',
         'requested_by',
+        'request_purpose',
+        'patient_surname',
+        'patient_first_name',
+        'patient_middle_name',
+        'patient_age',
+        'patient_sex',
         'blood_type_id',
-        'component_id',
-        'quantity',
         'urgency_level',
         'status',
         'rejection_reason',
@@ -45,7 +56,8 @@ class BloodRequest extends Model
         return [
             'status' => BloodRequestStatus::class,
             'urgency_level' => UrgencyLevel::class,
-            'quantity' => 'integer',
+            'request_purpose' => RequestPurpose::class,
+            'patient_age' => 'integer',
             'request_date' => 'immutable_datetime',
             'reviewed_at' => 'immutable_datetime',
             'fulfilled_at' => 'immutable_datetime',
@@ -89,9 +101,12 @@ class BloodRequest extends Model
         return $this->belongsTo(BloodType::class);
     }
 
-    public function component(): BelongsTo
+    /**
+     * The components this request asks for, one line each.
+     */
+    public function items(): HasMany
     {
-        return $this->belongsTo(BloodComponent::class, 'component_id');
+        return $this->hasMany(BloodRequestItem::class, 'request_id');
     }
 
     /**
@@ -111,6 +126,40 @@ class BloodRequest extends Model
     public function billing(): HasOne
     {
         return $this->hasOne(Billing::class, 'request_id');
+    }
+
+    /**
+     * Get the total units asked for across every line.
+     *
+     * Derived rather than stored, for the same reason inventory summaries are
+     * derived from blood units: a stored copy would be a second source of truth
+     * and would drift the moment a line changed. Callers that read this over a
+     * collection should eager-load `items`, which BloodRequestRepository does.
+     */
+    protected function quantity(): Attribute
+    {
+        return Attribute::get(
+            fn (): int => (int) $this->items->sum('quantity')
+        );
+    }
+
+    /**
+     * Get the patient's name as the request form prints it, if there is one.
+     */
+    public function patientFullName(): ?string
+    {
+        if ($this->patient_surname === null && $this->patient_first_name === null) {
+            return null;
+        }
+
+        $given = trim(implode(' ', array_filter([
+            $this->patient_first_name,
+            $this->patient_middle_name,
+        ])));
+
+        $surname = mb_strtoupper((string) $this->patient_surname);
+
+        return $given === '' ? $surname : "{$surname}, {$given}";
     }
 
     /**

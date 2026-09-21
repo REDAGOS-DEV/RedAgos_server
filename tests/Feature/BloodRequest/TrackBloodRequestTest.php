@@ -14,6 +14,7 @@ use App\Models\Facility;
 use App\Models\RequestAllocation;
 use App\Models\User;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Support\Arr;
 use Tests\TestCase;
 
 /**
@@ -241,7 +242,10 @@ class TrackBloodRequestTest extends TestCase
             ->raisedBy($this->hospital, $this->requester)
             ->addressedTo($this->centre)
             ->forStock($this->bloodType, $this->component, $overrides['quantity'] ?? 2)
-            ->create($overrides);
+            // quantity is not a column any more, it is the line's. forStock
+            // above has already applied it, so passing it on to create() would
+            // try to write a column that no longer exists.
+            ->create(Arr::except($overrides, 'quantity'));
     }
 
     private function unitAt(Facility $facility): BloodUnit

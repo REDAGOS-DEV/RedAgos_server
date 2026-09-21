@@ -25,6 +25,9 @@ class DatabaseSeeder extends Seeder
             EligibilityQuestionSeeder::class,
             FacilitySeeder::class,
             BloodComponentSeeder::class,
+            // After FacilitySeeder: drives hang off a facility, and the seeder
+            // warns and skips if none exist yet.
+            MobileEventSeeder::class,
         ]);
 
         foreach (RoleName::cases() as $role) {

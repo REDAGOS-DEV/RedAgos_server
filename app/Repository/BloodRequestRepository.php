@@ -24,7 +24,7 @@ class BloodRequestRepository
      */
     private const PROJECTION_RELATIONS = [
         'bloodType',
-        'component',
+        'items.component',
         'requestingFacility',
         'targetFacility',
     ];
@@ -222,9 +222,14 @@ class BloodRequestRepository
                 isset($filters['blood_type_id']),
                 fn (Builder $query): Builder => $query->where('blood_type_id', $filters['blood_type_id'])
             )
+            // The component moved onto the request's lines, so filtering by
+            // one now asks whether any line names it.
             ->when(
                 isset($filters['component_id']),
-                fn (Builder $query): Builder => $query->where('component_id', $filters['component_id'])
+                fn (Builder $query): Builder => $query->whereHas(
+                    'items',
+                    fn (Builder $items): Builder => $items->where('component_id', $filters['component_id'])
+                )
             )
             ->when(
                 isset($filters['search']),

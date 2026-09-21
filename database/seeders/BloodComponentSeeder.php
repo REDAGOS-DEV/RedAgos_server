@@ -27,6 +27,7 @@ class BloodComponentSeeder extends Seeder
         'Fresh Frozen Plasma',
         'Platelets',
         'Cryoprecipitate',
+        'Washed RBC',
     ];
 
     public function run(): void

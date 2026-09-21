@@ -4,9 +4,13 @@ namespace App\Service;
 
 use App\Enums\BloodRequestStatus;
 use App\Enums\Department;
+use App\Enums\IndicationCode;
+use App\Enums\RequestPurpose;
+use App\Enums\UrgencyLevel;
+use App\Models\BloodComponent;
 use App\Models\BloodRequest;
+use App\Models\BloodType;
 use App\Models\Facility;
-use App\Models\RequestAllocation;
 use App\Models\User;
 use App\Notifications\BloodRequestSubmitted;
 use App\Repository\AvailabilityRepository;
@@ -14,6 +18,7 @@ use App\Repository\BloodRequestRepository;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Exceptions\HttpResponseException;
+use Illuminate\Http\Response;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Validation\ValidationException;
@@ -40,6 +45,8 @@ class BloodRequestService
     public function __construct(
         private readonly BloodRequestRepository $bloodRequestRepository,
         private readonly AvailabilityRepository $availabilityRepository,
+        private readonly BloodRequestProjector $projector,
+        private readonly BloodRequestFormService $formService,
         private readonly AuditLogger $auditLogger
     ) {}
 
@@ -124,6 +131,85 @@ class BloodRequestService
     }
 
     /**
+     * Serve everything the request form needs to be filled in.
+     *
+     * The indication codes are projected from the IndicationCode enum rather
+     * than duplicated in the client. They are the criteria a physician
+     * certifies against, and two copies of a clinical list are two chances to
+     * disagree — a dropdown offering a code the API would reject, or worse,
+     * offering the wrong criterion text beside the right code.
+     *
+     * @return array<string, mixed>
+     */
+    public function referenceData(User $user): array
+    {
+        $this->requireFacilityId($user);
+
+        return [
+            'blood_types' => BloodType::query()->orderBy('code')->get()
+                ->map(fn (BloodType $type): array => [
+                    'id' => $type->id,
+                    'code' => $type->code,
+                    'label' => $type->label,
+                ])->all(),
+
+            'components' => BloodComponent::query()->orderBy('name')->get()
+                ->map(fn (BloodComponent $component): array => [
+                    'id' => $component->id,
+                    'name' => $component->name,
+                    'indication_codes' => array_map(
+                        fn (IndicationCode $code): array => [
+                            'code' => $code->value,
+                            'label' => $code->label(),
+                            'description' => $code->description(),
+                            // The client uses this to reveal the "please
+                            // specify" box, so the rule for when an
+                            // explanation is required lives in one place.
+                            'requires_explanation' => $code->triggersReview(),
+                        ],
+                        IndicationCode::forComponentName((string) $component->name)
+                    ),
+                ])->all(),
+
+            'purposes' => array_map(
+                fn (RequestPurpose $purpose): array => [
+                    'value' => $purpose->value,
+                    'label' => $purpose->label(),
+                    'requires_patient' => $purpose->requiresPatient(),
+                ],
+                RequestPurpose::cases()
+            ),
+
+            // Labelled for the form, which prints ROUTINE and STAT. The stored
+            // value stays `emergency`, which the rest of the workflow keys off.
+            'priorities' => array_map(
+                fn (UrgencyLevel $level): array => [
+                    'value' => $level->value,
+                    'label' => $level->isPrioritised() ? 'STAT' : 'Routine',
+                ],
+                UrgencyLevel::cases()
+            ),
+        ];
+    }
+
+    /**
+     * Render one of the caller facility's own requests as the DOH request form.
+     *
+     * Resolved through the same facility scope as show(), so a request raised
+     * by another blood bank is a 404 here exactly as it is there. The document
+     * is built by BloodRequestFormService, which the fulfilling side calls too
+     * — both portals print the same sheet.
+     */
+    public function form(User $user, int $requestId): Response
+    {
+        $facilityId = $this->requireFacilityId($user);
+        $request = $this->bloodRequestRepository->findRaisedBy($requestId, $facilityId)
+            ?? throw $this->refuse(404, 'request_not_found', 'Blood request not found.');
+
+        return $this->formService->download($request);
+    }
+
+    /**
      * Withdraw a request the caller's facility no longer needs.
      *
      * @return array<string, mixed>
@@ -178,28 +264,49 @@ class BloodRequestService
         $this->bloodRequestRepository->lockFacility($facilityId)
             ?? throw $this->refuse(404, 'facility_missing', 'This account is not linked to a facility.');
 
+        $purpose = RequestPurpose::from($payload['request_purpose']);
+
         $request = BloodRequest::query()->create([
             'reference_number' => $this->nextReference($facilityId),
             'facility_id' => $facilityId,
             'target_facility_id' => $target->id,
             'requested_by' => $user->id,
+            'request_purpose' => $purpose,
+            // Patient identity is dropped rather than trusted when the request
+            // is a restock. Validation already refuses to require it there, and
+            // storing a name a replenishment order should not carry would put
+            // patient data on a record that has no patient.
+            'patient_surname' => $purpose->requiresPatient() ? $payload['patient_surname'] : null,
+            'patient_first_name' => $purpose->requiresPatient() ? $payload['patient_first_name'] : null,
+            'patient_middle_name' => $purpose->requiresPatient() ? ($payload['patient_middle_name'] ?? null) : null,
+            'patient_age' => $purpose->requiresPatient() ? $payload['patient_age'] : null,
+            'patient_sex' => $purpose->requiresPatient() ? $payload['patient_sex'] : null,
             'blood_type_id' => $payload['blood_type_id'],
-            'component_id' => $payload['component_id'],
-            'quantity' => $payload['quantity'],
             'urgency_level' => $payload['urgency_level'],
             'status' => BloodRequestStatus::Pending,
             'request_date' => now(),
         ]);
 
+        $request->items()->createMany(array_map(fn (array $item): array => [
+            'component_id' => $item['component_id'],
+            'quantity' => $item['quantity'],
+            'indication_code' => $item['indication_code'] ?? null,
+            'indication_other' => $item['indication_other'] ?? null,
+        ], $payload['items']));
+
+        $request->load(['bloodType', 'items.component', 'requestingFacility', 'targetFacility']);
+
         $this->auditLogger->record($user, 'request.submitted', $request, [
             'facility_id' => $facilityId,
             'target_facility_id' => $target->id,
             'reference_number' => $request->reference_number,
+            'request_purpose' => $purpose->value,
             'quantity' => $request->quantity,
+            'components' => $request->items->pluck('component.name')->all(),
             'urgency_level' => $request->urgency_level->value,
         ]);
 
-        return $request->load(['bloodType', 'component', 'requestingFacility', 'targetFacility']);
+        return $request;
     }
 
     /**
@@ -255,75 +362,7 @@ class BloodRequestService
      */
     private function format(BloodRequest $request, bool $withAllocations = false): array
     {
-        $allocations = $request->relationLoaded('allocations') ? $request->allocations : collect();
-        $claimed = $allocations->filter(fn (RequestAllocation $a): bool => $a->status->claimsUnit());
-
-        // The SQL aggregate wins where the query provided one. A listing does
-        // not load allocations, so counting the relation there would report
-        // every request as uncovered; the relation is only the fallback for a
-        // single request loaded with its allocations.
-        $allocatedCount = $request->allocated_count ?? $claimed->count();
-        $receivedCount = $request->received_count ?? $claimed->whereNotNull('received_at')->count();
-
-        $projection = [
-            'id' => $request->id,
-            'reference_number' => $request->reference_number,
-            'requesting_facility' => $this->facilityStub($request->requestingFacility),
-            'target_facility' => $this->facilityStub($request->targetFacility),
-            'blood_type' => [
-                'id' => $request->blood_type_id,
-                'code' => $request->bloodType?->code,
-            ],
-            'component' => [
-                'id' => $request->component_id,
-                'name' => $request->component?->name,
-            ],
-            'quantity' => $request->quantity,
-            'urgency_level' => $request->urgency_level->value,
-            'urgency_label' => $request->urgency_level->label(),
-            'status' => $request->status->value,
-            'status_label' => $request->status->label(),
-            // Derived rather than stored: the request status says how far the
-            // request has got, and these say how much of it is covered.
-            'allocated_count' => $allocatedCount,
-            'received_count' => $receivedCount,
-            'outstanding_quantity' => max(0, $request->quantity - $allocatedCount),
-            'rejection_reason' => $request->rejection_reason,
-            'request_date' => $request->request_date?->toIso8601String(),
-            'reviewed_at' => $request->reviewed_at?->toIso8601String(),
-            'fulfilled_at' => $request->fulfilled_at?->toIso8601String(),
-        ];
-
-        if ($withAllocations) {
-            $projection['allocations'] = $allocations
-                ->map(fn (RequestAllocation $allocation): array => [
-                    'id' => $allocation->id,
-                    'unit_id' => $allocation->unit_id,
-                    'status' => $allocation->status->value,
-                    'status_label' => $allocation->status->label(),
-                    'expiry_date' => $allocation->unit?->expiry_date?->toDateString(),
-                    'allocated_at' => $allocation->allocated_at?->toIso8601String(),
-                    'released_at' => $allocation->released_at?->toIso8601String(),
-                    'received_at' => $allocation->received_at?->toIso8601String(),
-                ])
-                ->all();
-        }
-
-        return $projection;
-    }
-
-    /**
-     * Project the minimum a client needs to name a facility.
-     *
-     * @return array<string, mixed>|null
-     */
-    private function facilityStub(?Facility $facility): ?array
-    {
-        return $facility ? [
-            'id' => $facility->id,
-            'name' => $facility->name,
-            'address' => $facility->address,
-        ] : null;
+        return $this->projector->project($request, $withAllocations);
     }
 
     /**

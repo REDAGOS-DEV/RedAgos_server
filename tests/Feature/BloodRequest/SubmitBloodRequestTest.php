@@ -4,6 +4,8 @@ namespace Tests\Feature\BloodRequest;
 
 use App\Enums\BloodRequestStatus;
 use App\Enums\BloodUnitStatus;
+use App\Enums\IndicationCode;
+use App\Enums\RequestPurpose;
 use App\Enums\UrgencyLevel;
 use App\Models\BloodComponent;
 use App\Models\BloodRequest;
@@ -48,7 +50,7 @@ class SubmitBloodRequestTest extends TestCase
         $this->centre = Facility::factory()->approved()->create(['name' => 'Davao Blood Center']);
 
         $this->bloodType = BloodType::firstOrCreate(['code' => 'O+'], ['label' => 'O+']);
-        $this->component = BloodComponent::factory()->create(['name' => 'Packed Red Blood Cells']);
+        $this->component = BloodComponent::factory()->create(['name' => 'Packed RBC']);
 
         $this->donorProfile = DonorProfile::factory()->create([
             'donor_id' => User::factory()->create()->id,
@@ -74,7 +76,14 @@ class SubmitBloodRequestTest extends TestCase
             'target_facility_id' => $this->centre->id,
             'requested_by' => $this->requester->id,
             'status' => BloodRequestStatus::Pending->value,
+            'request_purpose' => RequestPurpose::PatientTransfusion->value,
+            'patient_surname' => 'Dela Cruz',
+        ]);
+
+        $this->assertDatabaseHas('blood_request_items', [
+            'component_id' => $this->component->id,
             'quantity' => 5,
+            'indication_code' => IndicationCode::R1->value,
         ]);
     }
 
@@ -186,7 +195,7 @@ class SubmitBloodRequestTest extends TestCase
             $this->actingAs($this->requester)
                 ->postJson('/api/hospital/blood-requests', $this->payload(['quantity' => $quantity]))
                 ->assertStatus(422)
-                ->assertJsonValidationErrors(['quantity']);
+                ->assertJsonValidationErrors(['items.0.quantity']);
         }
     }
 
@@ -280,12 +289,27 @@ class SubmitBloodRequestTest extends TestCase
      */
     private function payload(array $overrides = []): array
     {
+        // quantity is lifted out and applied to the single line, so the many
+        // existing callers passing ['quantity' => n] keep reading naturally.
+        $quantity = $overrides['quantity'] ?? 2;
+        unset($overrides['quantity']);
+
         return [
             'target_facility_id' => $this->centre->id,
             'blood_type_id' => $this->bloodType->id,
-            'component_id' => $this->component->id,
-            'quantity' => 2,
             'urgency_level' => UrgencyLevel::Routine->value,
+            'request_purpose' => RequestPurpose::PatientTransfusion->value,
+            'patient_surname' => 'Dela Cruz',
+            'patient_first_name' => 'Juan',
+            'patient_age' => 47,
+            'patient_sex' => 'male',
+            'items' => [
+                [
+                    'component_id' => $this->component->id,
+                    'quantity' => $quantity,
+                    'indication_code' => IndicationCode::R1->value,
+                ],
+            ],
             ...$overrides,
         ];
     }

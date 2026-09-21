@@ -28,6 +28,7 @@ class RequestAllocation extends Model
 
     protected $fillable = [
         'request_id',
+        'request_item_id',
         'unit_id',
         'allocated_at',
         'allocated_by',
@@ -54,6 +55,17 @@ class RequestAllocation extends Model
     public function request(): BelongsTo
     {
         return $this->belongsTo(BloodRequest::class, 'request_id');
+    }
+
+    /**
+     * The request line this allocation answers.
+     *
+     * request_id alone cannot say which component a hold is for once a request
+     * asks for more than one, so every hold names its line.
+     */
+    public function requestItem(): BelongsTo
+    {
+        return $this->belongsTo(BloodRequestItem::class, 'request_item_id');
     }
 
     /**

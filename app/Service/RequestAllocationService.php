@@ -5,6 +5,7 @@ namespace App\Service;
 use App\Enums\AllocationStatus;
 use App\Enums\BloodRequestStatus;
 use App\Models\BloodRequest;
+use App\Models\BloodRequestItem;
 use App\Models\BloodUnit;
 use App\Models\RequestAllocation;
 use App\Models\User;
@@ -42,19 +43,29 @@ class RequestAllocationService
     /**
      * Hold stock for a request, up to what was asked and what is on the shelf.
      *
+     * A request asks per component, so stock is held per component. Given a
+     * line, only that line is filled; given none, every line is walked in form
+     * order until the request is covered or the shelves run out. $wanted is a
+     * budget across the whole walk rather than a figure per line, so a caller
+     * asking for three units of a two-line request still gets three.
+     *
      * @return array<string, mixed>
      */
-    public function allocate(User $user, int $requestId, ?int $wanted = null): array
+    public function allocate(User $user, int $requestId, ?int $wanted = null, ?int $requestItemId = null): array
     {
         $facilityId = $this->requireFacilityId($user);
 
-        $result = DB::transaction(function () use ($user, $requestId, $facilityId, $wanted): array {
+        $result = DB::transaction(function () use ($user, $requestId, $facilityId, $wanted, $requestItemId): array {
             $request = $this->lockRequestForDecision($requestId, $facilityId);
 
-            $alreadyHeld = $this->claimedCount($request);
-            $outstanding = $request->quantity - $alreadyHeld;
+            $lines = $this->linesToFill($request, $requestItemId);
+            $heldPerLine = $this->claimedPerLine($request);
 
-            if ($outstanding < 1) {
+            $outstandingTotal = $lines->sum(
+                fn (BloodRequestItem $line): int => max(0, $line->quantity - ($heldPerLine[$line->id] ?? 0))
+            );
+
+            if ($outstandingTotal < 1) {
                 throw $this->refuse(
                     409,
                     'request_fully_allocated',
@@ -63,17 +74,44 @@ class RequestAllocationService
             }
 
             // Never more than the request asked for, whatever the caller sent.
-            $take = min($wanted ?? $outstanding, $outstanding);
+            $budget = min($wanted ?? $outstandingTotal, $outstandingTotal);
 
-            $units = $this->inventoryRepository->lockAvailableUnitsFefo(
-                $facilityId,
-                (int) $request->blood_type_id,
-                (int) $request->component_id,
-                $take,
-                OperationalDay::todayAsDate()
-            );
+            $taken = collect();
+            $allocations = collect();
 
-            if ($units->isEmpty()) {
+            foreach ($lines as $line) {
+                if ($budget < 1) {
+                    break;
+                }
+
+                $outstanding = max(0, $line->quantity - ($heldPerLine[$line->id] ?? 0));
+
+                if ($outstanding < 1) {
+                    continue;
+                }
+
+                $units = $this->inventoryRepository->lockAvailableUnitsFefo(
+                    $facilityId,
+                    (int) $request->blood_type_id,
+                    (int) $line->component_id,
+                    min($budget, $outstanding),
+                    OperationalDay::todayAsDate()
+                );
+
+                // An empty shelf for one component is not a failure of the
+                // whole allocation: the next line may still be coverable, and
+                // a partial hold is the honest answer.
+                if ($units->isEmpty()) {
+                    continue;
+                }
+
+                $this->reserve($units);
+                $allocations = $allocations->concat($this->recordHolds($request, $line, $units, $user));
+                $taken = $taken->concat($units);
+                $budget -= $units->count();
+            }
+
+            if ($taken->isEmpty()) {
                 throw $this->refuse(
                     409,
                     'no_matching_stock',
@@ -81,10 +119,7 @@ class RequestAllocationService
                 );
             }
 
-            $this->reserve($units);
-            $allocations = $this->recordHolds($request, $units, $user);
-
-            $heldNow = $alreadyHeld + $units->count();
+            $heldNow = array_sum($heldPerLine) + $taken->count();
 
             $request->status = BloodRequestStatus::Processing;
             $request->reviewed_by = $user->id;
@@ -92,18 +127,18 @@ class RequestAllocationService
             $request->rejection_reason = null;
             $request->save();
 
-            $request->loadMissing('component');
-            $billing = $this->billingService->syncFor($request, $user, $heldNow);
+            $request->load('items.component');
+            $billing = $this->billingService->syncFor($request, $user);
 
             $this->auditLogger->record($user, 'request.allocated', $request, [
                 'facility_id' => $facilityId,
                 'reference_number' => $request->reference_number,
-                'units' => $units->pluck('id')->all(),
+                'units' => $taken->pluck('id')->all(),
                 'held_total' => $heldNow,
                 'requested' => $request->quantity,
             ]);
 
-            foreach ($units as $unit) {
+            foreach ($taken as $unit) {
                 $this->auditLogger->record($user, 'allocation.reserved', $unit, [
                     'request_id' => $request->id,
                     'reference_number' => $request->reference_number,
@@ -125,11 +160,50 @@ class RequestAllocationService
             'message' => $result['short_by'] > 0
                 ? "Partially fulfilled. {$result['short_by']} unit(s) still outstanding."
                 : 'Request fully allocated.',
+            'request_id' => $result['request']->id,
+            'status' => $result['request']->status->value,
             'held_total' => $result['held_total'],
             'short_by' => $result['short_by'],
             'allocated_units' => $result['allocations']->pluck('unit_id')->all(),
             'billing' => $this->billingService->format($result['billing']),
         ];
+    }
+
+    /**
+     * Resolve the lines this allocation should fill, in the order the form lists them.
+     *
+     * @return Collection<int, BloodRequestItem>
+     */
+    private function linesToFill(BloodRequest $request, ?int $requestItemId): Collection
+    {
+        $lines = $request->items()->orderBy('id')->get();
+
+        if ($requestItemId === null) {
+            return $lines;
+        }
+
+        // Resolved from the request's own lines rather than looked up by id, so
+        // a line belonging to another facility's request cannot be filled from
+        // this one's stock.
+        $line = $lines->firstWhere('id', $requestItemId)
+            ?? throw $this->refuse(404, 'request_item_not_found', 'That component is not on this request.');
+
+        return collect([$line]);
+    }
+
+    /**
+     * Count the units already claimed against each line, keyed by line id.
+     *
+     * @return array<int, int>
+     */
+    private function claimedPerLine(BloodRequest $request): array
+    {
+        return $request->allocations()->claiming()
+            ->groupBy('request_item_id')
+            ->selectRaw('request_item_id, COUNT(*) as held')
+            ->pluck('held', 'request_item_id')
+            ->map(fn ($held): int => (int) $held)
+            ->all();
     }
 
     /**
@@ -285,10 +359,11 @@ class RequestAllocationService
      * @param  Collection<int, BloodUnit>  $units
      * @return Collection<int, RequestAllocation>
      */
-    private function recordHolds(BloodRequest $request, Collection $units, User $user): Collection
+    private function recordHolds(BloodRequest $request, BloodRequestItem $line, Collection $units, User $user): Collection
     {
         return $units->map(fn (BloodUnit $unit): RequestAllocation => RequestAllocation::query()->create([
             'request_id' => $request->id,
+            'request_item_id' => $line->id,
             'unit_id' => $unit->id,
             'allocated_at' => now(),
             'allocated_by' => $user->id,

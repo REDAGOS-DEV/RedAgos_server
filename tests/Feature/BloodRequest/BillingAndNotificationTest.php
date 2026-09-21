@@ -5,6 +5,7 @@ namespace Tests\Feature\BloodRequest;
 use App\Enums\BillingStatus;
 use App\Enums\BloodUnitStatus;
 use App\Enums\Department;
+use App\Enums\RequestPurpose;
 use App\Models\BloodComponent;
 use App\Models\BloodRequest;
 use App\Models\BloodType;
@@ -231,9 +232,18 @@ class BillingAndNotificationTest extends TestCase
             ->postJson('/api/hospital/blood-requests', [
                 'target_facility_id' => $this->centre->id,
                 'blood_type_id' => $this->bloodType->id,
-                'component_id' => $this->component->id,
-                'quantity' => 2,
                 'urgency_level' => 'emergency',
+                'request_purpose' => RequestPurpose::PatientTransfusion->value,
+                'patient_surname' => 'Dela Cruz',
+                'patient_first_name' => 'Juan',
+                'patient_age' => 47,
+                'patient_sex' => 'male',
+                'items' => [
+                    [
+                        'component_id' => $this->component->id,
+                        'quantity' => 2,
+                    ],
+                ],
             ])
             ->assertCreated();
 
@@ -251,9 +261,18 @@ class BillingAndNotificationTest extends TestCase
             ->postJson('/api/hospital/blood-requests', [
                 'target_facility_id' => $this->centre->id,
                 'blood_type_id' => $this->bloodType->id,
-                'component_id' => $this->component->id,
-                'quantity' => 1,
                 'urgency_level' => 'routine',
+                'request_purpose' => RequestPurpose::PatientTransfusion->value,
+                'patient_surname' => 'Dela Cruz',
+                'patient_first_name' => 'Juan',
+                'patient_age' => 47,
+                'patient_sex' => 'male',
+                'items' => [
+                    [
+                        'component_id' => $this->component->id,
+                        'quantity' => 1,
+                    ],
+                ],
             ])
             ->assertCreated();
 
@@ -266,9 +285,18 @@ class BillingAndNotificationTest extends TestCase
             ->postJson('/api/hospital/blood-requests', [
                 'target_facility_id' => $this->centre->id,
                 'blood_type_id' => $this->bloodType->id,
-                'component_id' => $this->component->id,
-                'quantity' => 1,
                 'urgency_level' => 'routine',
+                'request_purpose' => RequestPurpose::PatientTransfusion->value,
+                'patient_surname' => 'Dela Cruz',
+                'patient_first_name' => 'Juan',
+                'patient_age' => 47,
+                'patient_sex' => 'male',
+                'items' => [
+                    [
+                        'component_id' => $this->component->id,
+                        'quantity' => 1,
+                    ],
+                ],
             ])
             ->assertCreated();
 
