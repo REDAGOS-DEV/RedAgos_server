@@ -44,7 +44,7 @@ class BloodRequestFormPdfTest extends TestCase
         $this->requester = User::factory()->bloodBankStaff($this->hospital)->create();
 
         $this->centre = Facility::factory()->approved()->create(['name' => 'Davao Blood Center']);
-        $this->centreStaff = User::factory()->bloodCenterStaff($this->centre, Department::Inventory)->create();
+        $this->centreStaff = User::factory()->bloodCenterStaff($this->centre, Department::Issuance)->create();
 
         $this->bloodType = BloodType::firstOrCreate(['code' => 'AB+'], ['label' => 'AB+']);
         $this->packedCells = BloodComponent::factory()->create(['name' => 'Packed RBC']);
@@ -125,7 +125,7 @@ class BloodRequestFormPdfTest extends TestCase
     public function test_a_request_addressed_elsewhere_cannot_be_printed_by_a_centre(): void
     {
         $otherCentre = Facility::factory()->approved()->create();
-        $stranger = User::factory()->bloodCenterStaff($otherCentre, Department::Inventory)->create();
+        $stranger = User::factory()->bloodCenterStaff($otherCentre, Department::Issuance)->create();
 
         $request = $this->request();
 

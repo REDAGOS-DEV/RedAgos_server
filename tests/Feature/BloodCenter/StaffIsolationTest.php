@@ -115,7 +115,7 @@ class StaffIsolationTest extends TestCase
     public function test_department_staff_cannot_reach_the_roster(string $method, string $uri): void
     {
         $colleague = User::factory()
-            ->bloodCenterStaff($this->supervisor->facility, Department::Inventory)
+            ->bloodCenterStaff($this->supervisor->facility, Department::Issuance)
             ->create();
 
         $this->actingAs($colleague)

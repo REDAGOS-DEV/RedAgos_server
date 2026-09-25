@@ -216,7 +216,7 @@ class DonorDirectoryTest extends TestCase
 
     public function test_laboratory_staff_cannot_browse_donors(): void
     {
-        $lab = User::factory()->bloodCenterStaff($this->facility, Department::Laboratory)->create();
+        $lab = User::factory()->bloodCenterStaff($this->facility, Department::Testing)->create();
 
         $this->actingAs($lab)->getJson('/api/blood-center/donors')->assertForbidden();
     }

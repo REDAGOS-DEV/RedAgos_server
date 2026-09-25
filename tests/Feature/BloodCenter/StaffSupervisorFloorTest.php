@@ -49,7 +49,7 @@ class StaffSupervisorFloorTest extends TestCase
         $this->actingAs($this->supervisor)
             ->patchJson("/api/blood-center/staff/{$this->supervisor->uuid}", [
                 'is_supervisor' => false,
-                'department' => Department::Inventory->value,
+                'department' => Department::Issuance->value,
             ])
             ->assertStatus(409)
             ->assertJsonPath('code', 'last_supervisor');
@@ -62,7 +62,7 @@ class StaffSupervisorFloorTest extends TestCase
         $this->actingAs($this->supervisor)
             ->patchJson("/api/blood-center/staff/{$this->supervisor->uuid}", [
                 'is_supervisor' => false,
-                'department' => Department::Inventory->value,
+                'department' => Department::Issuance->value,
                 'position' => 'Demoted Clerk',
             ])
             ->assertStatus(409);
@@ -115,7 +115,7 @@ class StaffSupervisorFloorTest extends TestCase
         $this->actingAs($this->supervisor)
             ->patchJson("/api/blood-center/staff/{$second->uuid}", [
                 'is_supervisor' => false,
-                'department' => Department::Laboratory->value,
+                'department' => Department::Testing->value,
             ])
             ->assertOk();
 

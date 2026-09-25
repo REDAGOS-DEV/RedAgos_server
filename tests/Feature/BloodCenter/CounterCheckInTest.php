@@ -7,6 +7,7 @@ use App\Enums\Department;
 use App\Models\DonationAppointment;
 use App\Models\DonorProfile;
 use App\Models\DonorQrToken;
+use App\Models\EligibilityScreening;
 use App\Models\Facility;
 use App\Models\User;
 use App\Notifications\VerifyEmailNotification;
@@ -334,8 +335,8 @@ class CounterCheckInTest extends TestCase
 
     public function test_only_donors_manage_may_register_a_walk_in(): void
     {
-        // Laboratory holds no donor abilities at all.
-        $lab = User::factory()->bloodCenterStaff($this->facility, Department::Laboratory)->create();
+        // Testing holds no donor abilities at all.
+        $lab = User::factory()->bloodCenterStaff($this->facility, Department::Testing)->create();
 
         $this->actingAs($lab)
             ->postJson('/api/blood-center/donors', [
@@ -356,7 +357,7 @@ class CounterCheckInTest extends TestCase
      */
     public function test_the_scan_carries_a_questionnaire_reference_and_no_answers(): void
     {
-        $screening = \App\Models\EligibilityScreening::factory()->create([
+        $screening = EligibilityScreening::factory()->create([
             'question_version' => 2,
             'consented_at' => now(),
             'consent_version' => config('donor_consent.current'),

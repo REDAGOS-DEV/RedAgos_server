@@ -19,7 +19,7 @@ final class DepartmentPermissions
      * Abilities every operational department holds regardless of speciality.
      *
      * reference-data serves blood types, components, unit statuses and storage
-     * locations, which all four departments consume. It is still an operational
+     * locations, which every department consumes. It is still an operational
      * endpoint though, so a staff account carrying no department must not reach
      * it — which is why it is an ability rather than an unguarded route.
      */
@@ -46,8 +46,8 @@ final class DepartmentPermissions
             // browse list and the cross-facility summary. Reading a donor's
             // thirty declared health answers is a different act from looking
             // them up, and naming it separately is what keeps "who may read a
-            // donor's health history" a one-line, testable fact. Laboratory
-            // holds donations.view but not this, and cannot reach it.
+            // donor's health history" a one-line, testable fact. Testing and
+            // Processing hold donations.view but not this, and cannot reach it.
             'donors.view_questionnaire',
 
             'appointments.view',
@@ -62,18 +62,37 @@ final class DepartmentPermissions
             'inventory.view',
         ],
 
-        Department::Laboratory->value => [
+        // Testing and Processing share the laboratory queue (lab.view) and
+        // split the writes: Testing records what the screen found, Processing
+        // records what the bag was separated into and makes the final call.
+        // Clearing for issue needs both, so neither department can clear a
+        // unit on its own record alone.
+        Department::Testing->value => [
             'lab.view',
             'lab.record_result',
-            'lab.update_status',
 
-            // Read-only: processing acts on donations and hands validated
-            // units downstream, but inventory records belong to Inventory.
+            // Read-only: testing acts on donations, but inventory records
+            // belong to Issuance.
             'donations.view',
             'inventory.view',
         ],
 
-        Department::Inventory->value => [
+        Department::Processing->value => [
+            'lab.view',
+            'lab.record_components',
+
+            // Complete or reject. `tested` is reached by Testing recording a
+            // result, never by setting a status, so this is the only status
+            // write the laboratory side holds.
+            'lab.update_status',
+
+            // Read-only: processing hands validated units downstream, but
+            // inventory records belong to Issuance.
+            'donations.view',
+            'inventory.view',
+        ],
+
+        Department::Issuance->value => [
             'inventory.view',
             'inventory.create',
             'inventory.update',

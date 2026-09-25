@@ -49,14 +49,14 @@ class AddFacilityUserTest extends TestCase
     {
         $this->artisan('facility:add-user', [
             '--facility' => $this->bloodCenter->id,
-            '--department' => 'inventory',
+            '--department' => 'issuance',
             ...self::ACCOUNT,
         ])->assertSuccessful();
 
         $staff = User::where('email', 'jomar@redagos.test')->sole();
 
         $this->assertSame($this->bloodCenter->id, $staff->facility_id);
-        $this->assertSame(Department::Inventory, $staff->department);
+        $this->assertSame(Department::Issuance, $staff->department);
         $this->assertFalse($staff->is_supervisor);
         $this->assertTrue($staff->hasRole(RoleName::BloodCenter));
         $this->assertSame(AccountStatus::PendingVerification, $staff->account_status);
@@ -120,7 +120,7 @@ class AddFacilityUserTest extends TestCase
 
         $this->artisan('facility:add-user', [
             '--facility' => $bloodBank->id,
-            '--department' => 'inventory',
+            '--department' => 'issuance',
             ...self::ACCOUNT,
         ])->assertFailed();
 
@@ -146,7 +146,7 @@ class AddFacilityUserTest extends TestCase
     {
         $this->artisan('facility:add-user', [
             '--facility' => $this->bloodCenter->id,
-            '--department' => 'inventory',
+            '--department' => 'issuance',
             '--verified' => true,
             ...self::ACCOUNT,
         ])->assertSuccessful();
@@ -162,7 +162,7 @@ class AddFacilityUserTest extends TestCase
     {
         $this->artisan('facility:add-user', [
             '--facility' => $this->bloodCenter->id + 999,
-            '--department' => 'inventory',
+            '--department' => 'issuance',
             ...self::ACCOUNT,
         ])->assertFailed();
 
@@ -175,7 +175,7 @@ class AddFacilityUserTest extends TestCase
 
         $this->artisan('facility:add-user', [
             '--facility' => $this->bloodCenter->id,
-            '--department' => 'inventory',
+            '--department' => 'issuance',
             '--employee-id' => '001',
             ...self::ACCOUNT,
         ])->assertSuccessful();
@@ -183,7 +183,7 @@ class AddFacilityUserTest extends TestCase
         // The same badge at a different centre is a different person's badge.
         $this->artisan('facility:add-user', [
             '--facility' => $other->id,
-            '--department' => 'inventory',
+            '--department' => 'issuance',
             '--employee-id' => '001',
             ...[...self::ACCOUNT, '--email' => 'second@redagos.test'],
         ])->assertSuccessful();
@@ -191,7 +191,7 @@ class AddFacilityUserTest extends TestCase
         // The same badge at the same centre is a collision.
         $this->artisan('facility:add-user', [
             '--facility' => $this->bloodCenter->id,
-            '--department' => 'inventory',
+            '--department' => 'issuance',
             '--employee-id' => '001',
             ...[...self::ACCOUNT, '--email' => 'third@redagos.test'],
         ])->assertFailed();
@@ -203,7 +203,7 @@ class AddFacilityUserTest extends TestCase
     {
         $this->artisan('facility:add-user', [
             '--facility' => $this->bloodCenter->id,
-            '--department' => 'inventory',
+            '--department' => 'issuance',
             ...self::ACCOUNT,
         ])->assertSuccessful();
 
@@ -219,7 +219,7 @@ class AddFacilityUserTest extends TestCase
 
         $this->artisan('facility:add-user', [
             '--facility' => $this->bloodCenter->id,
-            '--department' => 'inventory',
+            '--department' => 'issuance',
             ...self::ACCOUNT,
         ])->assertFailed();
 

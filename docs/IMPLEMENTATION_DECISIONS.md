@@ -177,6 +177,11 @@ may record `rejected`.
 
 **DECIDED BY:** The project owner, on 2026-08-27.
 
+**SUPERSEDED IN PART:** Laboratory/Processing was split into Testing and
+Processing on 2026-09-26; see "Blood-centre departments: five, not four". Testing
+now reaches `tested` by recording a result, and Processing owns `completed` and
+the laboratory side of `rejected`.
+
 **WHY:** `docs/BLOOD-CENTER.md` gives Donor/Collection "Record completed blood
 donations" and "Manage donor queues", and gives Laboratory "Receive blood
 collection information for processing", "Record and update blood processing
@@ -694,3 +699,49 @@ and adding them later is additive.
 a donor-history shape the server has never returned and its stats, flags and
 update calls throw 501. Extending `history()` touches the endpoint that page
 consumes, but the page was already broken and fixing it is separate work.
+
+---
+
+## Blood-centre departments: five, not four
+
+**DECISION:** A blood centre has five operational departments instead of four:
+
+| Value | Label | Was |
+|---|---|---|
+| `collection` | Collection | Donor / Collection (renamed) |
+| `testing` | Testing | part of Laboratory / Processing |
+| `processing` | Processing | part of Laboratory / Processing |
+| `issuance` | Issuance | Inventory / Storage & Blood Request / Release (renamed) |
+| `billing` | Billing / Payment | unchanged |
+
+`App\Enums\Department` is the canonical list. `docs/BLOOD-CENTER.md` carries the
+chart and each department's responsibilities.
+
+**DECIDED BY:** The project owner, on 2026-09-26.
+
+**DECISION (how the laboratory abilities split):** Both departments hold
+`lab.view` and work from the same queue. Testing holds `lab.record_result`
+(screening result and blood type, which moves a donation to `tested`).
+Processing holds the new `lab.record_components` (the component breakdown) and
+`lab.update_status` (clear for issue, or reject). The components route used to
+sit behind `lab.record_result` and now sits behind `lab.record_components`.
+Clearing a donation needs a passed result and a declared breakdown, so neither
+department can clear a unit on its own record alone.
+
+**DECISION (what kept its name):** Only departments were renamed. The
+`/api/blood-center/laboratory/*` and `/inventory/*` routes, the `lab.*`,
+`inventory.*` and `requests.*` abilities, and the client's
+`/blood-center/laboratory` and `/blood-center/storage` pages keep their names.
+They name the work, not the department that does it, and renaming them would
+break links and tests for no change in behaviour.
+
+**CONSEQUENCE (existing staff):** Migration
+`2026_09_26_100001_rename_blood_center_departments` moves `inventory` to
+`issuance` and `laboratory` to `testing`. Testing's abilities are a subset of
+what Laboratory held, so the migration never grants anyone something they did
+not have. A supervisor moves whoever works the processing bench into Processing.
+`users.department` is cast to the enum, so a row still holding `inventory` or
+`laboratory` fails to load. Run the migration before using the new code.
+
+**CONSEQUENCE (owning department):** `DonationStatus::owningDepartment()` now
+returns Testing for `collected` and Processing for `tested`.

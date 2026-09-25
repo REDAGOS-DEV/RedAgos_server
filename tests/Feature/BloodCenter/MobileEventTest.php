@@ -103,7 +103,7 @@ class MobileEventTest extends TestCase
 
     public function test_a_department_without_drives_manage_is_refused(): void
     {
-        $lab = User::factory()->bloodCenterStaff($this->facility, Department::Laboratory)->create();
+        $lab = User::factory()->bloodCenterStaff($this->facility, Department::Testing)->create();
 
         $this->actingAs($lab)
             ->postJson('/api/blood-center/drives', $this->payload())

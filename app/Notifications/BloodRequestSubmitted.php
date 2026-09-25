@@ -10,7 +10,7 @@ use Illuminate\Notifications\Notification;
  * Tells a fulfilling facility's staff that a request has arrived for them.
  *
  * The paper requires the receiving facility to be notified on submission; this
- * is that notification. It is sent to the inventory staff of the target
+ * is that notification. It is sent to the Issuance staff of the target
  * facility, because that is the department chartered to receive and process
  * incoming requests.
  */

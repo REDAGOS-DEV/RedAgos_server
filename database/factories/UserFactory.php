@@ -152,10 +152,10 @@ class UserFactory extends Factory
     {
         $facility ??= Facility::factory()->approved()->create();
 
-        // Defaults to Inventory because that is the only department with
-        // implemented endpoints, so a test that just wants "some approved
-        // blood-centre staff" gets an account that can actually reach them.
-        $department ??= Department::Inventory;
+        // Defaults to Issuance because it holds the widest set of endpoints,
+        // so a test that just wants "some approved blood-centre staff" gets an
+        // account that can actually reach them.
+        $department ??= Department::Issuance;
 
         return $this->state(fn (array $attributes): array => [
             'facility_id' => $facility->id,
@@ -188,7 +188,7 @@ class UserFactory extends Factory
      * Create approved hospital blood-bank staff: the requester side of the workflow.
      *
      * No department is set, and that is correct rather than an omission: the
-     * department matrix charters the four departments of a blood centre, and a
+     * department matrix charters the five departments of a blood centre, and a
      * blood bank has none of them. Its staff are authorised by role and by
      * their facility being approved, which is what the /hospital routes check.
      */

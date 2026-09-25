@@ -45,7 +45,7 @@ class IncomingQueueTest extends TestCase
         parent::setUp();
 
         $this->centre = Facility::factory()->approved()->create();
-        $this->staff = User::factory()->bloodCenterStaff($this->centre, Department::Inventory)->create();
+        $this->staff = User::factory()->bloodCenterStaff($this->centre, Department::Issuance)->create();
         $this->hospital = Facility::factory()->bloodBank()->approved()->create(['name' => 'St Luke Blood Bank']);
 
         $this->bloodType = BloodType::firstOrCreate(['code' => 'O+'], ['label' => 'O+']);

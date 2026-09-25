@@ -4,6 +4,7 @@ namespace Tests\Feature\BloodCenter;
 
 use App\Enums\AppointmentStatus;
 use App\Enums\Department;
+use App\Enums\EligibilityStatus;
 use App\Models\AuditLog;
 use App\Models\DonationAppointment;
 use App\Models\DonorQrToken;
@@ -13,6 +14,7 @@ use App\Models\EligibilityScreeningAnswer;
 use App\Models\Facility;
 use App\Models\User;
 use Database\Seeders\EligibilityQuestionSeeder;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Str;
@@ -66,7 +68,7 @@ class DonorQuestionnaireTest extends TestCase
         $screening = EligibilityScreening::factory()->create([
             'donor_id' => $this->donor->id,
             'question_version' => 2,
-            'result' => \App\Enums\EligibilityStatus::Pending,
+            'result' => EligibilityStatus::Pending,
             'computed_result' => 'eligible',
             'gender_at_screening' => 'male',
             'consented_at' => now(),
@@ -148,7 +150,7 @@ class DonorQuestionnaireTest extends TestCase
         // reference rather than having to handle a credential from nowhere --
         // the invariant is in the schema, so it is asserted here rather than
         // guarded for in the read path.
-        $this->expectException(\Illuminate\Database\QueryException::class);
+        $this->expectException(QueryException::class);
 
         DonorQrToken::factory()->create([
             'donor_id' => $this->donor->id,
@@ -313,7 +315,7 @@ class DonorQuestionnaireTest extends TestCase
         $screening = $this->answerQuestionnaire();
         $this->bookToday();
 
-        $laboratory = User::factory()->bloodCenterStaff($this->facility, Department::Laboratory)->create();
+        $laboratory = User::factory()->bloodCenterStaff($this->facility, Department::Testing)->create();
 
         $this->actingAs($laboratory)
             ->getJson($this->url($screening))

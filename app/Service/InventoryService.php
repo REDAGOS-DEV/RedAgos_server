@@ -81,7 +81,7 @@ class InventoryService
      *
      * The laboratory hands a donation over by setting it `completed`; this is
      * the other side of that handover. It exists as its own endpoint because
-     * Inventory holds `donations.view` but not `lab.view`, so the laboratory
+     * Issuance holds `donations.view` but not `lab.view`, so the laboratory
      * queue is closed to them, and because neither that queue nor
      * GET /blood-center/donations carries the declaration ledger this needs.
      *

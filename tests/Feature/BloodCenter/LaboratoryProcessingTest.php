@@ -28,7 +28,9 @@ class LaboratoryProcessingTest extends TestCase
 
     private Facility $facility;
 
-    private User $lab;
+    private User $testing;
+
+    private User $processing;
 
     private BloodType $bloodType;
 
@@ -41,7 +43,8 @@ class LaboratoryProcessingTest extends TestCase
         parent::setUp();
 
         $this->facility = Facility::factory()->approved()->create();
-        $this->lab = User::factory()->bloodCenterStaff($this->facility, Department::Laboratory)->create();
+        $this->testing = User::factory()->bloodCenterStaff($this->facility, Department::Testing)->create();
+        $this->processing = User::factory()->bloodCenterStaff($this->facility, Department::Processing)->create();
 
         $this->component = BloodComponent::factory()->create(['name' => 'Packed RBC']);
 
@@ -53,7 +56,7 @@ class LaboratoryProcessingTest extends TestCase
         $profile = $donor->donorProfile;
         $this->bloodType = $profile->bloodType;
 
-        // Handed over by Donor/Collection.
+        // Handed over by Collection.
         $this->donation = Donation::factory()->create([
             'facility_id' => $this->facility->id,
             'donor_id' => $profile->donor_id,
@@ -66,7 +69,7 @@ class LaboratoryProcessingTest extends TestCase
      */
     private function recordResult(array $overrides = []): TestResponse
     {
-        return $this->actingAs($this->lab)->postJson(
+        return $this->actingAs($this->testing)->postJson(
             "/api/blood-center/laboratory/donations/{$this->donation->id}/results",
             [
                 'result' => 'passed',
@@ -78,7 +81,7 @@ class LaboratoryProcessingTest extends TestCase
 
     private function declareComponents(int $quantity = 2): TestResponse
     {
-        return $this->actingAs($this->lab)->postJson(
+        return $this->actingAs($this->processing)->postJson(
             "/api/blood-center/laboratory/donations/{$this->donation->id}/components",
             ['components' => [['component_id' => $this->component->id, 'quantity' => $quantity]]]
         );
@@ -86,7 +89,7 @@ class LaboratoryProcessingTest extends TestCase
 
     private function complete(): TestResponse
     {
-        return $this->actingAs($this->lab)->patchJson(
+        return $this->actingAs($this->processing)->patchJson(
             "/api/blood-center/laboratory/donations/{$this->donation->id}/status",
             ['status' => 'completed']
         );
@@ -95,7 +98,7 @@ class LaboratoryProcessingTest extends TestCase
     public function test_the_queue_shows_donations_handed_over_by_collection(): void
     {
         $ids = collect(
-            $this->actingAs($this->lab)
+            $this->actingAs($this->testing)
                 ->getJson('/api/blood-center/laboratory/queue')
                 ->assertOk()
                 ->json('data')
@@ -120,7 +123,7 @@ class LaboratoryProcessingTest extends TestCase
 
         $this->assertDatabaseHas('donation_test_results', [
             'donation_id' => $this->donation->id,
-            'recorded_by' => $this->lab->id,
+            'recorded_by' => $this->testing->id,
         ]);
     }
 
@@ -176,7 +179,7 @@ class LaboratoryProcessingTest extends TestCase
         $this->recordResult()->assertCreated();
 
         $this->assertDatabaseHas('audit_logs', [
-            'actor_id' => $this->lab->id,
+            'actor_id' => $this->testing->id,
             'action' => 'donor.blood_type_verified',
         ]);
     }
@@ -292,7 +295,7 @@ class LaboratoryProcessingTest extends TestCase
     {
         $this->recordResult()->assertCreated();
 
-        $this->actingAs($this->lab)
+        $this->actingAs($this->processing)
             ->postJson("/api/blood-center/laboratory/donations/{$this->donation->id}/components", [
                 'components' => [
                     ['component_id' => $this->component->id, 'quantity' => 1],
@@ -307,7 +310,7 @@ class LaboratoryProcessingTest extends TestCase
     {
         $this->recordResult(['result' => 'reactive'])->assertCreated();
 
-        $this->actingAs($this->lab)
+        $this->actingAs($this->processing)
             ->patchJson("/api/blood-center/laboratory/donations/{$this->donation->id}/status", ['status' => 'rejected'])
             ->assertOk()
             ->assertJsonPath('data.status', 'rejected');
@@ -316,7 +319,7 @@ class LaboratoryProcessingTest extends TestCase
     public function test_the_laboratory_cannot_set_a_collection_status(): void
     {
         foreach (['registered', 'screening', 'collected', 'tested'] as $status) {
-            $this->actingAs($this->lab)
+            $this->actingAs($this->processing)
                 ->patchJson("/api/blood-center/laboratory/donations/{$this->donation->id}/status", ['status' => $status])
                 ->assertStatus(422)
                 ->assertJsonValidationErrors('status');
@@ -331,7 +334,7 @@ class LaboratoryProcessingTest extends TestCase
             'status' => DonationStatus::Collected,
         ]);
 
-        $this->actingAs($this->lab)
+        $this->actingAs($this->testing)
             ->postJson("/api/blood-center/laboratory/donations/{$foreign->id}/results", [
                 'result' => 'passed',
                 'blood_type_id' => $this->bloodType->id,
@@ -353,12 +356,56 @@ class LaboratoryProcessingTest extends TestCase
             ->assertForbidden();
     }
 
-    public function test_inventory_staff_cannot_clear_a_donation_for_issue(): void
+    public function test_issuance_staff_cannot_clear_a_donation_for_issue(): void
     {
-        $inventory = User::factory()->bloodCenterStaff($this->facility, Department::Inventory)->create();
+        $issuance = User::factory()->bloodCenterStaff($this->facility, Department::Issuance)->create();
 
-        $this->actingAs($inventory)
+        $this->actingAs($issuance)
             ->patchJson("/api/blood-center/laboratory/donations/{$this->donation->id}/status", ['status' => 'completed'])
+            ->assertForbidden();
+    }
+
+    public function test_testing_and_processing_both_read_the_queue(): void
+    {
+        $this->actingAs($this->testing)->getJson('/api/blood-center/laboratory/queue')->assertOk();
+        $this->actingAs($this->processing)->getJson('/api/blood-center/laboratory/queue')->assertOk();
+
+        $this->actingAs($this->processing)
+            ->getJson("/api/blood-center/laboratory/donations/{$this->donation->id}")
+            ->assertOk();
+    }
+
+    public function test_testing_staff_cannot_declare_components_or_clear_a_donation(): void
+    {
+        $this->recordResult()->assertCreated();
+
+        $this->actingAs($this->testing)
+            ->postJson("/api/blood-center/laboratory/donations/{$this->donation->id}/components", [
+                'components' => [['component_id' => $this->component->id, 'quantity' => 1]],
+            ])
+            ->assertForbidden();
+
+        $this->declareComponents()->assertCreated();
+
+        $this->actingAs($this->testing)
+            ->patchJson("/api/blood-center/laboratory/donations/{$this->donation->id}/status", ['status' => 'completed'])
+            ->assertForbidden();
+
+        $this->actingAs($this->testing)
+            ->patchJson("/api/blood-center/laboratory/donations/{$this->donation->id}/status", [
+                'status' => 'rejected',
+                'rejection_reason' => 'Reactive',
+            ])
+            ->assertForbidden();
+    }
+
+    public function test_processing_staff_cannot_record_a_test_result(): void
+    {
+        $this->actingAs($this->processing)
+            ->postJson("/api/blood-center/laboratory/donations/{$this->donation->id}/results", [
+                'result' => 'passed',
+                'blood_type_id' => $this->bloodType->id,
+            ])
             ->assertForbidden();
     }
 }

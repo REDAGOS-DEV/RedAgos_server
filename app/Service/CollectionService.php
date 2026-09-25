@@ -22,10 +22,10 @@ use Illuminate\Support\Facades\Log;
 use Throwable;
 
 /**
- * The Donor/Collection counter: who is expected, who arrived, and what was drawn.
+ * The Collection counter: who is expected, who arrived, and what was drawn.
  *
- * This department owns a donation from registration to collection. Laboratory
- * takes it from `collected` onward — see "Who creates a donation and owns its
+ * This department owns a donation from registration to collection. Testing and
+ * Processing take it from `collected` onward — see "Who creates a donation and owns its
  * status" in docs/IMPLEMENTATION_DECISIONS.md. Nothing here may write `tested`
  * or `completed`, which is what keeps "cleared for issue to a patient" a
  * laboratory decision.
@@ -393,13 +393,13 @@ class CollectionService
             $this->notifyDonor(
                 $donation,
                 // The outcome goes with it: a donor who may never donate again
-            // must not be sent an email inviting them to book another
-            // appointment.
-            fn (User $donor): DonorDeferred => new DonorDeferred(
-                $donation,
-                $donation->rejection_reason,
-                $outcome
-            ),
+                // must not be sent an email inviting them to book another
+                // appointment.
+                fn (User $donor): DonorDeferred => new DonorDeferred(
+                    $donation,
+                    $donation->rejection_reason,
+                    $outcome
+                ),
                 'deferral notice'
             );
         }

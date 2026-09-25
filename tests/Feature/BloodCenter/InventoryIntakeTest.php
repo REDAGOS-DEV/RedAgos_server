@@ -382,7 +382,7 @@ class InventoryIntakeTest extends TestCase
     {
         $lab = User::factory()->bloodCenterStaff()->create([
             'facility_id' => $this->facilityId,
-            'department' => Department::Laboratory,
+            'department' => Department::Testing,
             'is_supervisor' => false,
         ]);
 

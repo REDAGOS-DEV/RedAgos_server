@@ -32,7 +32,7 @@ use Illuminate\Validation\Rules\Password;
  *
  * The role is taken from the facility's own type instead, which is the same
  * answer FacilityTypeName gives the onboarding flow. Departments are asked for
- * only where they mean something: the matrix charters the four departments of a
+ * only where they mean something: the matrix charters the five departments of a
  * blood centre, and a blood bank has none of them, so a blood bank account is
  * authorised by its role and its facility rather than by a posting.
  *
@@ -54,7 +54,7 @@ class AddFacilityUser extends Command
                             {--username= : Defaults to one derived from the email}
                             {--position= : Job title, optional}
                             {--employee-id= : Badge number, unique within the facility}
-                            {--department= : collection, laboratory, inventory or billing (blood centers only)}
+                            {--department= : collection, testing, processing, issuance or billing (blood centers only)}
                             {--supervisor : Grant the management level instead of a department}
                             {--primary : Also record this account as the facility contact}
                             {--password= : Leave unset to be prompted; an argument is visible in shell history}

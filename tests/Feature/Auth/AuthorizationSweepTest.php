@@ -156,7 +156,7 @@ class AuthorizationSweepTest extends TestCase
         // department is a plain column, so it can be set on an account that
         // holds no blood_center role. role: must still refuse first.
         $donor = User::factory()->donor()->create();
-        $donor->department = Department::Inventory;
+        $donor->department = Department::Issuance;
         $donor->save();
 
         $this->actingAs($donor->fresh())

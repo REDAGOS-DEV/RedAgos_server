@@ -27,7 +27,9 @@ class DonationToInventoryChainTest extends TestCase
 
     private User $collection;
 
-    private User $lab;
+    private User $testing;
+
+    private User $processing;
 
     private User $inventory;
 
@@ -43,8 +45,9 @@ class DonationToInventoryChainTest extends TestCase
 
         $this->facility = Facility::factory()->approved()->create();
         $this->collection = User::factory()->bloodCenterStaff($this->facility, Department::Collection)->create();
-        $this->lab = User::factory()->bloodCenterStaff($this->facility, Department::Laboratory)->create();
-        $this->inventory = User::factory()->bloodCenterStaff($this->facility, Department::Inventory)->create();
+        $this->testing = User::factory()->bloodCenterStaff($this->facility, Department::Testing)->create();
+        $this->processing = User::factory()->bloodCenterStaff($this->facility, Department::Processing)->create();
+        $this->inventory = User::factory()->bloodCenterStaff($this->facility, Department::Issuance)->create();
 
         $this->donor = User::factory()->donor()->create();
         $this->packedRbc = BloodComponent::factory()->create(['name' => 'Packed RBC']);
@@ -53,7 +56,7 @@ class DonationToInventoryChainTest extends TestCase
 
     public function test_a_donation_travels_from_the_counter_to_issuable_stock(): void
     {
-        // --- Donor/Collection -------------------------------------------
+        // --- Collection -----------------------------------------------
         $donationId = $this->actingAs($this->collection)
             ->postJson('/api/blood-center/donations', ['donor_uuid' => $this->donor->uuid])
             ->assertCreated()
@@ -68,10 +71,10 @@ class DonationToInventoryChainTest extends TestCase
             ->assertCreated()
             ->assertJsonPath('data.status', 'collected');
 
-        // --- Laboratory/Processing ---------------------------------------
+        // --- Testing and Processing ---------------------------------------
         $bloodTypeId = $this->donor->donorProfile->blood_type_id;
 
-        $this->actingAs($this->lab)
+        $this->actingAs($this->testing)
             ->postJson("/api/blood-center/laboratory/donations/{$donationId}/results", [
                 'result' => 'passed',
                 'blood_type_id' => $bloodTypeId,
@@ -79,7 +82,7 @@ class DonationToInventoryChainTest extends TestCase
             ->assertCreated()
             ->assertJsonPath('data.status', 'tested');
 
-        $this->actingAs($this->lab)
+        $this->actingAs($this->processing)
             ->postJson("/api/blood-center/laboratory/donations/{$donationId}/components", [
                 'components' => [
                     ['component_id' => $this->packedRbc->id, 'quantity' => 1],
@@ -88,12 +91,12 @@ class DonationToInventoryChainTest extends TestCase
             ])
             ->assertCreated();
 
-        $this->actingAs($this->lab)
+        $this->actingAs($this->processing)
             ->patchJson("/api/blood-center/laboratory/donations/{$donationId}/status", ['status' => 'completed'])
             ->assertOk()
             ->assertJsonPath('data.status', 'completed');
 
-        // --- Inventory/Storage --------------------------------------------
+        // --- Issuance -----------------------------------------------------
         $this->actingAs($this->inventory)
             ->postJson('/api/blood-center/inventory', [
                 'donation_id' => $donationId,
@@ -182,21 +185,21 @@ class DonationToInventoryChainTest extends TestCase
     {
         $donationId = $this->collectedDonation();
 
-        $this->actingAs($this->lab)
+        $this->actingAs($this->testing)
             ->postJson("/api/blood-center/laboratory/donations/{$donationId}/results", [
                 'result' => 'reactive',
                 'blood_type_id' => $this->donor->donorProfile->blood_type_id,
             ])
             ->assertCreated();
 
-        $this->actingAs($this->lab)
+        $this->actingAs($this->processing)
             ->postJson("/api/blood-center/laboratory/donations/{$donationId}/components", [
                 'components' => [['component_id' => $this->packedRbc->id, 'quantity' => 1]],
             ])
             ->assertCreated();
 
         // Cannot be cleared...
-        $this->actingAs($this->lab)
+        $this->actingAs($this->processing)
             ->patchJson("/api/blood-center/laboratory/donations/{$donationId}/status", ['status' => 'completed'])
             ->assertStatus(422);
 
@@ -240,16 +243,16 @@ class DonationToInventoryChainTest extends TestCase
     {
         $id = $this->collectedDonation();
 
-        $this->actingAs($this->lab)
+        $this->actingAs($this->testing)
             ->postJson("/api/blood-center/laboratory/donations/{$id}/results", [
                 'result' => 'passed',
                 'blood_type_id' => $this->donor->donorProfile->blood_type_id,
             ]);
 
-        $this->actingAs($this->lab)
+        $this->actingAs($this->processing)
             ->postJson("/api/blood-center/laboratory/donations/{$id}/components", ['components' => $components]);
 
-        $this->actingAs($this->lab)
+        $this->actingAs($this->processing)
             ->patchJson("/api/blood-center/laboratory/donations/{$id}/status", ['status' => 'completed']);
 
         return $id;

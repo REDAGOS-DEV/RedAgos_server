@@ -65,16 +65,18 @@ enum DonationStatus: string
     /**
      * Get the department that owns transitions out of this status.
      *
-     * Donor/Collection registers a donor and takes them through screening to
-     * collection; Laboratory/Processing takes it from there to cleared stock.
-     * Recorded in docs/IMPLEMENTATION_DECISIONS.md, "Who creates a donation and
-     * owns its status".
+     * Collection registers a donor and takes them through screening to
+     * collection; Testing records the result that makes it `tested`; Processing
+     * takes it from there to cleared stock or rejects it. Recorded in
+     * docs/IMPLEMENTATION_DECISIONS.md, "Who creates a donation and owns its
+     * status".
      */
     public function owningDepartment(): ?Department
     {
         return match ($this) {
             self::Registered, self::Screening => Department::Collection,
-            self::Collected, self::Tested => Department::Laboratory,
+            self::Collected => Department::Testing,
+            self::Tested => Department::Processing,
             self::Completed, self::Rejected => null,
         };
     }

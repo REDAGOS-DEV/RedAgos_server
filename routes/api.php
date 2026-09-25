@@ -249,7 +249,7 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
                 ->whereNumber('bloodRequest');
         });
 
-        // Billing. Inventory holds billing.view read-only so release can check
+        // Billing. Issuance holds billing.view read-only so release can check
         // whether anything is owed without being able to alter the answer;
         // recording money is the Billing department's alone.
         Route::prefix('billings')->group(function (): void {
@@ -281,7 +281,7 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         Route::patch('/notifications/{notification}', [FacilityNotificationController::class, 'update'])
             ->whereUuid('notification');
 
-        // Donor/Collection — the counter. Donors are not owned by a facility,
+        // Collection — the counter. Donors are not owned by a facility,
         // so DonorDirectoryService is what decides whether a caller sees a full
         // record or the standardised cross-facility summary.
         Route::prefix('donors')->group(function (): void {
@@ -348,8 +348,10 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
                 ->middleware('can:donations.record')->whereNumber('donation');
         });
 
-        // Laboratory/Processing — the only place `completed` can be written,
-        // and `completed` is what blood-unit intake gates on.
+        // Testing and Processing — the only place `completed` can be written,
+        // and `completed` is what blood-unit intake gates on. Both departments
+        // read the same queue; Testing records results, Processing records
+        // components and completes or rejects.
         Route::prefix('laboratory')->group(function (): void {
             Route::get('/queue', [BloodCenterLaboratoryController::class, 'index'])
                 ->middleware('can:lab.view');
@@ -361,7 +363,7 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
                 ->middleware('can:lab.record_result')->whereNumber('donation');
 
             Route::post('/donations/{donation}/components', [BloodCenterLaboratoryController::class, 'declareComponents'])
-                ->middleware('can:lab.record_result')->whereNumber('donation');
+                ->middleware('can:lab.record_components')->whereNumber('donation');
 
             Route::patch('/donations/{donation}/status', [BloodCenterLaboratoryController::class, 'updateStatus'])
                 ->middleware('can:lab.update_status')->whereNumber('donation');

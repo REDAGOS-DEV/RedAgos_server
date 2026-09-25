@@ -14,9 +14,9 @@ use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Laboratory/Processing: what was found, what it yielded, and whether it may be issued.
+ * Testing and Processing: what was found, what it yielded, and whether it may be issued.
  *
- * This department owns a donation from `collected` to `completed`. It is the
+ * These two departments own a donation from `collected` to `completed`. It is the
  * only place `completed` can be written, and `completed` is what blood-unit
  * intake gates on — so the rules here are the last thing between an untested
  * bag and a patient.
@@ -286,7 +286,7 @@ class LaboratoryService
 
         // A donation the counter has not finished with is not the laboratory's
         // to reject: turning a donor away before they have been screened is a
-        // Donor/Collection decision, and only that department closes the
+        // Collection decision, and only that department closes the
         // appointment the donor booked.
         if (! in_array($donation->status, [DonationStatus::Collected, DonationStatus::Tested], true)) {
             throw $this->refuse(
@@ -303,7 +303,7 @@ class LaboratoryService
      * Only fills a blank, and only from a `passed` result. It overwrites
      * nothing, so it does not disturb the mismatch rule next door: a profile
      * that already carries a type still wins a disagreement by refusing the
-     * result outright, and correcting it stays a Donor/Collection action.
+     * result outright, and correcting it stays a Collection action.
      *
      * Without this a donor registered at the counter without a blood type was
      * stuck: the laboratory could type their bag, but the type never reached
@@ -341,7 +341,7 @@ class LaboratoryService
      * records is wrong — and blood_units derives its type from the donor
      * profile. Letting the donation proceed would put a unit into stock labelled
      * with a type the laboratory did not read off the bag. Correcting the donor
-     * profile is a Donor/Collection action, so this refuses rather than silently
+     * profile is a Collection action, so this refuses rather than silently
      * picking a winner.
      */
     private function guardBloodTypeMatchesDonor(Donation $donation, int $typedBloodTypeId): void
@@ -355,7 +355,7 @@ class LaboratoryService
         throw $this->refuse(
             409,
             'blood_type_mismatch',
-            'The typed blood type does not match the donor record. Have Donor/Collection correct the donor profile before recording this result.'
+            'The typed blood type does not match the donor record. Have Collection correct the donor profile before recording this result.'
         );
     }
 

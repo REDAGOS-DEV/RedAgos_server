@@ -67,7 +67,7 @@ class BillingAndNotificationTest extends TestCase
         parent::setUp();
 
         $this->centre = Facility::factory()->approved()->create();
-        $this->inventoryStaff = User::factory()->bloodCenterStaff($this->centre, Department::Inventory)->create();
+        $this->inventoryStaff = User::factory()->bloodCenterStaff($this->centre, Department::Issuance)->create();
         $this->billingStaff = User::factory()->bloodCenterStaff($this->centre, Department::Billing)->create();
 
         $this->hospital = Facility::factory()->bloodBank()->approved()->create();

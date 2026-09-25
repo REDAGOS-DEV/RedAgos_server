@@ -309,7 +309,7 @@ class FacilityManagementTest extends TestCase
                 'primary_account' => [
                     'facility_id' => $otherFacility->id,
                     'is_supervisor' => false,
-                    'department' => 'inventory',
+                    'department' => 'issuance',
                     'roles' => ['admin'],
                     'account_status' => AccountStatus::Active->value,
                     'email_verified_at' => '2020-01-01T00:00:00+00:00',

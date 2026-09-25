@@ -2,13 +2,22 @@
 
 namespace App\Enums;
 
+/**
+ * The operational departments of a blood centre.
+ *
+ * Laboratory/Processing was split into Testing and Processing, and
+ * Inventory/Storage & Blood Request/Release became Issuance. Recorded in
+ * docs/IMPLEMENTATION_DECISIONS.md, "Blood-centre departments: five, not four".
+ */
 enum Department: string
 {
     case Collection = 'collection';
 
-    case Laboratory = 'laboratory';
+    case Testing = 'testing';
 
-    case Inventory = 'inventory';
+    case Processing = 'processing';
+
+    case Issuance = 'issuance';
 
     case Billing = 'billing';
 
@@ -32,9 +41,10 @@ enum Department: string
     public function label(): string
     {
         return match ($this) {
-            self::Collection => 'Donor / Collection',
-            self::Laboratory => 'Laboratory / Processing',
-            self::Inventory => 'Inventory / Storage & Blood Request / Release',
+            self::Collection => 'Collection',
+            self::Testing => 'Testing',
+            self::Processing => 'Processing',
+            self::Issuance => 'Issuance',
             self::Billing => 'Billing / Payment',
         };
     }

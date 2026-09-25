@@ -2,7 +2,7 @@
 
 ## Final Organizational Structure
 
-RedAgos uses **four operational departments** within the Blood Center, supported by an **Administrator/Supervisor management level**.
+RedAgos uses **five operational departments** within the Blood Center, supported by an **Administrator/Supervisor management level**.
 
 ```text
                          REDAGOS
@@ -13,12 +13,11 @@ RedAgos uses **four operational departments** within the Blood Center, supported
  ADMINISTRATOR / SUPERVISOR          OPERATIONAL STAFF
  Overall Blood Center View                    │
                                               │
-       ┌──────────────────────────────────────┼─────────────────────┐
-       │                  │                   │                     │
-       ▼                  ▼                   ▼                     ▼
- DONOR /            LABORATORY /       INVENTORY / STORAGE    BILLING /
- COLLECTION          PROCESSING        & BLOOD REQUEST /       PAYMENT
-                                           RELEASE
+     ┌──────────────┬──────────────┬──────────┴───┬──────────────┐
+     │              │              │              │              │
+     ▼              ▼              ▼              ▼              ▼
+ COLLECTION      TESTING      PROCESSING      ISSUANCE       BILLING /
+                                                              PAYMENT
 ```
 
 ---
@@ -38,11 +37,11 @@ RedAgos uses **four operational departments** within the Blood Center, supported
 - Oversee system configuration and Blood Center-related settings.
 - Generate and review consolidated operational reports.
 
-> **Note:** Administrator/Supervisor is a management/access level, not one of the four operational departments.
+> **Note:** Administrator/Supervisor is a management/access level, not one of the five operational departments.
 
 ---
 
-## 2. Donor / Collection Department
+## 2. Collection Department
 
 **Primary responsibility:** Manage donor-related activities and blood collection operations.
 
@@ -61,28 +60,43 @@ RedAgos uses **four operational departments** within the Blood Center, supported
 
 ---
 
-## 3. Laboratory / Processing Department
+## 3. Testing Department
 
-**Primary responsibility:** Manage the recording and monitoring of blood screening and processing information.
+**Primary responsibility:** Record the screening results and blood type of each collected unit.
+
+### Operational Responsibilities
+
+- Receive blood collection information for testing.
+- Record blood screening and laboratory results provided by authorized personnel.
+- Record the blood type the laboratory determined.
+- Validate and document testing-related results.
+
+### Scope Boundary
+
+RedAgos does **not** perform the actual physical laboratory testing or cross-matching. Qualified healthcare professionals perform those procedures, while the system records the resulting information and status.
+
+---
+
+## 4. Processing Department
+
+**Primary responsibility:** Record how each tested unit was processed and decide whether it may be issued.
 
 ### Operational Responsibilities
 
 - Receive blood collection information for processing.
-- Record blood screening and laboratory results provided by authorized personnel.
-- Record blood type and blood component information.
+- Record blood component information (what each unit was separated into).
 - Record and update blood processing status.
-- Validate and document processing-related results.
 - Maintain processing records associated with collected blood.
-- Update blood status when processing requirements have been completed.
+- Update blood status when processing requirements have been completed: clear the unit for issue, or reject it.
 - Provide validated blood information for subsequent inventory management.
 
 ### Scope Boundary
 
-RedAgos does **not** perform the actual physical laboratory testing, blood extraction, or cross-matching. Qualified healthcare professionals perform those procedures, while the system records the resulting information and status.
+RedAgos does **not** perform the physical component separation. Qualified healthcare professionals perform it, while the system records the resulting information and status.
 
 ---
 
-## 4. Inventory / Storage & Blood Request / Release Department
+## 5. Issuance Department
 
 **Primary responsibility:** Manage blood inventory and coordinate the fulfillment and release of blood requests.
 
@@ -106,7 +120,7 @@ RedAgos does **not** perform the actual physical laboratory testing, blood extra
 
 ---
 
-## 5. Billing / Payment Department
+## 6. Billing / Payment Department
 
 **Primary responsibility:** Manage financial transactions associated with blood request fulfillment.
 
@@ -127,7 +141,7 @@ RedAgos does **not** perform the actual physical laboratory testing, blood extra
 
 ## Access and UI Principle
 
-The **Administrator/Supervisor** receives the overall Blood Center view, while each of the four operational departments receives a **department-specific dashboard and navigation**.
+The **Administrator/Supervisor** receives the overall Blood Center view, while each of the five operational departments receives a **department-specific dashboard and navigation**.
 
 Department permissions should determine what staff members can:
 

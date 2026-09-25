@@ -44,7 +44,7 @@ class StaffManagementTest extends TestCase
             'email' => 'maria.guerra@example.com',
             'phone' => '09171234567',
             'position' => 'Medical Technologist',
-            'department' => Department::Laboratory->value,
+            'department' => Department::Testing->value,
             'password' => 'Password123',
             'password_confirmation' => 'Password123',
             ...$overrides,
@@ -56,7 +56,7 @@ class StaffManagementTest extends TestCase
         $response = $this->actingAs($this->supervisor)
             ->postJson('/api/blood-center/staff', $this->payload())
             ->assertCreated()
-            ->assertJsonPath('data.department', 'laboratory')
+            ->assertJsonPath('data.department', 'testing')
             ->assertJsonPath('data.is_supervisor', false)
             ->assertJsonPath('data.account_status', AccountStatus::PendingVerification->value)
             ->assertJsonPath('data.email_verified', false);
@@ -65,7 +65,7 @@ class StaffManagementTest extends TestCase
 
         $this->assertSame($this->facility->id, $created->facility_id, 'facility_id must come from the actor.');
         $this->assertTrue($created->hasRole(RoleName::BloodCenter));
-        $this->assertSame(Department::Laboratory, $created->department);
+        $this->assertSame(Department::Testing, $created->department);
     }
 
     public function test_a_created_account_never_takes_a_facility_from_request_input(): void
@@ -166,16 +166,16 @@ class StaffManagementTest extends TestCase
 
     public function test_the_roster_filters_by_department(): void
     {
-        $laboratory = User::factory()->bloodCenterStaff($this->facility, Department::Laboratory)->create();
+        $testing = User::factory()->bloodCenterStaff($this->facility, Department::Testing)->create();
         User::factory()->bloodCenterStaff($this->facility, Department::Billing)->create();
 
         $rows = $this->actingAs($this->supervisor)
-            ->getJson('/api/blood-center/staff?department=laboratory')
+            ->getJson('/api/blood-center/staff?department=testing')
             ->assertOk()
             ->json('data');
 
         $this->assertCount(1, $rows);
-        $this->assertSame($laboratory->uuid, $rows[0]['uuid']);
+        $this->assertSame($testing->uuid, $rows[0]['uuid']);
     }
 
     public function test_a_supervisor_reassigns_a_colleagues_department(): void

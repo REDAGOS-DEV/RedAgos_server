@@ -76,7 +76,7 @@ class DepartmentPermissionMatrixTest extends TestCase
 
     public function test_a_department_less_account_cannot_reach_an_operational_endpoint(): void
     {
-        // reference-data is shared by all four departments, which is exactly why
+        // reference-data is shared by every department, which is exactly why
         // it needs an ability of its own — role plus facility status alone would
         // wave an unassigned account straight through.
         $staff = User::factory()->bloodCenterStaff()->create();
@@ -101,18 +101,42 @@ class DepartmentPermissionMatrixTest extends TestCase
         $this->assertNotContains('inventory.create', $billing->abilities());
     }
 
-    public function test_laboratory_staff_may_read_inventory_but_not_write_it(): void
+    public function test_testing_and_processing_staff_may_read_inventory_but_not_write_it(): void
     {
         $facility = Facility::factory()->approved()->create();
-        $laboratory = User::factory()->bloodCenterStaff($facility, Department::Laboratory)->create();
 
-        $this->actingAs($laboratory)
-            ->getJson('/api/blood-center/inventory')
-            ->assertOk();
+        foreach ([Department::Testing, Department::Processing] as $department) {
+            $staff = User::factory()->bloodCenterStaff($facility, $department)->create();
 
-        $this->actingAs($laboratory)
-            ->postJson('/api/blood-center/inventory', [])
-            ->assertForbidden();
+            $this->actingAs($staff)
+                ->getJson('/api/blood-center/inventory')
+                ->assertOk();
+
+            $this->actingAs($staff)
+                ->postJson('/api/blood-center/inventory', [])
+                ->assertForbidden();
+        }
+    }
+
+    /**
+     * Pinned by name for the same reason as the questionnaire test below: the
+     * matrix-derived assertions cannot notice the split being undone.
+     */
+    public function test_testing_and_processing_split_the_laboratory_writes(): void
+    {
+        $testing = DepartmentPermissions::forDepartment(Department::Testing);
+        $processing = DepartmentPermissions::forDepartment(Department::Processing);
+
+        $this->assertContains('lab.view', $testing);
+        $this->assertContains('lab.view', $processing);
+
+        $this->assertContains('lab.record_result', $testing);
+        $this->assertNotContains('lab.record_components', $testing);
+        $this->assertNotContains('lab.update_status', $testing);
+
+        $this->assertContains('lab.record_components', $processing);
+        $this->assertContains('lab.update_status', $processing);
+        $this->assertNotContains('lab.record_result', $processing);
     }
 
     public function test_collection_staff_cannot_discard_a_unit(): void
@@ -125,31 +149,31 @@ class DepartmentPermissionMatrixTest extends TestCase
             ->assertForbidden();
     }
 
-    public function test_inventory_staff_reach_every_inventory_route(): void
+    public function test_issuance_staff_reach_every_inventory_route(): void
     {
         $facility = Facility::factory()->approved()->create();
-        $inventory = User::factory()->bloodCenterStaff($facility, Department::Inventory)->create();
+        $issuance = User::factory()->bloodCenterStaff($facility, Department::Issuance)->create();
 
-        $this->actingAs($inventory)->getJson('/api/blood-center/inventory')->assertOk();
-        $this->actingAs($inventory)->getJson('/api/blood-center/inventory/summary')->assertOk();
+        $this->actingAs($issuance)->getJson('/api/blood-center/inventory')->assertOk();
+        $this->actingAs($issuance)->getJson('/api/blood-center/inventory/summary')->assertOk();
 
         // 422 rather than 403: the gate passed and validation is what refused.
-        $this->actingAs($inventory)
+        $this->actingAs($issuance)
             ->postJson('/api/blood-center/inventory', [])
             ->assertStatus(422);
     }
 
     public function test_the_permission_list_is_exposed_on_the_authenticated_user(): void
     {
-        $staff = User::factory()->bloodCenterStaff(null, Department::Laboratory)->create();
+        $staff = User::factory()->bloodCenterStaff(null, Department::Testing)->create();
 
         $this->actingAs($staff)
             ->getJson('/api/user')
             ->assertOk()
-            ->assertJsonPath('data.department', 'laboratory')
-            ->assertJsonPath('data.department_label', 'Laboratory / Processing')
+            ->assertJsonPath('data.department', 'testing')
+            ->assertJsonPath('data.department_label', 'Testing')
             ->assertJsonPath('data.is_supervisor', false)
-            ->assertJsonPath('data.permissions', DepartmentPermissions::forDepartment(Department::Laboratory));
+            ->assertJsonPath('data.permissions', DepartmentPermissions::forDepartment(Department::Testing));
     }
 
     public function test_the_authenticated_user_payload_carries_the_facility(): void
@@ -207,9 +231,11 @@ class DepartmentPermissionMatrixTest extends TestCase
             'The questionnaire must not be gated on the general donor-view ability.'
         );
 
-        $laboratory = DepartmentPermissions::forDepartment(Department::Laboratory);
+        foreach ([Department::Testing, Department::Processing] as $department) {
+            $abilities = DepartmentPermissions::forDepartment($department);
 
-        $this->assertContains('donations.view', $laboratory);
-        $this->assertNotContains('donors.view_questionnaire', $laboratory);
+            $this->assertContains('donations.view', $abilities);
+            $this->assertNotContains('donors.view_questionnaire', $abilities);
+        }
     }
 }

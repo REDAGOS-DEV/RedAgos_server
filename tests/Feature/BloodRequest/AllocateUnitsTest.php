@@ -52,7 +52,7 @@ class AllocateUnitsTest extends TestCase
         parent::setUp();
 
         $this->centre = Facility::factory()->approved()->create();
-        $this->staff = User::factory()->bloodCenterStaff($this->centre, Department::Inventory)->create();
+        $this->staff = User::factory()->bloodCenterStaff($this->centre, Department::Issuance)->create();
 
         $this->hospital = Facility::factory()->bloodBank()->approved()->create();
         $this->requester = User::factory()->bloodBankStaff($this->hospital)->create();

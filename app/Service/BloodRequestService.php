@@ -368,7 +368,7 @@ class BloodRequestService
     /**
      * Notify the staff who will have to act on a newly submitted request.
      *
-     * Addressed to the target facility's inventory department, which
+     * Addressed to the target facility's Issuance department, which
      * docs/BLOOD-CENTER.md charters to receive and process incoming requests.
      * Supervisors are included because they hold every ability and may be the
      * only account staffing a small centre out of hours.
@@ -378,7 +378,7 @@ class BloodRequestService
         $recipients = User::query()
             ->where('facility_id', $request->target_facility_id)
             ->where(function ($query): void {
-                $query->where('department', Department::Inventory->value)
+                $query->where('department', Department::Issuance->value)
                     ->orWhere('is_supervisor', true);
             })
             ->get();

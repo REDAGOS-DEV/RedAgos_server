@@ -87,7 +87,7 @@ class CollectionWorkflowTest extends TestCase
             ->postJson("/api/blood-center/donations/{$id}/collection", ['volume_ml' => 450])
             ->assertCreated()
             ->assertJsonPath('data.status', 'collected')
-            ->assertJsonPath('data.owning_department', 'laboratory');
+            ->assertJsonPath('data.owning_department', 'testing');
 
         $this->assertSame(450, Donation::findOrFail($id)->volume_ml);
     }
@@ -505,7 +505,7 @@ class CollectionWorkflowTest extends TestCase
         // only Laboratory may set it — so collection alone does not yet make
         // the inventory module reachable. Building Laboratory is what closes
         // this gap; until then this refusal is correct, not a defect.
-        $inventoryStaff = User::factory()->bloodCenterStaff($this->facility, Department::Inventory)->create();
+        $inventoryStaff = User::factory()->bloodCenterStaff($this->facility, Department::Issuance)->create();
 
         $this->actingAs($inventoryStaff)
             ->postJson('/api/blood-center/inventory', [

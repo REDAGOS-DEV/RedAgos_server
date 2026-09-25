@@ -54,7 +54,7 @@ class SubsidyTest extends TestCase
         $this->centre = Facility::factory()->approved()->create();
 
         $this->billingStaff = User::factory()->bloodCenterStaff($this->centre, Department::Billing)->create();
-        $this->inventoryStaff = User::factory()->bloodCenterStaff($this->centre, Department::Inventory)->create();
+        $this->inventoryStaff = User::factory()->bloodCenterStaff($this->centre, Department::Issuance)->create();
 
         $this->bloodType = BloodType::firstOrCreate(['code' => 'O+'], ['label' => 'O+']);
         $this->component = BloodComponent::factory()->create(['name' => 'Packed RBC']);

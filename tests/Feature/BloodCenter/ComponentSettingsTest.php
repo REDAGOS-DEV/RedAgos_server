@@ -137,7 +137,7 @@ class ComponentSettingsTest extends TestCase
     public function test_a_department_staff_member_cannot_configure_components(): void
     {
         $inventory = User::factory()->bloodCenterStaff()->create([
-            'department' => Department::Inventory,
+            'department' => Department::Issuance,
             'is_supervisor' => false,
         ]);
 
