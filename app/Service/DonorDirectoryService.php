@@ -138,6 +138,24 @@ class DonorDirectoryService
                 'status' => $donation->status?->value,
                 'status_label' => $donation->status?->label(),
                 'volume_ml' => $donation->volume_ml,
+
+                // What the screening officer decided, and why. Without this a
+                // deferred visit reads as a bare "Rejected" with the reason
+                // recorded nowhere a colleague can find it — which is the whole
+                // question a staff member opens this page to answer.
+                //
+                // This is the gated surface the scan response deliberately
+                // withholds the reason from: the endpoint already refuses
+                // unless the caller's facility has a relationship with the
+                // donor.
+                'screening' => $donation->screening === null ? null : [
+                    'outcome' => $donation->screening->outcome?->value,
+                    'outcome_label' => $donation->screening->outcome?->label(),
+                    'is_deferral' => $donation->screening->outcome?->isDeferral() ?? false,
+                    'is_blocking' => $donation->screening->outcome?->isBlocking() ?? false,
+                    'deferral_reason' => $donation->screening->deferral_reason,
+                    'screened_at' => $donation->screening->screened_at?->toISOString(),
+                ],
             ])->all(),
         ];
     }

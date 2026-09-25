@@ -4,11 +4,13 @@ namespace App\Repository;
 
 use App\Enums\AppointmentStatus;
 use App\Enums\DonationStatus;
+use App\Enums\ScreeningOutcome;
 use App\Models\BloodCollection;
 use App\Models\Donation;
 use App\Models\DonationAppointment;
 use App\Models\DonationScreening;
 use App\Models\DonorQrToken;
+use App\Support\OperationalDay;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
@@ -31,7 +33,7 @@ class CollectionRepository
         return DonationAppointment::query()
             ->with(['donorProfile.donor', 'donorProfile.bloodType'])
             ->where('facility_id', $facilityId)
-            ->whereDate('appointment_datetime', $date)
+            ->whereBetween('appointment_datetime', OperationalDay::boundsFor($date))
             ->when($status !== null, fn (Builder $q): Builder => $q->where('status', $status))
             ->orderBy('appointment_datetime')
             ->orderBy('id')
@@ -63,6 +65,9 @@ class CollectionRepository
     public function findUsableQrToken(string $tokenHash): ?DonorQrToken
     {
         return DonorQrToken::query()
+            // `screening` here is the donor's own eligibility questionnaire,
+            // not the counter's DonationScreening. Different model, no
+            // recorder — the two are named alike and mean different things.
             ->with(['donorProfile.donor', 'donorProfile.bloodType', 'screening'])
             ->where('token_hash', $tokenHash)
             ->whereNull('revoked_at')
@@ -98,7 +103,7 @@ class CollectionRepository
         return DonationAppointment::query()
             ->where('donor_id', $donorId)
             ->where('facility_id', $facilityId)
-            ->whereDate('appointment_datetime', $date)
+            ->whereBetween('appointment_datetime', OperationalDay::boundsFor($date))
             ->whereIn('status', AppointmentStatus::activeValues())
             ->orderBy('appointment_datetime')
             ->first();
@@ -132,7 +137,7 @@ class CollectionRepository
     public function findDonation(int $donationId, int $facilityId): ?Donation
     {
         return Donation::query()
-            ->with(['donorProfile.donor', 'donorProfile.bloodType', 'appointment', 'screening'])
+            ->with(['donorProfile.donor', 'donorProfile.bloodType', 'appointment', 'screening.recorder'])
             ->where('id', $donationId)
             ->where('facility_id', $facilityId)
             ->first();
@@ -147,7 +152,7 @@ class CollectionRepository
     public function paginateDonations(int $facilityId, array $filters, int $perPage)
     {
         return Donation::query()
-            ->with(['donorProfile.donor', 'donorProfile.bloodType', 'screening'])
+            ->with(['donorProfile.donor', 'donorProfile.bloodType', 'screening.recorder'])
             ->where('facility_id', $facilityId)
             ->when(
                 isset($filters['status']),
@@ -155,7 +160,10 @@ class CollectionRepository
             )
             ->when(
                 isset($filters['date']),
-                fn (Builder $q): Builder => $q->whereDate('donation_date', $filters['date'])
+                fn (Builder $q): Builder => $q->whereBetween(
+                    'donation_date',
+                    OperationalDay::boundsFor($filters['date'])
+                )
             )
             ->when(
                 $filters['open_only'] ?? false,
@@ -205,6 +213,31 @@ class CollectionRepository
             ['donation_id' => $donationId],
             $attributes
         );
+    }
+
+    /**
+     * The donor's most recent permanent or indefinite deferral, at any facility.
+     *
+     * `donation_screenings` has no `donor_id` — a screening belongs to a
+     * donation, and the donation is what belongs to a donor — so the question
+     * goes through the relation. `donations.donor_id` is indexed, and this runs
+     * once per scan.
+     *
+     * Deliberately not limited to this facility. A donor permanently deferred
+     * at one centre is permanently deferred, and the counter that has never met
+     * them is exactly the one that needs telling.
+     */
+    public function blockingDeferralFor(int $donorId): ?DonationScreening
+    {
+        return DonationScreening::query()
+            ->whereIn('outcome', [
+                ScreeningOutcome::PermanentlyDeferred->value,
+                ScreeningOutcome::IndefiniteDeferral->value,
+            ])
+            ->whereHas('donation', fn (Builder $q) => $q->where('donor_id', $donorId))
+            ->latest('screened_at')
+            ->latest('id')
+            ->first();
     }
 
     /**

@@ -2,6 +2,7 @@
 
 namespace App\Notifications;
 
+use App\Enums\ScreeningOutcome;
 use App\Models\Donation;
 use Illuminate\Bus\Queueable;
 use Illuminate\Notifications\Messages\MailMessage;
@@ -22,7 +23,8 @@ class DonorDeferred extends Notification
 
     public function __construct(
         private readonly Donation $donation,
-        private readonly ?string $reason = null
+        private readonly ?string $reason = null,
+        private readonly ?ScreeningOutcome $outcome = null
     ) {}
 
     /**
@@ -53,6 +55,15 @@ class DonorDeferred extends Notification
             $message->line('**Reason recorded:** '.$this->reason);
         }
 
+        // A donor who may never donate again must not be told a deferral is
+        // usually temporary, and must not be handed a button to book another
+        // appointment. What they get instead is the hotline and a person.
+        if ($this->isBlocking()) {
+            return $message
+                ->line('Please speak to our staff before booking again. They can explain what was recorded and what it means for you.')
+                ->line('Call us on '.config('donation.support.hotline_label').' ('.config('donation.support.hours').').');
+        }
+
         return $message
             ->line('A deferral is common and is usually temporary. Our staff can tell you when it would be right to try again.')
             ->action('Book another appointment', $frontend.'/donor/appointments')
@@ -66,18 +77,37 @@ class DonorDeferred extends Notification
      */
     public function toDatabase(object $notifiable): array
     {
+        $blocking = $this->isBlocking();
+
         return [
             'category' => 'screening',
             'title' => 'You were deferred today',
             'desc' => $this->reason
                 ? $this->reason
                 : 'You were not able to donate at '.$this->venue().' today.',
-            'meta' => 'Deferrals are usually temporary.',
+            'meta' => $blocking
+                ? 'Please speak to our staff before booking again.'
+                : 'Deferrals are usually temporary.',
             'icon' => 'alert-circle',
             'tone' => 'warning',
-            'action_label' => 'Book again',
-            'action_route' => '/donor/appointments',
+            // No rebooking action on a blocking deferral. The card is read
+            // days later with none of the counter's context around it, so the
+            // button is the part most likely to be acted on alone.
+            'action_label' => $blocking ? null : 'Book again',
+            'action_route' => $blocking ? null : '/donor/appointments',
         ];
+    }
+
+    /**
+     * Determine whether this deferral has no expected end.
+     *
+     * Defaults to false when no outcome was passed, which keeps the wording
+     * for every deferral recorded before the form's four REMARKS boxes existed
+     * exactly as those donors were originally told.
+     */
+    private function isBlocking(): bool
+    {
+        return $this->outcome?->isBlocking() ?? false;
     }
 
     private function venue(): string

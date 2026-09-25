@@ -149,7 +149,7 @@ class DonorDirectoryRepository
     public function donationsAtFacility(int $donorId, int $facilityId)
     {
         return Donation::query()
-            ->with('facility')
+            ->with(['facility', 'screening'])
             ->where('donor_id', $donorId)
             ->where('facility_id', $facilityId)
             ->orderByDesc('donation_date')

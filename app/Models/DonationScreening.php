@@ -25,6 +25,17 @@ class DonationScreening extends Model
         'recorded_by',
         'outcome',
         'deferral_reason',
+
+        // Section I-D. Asked in person or observed by the screening officer at
+        // the counter; never written from the donor's side of the app.
+        'sleep',
+        'meal',
+        'meds',
+        'allergies',
+        'general_appearance',
+        'skin',
+        'heent',
+        'heart_and_lungs',
         'systolic_bp',
         'diastolic_bp',
         'pulse_bpm',

@@ -58,7 +58,7 @@ class OpenScreeningWindow extends Command
         $appointments = DonationAppointment::query()
             ->with(['donorProfile.donor', 'facility', 'mobileEvent'])
             ->whereIn('status', AppointmentStatus::activeValues())
-            ->whereDate('appointment_datetime', $date)
+            ->whereBetween('appointment_datetime', OperationalDay::boundsFor($date))
             ->get();
 
         $sent = 0;

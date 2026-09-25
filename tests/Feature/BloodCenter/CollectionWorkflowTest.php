@@ -61,7 +61,7 @@ class CollectionWorkflowTest extends TestCase
     private function screenDonation(int $id): void
     {
         $this->actingAs($this->staff)
-            ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'qualified'])
+            ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'accepted'])
             ->assertCreated();
     }
 
@@ -79,7 +79,7 @@ class CollectionWorkflowTest extends TestCase
         $id = $this->openDonation();
 
         $this->actingAs($this->staff)
-            ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'qualified'])
+            ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'accepted'])
             ->assertCreated()
             ->assertJsonPath('data.status', 'screening');
 
@@ -249,7 +249,7 @@ class CollectionWorkflowTest extends TestCase
 
         $this->actingAs($this->staff)
             ->postJson("/api/blood-center/donations/{$id}/screening", [
-                'outcome' => 'qualified',
+                'outcome' => 'accepted',
                 'systolic_bp' => 118,
                 'diastolic_bp' => 76,
                 'pulse_bpm' => 72,
@@ -259,7 +259,7 @@ class CollectionWorkflowTest extends TestCase
             ])
             ->assertCreated()
             ->assertJsonPath('data.status', 'screening')
-            ->assertJsonPath('data.screening.outcome', 'qualified')
+            ->assertJsonPath('data.screening.outcome', 'accepted')
             ->assertJsonPath('data.screening.haemoglobin_g_dl', 14.2);
     }
 
@@ -268,7 +268,7 @@ class CollectionWorkflowTest extends TestCase
         $id = $this->openDonation();
 
         $this->actingAs($this->staff)
-            ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'qualified'])
+            ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'accepted'])
             ->assertCreated();
 
         // recorded_by is the authenticated staff member, never request input.
@@ -285,7 +285,7 @@ class CollectionWorkflowTest extends TestCase
 
         $this->actingAs($this->staff)
             ->postJson("/api/blood-center/donations/{$id}/screening", [
-                'outcome' => 'deferred',
+                'outcome' => 'temporarily_deferred',
                 'deferral_reason' => 'Haemoglobin below the accepted threshold.',
             ])
             ->assertCreated()
@@ -298,7 +298,7 @@ class CollectionWorkflowTest extends TestCase
         $id = $this->openDonation();
 
         $this->actingAs($this->staff)
-            ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'deferred'])
+            ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'temporarily_deferred'])
             ->assertStatus(422)
             ->assertJsonValidationErrors('deferral_reason');
     }
@@ -309,13 +309,13 @@ class CollectionWorkflowTest extends TestCase
 
         $this->actingAs($this->staff)
             ->postJson("/api/blood-center/donations/{$id}/screening", [
-                'outcome' => 'qualified',
+                'outcome' => 'accepted',
                 'haemoglobin_g_dl' => 12.1,
             ])->assertCreated();
 
         $this->actingAs($this->staff)
             ->postJson("/api/blood-center/donations/{$id}/screening", [
-                'outcome' => 'qualified',
+                'outcome' => 'accepted',
                 'haemoglobin_g_dl' => 14.5,
             ])
             ->assertCreated()
@@ -335,7 +335,7 @@ class CollectionWorkflowTest extends TestCase
             ->assertCreated();
 
         $this->actingAs($this->staff)
-            ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'deferred', 'deferral_reason' => 'Changed my mind.'])
+            ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'temporarily_deferred', 'deferral_reason' => 'Changed my mind.'])
             ->assertStatus(409)
             ->assertJsonPath('code', 'screening_not_amendable');
     }
@@ -367,7 +367,7 @@ class CollectionWorkflowTest extends TestCase
 
         $this->actingAs($this->staff)
             ->postJson("/api/blood-center/donations/{$id}/screening", [
-                'outcome' => 'deferred',
+                'outcome' => 'temporarily_deferred',
                 'deferral_reason' => 'Haemoglobin below the accepted threshold.',
             ])
             ->assertCreated()
@@ -434,7 +434,7 @@ class CollectionWorkflowTest extends TestCase
 
         $this->actingAs($this->staff)
             ->postJson("/api/blood-center/donations/{$id}/screening", [
-                'outcome' => 'deferred',
+                'outcome' => 'temporarily_deferred',
                 'deferral_reason' => 'Haemoglobin below the accepted threshold.',
             ])
             ->assertCreated();

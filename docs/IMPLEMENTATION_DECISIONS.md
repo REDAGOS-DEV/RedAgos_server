@@ -547,3 +547,150 @@ the command existing is not the command running.
 flagged questionnaire is not a bar. It may have been answered months ago, and
 the one that counts is answered the day before. The appointment list says what
 is outstanding rather than implying all is well.
+
+## Section I-D: Physical Examination
+
+**SOURCE:** The block of the DOH questionnaire headed *FOR BLOOD DONOR SCREENING
+OFFICER USE ONLY*, plus the four boxes in the form's top margin. It already had
+a home — `donation_screenings` was created for exactly this and was already
+stage 3 of the counter's donation transaction — so this completes that table
+rather than adding anything beside it.
+
+**DECISION (the four REMARKS boxes):** `donation_screenings.outcome` widens from
+`qualified|deferred` to `accepted`, `temporarily_deferred`,
+`permanently_deferred` and `indefinite_deferral`. Two values could not express
+the difference between a donor who should come back next month and one who must
+never donate again, and the system was telling every deferred donor in writing
+that deferrals are usually temporary. `permitsCollection()` becomes "is
+Accepted", so all three deferrals behave identically inside the donation
+workflow; what separates them is what the donor is told and what the next
+counter sees.
+
+**CONSEQUENCE:** `ScreeningOutcome::label()` is an exhaustive `match` with no
+`default`, so a case added without a label is a fatal error at the first
+screening rather than a raw enum value printed on a clinical record. `isDeferral()`
+and `isBlocking()` exist so no caller enumerates the three deferral cases
+itself — one that did would silently miss a fourth if the form ever grows one.
+Both `RecordScreeningRequest` and `CollectionService::recordScreening()` had a
+hardcoded compare against the single old value; each now asks the outcome its
+shape, which is what stops a permanent deferral being recorded unexplained.
+
+**CONSEQUENCE (the back-fill):** existing rows migrate `qualified → accepted`
+and `deferred → temporarily_deferred`. The second is the only honest reading:
+every deferral on record was entered when temporariness was the only thing the
+system could mean by the word, and `DonorDeferred` told those donors exactly
+that. The `down()` refuses rather than guessing if any row holds a permanent or
+indefinite deferral, because mapping one back onto `deferred` would tell that
+donor to book again.
+
+**CONSEQUENCE (the migration is idempotent):** the migration that created the
+table called `ScreeningOutcome::values()` at migration time, so the accepted set
+was baked from whatever the enum held when it ran. Now that the enum has four
+cases, a fresh `migrate:fresh` builds the four-value column directly and arrives
+at the widening migration with nothing to widen and no legacy rows to rewrite.
+That has to be a no-op rather than an error, or CI and an existing database
+diverge. Written per driver, following
+`2026_09_21_120001_add_subsidised_status_to_billings_table`, whose docblock
+explains why `enum()->change()` is rejected on PostgreSQL.
+
+**DECISION (a blocking deferral gates nothing):** A permanent or indefinite
+deferral is recorded, shown to the next counter, and enforced nowhere. A donor
+carrying one can still book, answer the questionnaire, receive a QR and be
+scanned in. This follows the boundary this file already sets — RedAgos records
+what qualified personnel reported and does not judge — and the decision made for
+Section I-B, where the donor's own answers stopped deciding anything. The
+officer reads the banner and decides. `AppointmentService::book()` keeps its
+explicit no-screening-gate comment, and the tests asserting a deferred donor can
+still book are the guarantee that no block was introduced by accident.
+
+**CONSEQUENCE:** the banner is the entire mitigation, so it has to be impossible
+to miss. It sits in the pinned donor band at the top of the counter page, from
+the moment the donor is verified.
+
+**DECISION (the scan carries a reference, not the reason):** `verify-qr` gains
+`prior_deferral` with the outcome, its label and the date — and no reason text.
+What check-in needs is that a decision exists and when it was made; the reason is
+clinical detail and belongs behind `DonorDirectoryService::history()`, which
+already refuses unless the caller's facility has a relationship with the donor.
+This is the same split already made for the questionnaire, and for the same
+reason: the scan response is about who is standing at the counter.
+
+**CONSEQUENCE:** `donation_screenings` has no `donor_id` — a screening belongs
+to a donation, and the donation is what belongs to a donor — so every
+donor-scoped question about screenings joins through `donations`, whose
+`donor_id` is indexed. The lookup is deliberately not scoped to the calling
+facility: a donor permanently deferred at one centre is permanently deferred, and
+the counter that has never met them is the one that needs telling.
+
+**CONSEQUENCE:** `history()` now carries the screening outcome and reason per
+donation. Before this a deferred visit showed as a bare "Rejected" with the
+reason recorded nowhere a colleague could find it, while the donor held the
+explanation in a notification on a different page.
+
+**DECISION (what the deferred donor is told):** `DonorDeferred` takes the
+outcome. On a permanent or indefinite deferral it drops the line saying deferrals
+are usually temporary and drops the "Book again" action from both the mail and
+the stored card, pointing at the hotline instead. Telling someone who may never
+donate again to book another appointment is the most damaging thing this feature
+could have shipped, and the stored card is read days later with none of the
+counter's context around it, so the button is the part most likely to be acted on
+alone. A deferral recorded before the four outcomes existed passes no outcome and
+keeps its original wording, which is what those donors were actually told.
+
+**DECISION (the eight new fields are the officer's):** `general_appearance`,
+`skin`, `heent` and `heart_and_lungs` are what the officer observed;
+`sleep`, `meal`, `meds` and `allergies` are the margin boxes they ask the donor
+in person and transcribe. All eight are entered at the counter after the scan,
+and nothing on the donor side of the application writes to them.
+
+**DECISION (where the margin boxes are filled in):** Sleep, Meal, Meds and
+Allergies are printed in the top margin of the donor's questionnaire sheet, not
+in the Section I-D box, so that is where the counter fills them — at the top of
+the questionnaire drawer, above the tabs, rather than in the screening form
+further down the page. They are the one editable part of a document that is
+otherwise the donor's own declaration, and they are marked as the officer's so a
+staff member is never in doubt about which author they are looking at. The
+drawer's read-only guarantee narrows accordingly: it now covers Sections I-A to
+I-C, which no counter may edit, and the test asserting it was rewritten to say
+exactly that rather than to claim the whole drawer is read-only.
+
+**CONSEQUENCE:** the four are held by the counter, not by either component, and
+the drawer asks for a change rather than writing into what it was handed. The
+screening form is what sends them, so both have to read the same object or they
+drift. They save with the screening rather than on their own — a set of answers
+with no screening behind them would belong to nothing — and they cannot be
+entered before the donation is open, because there is no visit to record them
+against. Free text and
+nullable throughout, for the two reasons this table already states: no document
+defines a vocabulary for any of them, and a partial record is more honest than a
+mandatory field holding a placeholder. Named after the form's own labels rather
+than interpreted — "Sleep:" is a ruled blank, so `sleep` and not `sleep_hours`,
+because presuming a number is the same kind of invention as presuming a
+vocabulary.
+
+**CONSEQUENCE (`meds` is not the donor's questionnaire answer):** The donor
+already answered "Currently taking medication?" in Section I-B, days earlier, in
+the app. The counter field is never pre-filled from it. Pre-filling would turn
+the officer's own finding into a confirmation of the donor's claim, and the two
+are recorded in separate tables, by separate authors, precisely so they can
+disagree — a disagreement between them is itself a finding. The migration that
+created this table already states the rule: mixing "what the donor claimed" with
+"what a qualified professional found" would put two very different kinds of claim
+in one place.
+
+**DECISION (the officer is `recorded_by`):** At a counter the person examining is
+the person entering, and the column is already the authenticated user — never a
+name from the request, which is what makes it worth anything. Its docblock said
+it meant the typist rather than the examiner; it now means the screening officer,
+and their name comes back on the donation payload for the form's signature line.
+A separate `examined_by` was considered and rejected: it would introduce a name
+the system cannot verify was present.
+
+**DECISION (DH and DS are not captured):** The form's remaining two margin boxes
+stay on paper. Nothing in the form or in this project names what they abbreviate,
+and adding them later is additive.
+
+**CONSEQUENCE (out of scope, noted):** `app/pages/blood-center/donors.vue` renders
+a donor-history shape the server has never returned and its stats, flags and
+update calls throw 501. Extending `history()` touches the endpoint that page
+consumes, but the page was already broken and fixing it is separate work.

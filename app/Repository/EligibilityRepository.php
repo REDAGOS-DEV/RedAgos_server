@@ -173,7 +173,7 @@ class EligibilityRepository
         return DonorQrToken::query()
             ->where('donor_id', $donorId)
             ->where('last_used_facility_id', $facilityId)
-            ->whereDate('last_used_at', $date)
+            ->whereBetween('last_used_at', OperationalDay::boundsFor($date))
             ->exists();
     }
 

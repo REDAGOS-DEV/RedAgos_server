@@ -140,6 +140,17 @@ class CollectionService
                 // Named health_questionnaire, never 'screening': that word is
                 // already the staff's own on-site vitals record here.
                 'health_questionnaire' => $this->donorQuestionnaireService->reference($token->screening),
+
+                // A permanent or indefinite deferral already on this donor's
+                // record. Blocks nothing — the officer decides — but a counter
+                // that cannot see it may draw blood from someone a colleague
+                // decided must never donate again.
+                //
+                // The reason text is deliberately absent: what check-in needs
+                // is that a decision exists and when it was made. The reason is
+                // clinical detail and lives behind the donor's history, which
+                // is separately gated.
+                'prior_deferral' => $this->formatPriorDeferral($donor->id),
             ],
         ];
     }
@@ -323,13 +334,34 @@ class CollectionService
                 // The authenticated staff member, never a name from the request.
                 'recorded_by' => $staff->id,
                 'outcome' => $outcome,
-                'deferral_reason' => $outcome === ScreeningOutcome::Deferred ? $deferralReason : null,
+                // Asked of the outcome rather than compared to one value: all
+                // three deferrals carry a reason, and only an accepted donor
+                // has none.
+                'deferral_reason' => $outcome->permitsCollection() ? null : $deferralReason,
+
+                // Section I-D, asked in person before anything is measured.
+                'sleep' => $this->trimmedOrNull($payload['sleep'] ?? null),
+                'meal' => $this->trimmedOrNull($payload['meal'] ?? null),
+                // Deliberately not reconciled against the donor's own answer to
+                // questionnaire question 2. That was a claim made days earlier
+                // in the app; this is what the officer was told at the counter,
+                // and the two have to be able to disagree.
+                'meds' => $this->trimmedOrNull($payload['meds'] ?? null),
+                'allergies' => $this->trimmedOrNull($payload['allergies'] ?? null),
+
                 'systolic_bp' => $payload['systolic_bp'] ?? null,
                 'diastolic_bp' => $payload['diastolic_bp'] ?? null,
                 'pulse_bpm' => $payload['pulse_bpm'] ?? null,
                 'temperature_c' => $payload['temperature_c'] ?? null,
                 'weight_kg' => $payload['weight_kg'] ?? null,
                 'haemoglobin_g_dl' => $payload['haemoglobin_g_dl'] ?? null,
+
+                // Section I-D, observed.
+                'general_appearance' => $this->trimmedOrNull($payload['general_appearance'] ?? null),
+                'skin' => $this->trimmedOrNull($payload['skin'] ?? null),
+                'heent' => $this->trimmedOrNull($payload['heent'] ?? null),
+                'heart_and_lungs' => $this->trimmedOrNull($payload['heart_and_lungs'] ?? null),
+
                 'notes' => isset($payload['notes']) ? trim((string) $payload['notes']) : null,
                 'screened_at' => $payload['screened_at'] ?? now(),
             ]);
@@ -360,7 +392,14 @@ class CollectionService
         if (! $outcome->permitsCollection()) {
             $this->notifyDonor(
                 $donation,
-                fn (User $donor): DonorDeferred => new DonorDeferred($donation, $donation->rejection_reason),
+                // The outcome goes with it: a donor who may never donate again
+            // must not be sent an email inviting them to book another
+            // appointment.
+            fn (User $donor): DonorDeferred => new DonorDeferred(
+                $donation,
+                $donation->rejection_reason,
+                $outcome
+            ),
                 'deferral notice'
             );
         }
@@ -368,7 +407,7 @@ class CollectionService
         return [
             'message' => $outcome->permitsCollection()
                 ? 'Screening recorded. The donor may proceed to collection.'
-                : 'Screening recorded. The donor has been deferred.',
+                : 'Screening recorded. '.$outcome->label().'.',
             'data' => $this->formatDonation($this->reload($donation, $facility)),
         ];
     }
@@ -619,6 +658,43 @@ class CollectionService
     }
 
     /**
+     * The donor's standing permanent or indefinite deferral, if any.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function formatPriorDeferral(int $donorId): ?array
+    {
+        $deferral = $this->collectionRepository->blockingDeferralFor($donorId);
+
+        if ($deferral === null) {
+            return null;
+        }
+
+        return [
+            'outcome' => $deferral->outcome?->value,
+            'outcome_label' => $deferral->outcome?->label(),
+            'recorded_on' => $deferral->screened_at?->toDateString(),
+        ];
+    }
+
+    /**
+     * Trim a Section I-D field, treating an empty string as not recorded.
+     *
+     * A blank the officer tabbed past is not a finding, and storing '' would
+     * make the counter print an empty line where "not recorded" is the truth.
+     */
+    private function trimmedOrNull(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $trimmed = trim($value);
+
+        return $trimmed === '' ? null : $trimmed;
+    }
+
+    /**
      * Re-read a donation with its relations, for the response.
      */
     private function reload(Donation $donation, Facility $facility): Donation
@@ -653,8 +729,22 @@ class CollectionService
                 'temperature_c' => $screening->temperature_c,
                 'weight_kg' => $screening->weight_kg,
                 'haemoglobin_g_dl' => $screening->haemoglobin_g_dl,
+                'sleep' => $screening->sleep,
+                'meal' => $screening->meal,
+                'meds' => $screening->meds,
+                'allergies' => $screening->allergies,
+                'general_appearance' => $screening->general_appearance,
+                'skin' => $screening->skin,
+                'heent' => $screening->heent,
+                'heart_and_lungs' => $screening->heart_and_lungs,
                 'notes' => $screening->notes,
                 'screened_at' => $screening->screened_at?->toISOString(),
+                // The screening officer, resolved from the authenticated user
+                // who recorded it — this is what the form's signature line
+                // stands for.
+                'recorded_by' => $screening->recorder
+                    ? trim($screening->recorder->first_name.' '.$screening->recorder->last_name)
+                    : null,
             ],
             'appointment_id' => $donation->appointment_id,
             'donor' => $donation->relationLoaded('donorProfile') && $donation->donorProfile?->donor

@@ -25,7 +25,7 @@ class DonationScreeningFactory extends Factory
             'donation_id' => Donation::factory(),
             'facility_id' => Facility::factory(),
             'recorded_by' => User::factory(),
-            'outcome' => ScreeningOutcome::Qualified,
+            'outcome' => ScreeningOutcome::Accepted,
             'deferral_reason' => null,
             'systolic_bp' => 118,
             'diastolic_bp' => 76,
@@ -39,13 +39,52 @@ class DonationScreeningFactory extends Factory
     }
 
     /**
-     * Indicate that the donor was turned away at the counter.
+     * Indicate that the donor was turned away and may return.
      */
     public function deferred(string $reason = 'Haemoglobin below the accepted threshold.'): static
     {
         return $this->state(fn (array $attributes): array => [
-            'outcome' => ScreeningOutcome::Deferred,
+            'outcome' => ScreeningOutcome::TemporarilyDeferred,
             'deferral_reason' => $reason,
+        ]);
+    }
+
+    /**
+     * Indicate that the donor may never donate again.
+     */
+    public function permanentlyDeferred(string $reason = 'Permanent deferral recorded by the screening officer.'): static
+    {
+        return $this->state(fn (array $attributes): array => [
+            'outcome' => ScreeningOutcome::PermanentlyDeferred,
+            'deferral_reason' => $reason,
+        ]);
+    }
+
+    /**
+     * Indicate that the donor was deferred with no expected end.
+     */
+    public function indefinitelyDeferred(string $reason = 'Deferred pending further assessment.'): static
+    {
+        return $this->state(fn (array $attributes): array => [
+            'outcome' => ScreeningOutcome::IndefiniteDeferral,
+            'deferral_reason' => $reason,
+        ]);
+    }
+
+    /**
+     * Fill in Section I-D, for a record that stands in for a completed form.
+     */
+    public function examined(): static
+    {
+        return $this->state(fn (array $attributes): array => [
+            'sleep' => '7 hours',
+            'meal' => 'Breakfast at 7am',
+            'meds' => 'None',
+            'allergies' => 'None known',
+            'general_appearance' => 'Well, ambulatory',
+            'skin' => 'No lesions or puncture marks',
+            'heent' => 'Unremarkable',
+            'heart_and_lungs' => 'Clear, regular rhythm',
         ]);
     }
 }

@@ -11,6 +11,8 @@ use App\Models\Facility;
 use App\Models\User;
 use App\Notifications\ScreeningWindowOpen;
 use App\Support\AppointmentScreeningWindow;
+use App\Support\OperationalDay;
+use Carbon\CarbonImmutable;
 use Database\Seeders\EligibilityQuestionSeeder;
 use Illuminate\Console\Scheduling\Event;
 use Illuminate\Console\Scheduling\Schedule;
@@ -322,5 +324,45 @@ class ScreeningWindowTest extends TestCase
         $this->assertSame(config('blood_center.timezone'), $event->timezone);
         $this->assertTrue($event->withoutOverlapping);
         $this->assertTrue($event->onOneServer);
+    }
+
+    /**
+     * A day is compared as two instants, never as a date taken from a timestamp.
+     *
+     * This is the failure that hides until the clock crosses into it. The test
+     * suite runs with APP_TIMEZONE=UTC while the operational timezone is
+     * Asia/Manila, so between 16:00 and midnight UTC the two disagree about
+     * what day it is — and `whereDate()` on a timestamp column then misses
+     * every appointment booked for "today". It passed for months and began
+     * failing at 03:00 Manila.
+     */
+    public function test_an_operational_day_is_bounded_by_instants_not_by_a_date_string(): void
+    {
+        config(['app.timezone' => 'UTC', 'blood_center.timezone' => 'Asia/Manila']);
+
+        [$start, $end] = OperationalDay::boundsFor('2026-10-15');
+
+        // Manila's 15 October runs from 16:00 on the 14th UTC to 15:59 on the
+        // 15th. Anything narrower drops eight hours of real appointments.
+        $this->assertSame('2026-10-14 16:00:00', $start->toDateTimeString());
+        $this->assertSame('2026-10-15 15:59:59', $end->toDateTimeString());
+    }
+
+    public function test_an_appointment_booked_during_the_offset_is_still_found_for_today(): void
+    {
+        config(['app.timezone' => 'UTC', 'blood_center.timezone' => 'Asia/Manila']);
+
+        // 02:00 Manila on the appointment day, which is 18:00 UTC the day
+        // before — squarely inside the window where the two disagree.
+        $this->travelTo(CarbonImmutable::parse('2026-10-15 02:00', 'Asia/Manila'));
+
+        $appointment = $this->bookFor(Carbon::parse('2026-10-15 09:00', 'Asia/Manila'));
+
+        [$start, $end] = OperationalDay::boundsFor(OperationalDay::todayAsDate());
+
+        $this->assertTrue(
+            CarbonImmutable::parse($appointment->appointment_datetime)->between($start, $end),
+            "An appointment booked for today falls outside today's own bounds."
+        );
     }
 }

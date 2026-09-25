@@ -37,6 +37,40 @@ final class OperationalDay
     }
 
     /**
+     * The first and last instant of an operational day.
+     *
+     * For comparing a TIMESTAMP column against a day. `whereDate()` asks the
+     * database to take the date of a stored instant, which it does in the
+     * connection's own reckoning — so a date computed here in Manila and a
+     * timestamp written by now() in UTC disagree for the eight hours this
+     * class exists to warn about. Two absolute instants have no such
+     * ambiguity, whatever APP_TIMEZONE happens to be.
+     *
+     * Date columns are different and are right to use whereDate(): a date has
+     * no instant to convert.
+     *
+     * @return array{0: CarbonImmutable, 1: CarbonImmutable}
+     */
+    public static function boundsFor(?string $date = null): array
+    {
+        $day = $date === null
+            ? self::today()
+            : CarbonImmutable::parse($date, self::timezone());
+
+        // Handed back in the application's own timezone. The instants are the
+        // same either way, but the query binds them as wall-clock strings and
+        // the column stores wall clock in APP_TIMEZONE — so a Manila-shaped
+        // bound would be compared against a UTC-shaped column and miss by the
+        // very eight hours this is meant to close.
+        $appTimezone = (string) config('app.timezone', 'UTC');
+
+        return [
+            $day->startOfDay()->setTimezone($appTimezone),
+            $day->endOfDay()->setTimezone($appTimezone),
+        ];
+    }
+
+    /**
      * Whole days from the operational today until a given expiry date.
      *
      * Negative for a date already past, zero for a unit expiring today — which
