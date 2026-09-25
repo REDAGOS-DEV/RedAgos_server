@@ -328,4 +328,89 @@ class ProfileAndAccountTest extends TestCase
             'address' => $profile->address,
         ], $overrides);
     }
+
+    /**
+     * Section I-A round-trips through the donor's own profile.
+     *
+     * This is the only place these fields are collected -- registration
+     * deliberately does not ask for them -- so if the profile cannot write them,
+     * nothing can, and the blood centre's questionnaire stays permanently
+     * incomplete.
+     */
+    public function test_the_questionnaire_personal_data_round_trips(): void
+    {
+        $payload = [
+            'first_name' => $this->donor->first_name,
+            'last_name' => $this->donor->last_name,
+            'email' => $this->donor->email,
+            'phone' => $this->donor->phone,
+            'birth_date' => '1995-05-20',
+            'address' => '12 Mabini St, Davao City',
+
+            'middle_name' => 'Reyes',
+            'civil_status' => 'married',
+            'occupation' => 'Teacher',
+            'nationality' => 'Filipino',
+            'religion' => 'Roman Catholic',
+            'office_address' => '5F Insular Life, Davao City',
+            'telephone_no' => '082-1234567',
+            'contact_person_name' => 'Maria Dela Cruz',
+            'contact_person_address' => '12 Mabini St, Davao City',
+            'contact_person_number' => '09181234567',
+        ];
+
+        $this->actingAs($this->donor)
+            ->patchJson('/api/donors/profile', $payload)
+            ->assertOk();
+
+        $this->actingAs($this->donor)
+            ->getJson('/api/donors/profile')
+            ->assertOk()
+            ->assertJsonPath('middle_name', 'Reyes')
+            ->assertJsonPath('civil_status', 'married')
+            ->assertJsonPath('occupation', 'Teacher')
+            ->assertJsonPath('nationality', 'Filipino')
+            ->assertJsonPath('contact_person_name', 'Maria Dela Cruz');
+    }
+
+    public function test_a_donor_who_never_filled_in_section_one_a_still_loads_their_profile(): void
+    {
+        // Every donor who registered before these fields existed is in exactly
+        // this state, and always will be -- they cannot be back-filled.
+        $this->donor->donorProfile->update([
+            'civil_status' => null,
+            'occupation' => null,
+            'nationality' => null,
+            'religion' => null,
+        ]);
+
+        $this->actingAs($this->donor)
+            ->getJson('/api/donors/profile')
+            ->assertOk()
+            ->assertJsonPath('civil_status', null)
+            ->assertJsonPath('occupation', null);
+    }
+
+    public function test_a_partial_edit_does_not_erase_the_rest_of_section_one_a(): void
+    {
+        $this->donor->donorProfile->update(['occupation' => 'Teacher', 'nationality' => 'Filipino']);
+
+        $this->actingAs($this->donor)
+            ->patchJson('/api/donors/profile', [
+                'first_name' => $this->donor->first_name,
+                'last_name' => $this->donor->last_name,
+                'email' => $this->donor->email,
+                'phone' => $this->donor->phone,
+                'birth_date' => '1995-05-20',
+                'address' => 'A new address',
+                // nationality deliberately absent
+                'occupation' => 'Nurse',
+            ])
+            ->assertOk();
+
+        $profile = $this->donor->donorProfile->fresh();
+
+        $this->assertSame('Nurse', $profile->occupation);
+        $this->assertSame('Filipino', $profile->nationality, 'An omitted field was wiped rather than left alone.');
+    }
 }

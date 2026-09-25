@@ -397,3 +397,153 @@ to be, it is a Laboratory concern with its own states, not a relabelling of
 the hospital's request page. The dispatching centre cannot assert on the
 hospital's behalf that blood arrived, which is why the endpoint has always sat
 on the requester side of the API.
+
+## Blood Donor's Health Questionnaire (DOH-DCHD-RD-SNBC-DMS-FORM002)
+
+**SOURCE:** A copy of the DOH *Blood Donor's Health Questionnaire* used by
+Sub-National Blood Center – Mindanao, effectivity 3 July 2023, was supplied as
+the form the counter must be able to read on screen. Sections I-A (Personal
+Data), I-B (Donor History, 29 questions) and I-C (Informed Consent) are in
+scope. Section I-D onward — physical examination, serology, phlebotomy — is
+not, and neither are the form's margin boxes (Sleep/Meal/Meds/Allergies,
+DH/DS), which are the screening officer's own working notes.
+
+**DECISION (the donor side does not judge):** RedAgos no longer scores a
+donor's own questionnaire answers into a verdict. Every screening is recorded
+`result = pending` — answered, awaiting the blood centre's decision — and a
+complete submission always mints a QR code. The donor is shown no pass, no
+deferral and no reasons. Two things drove this. The form says on its face that
+"A 'YES' answer may not necessarily exclude you from blood donation", and this
+file's own *Clinical configuration boundary* says RedAgos records what
+qualified personnel reported rather than computing clinical outcomes. Applying
+that rule to the donor side is what this change is.
+
+**CONSEQUENCE:** `eligibility_screenings.result` is always `pending` for new
+rows. `EligibilityScreening::scopeCurrentlyValid()` therefore had to stop
+filtering on `result = eligible` and now means only "answered and unexpired" —
+leaving that filter would have made every new screening invisible to
+`currentValidScreening()`, breaking the QR refresh and the re-screen guard
+without raising anything. `QuestionnaireVersionTest` guards it.
+
+**CONSEQUENCE:** `submitted_result` is no longer written and the client no
+longer submits a verdict, so the divergence-detection audit went with it.
+`computed_result` is still written: it is the server's advisory read, shown to
+the counter and never to the donor.
+
+**DECISION (thresholds still refuse):** Age, weight and the 56-day donation
+interval remain hard refusals on submission, because they are arithmetic on
+records the donor cannot forge rather than readings of their answers. They are
+reported as plain statements of the threshold — "Donors must weigh at least 50
+kilograms" — never in the language of a health verdict.
+`EligibilityRuleEvaluator` is split along exactly that seam.
+
+**DECISION (review markers, not deferral triggers):**
+`eligibility_questions.disqualify_if_answer` keeps its name and its meaning for
+version 1, but nothing defers on it any more. A set flag highlights that row in
+the counter's questionnaire drawer so a nurse's eye lands on it. This inverts
+the risk the *Clinical configuration boundary* warns about: a wrong flag now
+costs a second glance rather than turning away a real donor. Version 2's flags
+follow version 1's precedent where one exists, plus the answers that plainly
+warrant a look; a clinical owner can revise them with an UPDATE.
+
+**DECISION (version 1 keeps working):** Bumping
+`config('donation.questionnaire_version')` to 2 revokes nothing. A QR is a
+credential presented by a person standing at a counter, and a bulk revoke would
+strand donors mid-visit while leaving no per-donor audit row. The counter is
+told instead: the payload carries `question_version` and `is_current_version`,
+and the drawer says the donor answered an older form and names what is missing.
+A version 1 screening also predates consent, so it renders an explicit
+"no consent is on file" rather than a blank date — that gap read as a consent
+that was given is the worst failure this record can produce.
+
+**CONSEQUENCE:** the question bank is append-only. Never delete, and never
+deactivate, a version that has screenings against it: the counter resolves a
+historical answer's wording by `[version, code]`. `scopeForVersion()` filters
+`is_active` and is therefore wrong for that read, which is why
+`EligibilityRepository::questionTextMap()` exists without the filter. Version 2
+codes are prefixed `v2_` so a cross-version mix-up is impossible by
+construction — `eligibility_screening_answers` stores a code but not a version.
+
+**DECISION (question 5 is omitted, not answered falsely):** The form's question
+5 is for female donors. Applicability is resolved server-side from the stored
+gender and the question is left out of the payload entirely for male donors,
+rather than answered `false` — "not pregnant" from someone the question was
+never put to is a falsehood in a clinical record. A donor whose gender is
+`other`, `prefer_not_to_say` or unrecorded is offered it and not required to
+answer: dropping a physiological safety question over a privacy choice is the
+wrong way to be discreet. `gender_at_screening` is snapshotted beside
+`age_at_screening` so a later profile edit cannot retroactively change what the
+record says was asked.
+
+**DECISION (Section I-A is derived where records already hold it):** Type of
+donor, number of times donated and date of last donation are computed from
+donation records and reported with `donor_type_source: "derived_from_records"`.
+`EligibilityRuleEvaluator`'s own rule is that these come from the records,
+"never from the numbers typed into the questionnaire", and a donor-declared
+copy beside a derived one is two contradictory answers in one payload. Only the
+venue of a previous donation is stored as declared, because it may have been at
+a non-RedAgos centre; it lives on the screening, not the profile.
+
+**DECISION (I-A is collected in the profile, not at registration):** Signing up
+already asks for a lot, and every I-A field can be filled in later from the
+donor's profile, which is where they are edited anyway. Registration therefore
+does not ask for them. Existing donors cannot be back-filled in any case, so
+the counter renders every gap as "Not provided" rather than as a blank line
+that reads like an unanswered question on the paper form.
+
+**DECISION (the questionnaire is gated on presentation, not relationship):**
+`DonorDirectoryService::present()` withholds a donor's record from a centre they
+have never donated at, on the grounds that detailed records stay with the
+facility that created them. That rule does not apply here and applying it would
+withhold the questionnaire from every first-time donor — the ones whose answers
+most need reading. The questionnaire is not another facility's record; it is the
+donor's own declaration, addressed to whichever centre they hand it to. So the
+gate is presentation: an appointment here today, an open donation here, a QR
+verified at this counter today, or an existing donation relationship. This is
+also stricter than `donors.view` alone, because it closes the hole where any
+Collection member could pull a questionnaire for a donor found by browsing the
+directory.
+
+**CONSEQUENCE:** a new ability, `donors.view_questionnaire`, held by Collection
+alone. Reading thirty declared health answers is a different act from looking a
+donor up, and Laboratory — which holds `donations.view` — cannot reach it. The
+scan response carries only a reference; the document has its own route, its own
+ability and its own audit entry, with no answers in the audit context.
+
+## Appointment screening window
+
+**DECISION (book first, answer the day before):** `AppointmentService::book()`
+no longer requires a valid screening. A donor books freely and the questionnaire
+falls due in a window opening the day before the appointment, so that what the
+blood centre reads describes the donor as they are now rather than as they were
+up to 90 days ago. `appointment_screening_window_days` joins the file's three
+independent time rules as a fourth: `screening_validity_days` is how long an
+answer stands, this is how early it may be given, and a donor with no
+appointment is not subject to it.
+
+**DECISION (the window closes at the end of the appointment day):** Not at the
+booked time. A donor who never answered has no QR, so the remedy is to fill it
+in at the counter — and a window that shut at the booked time would be shut for
+exactly the person who needs it. It also gives donors a rule they can state
+without checking their booking: the day before, or the day of.
+
+**CONSEQUENCE:** both bounds are computed through `AppointmentScreeningWindow`,
+built on `OperationalDay`. `config/app.php` defaults to UTC while deployment
+runs in Manila, and under UTC Manila's 00:00-08:00 still reads as the previous
+date — a window computed from a bare `now()` opens eight hours late for every
+Manila donor and still passes a UTC test suite.
+
+**CONSEQUENCE:** rescheduling out of the window revokes the QR, and so does
+cancelling. A credential minted for one visit must not outlive it. The QR's
+expiry is capped at the end of the appointment day for the same reason.
+
+**CONSEQUENCE:** the reminder is load-bearing, not a courtesy. With the booking
+gate gone, `donors:open-screening-window` is the only thing between a donor
+booking and arriving with nothing to scan. It is registered in
+`routes/console.php` alongside the expiry sweep, for the reason stated there:
+the command existing is not the command running.
+
+**DECISION (a donor may book while their last questionnaire was flagged):** A
+flagged questionnaire is not a bar. It may have been answered months ago, and
+the one that counts is answered the day before. The appointment list says what
+is outstanding rather than implying all is well.

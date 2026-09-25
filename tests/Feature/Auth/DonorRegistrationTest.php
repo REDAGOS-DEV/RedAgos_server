@@ -2,7 +2,8 @@
 
 namespace Tests\Feature\Auth;
 
-use App\Enums\AccountStatus;
+use AppModelsSER;
+USE App\Enums\AccountStatus;
 use App\Enums\RoleName;
 use App\Models\BloodType;
 use App\Models\User;
@@ -335,5 +336,21 @@ class DonorRegistrationTest extends TestCase
             'password' => 'Password123',
             'role' => 'donor',
         ])->assertOk();
+    }
+
+    public function test_registration_does_not_ask_for_the_questionnaire_personal_data(): void
+    {
+        Notification::fake();
+
+        // Section I-A belongs to the profile, not to signing up. A donor who
+        // registers without it is perfectly valid; the blood centre's
+        // questionnaire prints what is absent as "Not provided".
+        $this->postJson('/api/donors/register', $this->payload())->assertCreated();
+
+        $profile = User::where('email', 'juan@example.com')->firstOrFail()->donorProfile;
+
+        $this->assertNull($profile->civil_status);
+        $this->assertNull($profile->occupation);
+        $this->assertNull($profile->nationality);
     }
 }

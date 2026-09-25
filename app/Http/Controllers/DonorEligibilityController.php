@@ -16,9 +16,9 @@ class DonorEligibilityController extends Controller
     /**
      * List the current questionnaire without its disqualification flags.
      */
-    public function questions(): JsonResponse
+    public function questions(Request $request): JsonResponse
     {
-        return response()->json($this->eligibilityService->questions());
+        return response()->json($this->eligibilityService->questions($request->user()));
     }
 
     /**

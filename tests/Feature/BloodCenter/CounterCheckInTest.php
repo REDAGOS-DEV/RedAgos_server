@@ -346,4 +346,47 @@ class CounterCheckInTest extends TestCase
             ])
             ->assertForbidden();
     }
+
+    /**
+     * The scan says who is at the counter. It does not hand over their history.
+     *
+     * formatDonor() carries the same rule in a comment -- "identity fields only"
+     * -- and this is the response that would quietly break it, because the
+     * questionnaire reference sits right beside the donor in the same payload.
+     */
+    public function test_the_scan_carries_a_questionnaire_reference_and_no_answers(): void
+    {
+        $screening = \App\Models\EligibilityScreening::factory()->create([
+            'question_version' => 2,
+            'consented_at' => now(),
+            'consent_version' => config('donor_consent.current'),
+        ]);
+
+        $donor = $screening->donorProfile->donor;
+        $raw = Str::random(40);
+
+        DonorQrToken::factory()->create([
+            'donor_id' => $donor->id,
+            'screening_id' => $screening->id,
+            'token_hash' => hash('sha256', $raw),
+            'issued_at' => now(),
+            'expires_at' => now()->addDays(14),
+        ]);
+
+        $response = $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/collection/verify-qr', ['token' => $raw])
+            ->assertOk()
+            ->assertJsonPath('data.health_questionnaire.available', true)
+            ->assertJsonPath('data.health_questionnaire.screening_id', $screening->id)
+            ->assertJsonPath('data.health_questionnaire.consent_captured', true);
+
+        $body = $response->getContent();
+
+        // Enough to draw the counter's summary strip, and nothing a nurse would
+        // read as a health record. The document has its own endpoint, its own
+        // ability and its own audit entry.
+        $this->assertStringNotContainsString('answer_label', $body);
+        $this->assertStringNotContainsString('sections', $body);
+        $this->assertStringNotContainsString('flagged', $body);
+    }
 }

@@ -63,7 +63,7 @@ class CollectionRepository
     public function findUsableQrToken(string $tokenHash): ?DonorQrToken
     {
         return DonorQrToken::query()
-            ->with(['donorProfile.donor', 'donorProfile.bloodType'])
+            ->with(['donorProfile.donor', 'donorProfile.bloodType', 'screening'])
             ->where('token_hash', $tokenHash)
             ->whereNull('revoked_at')
             ->where('expires_at', '>', now())
@@ -77,9 +77,13 @@ class CollectionRepository
      * should not be locked out of their own appointment. `last_used_at` is an
      * audit fact, not a consumption flag.
      */
-    public function stampQrTokenUse(DonorQrToken $token): void
+    public function stampQrTokenUse(DonorQrToken $token, ?int $facilityId = null): void
     {
         $token->last_used_at = now();
+        // Which centre saw it, not just when. A scan here today is one of the
+        // ways a donor counts as having presented at this facility, which is
+        // what reading their health questionnaire is gated on.
+        $token->last_used_facility_id = $facilityId;
         $token->save();
     }
 

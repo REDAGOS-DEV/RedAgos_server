@@ -19,7 +19,7 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | The Three Independent Time Rules
+    | The Four Independent Time Rules
     |--------------------------------------------------------------------------
     |
     | These are distinct concepts and must never be collapsed into one another:
@@ -27,12 +27,18 @@ return [
     |   interval_days   How long a donor must wait between whole-blood
     |                   donations. Measured from the last completed donation.
     |   screening_validity_days
-    |                   How long a passed preliminary screening stands before
-    |                   the donor must answer the questionnaire again.
+    |                   How long an answered questionnaire stands before the
+    |                   donor must answer it again.
     |   qr_validity_days
     |                   How long an issued check-in token can be presented. A
     |                   donor whose screening is still valid but whose token has
     |                   expired refreshes the token without re-screening.
+    |   appointment_screening_window_days
+    |                   How many days before a booked appointment the donor may
+    |                   answer the questionnaire at all. Distinct from
+    |                   screening_validity_days: that one is how long an answer
+    |                   stands, this one is how early it may be given. A donor
+    |                   with no appointment is not subject to it.
     |
     | Screening validity is NOT a substitute for the donation interval.
     |
@@ -43,6 +49,8 @@ return [
     'screening_validity_days' => env('DONATION_SCREENING_VALIDITY_DAYS', 90),
 
     'qr_validity_days' => env('DONATION_QR_VALIDITY_DAYS', 14),
+
+    'appointment_screening_window_days' => env('DONATION_APPOINTMENT_SCREENING_WINDOW_DAYS', 1),
 
     /*
     |--------------------------------------------------------------------------
@@ -68,7 +76,7 @@ return [
     |
     */
 
-    'questionnaire_version' => env('DONATION_QUESTIONNAIRE_VERSION', 1),
+    'questionnaire_version' => env('DONATION_QUESTIONNAIRE_VERSION', 2),
 
     /*
     |--------------------------------------------------------------------------

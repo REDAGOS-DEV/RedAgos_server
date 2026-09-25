@@ -162,4 +162,54 @@ class DepartmentPermissionMatrixTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.facility.facility_name', $facility->name);
     }
+
+    /**
+     * The one ability that reads a donor's declared health answers.
+     *
+     * Pinned by name rather than compared against the matrix, because every
+     * other assertion in this file derives both sides from
+     * DepartmentPermissions and so cannot notice the declared set changing.
+     * This one states the intended answer independently: reading thirty
+     * questionnaire answers belongs to the counter that the donor handed them
+     * to, and to nobody else.
+     */
+    public function test_only_the_collection_department_may_read_a_donor_questionnaire(): void
+    {
+        $ability = 'donors.view_questionnaire';
+
+        $this->assertContains(
+            $ability,
+            DepartmentPermissions::forDepartment(Department::Collection),
+            'The counter cannot read the questionnaire it exists to review.'
+        );
+
+        foreach (Department::cases() as $department) {
+            if ($department === Department::Collection) {
+                continue;
+            }
+
+            $this->assertNotContains(
+                $ability,
+                DepartmentPermissions::forDepartment($department),
+                "{$department->value} must not be able to read a donor's health questionnaire."
+            );
+        }
+    }
+
+    public function test_reading_a_questionnaire_is_a_narrower_right_than_viewing_a_donor(): void
+    {
+        // donors.view also gates the browse list and the cross-facility
+        // summary. If the questionnaire rode on it, any Collection member could
+        // pull thirty health answers for any donor they found by browsing.
+        $this->assertNotSame(
+            'donors.view',
+            'donors.view_questionnaire',
+            'The questionnaire must not be gated on the general donor-view ability.'
+        );
+
+        $laboratory = DepartmentPermissions::forDepartment(Department::Laboratory);
+
+        $this->assertContains('donations.view', $laboratory);
+        $this->assertNotContains('donors.view_questionnaire', $laboratory);
+    }
 }

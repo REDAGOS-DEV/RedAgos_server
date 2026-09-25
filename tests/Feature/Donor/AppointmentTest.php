@@ -163,36 +163,55 @@ class AppointmentTest extends TestCase
             ->assertJsonPath('code', 'email_unverified');
     }
 
-    public function test_booking_without_a_screening_is_refused(): void
+    public function test_booking_without_a_questionnaire_is_allowed(): void
     {
+        // The order is now book first, answer the day before. A donor who has
+        // never answered is exactly who this is for: making them answer months
+        // ahead of the visit is what produced a stale questionnaire at the
+        // counter.
         $donor = User::factory()->donor()->create();
 
         $this->actingAs($donor)
             ->postJson('/api/donors/appointments', $this->payload())
-            ->assertForbidden()
-            ->assertJsonPath('code', 'screening_required');
+            ->assertCreated();
     }
 
-    public function test_booking_with_an_expired_screening_is_refused(): void
+    public function test_booking_with_an_expired_questionnaire_is_allowed(): void
     {
         $donor = User::factory()->donor()->create();
         EligibilityScreening::factory()->expired()->create(['donor_id' => $donor->id]);
 
         $this->actingAs($donor)
             ->postJson('/api/donors/appointments', $this->payload())
-            ->assertForbidden()
-            ->assertJsonPath('code', 'screening_expired');
+            ->assertCreated();
     }
 
-    public function test_booking_after_a_deferral_is_refused(): void
+    public function test_booking_after_a_flagged_questionnaire_is_allowed(): void
     {
+        // A flagged questionnaire is not a bar. It may well have been answered
+        // months ago, and the one that counts is answered the day before.
         $donor = User::factory()->donor()->create();
         EligibilityScreening::factory()->deferred()->create(['donor_id' => $donor->id]);
 
         $this->actingAs($donor)
             ->postJson('/api/donors/appointments', $this->payload())
-            ->assertForbidden()
-            ->assertJsonPath('code', 'screening_required');
+            ->assertCreated();
+    }
+
+    public function test_the_donation_interval_still_refuses_a_booking(): void
+    {
+        // Dropping the questionnaire gate must not drop this one: the 56-day
+        // interval protects the donor's body and is derived from records, not
+        // from anything they answered.
+        $donor = User::factory()->donor()->create();
+        Donation::factory()->completedAt(now()->subDays(10)->toDateString())->create([
+            'donor_id' => $donor->id,
+        ]);
+
+        $this->actingAs($donor)
+            ->postJson('/api/donors/appointments', $this->payload())
+            ->assertStatus(422)
+            ->assertJsonPath('code', 'below_min_interval');
     }
 
     public function test_booking_inside_the_donation_interval_is_refused(): void

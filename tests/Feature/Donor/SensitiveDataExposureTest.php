@@ -107,15 +107,64 @@ class SensitiveDataExposureTest extends TestCase
         $this->assertArrayNotHasKey('token_hash', $token->toArray());
     }
 
-    public function test_a_donor_cannot_read_another_donors_eligibility_state(): void
+    public function test_a_donor_cannot_read_another_donors_questionnaire_state(): void
     {
         $other = User::factory()->donor()->create();
-        EligibilityScreening::factory()->deferred()->create(['donor_id' => $other->id]);
+        EligibilityScreening::factory()->expired()->create(['donor_id' => $other->id]);
 
+        // The caller's own state, never the other donor's.
         $this->actingAs($this->donor)
             ->getJson('/api/donors/eligibility')
             ->assertOk()
-            ->assertJsonPath('eligibility_status', 'eligible');
+            ->assertJsonPath('questionnaire_status', 'answered');
+    }
+
+    /**
+     * Religion is sensitive personal information under RA 10173 s.3(l).
+     *
+     * Collected because Section I-A of the DOH form has a line for it, and kept
+     * out of every response that is not the questionnaire itself. The donor's
+     * own profile may show it back to them; nothing else may carry it.
+     */
+    public function test_religion_does_not_leak_into_general_donor_responses(): void
+    {
+        $this->donor->donorProfile->update(['religion' => 'Iglesia ni Cristo']);
+
+        foreach (['/api/donors/dashboard', '/api/donors/eligibility', '/api/donors/qr-code'] as $endpoint) {
+            $body = $this->actingAs($this->donor)->getJson($endpoint)->getContent();
+
+            $this->assertStringNotContainsString(
+                'Iglesia ni Cristo',
+                $body,
+                "{$endpoint} leaked the donor's religion."
+            );
+        }
+    }
+
+    public function test_the_prefill_endpoint_carries_only_server_derived_hints(): void
+    {
+        $this->donor->donorProfile->update(['religion' => 'Iglesia ni Cristo']);
+
+        $body = $this->actingAs($this->donor)
+            ->getJson('/api/donors/eligibility/prefill')
+            ->assertOk()
+            ->getContent();
+
+        $this->assertStringNotContainsString('Iglesia ni Cristo', $body);
+        $this->assertStringNotContainsString('religion', $body);
+    }
+
+    public function test_the_questionnaire_endpoint_never_reveals_which_answers_are_flagged(): void
+    {
+        // Which answers draw a second look is the blood centre's to know. A
+        // donor who could see the markers could work backwards to the answers
+        // that avoid one.
+        $body = $this->actingAs($this->donor)
+            ->getJson('/api/donors/eligibility/questions')
+            ->assertOk()
+            ->getContent();
+
+        $this->assertStringNotContainsString('disqualify', $body);
     }
 
     public function test_the_registration_response_does_not_echo_the_password(): void

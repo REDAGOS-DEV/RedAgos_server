@@ -195,10 +195,25 @@ class DonorService
             'email_verified' => $donor->hasVerifiedEmail(),
             'phone' => $donor->phone,
             'contact_number' => $donor->phone,
+            'middle_name' => $donor->middle_name,
             'birth_date' => $profile->birth_date?->toDateString(),
             'date_of_birth' => $profile->birth_date?->toDateString(),
             'blood_type' => $profile->bloodType?->code,
             'address' => $profile->address,
+
+            // Section I-A of the DOH questionnaire. Nullable throughout:
+            // donors who registered before these were collected cannot be
+            // back-filled, and the counter prints what is absent as absent.
+            'civil_status' => $profile->civil_status?->value,
+            'occupation' => $profile->occupation,
+            'nationality' => $profile->nationality,
+            'religion' => $profile->religion,
+            'preferred_mailing_address' => $profile->preferred_mailing_address?->value,
+            'office_address' => $profile->office_address,
+            'telephone_no' => $profile->telephone_no,
+            'contact_person_name' => $profile->contact_person_name,
+            'contact_person_address' => $profile->contact_person_address,
+            'contact_person_number' => $profile->contact_person_number,
             'avatar_url' => $profile->profile_image_path,
             'eligibility_status' => $dashboard['eligibility_status'],
             'total_donations' => $dashboard['total_donations'],
@@ -208,6 +223,52 @@ class DonorService
             'notification_preferences' => $profile->notification_preferences ?: $this->defaultNotificationPreferences(),
             'identity' => $this->formatIdentity($donor, $profile),
         ];
+    }
+
+    /**
+     * The Section I-A attributes present in a payload, trimmed.
+     *
+     * Only what was sent: a field the client left out keeps its stored value
+     * rather than being nulled, so a partial edit cannot quietly erase the
+     * rest of the donor's I-A.
+     *
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function personalDataAttributes(array $payload): array
+    {
+        $fields = [
+            'civil_status',
+            'occupation',
+            'nationality',
+            'religion',
+            'preferred_mailing_address',
+            'office_address',
+            'telephone_no',
+            'contact_person_name',
+            'contact_person_address',
+            'contact_person_number',
+        ];
+
+        $attributes = [];
+
+        foreach ($fields as $field) {
+            if (array_key_exists($field, $payload)) {
+                $attributes[$field] = $this->trimmedOrNull($payload[$field]);
+            }
+        }
+
+        return $attributes;
+    }
+
+    /**
+     * Trim a value, treating an empty string as absent.
+     */
+    private function trimmedOrNull(mixed $value): ?string
+    {
+        $trimmed = is_string($value) ? trim($value) : $value;
+
+        return $trimmed === '' ? null : $trimmed;
     }
 
     /**
@@ -345,6 +406,7 @@ class DonorService
         DB::transaction(function () use ($donor, $profile, $bloodTypeId, $payload, $email, $emailChanged): void {
             $this->donorRepository->updateUser($donor, [
                 'first_name' => trim($payload['first_name']),
+                'middle_name' => $this->trimmedOrNull($payload['middle_name'] ?? null),
                 'last_name' => trim($payload['last_name']),
                 'email' => $email,
                 'phone' => $this->normalizePhilippinePhone($payload['phone']),
@@ -358,7 +420,7 @@ class DonorService
                 'blood_type_id' => $bloodTypeId,
                 'birth_date' => $payload['birth_date'],
                 'address' => trim($payload['address']),
-            ]);
+            ] + $this->personalDataAttributes($payload));
         });
 
         // Sent after the commit so a rolled-back update never mails a live link.

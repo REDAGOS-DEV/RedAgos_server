@@ -22,3 +22,19 @@ Schedule::command('inventory:expire-units')
     ->timezone(config('blood_center.timezone'))
     ->withoutOverlapping()
     ->onOneServer();
+
+// Same reasoning as above, and the same failure mode if it is ever dropped.
+// Booking an appointment no longer requires a health questionnaire — a donor
+// answers it the day before — so this reminder is the only thing standing
+// between a donor booking and arriving at the counter with nothing to scan.
+// Without it they are turned back to a form they could have filled at home.
+//
+// 08:00 so the day-before reminder arrives with an evening still left to act
+// on, and the second one on the morning of the appointment lands before the
+// donor sets off. The command is idempotent per donor, appointment and stage,
+// so a retried or overlapping run cannot mail anyone twice.
+Schedule::command('donors:open-screening-window')
+    ->dailyAt('08:00')
+    ->timezone(config('blood_center.timezone'))
+    ->withoutOverlapping()
+    ->onOneServer();

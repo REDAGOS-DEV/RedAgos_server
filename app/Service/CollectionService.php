@@ -51,7 +51,8 @@ class CollectionService
         private readonly CollectionRepository $collectionRepository,
         private readonly DonorDirectoryRepository $donorDirectoryRepository,
         private readonly AuditLogger $auditLogger,
-        private readonly EligibilityRuleEvaluator $evaluator
+        private readonly EligibilityRuleEvaluator $evaluator,
+        private readonly DonorQuestionnaireService $donorQuestionnaireService
     ) {}
 
     /**
@@ -110,7 +111,7 @@ class CollectionService
             throw $this->refuse(404, 'qr_invalid', 'This QR code is not valid. Ask for an ID instead.');
         }
 
-        $this->collectionRepository->stampQrTokenUse($token);
+        $this->collectionRepository->stampQrTokenUse($token, $facility->id);
 
         $donor = $token->donorProfile?->donor
             ?? throw $this->refuse(404, 'donor_not_found', 'This QR code is not linked to a donor.');
@@ -132,6 +133,13 @@ class CollectionService
                 'donor' => $this->formatDonor($donor),
                 'appointment' => $appointment ? $this->formatAppointment($appointment) : null,
                 'open_donation' => $this->openDonationFor($donor->id, $facility->id),
+                // A reference, never the document. The questionnaire holds
+                // thirty declared health answers, and this response is about
+                // who is at the counter -- the drawer fetches the rest from
+                // its own endpoint, which is separately gated and audited.
+                // Named health_questionnaire, never 'screening': that word is
+                // already the staff's own on-site vitals record here.
+                'health_questionnaire' => $this->donorQuestionnaireService->reference($token->screening),
             ],
         ];
     }

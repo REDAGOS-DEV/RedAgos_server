@@ -11,7 +11,10 @@ use App\Models\User;
 use App\Notifications\AppointmentScheduled;
 use App\Repository\AppointmentRepository;
 use App\Repository\EligibilityRepository;
+use App\Support\AppointmentScreeningWindow;
+use App\Support\OperationalDay;
 use Illuminate\Http\Exceptions\HttpResponseException;
+use Carbon\CarbonImmutable;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -23,8 +26,7 @@ class AppointmentService
     public function __construct(
         private readonly AppointmentRepository $appointmentRepository,
         private readonly EligibilityRepository $eligibilityRepository,
-        private readonly EligibilityRuleEvaluator $evaluator,
-        private readonly EligibilityService $eligibilityService
+        private readonly EligibilityRuleEvaluator $evaluator
     ) {}
 
     /**
@@ -109,8 +111,11 @@ class AppointmentService
     {
         $profile = $this->requireDonorProfile($user);
 
+        // Resolved once for the donor rather than per booking.
+        $latestScreenedAt = $this->eligibilityRepository->latestScreenedAt($profile->donor_id);
+
         return $this->appointmentRepository->forDonor($profile->donor_id)
-            ->map(fn (DonationAppointment $appointment): array => $this->format($appointment))
+            ->map(fn (DonationAppointment $a): array => $this->format($a, $latestScreenedAt))
             ->all();
     }
 
@@ -125,8 +130,11 @@ class AppointmentService
         $profile = $this->requireDonorProfile($user);
 
         $this->guardEmailVerified($user);
-        $this->guardValidScreening($profile);
 
+        // No screening gate. A donor books first and answers the health
+        // questionnaire the day before, so that what the blood centre reads at
+        // the counter describes them as they are now rather than as they were
+        // up to 90 days ago. See App\Support\AppointmentScreeningWindow.
         $slot = $this->resolveSlot($payload);
         $this->guardBookingWindow($slot);
         $this->guardDonationInterval($profile, $slot);
@@ -169,7 +177,6 @@ class AppointmentService
         $profile = $this->requireDonorProfile($user);
 
         $this->guardEmailVerified($user);
-        $this->guardValidScreening($profile);
         $this->guardMutable($appointment);
         $this->guardChangeWindow($appointment);
 
@@ -194,7 +201,15 @@ class AppointmentService
             ]);
         });
 
-        return $this->format($updated->load(['facility', 'mobileEvent']));
+        // The questionnaire was answered against the old date's window. If it
+        // no longer falls inside the new one, the credential minted from it
+        // must not survive the move -- otherwise a donor who shifts their
+        // appointment a fortnight out walks in holding a working QR backed by
+        // answers given for a visit that never happened.
+        $screeningStillValid = $this->revokeCredentialIfWindowMoved($profile, $updated);
+
+        return $this->format($updated->load(['facility', 'mobileEvent']))
+            + ['requires_new_screening' => ! $screeningStillValid];
     }
 
     /**
@@ -209,7 +224,34 @@ class AppointmentService
 
         $this->appointmentRepository->update($appointment, ['status' => AppointmentStatus::Cancelled]);
 
+        // A check-in credential outlives no visit it was issued for.
+        $this->eligibilityRepository->revokeQrTokens((int) $appointment->donor_id);
+
         return $this->format($appointment->load(['facility', 'mobileEvent']));
+    }
+
+    /**
+     * Revoke the donor's QR when a moved appointment leaves its questionnaire
+     * outside the new screening window.
+     *
+     * Returns whether the standing questionnaire still covers the new date.
+     */
+    private function revokeCredentialIfWindowMoved(
+        DonorProfile $profile,
+        DonationAppointment $appointment
+    ): bool {
+        $screening = $this->eligibilityRepository->currentValidScreening($profile->donor_id);
+
+        if ($screening !== null && AppointmentScreeningWindow::contains(
+            $appointment,
+            CarbonImmutable::parse($screening->screened_at)
+        )) {
+            return true;
+        }
+
+        $this->eligibilityRepository->revokeQrTokens($profile->donor_id);
+
+        return false;
     }
 
     /**
@@ -244,30 +286,6 @@ class AppointmentService
         throw new HttpResponseException(response()->json([
             'message' => 'Please verify your email address before booking an appointment.',
             'code' => 'email_unverified',
-        ], 403));
-    }
-
-    /**
-     * Reject booking without a passed, unexpired preliminary screening.
-     */
-    private function guardValidScreening(DonorProfile $profile): void
-    {
-        if ($this->eligibilityRepository->currentValidScreening($profile->donor_id)) {
-            return;
-        }
-
-        $latest = $this->eligibilityRepository->latestScreening($profile->donor_id);
-        $status = $this->eligibilityService->resolveStatus($latest);
-
-        [$code, $message] = match ($status->value) {
-            'expired' => ['screening_expired', 'Your eligibility screening has expired. Please complete a new screening.'],
-            'deferred' => ['screening_required', 'You were deferred at your last screening. Please complete a new screening.'],
-            default => ['screening_required', 'Please complete an eligibility screening before booking an appointment.'],
-        };
-
-        throw new HttpResponseException(response()->json([
-            'message' => $message,
-            'code' => $code,
         ], 403));
     }
 
@@ -480,7 +498,7 @@ class AppointmentService
     /**
      * @return array<string, mixed>
      */
-    private function format(DonationAppointment $appointment): array
+    private function format(DonationAppointment $appointment, ?Carbon $latestScreenedAt = null): array
     {
         return [
             'id' => $appointment->id,
@@ -496,7 +514,48 @@ class AppointmentService
                 && $appointment->appointment_datetime->greaterThan(
                     now()->addHours((int) config('donation.cancellation_window_hours'))
                 ),
+
+            // Where the health questionnaire stands for this booking. Booking no
+            // longer requires one, so this is what tells the donor when theirs
+            // falls due -- and the only thing on the appointments screen that
+            // does.
+            'screening_window_opens_on' => AppointmentScreeningWindow::opensOn($appointment),
+            'screening_status' => $this->screeningStatusFor($appointment, $latestScreenedAt),
         ];
+    }
+
+    /**
+     * How the questionnaire stands against one booking.
+     *
+     * `null` for a booking that no longer holds its slot: a cancelled or
+     * completed appointment has nothing outstanding, and reporting it as
+     * "missed" would be both wrong and alarming.
+     */
+    private function screeningStatusFor(DonationAppointment $appointment, ?Carbon $latestScreenedAt): ?string
+    {
+        if (! $appointment->status->holdsSlot()) {
+            return null;
+        }
+
+        if ($latestScreenedAt !== null && AppointmentScreeningWindow::contains(
+            $appointment,
+            CarbonImmutable::parse($latestScreenedAt)
+        )) {
+            return 'answered';
+        }
+
+        if (AppointmentScreeningWindow::isTooEarly($appointment)) {
+            return 'not_due';
+        }
+
+        // The window has opened and closed with nothing answered against it.
+        // The donor can still fill it in at the counter, so this is a prompt
+        // rather than a refusal.
+        if (OperationalDay::today()->greaterThan(AppointmentScreeningWindow::closesAt($appointment))) {
+            return 'missed';
+        }
+
+        return 'due';
     }
 
     private function requireDonorProfile(User $user): DonorProfile

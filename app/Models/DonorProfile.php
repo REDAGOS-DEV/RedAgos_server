@@ -2,7 +2,9 @@
 
 namespace App\Models;
 
+use App\Enums\CivilStatus;
 use App\Enums\IdentityStatus;
+use App\Enums\MailingAddressPreference;
 use App\Enums\ValidIdType;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -23,7 +25,17 @@ class DonorProfile extends Model
         'blood_type_id',
         'gender',
         'birth_date',
+        'civil_status',
+        'occupation',
+        'nationality',
+        'religion',
         'address',
+        'preferred_mailing_address',
+        'office_address',
+        'telephone_no',
+        'contact_person_name',
+        'contact_person_address',
+        'contact_person_number',
         'last_donation_date',
         'valid_id_type',
         'valid_id_number',
@@ -56,6 +68,8 @@ class DonorProfile extends Model
         return [
             'birth_date' => 'date',
             'last_donation_date' => 'date',
+            'civil_status' => CivilStatus::class,
+            'preferred_mailing_address' => MailingAddressPreference::class,
             'valid_id_type' => ValidIdType::class,
             'identity_status' => IdentityStatus::class,
             'identity_submitted_at' => 'datetime',

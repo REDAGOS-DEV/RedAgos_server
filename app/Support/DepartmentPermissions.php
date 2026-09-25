@@ -41,6 +41,15 @@ final class DepartmentPermissions
         Department::Collection->value => [
             'donors.view',
             'donors.manage',
+
+            // Deliberately separate from donors.view, which also gates the
+            // browse list and the cross-facility summary. Reading a donor's
+            // thirty declared health answers is a different act from looking
+            // them up, and naming it separately is what keeps "who may read a
+            // donor's health history" a one-line, testable fact. Laboratory
+            // holds donations.view but not this, and cannot reach it.
+            'donors.view_questionnaire',
+
             'appointments.view',
             'appointments.verify',
             'drives.view',

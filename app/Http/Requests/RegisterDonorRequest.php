@@ -60,6 +60,14 @@ class RegisterDonorRequest extends FormRequest
             'birth_date' => ['required', 'date', 'before_or_equal:'.now()->subYears(self::MINIMUM_AGE_YEARS)->toDateString()],
             'address' => ['required', 'string', 'max:255'],
 
+            // Section I-A of the DOH questionnaire is deliberately NOT collected
+            // here. Signing up is already a long form, and every one of those
+            // fields can be filled in later from the donor's profile, which is
+            // where they are edited anyway. A donor who never fills them in is
+            // not blocked: the columns are nullable and the blood centre's
+            // questionnaire prints a gap as "Not provided".
+
+
             // Optional at signup: the donor may supply the ID they will present
             // at the counter now, or upload the document later from their
             // profile. Either way it is the type and number together or neither.

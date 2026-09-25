@@ -300,6 +300,13 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
 
             Route::get('/{uuid}/history', [BloodCenterDonorController::class, 'history'])
                 ->middleware('can:donors.view')->whereUuid('uuid');
+
+            // Its own ability, not donors.view: reading a donor's declared
+            // health answers is a different act from looking them up, and the
+            // service additionally refuses a facility the donor has not
+            // presented at.
+            Route::get('/{uuid}/health-questionnaire', [BloodCenterDonorController::class, 'healthQuestionnaire'])
+                ->middleware(['can:donors.view_questionnaire', 'throttle:60,1'])->whereUuid('uuid');
         });
 
         // Mobile drives. The donor-facing GET /blood-drives is a read-only view
