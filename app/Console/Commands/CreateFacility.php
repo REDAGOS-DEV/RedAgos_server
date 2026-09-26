@@ -5,7 +5,6 @@ namespace App\Console\Commands;
 use App\Console\Commands\Concerns\PromptsForAccountDetails;
 use App\Console\Commands\Concerns\ResolvesActingAdministrator;
 use App\Http\Requests\StoreFacilityRequest;
-use App\Models\User;
 use App\Service\FacilityManagementService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Validator;
@@ -51,8 +50,7 @@ class CreateFacility extends Command
                             {--account-phone= : Primary account mobile number}
                             {--account-username= : Defaults to one derived from the email}
                             {--account-password= : Leave unset to be prompted; an argument is visible in shell history}
-                            {--admin= : Email of the administrator recorded as creating it}
-                            {--verified : Mark the primary account verified instead of waiting on the emailed link}';
+                            {--admin= : Email of the administrator recorded as creating it}';
 
     protected $description = 'Create a facility and its primary account';
 
@@ -93,24 +91,18 @@ class CreateFacility extends Command
             return self::FAILURE;
         }
 
-        $created = $this->facilityManagementService->create($admin, $payload);
+        // Verified on creation, with no link mailed: the operator at the
+        // terminal is vouching for the account in person.
+        $created = $this->facilityManagementService->create($admin, $payload, verified: true);
         $facility = $created['data'];
-        $account = $facility['primary_account'];
-        $verified = (bool) $this->option('verified');
-
-        if ($verified) {
-            User::query()->where('uuid', $account['uuid'])->sole()->markEmailAsVerified();
-        }
 
         $this->info($facility['name'].' created.');
         $this->table(['Field', 'Value'], [
             ['Facility', $facility['name'].' (#'.$facility['id'].')'],
             ['Type', $facility['facility_type_label']],
             ['Status', $facility['status']],
-            ['Primary account', $account['email']],
-            ['Can sign in', $verified
-                ? 'Yes'
-                : 'Not until the emailed verification link is opened'],
+            ['Primary account', $facility['primary_account']['email']],
+            ['Can sign in', 'Yes'],
         ]);
 
         return self::SUCCESS;

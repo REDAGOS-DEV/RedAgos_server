@@ -8,6 +8,7 @@ use App\Enums\RoleName;
 use App\Models\Facility;
 use App\Models\User;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Support\Facades\Notification;
 use Tests\TestCase;
 
 /**
@@ -31,6 +32,18 @@ class AddFacilityUserTest extends TestCase
         '--last-name' => 'Reyes',
         '--email' => 'jomar@redagos.test',
         '--password' => 'Sup3rSecret',
+    ];
+
+    /**
+     * @var array<string, string>
+     */
+    private const LEVELS = [
+        'collection' => 'Collection',
+        'testing' => 'Testing',
+        'processing' => 'Processing',
+        'issuance' => 'Issuance',
+        'billing' => 'Billing / Payment',
+        'supervisor' => 'Supervisor (management level, no department)',
     ];
 
     private User $admin;
@@ -59,7 +72,8 @@ class AddFacilityUserTest extends TestCase
         $this->assertSame(Department::Issuance, $staff->department);
         $this->assertFalse($staff->is_supervisor);
         $this->assertTrue($staff->hasRole(RoleName::BloodCenter));
-        $this->assertSame(AccountStatus::PendingVerification, $staff->account_status);
+        $this->assertSame(AccountStatus::Active, $staff->account_status);
+        $this->assertTrue($staff->hasVerifiedEmail());
         $this->assertNotNull($staff->username);
     }
 
@@ -81,10 +95,37 @@ class AddFacilityUserTest extends TestCase
     {
         $this->artisan('facility:add-user', [
             '--facility' => $this->bloodCenter->id,
+            '--no-interaction' => true,
             ...self::ACCOUNT,
         ])->assertFailed();
 
         $this->assertDatabaseMissing('users', ['email' => 'jomar@redagos.test']);
+    }
+
+    public function test_an_interactive_run_asks_for_the_department(): void
+    {
+        $this->artisan('facility:add-user', [
+            '--facility' => $this->bloodCenter->id,
+            ...self::ACCOUNT,
+        ])->expectsChoice('Department', 'testing', self::LEVELS)->assertSuccessful();
+
+        $staff = User::where('email', 'jomar@redagos.test')->sole();
+
+        $this->assertSame(Department::Testing, $staff->department);
+        $this->assertFalse($staff->is_supervisor);
+    }
+
+    public function test_an_interactive_run_can_choose_the_management_level(): void
+    {
+        $this->artisan('facility:add-user', [
+            '--facility' => $this->bloodCenter->id,
+            ...self::ACCOUNT,
+        ])->expectsChoice('Department', 'supervisor', self::LEVELS)->assertSuccessful();
+
+        $staff = User::where('email', 'jomar@redagos.test')->sole();
+
+        $this->assertTrue($staff->is_supervisor);
+        $this->assertNull($staff->department);
     }
 
     public function test_an_unknown_department_creates_nothing(): void
@@ -142,14 +183,17 @@ class AddFacilityUserTest extends TestCase
         );
     }
 
-    public function test_verified_produces_an_account_that_can_sign_in_at_once(): void
+    public function test_the_account_is_verified_without_mailing_a_link(): void
     {
+        Notification::fake();
+
         $this->artisan('facility:add-user', [
             '--facility' => $this->bloodCenter->id,
             '--department' => 'issuance',
-            '--verified' => true,
             ...self::ACCOUNT,
         ])->assertSuccessful();
+
+        Notification::assertNothingSent();
 
         $this->postJson('/api/login', [
             'email' => 'jomar@redagos.test',

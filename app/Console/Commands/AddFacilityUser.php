@@ -4,12 +4,12 @@ namespace App\Console\Commands;
 
 use App\Console\Commands\Concerns\PromptsForAccountDetails;
 use App\Console\Commands\Concerns\ResolvesActingAdministrator;
-use App\Enums\AccountStatus;
 use App\Enums\Department;
 use App\Enums\FacilityStatus;
 use App\Enums\FacilityTypeName;
 use App\Models\Facility;
 use App\Models\User;
+use App\Repository\AuthRepository;
 use App\Repository\BloodCenterRepository;
 use App\Repository\FacilityRepository;
 use App\Service\AuditLogger;
@@ -58,12 +58,12 @@ class AddFacilityUser extends Command
                             {--supervisor : Grant the management level instead of a department}
                             {--primary : Also record this account as the facility contact}
                             {--password= : Leave unset to be prompted; an argument is visible in shell history}
-                            {--admin= : Email of the administrator recorded in the audit trail}
-                            {--verified : Mark the account verified instead of waiting on the emailed link}';
+                            {--admin= : Email of the administrator recorded in the audit trail}';
 
     protected $description = 'Add a staff account to an existing facility';
 
     public function __construct(
+        private readonly AuthRepository $authRepository,
         private readonly BloodCenterRepository $bloodCenterRepository,
         private readonly FacilityRepository $facilityRepository,
         private readonly AuditLogger $auditLogger
@@ -92,6 +92,8 @@ class AddFacilityUser extends Command
         if ($admin === null) {
             return self::FAILURE;
         }
+
+        $this->promptForLevel($type);
 
         $isSupervisor = (bool) $this->option('supervisor');
         $department = $this->resolveDepartment($type, $isSupervisor);
@@ -133,13 +135,6 @@ class AddFacilityUser extends Command
         }
 
         $staff = $this->createAccount($facility, $type, $attributes, $department, $isSupervisor);
-
-        if ($this->option('verified')) {
-            $staff->markEmailAsVerified();
-        } else {
-            // After the commit, so a rolled-back creation never mails a live link.
-            $staff->sendEmailVerificationNotification();
-        }
 
         $this->auditLogger->record($admin, 'staff.created', $staff, [
             'facility_id' => $facility->id,
@@ -203,6 +198,41 @@ class AddFacilityUser extends Command
             $facility->facilityType?->name,
             $facility->status->value,
         ])->all());
+    }
+
+    /**
+     * Ask for a blood centre account's level when neither option was passed.
+     *
+     * The level is a department or the management level, which are two options
+     * rather than one field, so optionOrAsk cannot cover it. The answer is
+     * written back onto the input so resolveDepartment judges a prompted run
+     * exactly as it would the equivalent flags. A --no-interaction run is left
+     * alone and refused there by name.
+     */
+    private function promptForLevel(FacilityTypeName $type): void
+    {
+        if (! $type->acceptsDonorBookings()
+            || ! $this->input->isInteractive()
+            || $this->option('supervisor')
+            || $this->optionOrNull('department') !== null) {
+            return;
+        }
+
+        $choices = [];
+
+        foreach (Department::cases() as $department) {
+            $choices[$department->value] = $department->label();
+        }
+
+        $choices['supervisor'] = 'Supervisor (management level, no department)';
+
+        $answer = $this->choice('Department', $choices);
+
+        if ($answer === 'supervisor') {
+            $this->input->setOption('supervisor', true);
+        } else {
+            $this->input->setOption('department', $answer);
+        }
     }
 
     /**
@@ -300,14 +330,15 @@ class AddFacilityUser extends Command
                 // The hashed cast turns this into a hash on save; passing an
                 // already-hashed value here would be hashed a second time.
                 'password' => $attributes['password'],
-                // Sign-in is refused until the address is verified, which is
-                // what --verified answers. An operator creating the account does
-                // not make the address any more proven than self-registration
-                // did, so the default stands where the API puts it.
-                'account_status' => AccountStatus::PendingVerification,
                 'employee_id' => $attributes['employee_id'],
                 'position' => $attributes['position'],
             ], $facility, $department, $isSupervisor);
+
+            // Verified on creation, with no link mailed: the operator at the
+            // terminal is vouching for the account in person. This is the same
+            // state the emailed link leaves behind, so the account is active
+            // rather than merely verified.
+            $this->authRepository->markVerified($staff);
 
             $this->facilityRepository->attachRole($staff, $type->role());
 
@@ -352,9 +383,7 @@ class AddFacilityUser extends Command
             ['Username', $staff->username],
             ['Level', $isSupervisor ? 'Supervisor' : ($department?->label() ?? 'Staff')],
             ['Facility contact', $this->option('primary') ? 'Yes' : 'No'],
-            ['Can sign in', $this->option('verified')
-                ? 'Yes'
-                : 'Not until the emailed verification link is opened'],
+            ['Can sign in', 'Yes'],
         ]);
     }
 }

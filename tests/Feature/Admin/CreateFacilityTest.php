@@ -2,11 +2,13 @@
 
 namespace Tests\Feature\Admin;
 
+use App\Enums\AccountStatus;
 use App\Enums\FacilityStatus;
 use App\Enums\RoleName;
 use App\Models\Facility;
 use App\Models\User;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Support\Facades\Notification;
 use Tests\TestCase;
 
 /**
@@ -91,10 +93,11 @@ class CreateFacilityTest extends TestCase
         $this->assertDatabaseHas('users', ['phone' => '+639181234567']);
     }
 
-    public function test_verified_produces_an_account_that_can_sign_in_at_once(): void
+    public function test_the_primary_account_can_sign_in_at_once(): void
     {
-        $this->artisan('facility:create', $this->commandOptions(['--verified' => true]))
-            ->assertSuccessful();
+        $this->artisan('facility:create', $this->commandOptions())->assertSuccessful();
+
+        $this->assertSame(AccountStatus::Active, User::where('email', 'maria@redagos.test')->sole()->account_status);
 
         $this->postJson('/api/login', [
             'email' => 'maria@redagos.test',
@@ -103,15 +106,13 @@ class CreateFacilityTest extends TestCase
         ])->assertOk();
     }
 
-    public function test_without_verified_the_account_waits_on_the_emailed_link(): void
+    public function test_no_verification_link_is_mailed(): void
     {
+        Notification::fake();
+
         $this->artisan('facility:create', $this->commandOptions())->assertSuccessful();
 
-        $this->postJson('/api/login', [
-            'email' => 'maria@redagos.test',
-            'password' => 'Sup3rSecret',
-            'role' => 'blood_center',
-        ])->assertForbidden()->assertJsonPath('code', 'email_not_verified');
+        Notification::assertNothingSent();
     }
 
     public function test_it_refuses_to_run_with_no_administrator_to_record(): void

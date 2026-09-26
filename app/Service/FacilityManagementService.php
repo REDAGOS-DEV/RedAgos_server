@@ -6,6 +6,7 @@ use App\Enums\AccountStatus;
 use App\Enums\FacilityTypeName;
 use App\Models\Facility;
 use App\Models\User;
+use App\Repository\AuthRepository;
 use App\Repository\FacilityRepository;
 use App\Support\AccountIdentity;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
@@ -36,6 +37,7 @@ class FacilityManagementService
 
     public function __construct(
         private readonly FacilityRepository $facilityRepository,
+        private readonly AuthRepository $authRepository,
         private readonly AuditLogger $auditLogger
     ) {}
 
@@ -60,16 +62,21 @@ class FacilityManagementService
      * there is no queue to wait in when an administrator is the one creating
      * it — and the approval trail records who did it.
      *
+     * $verified is for the console only. An operator at a terminal is vouching
+     * for the account in person, so it is activated on the spot and no link is
+     * mailed. The portal never passes it: an address typed into a form is
+     * proven by the link, not by the administrator who typed it.
+     *
      * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
      */
-    public function create(User $admin, array $payload): array
+    public function create(User $admin, array $payload, bool $verified = false): array
     {
         $type = FacilityTypeName::from($payload['facility_type']);
         $account = $payload['primary_account'];
 
         try {
-            [$facility, $primary] = DB::transaction(function () use ($admin, $payload, $account, $type): array {
+            [$facility, $primary] = DB::transaction(function () use ($admin, $payload, $account, $type, $verified): array {
                 $facility = $this->facilityRepository->createApprovedFacility(
                     $this->facilityAttributes($payload, $account, $type),
                     $type,
@@ -96,6 +103,13 @@ class FacilityManagementService
                 $this->facilityRepository->attachRole($primary, $type->role());
                 $this->facilityRepository->setPrimaryAccount($facility, $primary);
 
+                if ($verified) {
+                    // The same state the emailed link leaves behind, so a
+                    // console-created account is indistinguishable from one
+                    // that verified itself.
+                    $this->authRepository->markVerified($primary);
+                }
+
                 return [$facility, $primary];
             });
         } catch (QueryException $exception) {
@@ -104,9 +118,11 @@ class FacilityManagementService
             throw $exception;
         }
 
-        // Sent after the commit so a rolled-back creation never mails a live
-        // verification link.
-        $primary->sendEmailVerificationNotification();
+        if (! $verified) {
+            // Sent after the commit so a rolled-back creation never mails a live
+            // verification link.
+            $primary->sendEmailVerificationNotification();
+        }
 
         $this->auditLogger->record($admin, 'facility.created', $facility, [
             'super_admin_id' => $admin->id,
@@ -116,7 +132,9 @@ class FacilityManagementService
         ]);
 
         return [
-            'message' => $facility->name.' has been created. The primary account must verify its email address before signing in.',
+            'message' => $verified
+                ? $facility->name.' has been created. The primary account can sign in now.'
+                : $facility->name.' has been created. The primary account must verify its email address before signing in.',
             'data' => $this->format($facility),
         ];
     }

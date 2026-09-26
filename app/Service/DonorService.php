@@ -9,6 +9,7 @@ use App\Enums\IdentityStatus;
 use App\Enums\RoleName;
 use App\Models\DonorProfile;
 use App\Models\User;
+use App\Repository\AuthRepository;
 use App\Repository\DonorRepository;
 use App\Repository\EligibilityRepository;
 use App\Support\AccountIdentity;
@@ -36,16 +37,24 @@ class DonorService
     private const IDENTITY_DOCUMENT_DIRECTORY = 'identity-documents';
 
     public function __construct(
+        private readonly AuthRepository $authRepository,
         private readonly DonorRepository $donorRepository,
         private readonly EligibilityRepository $eligibilityRepository,
         private readonly EligibilityRuleEvaluator $eligibilityRuleEvaluator
     ) {}
 
     /**
+     * Register a donor account and its profile.
+     *
+     * $verified is for the console only. An operator at a terminal is vouching
+     * for the account in person, so it is activated on the spot and no link is
+     * mailed. Self-registration never passes it: an address typed into the
+     * sign-up form is proven by the link and nothing else.
+     *
      * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
      */
-    public function register(array $payload): array
+    public function register(array $payload, bool $verified = false): array
     {
         $normalizedEmail = Str::lower(trim($payload['email']));
         $normalizedPhone = $this->normalizePhilippinePhone($payload['phone']);
@@ -62,7 +71,7 @@ class DonorService
             ]);
         }
 
-        $donor = DB::transaction(function () use ($payload, $normalizedEmail, $normalizedPhone): User {
+        $donor = DB::transaction(function () use ($payload, $normalizedEmail, $normalizedPhone, $verified): User {
             // A donor who does not know their type registers without one. The
             // profile column is nullable for exactly this, and the laboratory
             // fills it from the first cleared donation.
@@ -110,13 +119,24 @@ class DonorService
             $role = $this->donorRepository->findOrCreateRoleByName(self::DONOR_ROLE);
             $this->donorRepository->attachRole($donor, $role);
 
+            if ($verified) {
+                // The same state the emailed link leaves behind, so a
+                // console-created donor is indistinguishable from one that
+                // verified itself.
+                $this->authRepository->markVerified($donor);
+            }
+
             return $donor;
         });
 
-        $donor->sendEmailVerificationNotification();
+        if (! $verified) {
+            $donor->sendEmailVerificationNotification();
+        }
 
         return [
-            'message' => 'Donor registration submitted successfully. Please check your email to verify your address.',
+            'message' => $verified
+                ? 'Donor registered. The account can sign in now.'
+                : 'Donor registration submitted successfully. Please check your email to verify your address.',
             'data' => [
                 'user' => $this->formatDonor(
                     $this->donorRepository->loadDonorRegistration($donor)
