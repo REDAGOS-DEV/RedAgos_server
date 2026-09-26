@@ -67,7 +67,7 @@ class DonationToInventoryChainTest extends TestCase
             ->assertCreated();
 
         $this->actingAs($this->collection)
-            ->postJson("/api/blood-center/donations/{$donationId}/collection", ['volume_ml' => 450])
+            ->postJson("/api/blood-center/donations/{$donationId}/collection", $this->collectionPayload())
             ->assertCreated()
             ->assertJsonPath('data.status', 'collected');
 
@@ -75,10 +75,14 @@ class DonationToInventoryChainTest extends TestCase
         $bloodTypeId = $this->donor->donorProfile->blood_type_id;
 
         $this->actingAs($this->testing)
-            ->postJson("/api/blood-center/laboratory/donations/{$donationId}/results", [
-                'result' => 'passed',
+            ->postJson("/api/blood-center/laboratory/donations/{$donationId}/immunohematology", [
                 'blood_type_id' => $bloodTypeId,
             ])
+            ->assertCreated()
+            ->assertJsonPath('data.status', 'collected');
+
+        $this->actingAs($this->testing)
+            ->postJson("/api/blood-center/laboratory/donations/{$donationId}/serology", $this->nonReactivePanel())
             ->assertCreated()
             ->assertJsonPath('data.status', 'tested');
 
@@ -185,23 +189,26 @@ class DonationToInventoryChainTest extends TestCase
     {
         $donationId = $this->collectedDonation();
 
-        $this->actingAs($this->testing)
-            ->postJson("/api/blood-center/laboratory/donations/{$donationId}/results", [
-                'result' => 'reactive',
-                'blood_type_id' => $this->donor->donorProfile->blood_type_id,
-            ])
-            ->assertCreated();
-
         $this->actingAs($this->processing)
             ->postJson("/api/blood-center/laboratory/donations/{$donationId}/components", [
                 'components' => [['component_id' => $this->packedRbc->id, 'quantity' => 1]],
             ])
             ->assertCreated();
 
-        // Cannot be cleared...
+        $this->actingAs($this->testing)
+            ->postJson("/api/blood-center/laboratory/donations/{$donationId}/serology", [
+                ...$this->nonReactivePanel(),
+                'hcv' => 'reactive',
+                'confirm_reactive' => true,
+            ])
+            ->assertCreated()
+            ->assertJsonPath('data.status', 'rejected');
+
+        // Cannot be cleared: a reactive panel rejects it on the spot...
         $this->actingAs($this->processing)
             ->patchJson("/api/blood-center/laboratory/donations/{$donationId}/status", ['status' => 'completed'])
-            ->assertStatus(422);
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'donation_already_final');
 
         // ...and therefore cannot enter stock. This is the whole point of the
         // intake gate: reactive blood has no route to a patient.
@@ -229,9 +236,43 @@ class DonationToInventoryChainTest extends TestCase
             ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'accepted']);
 
         $this->actingAs($this->collection)
-            ->postJson("/api/blood-center/donations/{$id}/collection", ['volume_ml' => 450]);
+            ->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload());
 
         return $id;
+    }
+
+    private int $segments = 0;
+
+    /**
+     * A complete "For Phlebotomist Use Only" box, with a fresh segment number each call.
+     *
+     * @return array<string, mixed>
+     */
+    private function collectionPayload(): array
+    {
+        $this->segments++;
+
+        return [
+            'volume_ml' => 450,
+            'blood_bag_type' => 'double',
+            'segment_number' => 'SEG-'.$this->segments,
+            'started_at' => now()->subMinutes(15)->toISOString(),
+            'ended_at' => now()->subMinutes(5)->toISOString(),
+        ];
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function nonReactivePanel(): array
+    {
+        return [
+            'hiv' => 'non_reactive',
+            'hbsag' => 'non_reactive',
+            'hcv' => 'non_reactive',
+            'syphilis' => 'non_reactive',
+            'malaria' => 'non_reactive',
+        ];
     }
 
     /**
@@ -244,10 +285,12 @@ class DonationToInventoryChainTest extends TestCase
         $id = $this->collectedDonation();
 
         $this->actingAs($this->testing)
-            ->postJson("/api/blood-center/laboratory/donations/{$id}/results", [
-                'result' => 'passed',
+            ->postJson("/api/blood-center/laboratory/donations/{$id}/immunohematology", [
                 'blood_type_id' => $this->donor->donorProfile->blood_type_id,
             ]);
+
+        $this->actingAs($this->testing)
+            ->postJson("/api/blood-center/laboratory/donations/{$id}/serology", $this->nonReactivePanel());
 
         $this->actingAs($this->processing)
             ->postJson("/api/blood-center/laboratory/donations/{$id}/components", ['components' => $components]);

@@ -55,6 +55,10 @@ class AuthorizationSweepTest extends TestCase
             'centre billing show' => ['get', '/api/blood-center/billings/1'],
             'centre record payment' => ['post', '/api/blood-center/billings/1/payments'],
             'centre notifications' => ['get', '/api/blood-center/notifications'],
+            'testing immunohematology' => ['post', '/api/blood-center/laboratory/donations/1/immunohematology'],
+            'testing serology' => ['post', '/api/blood-center/laboratory/donations/1/serology'],
+            'testing referral list' => ['get', '/api/blood-center/laboratory/referrals'],
+            'testing referral update' => ['patch', '/api/blood-center/laboratory/referrals/1'],
         ];
     }
 

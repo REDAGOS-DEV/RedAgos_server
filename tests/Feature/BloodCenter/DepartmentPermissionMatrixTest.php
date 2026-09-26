@@ -139,6 +139,19 @@ class DepartmentPermissionMatrixTest extends TestCase
         $this->assertNotContains('lab.record_result', $processing);
     }
 
+    /**
+     * The referral list names which infection each donor carries. Processing
+     * clears the same donations and must never learn it.
+     */
+    public function test_only_testing_holds_the_counselling_referral_list(): void
+    {
+        $this->assertContains('lab.referrals', DepartmentPermissions::forDepartment(Department::Testing));
+
+        foreach ([Department::Processing, Department::Collection, Department::Issuance, Department::Billing] as $department) {
+            $this->assertNotContains('lab.referrals', DepartmentPermissions::forDepartment($department), $department->value);
+        }
+    }
+
     public function test_collection_staff_cannot_discard_a_unit(): void
     {
         $facility = Facility::factory()->approved()->create();

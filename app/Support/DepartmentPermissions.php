@@ -69,7 +69,17 @@ final class DepartmentPermissions
         // unit on its own record alone.
         Department::Testing->value => [
             'lab.view',
+
+            // Immunohematology and the five-marker serology panel. A reactive
+            // marker rejects the donation automatically — the one status write
+            // Testing makes without lab.update_status, because it is the
+            // consequence of a reading only Testing may record.
             'lab.record_result',
+
+            // The counselling referral list: the only screen that names which
+            // marker a donor was reactive for. Testing alone, so Processing,
+            // which clears the same donations, never learns it.
+            'lab.referrals',
 
             // Read-only: testing acts on donations, but inventory records
             // belong to Issuance.

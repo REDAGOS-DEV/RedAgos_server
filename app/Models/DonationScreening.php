@@ -42,6 +42,10 @@ class DonationScreening extends Model
         'temperature_c',
         'weight_kg',
         'haemoglobin_g_dl',
+
+        // Section II's fingerprick table. Preliminary: never copied onto the
+        // donor profile and never used to pre-fill the laboratory's typing.
+        'fingerprick_blood_type_id',
         'notes',
         'screened_at',
     ];
@@ -68,6 +72,14 @@ class DonationScreening extends Model
     public function facility(): BelongsTo
     {
         return $this->belongsTo(Facility::class);
+    }
+
+    /**
+     * The blood type read off the fingerprick slide at the screening table.
+     */
+    public function fingerprickBloodType(): BelongsTo
+    {
+        return $this->belongsTo(BloodType::class, 'fingerprick_blood_type_id');
     }
 
     /**

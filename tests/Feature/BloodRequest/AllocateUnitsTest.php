@@ -192,7 +192,7 @@ class AllocateUnitsTest extends TestCase
     {
         $request = $this->incomingRequest(3);
         $otherType = BloodType::firstOrCreate(['code' => 'A-'], ['label' => 'A-']);
-        $otherComponent = BloodComponent::factory()->create(['name' => 'Platelets']);
+        $otherComponent = BloodComponent::factory()->create(['name' => 'Platelet Concentrate']);
 
         $this->unit(['id' => 'MATCH']);
         $this->unit(['id' => 'WRONG-TYPE', 'blood_type_id' => $otherType->id]);

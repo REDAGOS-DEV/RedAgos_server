@@ -48,7 +48,7 @@ class BloodRequestFormPdfTest extends TestCase
 
         $this->bloodType = BloodType::firstOrCreate(['code' => 'AB+'], ['label' => 'AB+']);
         $this->packedCells = BloodComponent::factory()->create(['name' => 'Packed RBC']);
-        $this->platelets = BloodComponent::factory()->create(['name' => 'Platelets']);
+        $this->platelets = BloodComponent::factory()->create(['name' => 'Platelet Concentrate']);
     }
 
     public function test_the_requesting_hospital_can_download_the_form(): void

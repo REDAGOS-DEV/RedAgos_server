@@ -33,7 +33,7 @@ class BloodRequestFormService
         'Whole Blood' => 'approximate volume 500 ml',
         'Packed RBC' => 'approximate volume 250 ml',
         'Washed RBC' => 'approximate volume 180 ml',
-        'Platelets' => 'approximate volume 50 ml',
+        'Platelet Concentrate' => 'approximate volume 50 ml',
         'Cryoprecipitate' => 'approximate volume 20 ml',
         'Fresh Frozen Plasma' => 'approximate volume 200-250 ml',
     ];

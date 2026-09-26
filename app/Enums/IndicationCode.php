@@ -77,7 +77,7 @@ enum IndicationCode: string
             self::WB1, self::WB2 => 'Whole Blood',
             self::R1, self::R2, self::R3, self::R4, self::R5 => 'Packed RBC',
             self::WP1, self::WP2, self::WP3, self::WP4 => 'Washed RBC',
-            self::P1, self::P2, self::P3, self::P4, self::P5, self::P6 => 'Platelets',
+            self::P1, self::P2, self::P3, self::P4, self::P5, self::P6 => 'Platelet Concentrate',
             self::C1, self::C2, self::C3, self::C4 => 'Cryoprecipitate',
             self::F1, self::F2, self::F3, self::F4, self::F5, self::F6 => 'Fresh Frozen Plasma',
         };

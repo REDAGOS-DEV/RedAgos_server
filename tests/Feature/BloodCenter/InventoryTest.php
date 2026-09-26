@@ -92,7 +92,7 @@ class InventoryTest extends TestCase
     public function test_the_blood_type_and_component_filters_narrow_the_listing(): void
     {
         $otherType = BloodType::firstOrCreate(['code' => 'AB-'], ['label' => 'AB-']);
-        $otherComponent = BloodComponent::factory()->create(['name' => 'Platelets']);
+        $otherComponent = BloodComponent::factory()->create(['name' => 'Platelet Concentrate']);
 
         $this->makeUnit(['id' => 'MATCH-01']);
         $this->makeUnit(['id' => 'OTHERTYPE-01', 'blood_type_id' => $otherType->id]);

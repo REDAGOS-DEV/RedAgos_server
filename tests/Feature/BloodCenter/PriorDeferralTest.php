@@ -3,6 +3,8 @@
 namespace Tests\Feature\BloodCenter;
 
 use App\Enums\Department;
+use App\Enums\ScreeningOutcome;
+use App\Models\CounsellingReferral;
 use App\Models\Donation;
 use App\Models\DonationScreening;
 use App\Models\DonorQrToken;
@@ -10,9 +12,12 @@ use App\Models\EligibilityScreening;
 use App\Models\Facility;
 use App\Models\User;
 use App\Notifications\DonorDeferred;
+use App\Support\AccountIdentity;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Str;
+use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
 
 /**
@@ -68,7 +73,7 @@ class PriorDeferralTest extends TestCase
     /**
      * Put a live credential in the donor's hands.
      */
-    private function scan(): \Illuminate\Testing\TestResponse
+    private function scan(): TestResponse
     {
         $screening = EligibilityScreening::factory()->create(['donor_id' => $this->donor->id]);
         $raw = Str::random(40);
@@ -83,6 +88,102 @@ class PriorDeferralTest extends TestCase
 
         return $this->actingAs($this->staff)
             ->postJson('/api/blood-center/collection/verify-qr', ['token' => $raw]);
+    }
+
+    /**
+     * Record a reactive serology result's referral for this donor, as LaboratoryService would.
+     */
+    private function laboratoryDeferral(?Facility $at = null, ?Carbon $on = null): CounsellingReferral
+    {
+        $at ??= $this->facility;
+
+        $donation = Donation::factory()->rejectedAfterCollection()->create([
+            'donor_id' => $this->donor->id,
+            'facility_id' => $at->id,
+            'donation_date' => $on ?? now()->subMonths(2),
+        ]);
+
+        $referral = CounsellingReferral::create([
+            'donation_id' => $donation->id,
+            'donor_id' => $this->donor->id,
+            'facility_id' => $at->id,
+        ]);
+
+        $referral->forceFill(['created_at' => $on ?? now()->subMonths(2)])->save();
+
+        return $referral;
+    }
+
+    // --- The laboratory's reactive result tells the counter too --------------
+
+    public function test_a_reactive_serology_result_surfaces_as_a_permanent_deferral(): void
+    {
+        $this->laboratoryDeferral(on: now()->subMonths(2));
+
+        $this->scan()
+            ->assertOk()
+            ->assertJsonPath('data.prior_deferral.outcome', 'permanently_deferred')
+            ->assertJsonPath('data.prior_deferral.recorded_on', now()->subMonths(2)->toDateString());
+    }
+
+    public function test_a_reactive_result_at_another_centre_still_surfaces(): void
+    {
+        $this->laboratoryDeferral(Facility::factory()->approved()->create());
+
+        $this->scan()
+            ->assertOk()
+            ->assertJsonPath('data.prior_deferral.outcome', 'permanently_deferred');
+    }
+
+    public function test_the_scan_cannot_tell_a_laboratory_deferral_from_a_screening_one(): void
+    {
+        $this->laboratoryDeferral();
+
+        // The same three keys as a screening deferral. Which department
+        // recorded it — and so that a laboratory finding exists — is not the
+        // counter's to know.
+        $this->assertSame(
+            ['outcome', 'outcome_label', 'recorded_on'],
+            array_keys($this->scan()->assertOk()->json('data.prior_deferral'))
+        );
+    }
+
+    public function test_a_permanent_deferral_is_not_hidden_by_a_newer_indefinite_one(): void
+    {
+        $this->laboratoryDeferral(on: now()->subYear());
+        $this->pastScreening('indefinitelyDeferred');
+
+        $this->scan()
+            ->assertOk()
+            ->assertJsonPath('data.prior_deferral.outcome', 'permanently_deferred');
+    }
+
+    public function test_a_donor_found_by_id_number_carries_the_deferral_too(): void
+    {
+        $this->laboratoryDeferral();
+        $this->donor->donorProfile->update([
+            'valid_id_number' => AccountIdentity::normalizeValidIdNumber('PH-ID-000123'),
+        ]);
+
+        // A donor who left their phone at home must not walk past the warning.
+        $this->actingAs($this->staff)
+            ->getJson('/api/blood-center/donors/lookup?type=valid_id_number&value=PH-ID-000123')
+            ->assertOk()
+            ->assertJsonPath('prior_deferral.outcome', 'permanently_deferred');
+    }
+
+    public function test_the_staff_history_marks_the_laboratory_deferral_without_the_marker(): void
+    {
+        $this->laboratoryDeferral();
+
+        $response = $this->actingAs($this->staff)
+            ->getJson("/api/blood-center/donors/{$this->donor->uuid}/history")
+            ->assertOk();
+
+        $this->assertSame('permanently_deferred', $response->json('donations.0.laboratory_deferral.outcome'));
+        $this->assertTrue($response->json('donations.0.laboratory_deferral.is_blocking'));
+        $this->assertStringNotContainsStringIgnoringCase('hiv', $response->getContent());
+        $this->assertStringNotContainsStringIgnoringCase('hbsag', $response->getContent());
     }
 
     // --- The scan tells the counter ------------------------------------------
@@ -215,7 +316,7 @@ class PriorDeferralTest extends TestCase
         $notification = new DonorDeferred(
             $donation,
             'Recorded by the officer.',
-            \App\Enums\ScreeningOutcome::PermanentlyDeferred
+            ScreeningOutcome::PermanentlyDeferred
         );
 
         $mail = $notification->toMail($this->donor)->render();
@@ -240,7 +341,7 @@ class PriorDeferralTest extends TestCase
         $notification = new DonorDeferred(
             $donation,
             'Haemoglobin below the accepted threshold.',
-            \App\Enums\ScreeningOutcome::TemporarilyDeferred
+            ScreeningOutcome::TemporarilyDeferred
         );
 
         $this->assertStringContainsString('usually temporary', $notification->toMail($this->donor)->render());

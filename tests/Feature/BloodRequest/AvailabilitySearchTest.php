@@ -159,7 +159,7 @@ class AvailabilitySearchTest extends TestCase
     {
         $centre = Facility::factory()->approved()->create();
         $otherType = BloodType::firstOrCreate(['code' => 'A-'], ['label' => 'A-']);
-        $otherComponent = BloodComponent::factory()->create(['name' => 'Platelets']);
+        $otherComponent = BloodComponent::factory()->create(['name' => 'Platelet Concentrate']);
 
         $this->stockAt($centre, 1);
         $this->unitAt($centre, ['blood_type_id' => $otherType->id]);

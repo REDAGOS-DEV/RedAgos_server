@@ -7,6 +7,7 @@ use App\Enums\Department;
 use App\Enums\DonationStatus;
 use App\Models\BloodCollection;
 use App\Models\BloodComponent;
+use App\Models\BloodType;
 use App\Models\Donation;
 use App\Models\DonationAppointment;
 use App\Models\Facility;
@@ -65,6 +66,48 @@ class CollectionWorkflowTest extends TestCase
             ->assertCreated();
     }
 
+    private int $segments = 0;
+
+    /**
+     * A complete "For Phlebotomist Use Only" box, with a fresh segment number each call.
+     *
+     * @param  array<string, mixed>  $overrides
+     * @return array<string, mixed>
+     */
+    private function collectionPayload(array $overrides = []): array
+    {
+        $this->segments++;
+
+        return [
+            'volume_ml' => 450,
+            'blood_bag_type' => 'double',
+            'segment_number' => 'SEG-'.str_pad((string) $this->segments, 4, '0', STR_PAD_LEFT),
+            'started_at' => now()->subMinutes(15)->toISOString(),
+            'ended_at' => now()->subMinutes(5)->toISOString(),
+            ...$overrides,
+        ];
+    }
+
+    /**
+     * Open and screen a donation for a fresh donor, ready to be collected.
+     */
+    private function screenedDonationForNewDonor(?User $staff = null): int
+    {
+        $staff ??= $this->staff;
+        $donor = User::factory()->donor()->create();
+
+        $id = $this->actingAs($staff)
+            ->postJson('/api/blood-center/donations', ['donor_uuid' => $donor->uuid])
+            ->assertCreated()
+            ->json('data.id');
+
+        $this->actingAs($staff)
+            ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'accepted'])
+            ->assertCreated();
+
+        return $id;
+    }
+
     public function test_a_donation_opens_as_registered_at_the_callers_facility(): void
     {
         $id = $this->openDonation();
@@ -84,7 +127,7 @@ class CollectionWorkflowTest extends TestCase
             ->assertJsonPath('data.status', 'screening');
 
         $this->actingAs($this->staff)
-            ->postJson("/api/blood-center/donations/{$id}/collection", ['volume_ml' => 450])
+            ->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload())
             ->assertCreated()
             ->assertJsonPath('data.status', 'collected')
             ->assertJsonPath('data.owning_department', 'testing');
@@ -98,7 +141,7 @@ class CollectionWorkflowTest extends TestCase
         $this->screenDonation($id);
 
         $this->actingAs($this->staff)
-            ->postJson("/api/blood-center/donations/{$id}/collection", ['volume_ml' => 450])
+            ->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload())
             ->assertCreated();
 
         // collected_by is the authenticated staff member, never request input.
@@ -113,7 +156,7 @@ class CollectionWorkflowTest extends TestCase
         $id = $this->openDonation();
 
         $this->actingAs($this->staff)
-            ->postJson("/api/blood-center/donations/{$id}/collection", ['volume_ml' => 450])
+            ->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload())
             ->assertStatus(409)
             ->assertJsonPath('code', 'donation_not_screened');
 
@@ -124,10 +167,10 @@ class CollectionWorkflowTest extends TestCase
     {
         $id = $this->openDonation();
         $this->screenDonation($id);
-        $this->actingAs($this->staff)->postJson("/api/blood-center/donations/{$id}/collection", ['volume_ml' => 450]);
+        $this->actingAs($this->staff)->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload());
 
         $this->actingAs($this->staff)
-            ->postJson("/api/blood-center/donations/{$id}/collection", ['volume_ml' => 450])
+            ->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload())
             ->assertStatus(409)
             ->assertJsonPath('code', 'collection_already_recorded');
 
@@ -138,7 +181,7 @@ class CollectionWorkflowTest extends TestCase
     {
         $id = $this->openDonation();
         $this->screenDonation($id);
-        $this->actingAs($this->staff)->postJson("/api/blood-center/donations/{$id}/collection", ['volume_ml' => 450]);
+        $this->actingAs($this->staff)->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload());
 
         foreach (['tested', 'completed'] as $status) {
             $this->actingAs($this->staff)
@@ -238,7 +281,7 @@ class CollectionWorkflowTest extends TestCase
             ])->json('data.id');
 
         $this->screenDonation($id);
-        $this->actingAs($this->staff)->postJson("/api/blood-center/donations/{$id}/collection", ['volume_ml' => 450]);
+        $this->actingAs($this->staff)->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload());
 
         $this->assertSame(AppointmentStatus::Completed, $appointment->fresh()->status);
     }
@@ -331,7 +374,7 @@ class CollectionWorkflowTest extends TestCase
         $id = $this->openDonation();
         $this->screenDonation($id);
         $this->actingAs($this->staff)
-            ->postJson("/api/blood-center/donations/{$id}/collection", ['volume_ml' => 450])
+            ->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload())
             ->assertCreated();
 
         $this->actingAs($this->staff)
@@ -420,7 +463,7 @@ class CollectionWorkflowTest extends TestCase
         $id = $this->openDonation();
         $this->screenDonation($id);
         $this->actingAs($this->staff)
-            ->postJson("/api/blood-center/donations/{$id}/collection", ['volume_ml' => 450])
+            ->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload())
             ->assertCreated();
 
         Notification::assertSentTo($this->donor, DonationRecorded::class);
@@ -476,7 +519,7 @@ class CollectionWorkflowTest extends TestCase
         // The bag is already drawn. Refusing the request would lose the record
         // of a donation that physically happened.
         $this->actingAs($this->staff)
-            ->postJson("/api/blood-center/donations/{$id}/collection", ['volume_ml' => 450])
+            ->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload())
             ->assertCreated();
 
         $this->assertSame(450, Donation::findOrFail($id)->volume_ml);
@@ -499,7 +542,7 @@ class CollectionWorkflowTest extends TestCase
     {
         $id = $this->openDonation();
         $this->screenDonation($id);
-        $this->actingAs($this->staff)->postJson("/api/blood-center/donations/{$id}/collection", ['volume_ml' => 450]);
+        $this->actingAs($this->staff)->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload());
 
         // The handoff this module stops at. Intake gates on `completed`, and
         // only Laboratory may set it — so collection alone does not yet make
@@ -517,6 +560,191 @@ class CollectionWorkflowTest extends TestCase
             ])
             ->assertStatus(409)
             ->assertJsonPath('code', 'donation_not_completed');
+    }
+
+    public function test_the_phlebotomist_box_is_recorded_and_returned(): void
+    {
+        $id = $this->openDonation();
+        $this->screenDonation($id);
+
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload([
+                'blood_bag_type' => 'triple',
+                'segment_number' => 'SNB-0042',
+            ]))
+            ->assertCreated()
+            ->assertJsonPath('data.collection.blood_bag_type', 'triple')
+            ->assertJsonPath('data.collection.blood_bag_type_label', 'Triple')
+            ->assertJsonPath('data.collection.segment_number', 'SNB-0042')
+            ->assertJsonPath('data.collection.phlebotomist', trim($this->staff->first_name.' '.$this->staff->last_name));
+
+        $collection = BloodCollection::where('donation_id', $id)->firstOrFail();
+        $this->assertSame($this->facility->id, $collection->facility_id);
+        $this->assertNotNull($collection->started_at);
+        $this->assertTrue($collection->ended_at->equalTo($collection->collection_datetime));
+    }
+
+    public function test_every_field_of_the_phlebotomist_box_is_required(): void
+    {
+        $id = $this->openDonation();
+        $this->screenDonation($id);
+
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/donations/{$id}/collection", ['volume_ml' => 450])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['blood_bag_type', 'segment_number', 'started_at', 'ended_at']);
+
+        $this->assertSame(0, BloodCollection::where('donation_id', $id)->count());
+    }
+
+    public function test_an_unknown_bag_type_is_refused(): void
+    {
+        $id = $this->openDonation();
+        $this->screenDonation($id);
+
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload(['blood_bag_type' => 'quintuple']))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('blood_bag_type');
+    }
+
+    public function test_a_segment_number_cannot_be_used_twice_at_one_facility(): void
+    {
+        $first = $this->screenedDonationForNewDonor();
+        $second = $this->screenedDonationForNewDonor();
+
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/donations/{$first}/collection", $this->collectionPayload(['segment_number' => 'SEG-DUP']))
+            ->assertCreated();
+
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/donations/{$second}/collection", $this->collectionPayload(['segment_number' => 'SEG-DUP']))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('segment_number');
+
+        $this->assertSame(DonationStatus::Screening, Donation::findOrFail($second)->status);
+    }
+
+    public function test_the_same_segment_number_is_allowed_at_another_facility(): void
+    {
+        $otherFacility = Facility::factory()->approved()->create();
+        $otherStaff = User::factory()->bloodCenterStaff($otherFacility, Department::Collection)->create();
+
+        $here = $this->screenedDonationForNewDonor();
+        $there = $this->screenedDonationForNewDonor($otherStaff);
+
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/donations/{$here}/collection", $this->collectionPayload(['segment_number' => 'SEG-0001']))
+            ->assertCreated();
+
+        // Numbering schemes are each centre's own.
+        $this->actingAs($otherStaff)
+            ->postJson("/api/blood-center/donations/{$there}/collection", $this->collectionPayload(['segment_number' => 'SEG-0001']))
+            ->assertCreated();
+    }
+
+    public function test_a_scanned_segment_number_is_normalised_so_a_typed_copy_collides(): void
+    {
+        $first = $this->screenedDonationForNewDonor();
+        $second = $this->screenedDonationForNewDonor();
+
+        // A scanner appends a carriage return; staff type in lower case.
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/donations/{$first}/collection", $this->collectionPayload(['segment_number' => "abc 123\r"]))
+            ->assertCreated()
+            ->assertJsonPath('data.collection.segment_number', 'ABC123');
+
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/donations/{$second}/collection", $this->collectionPayload(['segment_number' => 'ABC123']))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('segment_number');
+    }
+
+    public function test_a_draw_cannot_end_before_it_started(): void
+    {
+        $id = $this->openDonation();
+        $this->screenDonation($id);
+
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload([
+                'started_at' => now()->subMinutes(5)->toISOString(),
+                'ended_at' => now()->subMinutes(15)->toISOString(),
+            ]))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('ended_at');
+    }
+
+    public function test_a_draw_cannot_be_recorded_in_the_future(): void
+    {
+        $id = $this->openDonation();
+        $this->screenDonation($id);
+
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload([
+                'ended_at' => now()->addHour()->toISOString(),
+            ]))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('ended_at');
+    }
+
+    public function test_the_phlebotomist_is_never_taken_from_the_request(): void
+    {
+        $someoneElse = User::factory()->bloodCenterStaff($this->facility, Department::Collection)->create();
+        $id = $this->openDonation();
+        $this->screenDonation($id);
+
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload([
+                'collected_by' => $someoneElse->id,
+            ]))
+            ->assertCreated();
+
+        $this->assertDatabaseHas('blood_collections', [
+            'donation_id' => $id,
+            'collected_by' => $this->staff->id,
+        ]);
+    }
+
+    public function test_the_fingerprick_blood_type_is_stored_but_never_adopted_onto_the_donor(): void
+    {
+        $bloodType = BloodType::factory()->create();
+        $this->donor->donorProfile->update(['blood_type_id' => null]);
+        $id = $this->openDonation();
+
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/donations/{$id}/screening", [
+                'outcome' => 'accepted',
+                'haemoglobin_g_dl' => 13.8,
+                'fingerprick_blood_type_id' => $bloodType->id,
+            ])
+            ->assertCreated()
+            ->assertJsonPath('data.screening.fingerprick_blood_type_id', $bloodType->id)
+            ->assertJsonPath('data.screening.fingerprick_blood_type', $bloodType->code);
+
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload())
+            ->assertCreated();
+
+        // Preliminary. Only the Testing department's typing reaches the profile.
+        $this->assertNull($this->donor->donorProfile->fresh()->blood_type_id);
+    }
+
+    public function test_the_fingerprick_blood_type_is_optional_and_must_exist(): void
+    {
+        $id = $this->openDonation();
+
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/donations/{$id}/screening", [
+                'outcome' => 'accepted',
+                'fingerprick_blood_type_id' => 999999,
+            ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('fingerprick_blood_type_id');
+
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'accepted'])
+            ->assertCreated()
+            ->assertJsonPath('data.screening.fingerprick_blood_type', null);
     }
 
     public function test_billing_staff_cannot_touch_the_collection_chain(): void

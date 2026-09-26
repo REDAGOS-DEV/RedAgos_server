@@ -36,7 +36,7 @@ class ComponentSettingsTest extends TestCase
 
     public function test_a_supervisor_sees_which_components_are_unconfigured(): void
     {
-        BloodComponent::factory()->create(['name' => 'Platelets']);
+        BloodComponent::factory()->create(['name' => 'Platelet Concentrate']);
 
         $this->actingAs($this->supervisor)
             ->getJson('/api/blood-center/blood-components')

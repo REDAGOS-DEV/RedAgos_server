@@ -4,7 +4,6 @@ namespace App\Repository;
 
 use App\Enums\AppointmentStatus;
 use App\Enums\DonationStatus;
-use App\Enums\ScreeningOutcome;
 use App\Models\BloodCollection;
 use App\Models\Donation;
 use App\Models\DonationAppointment;
@@ -137,7 +136,14 @@ class CollectionRepository
     public function findDonation(int $donationId, int $facilityId): ?Donation
     {
         return Donation::query()
-            ->with(['donorProfile.donor', 'donorProfile.bloodType', 'appointment', 'screening.recorder'])
+            ->with([
+                'donorProfile.donor',
+                'donorProfile.bloodType',
+                'appointment',
+                'screening.recorder',
+                'screening.fingerprickBloodType',
+                'collection.collector',
+            ])
             ->where('id', $donationId)
             ->where('facility_id', $facilityId)
             ->first();
@@ -152,7 +158,13 @@ class CollectionRepository
     public function paginateDonations(int $facilityId, array $filters, int $perPage)
     {
         return Donation::query()
-            ->with(['donorProfile.donor', 'donorProfile.bloodType', 'screening.recorder'])
+            ->with([
+                'donorProfile.donor',
+                'donorProfile.bloodType',
+                'screening.recorder',
+                'screening.fingerprickBloodType',
+                'collection.collector',
+            ])
             ->where('facility_id', $facilityId)
             ->when(
                 isset($filters['status']),
@@ -213,31 +225,6 @@ class CollectionRepository
             ['donation_id' => $donationId],
             $attributes
         );
-    }
-
-    /**
-     * The donor's most recent permanent or indefinite deferral, at any facility.
-     *
-     * `donation_screenings` has no `donor_id` — a screening belongs to a
-     * donation, and the donation is what belongs to a donor — so the question
-     * goes through the relation. `donations.donor_id` is indexed, and this runs
-     * once per scan.
-     *
-     * Deliberately not limited to this facility. A donor permanently deferred
-     * at one centre is permanently deferred, and the counter that has never met
-     * them is exactly the one that needs telling.
-     */
-    public function blockingDeferralFor(int $donorId): ?DonationScreening
-    {
-        return DonationScreening::query()
-            ->whereIn('outcome', [
-                ScreeningOutcome::PermanentlyDeferred->value,
-                ScreeningOutcome::IndefiniteDeferral->value,
-            ])
-            ->whereHas('donation', fn (Builder $q) => $q->where('donor_id', $donorId))
-            ->latest('screened_at')
-            ->latest('id')
-            ->first();
     }
 
     /**

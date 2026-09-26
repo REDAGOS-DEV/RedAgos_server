@@ -21,6 +21,9 @@ use Tests\TestCase;
  * `completed` is what blood-unit intake gates on, and this department is the
  * only place it can be written. Every guard here exists so a donation cannot
  * reach that status without a passing result and a declared yield.
+ *
+ * The Testing department's two sections themselves — ordering, authorship,
+ * the reactive chain — are covered in TestingSectionsTest.
  */
 class LaboratoryProcessingTest extends TestCase
 {
@@ -67,16 +70,39 @@ class LaboratoryProcessingTest extends TestCase
     /**
      * @param  array<string, mixed>  $overrides
      */
-    private function recordResult(array $overrides = []): TestResponse
+    private function recordImmunohematology(array $overrides = []): TestResponse
     {
         return $this->actingAs($this->testing)->postJson(
-            "/api/blood-center/laboratory/donations/{$this->donation->id}/results",
+            "/api/blood-center/laboratory/donations/{$this->donation->id}/immunohematology",
+            ['blood_type_id' => $this->bloodType->id, ...$overrides]
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $overrides
+     */
+    private function recordSerology(array $overrides = []): TestResponse
+    {
+        return $this->actingAs($this->testing)->postJson(
+            "/api/blood-center/laboratory/donations/{$this->donation->id}/serology",
             [
-                'result' => 'passed',
-                'blood_type_id' => $this->bloodType->id,
+                'hiv' => 'non_reactive',
+                'hbsag' => 'non_reactive',
+                'hcv' => 'non_reactive',
+                'syphilis' => 'non_reactive',
+                'malaria' => 'non_reactive',
                 ...$overrides,
             ]
         );
+    }
+
+    /**
+     * Both Testing sections, all non-reactive: the donation passes to Processing.
+     */
+    private function recordPassingTests(): void
+    {
+        $this->recordImmunohematology()->assertCreated();
+        $this->recordSerology()->assertCreated();
     }
 
     private function declareComponents(int $quantity = 2): TestResponse
@@ -95,6 +121,22 @@ class LaboratoryProcessingTest extends TestCase
         );
     }
 
+    /**
+     * A donation passed under the old single-result screen, before the sections existed.
+     */
+    private function legacyResult(TestResult $result): void
+    {
+        $this->donation->update(['status' => DonationStatus::Tested]);
+
+        DonationTestResult::create([
+            'donation_id' => $this->donation->id,
+            'recorded_by' => $this->testing->id,
+            'blood_type_id' => $this->bloodType->id,
+            'result' => $result,
+            'tested_at' => now()->subDay(),
+        ]);
+    }
+
     public function test_the_queue_shows_donations_handed_over_by_collection(): void
     {
         $ids = collect(
@@ -107,9 +149,10 @@ class LaboratoryProcessingTest extends TestCase
         $this->assertContains($this->donation->id, $ids);
     }
 
-    public function test_recording_a_result_moves_the_donation_to_tested(): void
+    public function test_both_sections_move_the_donation_to_tested(): void
     {
-        $this->recordResult()
+        $this->recordImmunohematology()->assertCreated();
+        $this->recordSerology()
             ->assertCreated()
             ->assertJsonPath('data.status', 'tested')
             ->assertJsonPath('data.test_result.result', 'passed');
@@ -119,7 +162,7 @@ class LaboratoryProcessingTest extends TestCase
 
     public function test_the_recording_staff_member_is_taken_from_the_token(): void
     {
-        $this->recordResult()->assertCreated();
+        $this->recordPassingTests();
 
         $this->assertDatabaseHas('donation_test_results', [
             'donation_id' => $this->donation->id,
@@ -131,20 +174,26 @@ class LaboratoryProcessingTest extends TestCase
     {
         $this->donation->update(['status' => DonationStatus::Registered]);
 
-        $this->recordResult()
+        $this->recordImmunohematology()
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'donation_not_collected');
+
+        $this->recordSerology()
             ->assertStatus(409)
             ->assertJsonPath('code', 'donation_not_collected');
     }
 
-    public function test_correcting_a_result_edits_the_same_row(): void
+    public function test_correcting_a_section_edits_the_same_rows(): void
     {
-        $this->recordResult()->assertCreated();
-        $this->recordResult(['result' => 'inconclusive'])->assertCreated();
+        $this->recordPassingTests();
+        $this->recordImmunohematology(['notes' => 'Re-read after centrifuge.'])->assertCreated();
+        $this->recordSerology()->assertCreated();
 
-        // One result set per donation, so there is never an ambiguity about
-        // which result cleared the blood.
+        // One of each per donation, so there is never an ambiguity about which
+        // reading cleared the blood.
         $this->assertSame(1, DonationTestResult::where('donation_id', $this->donation->id)->count());
-        $this->assertSame(TestResult::Inconclusive, DonationTestResult::where('donation_id', $this->donation->id)->value('result'));
+        $this->assertDatabaseCount('donation_immunohematology', 1);
+        $this->assertDatabaseCount('donation_serology', 1);
     }
 
     public function test_a_typed_blood_type_contradicting_the_donor_record_is_refused(): void
@@ -154,7 +203,7 @@ class LaboratoryProcessingTest extends TestCase
         // A person's blood type does not change, so a mismatch means one of the
         // two records is wrong — and blood_units derives its type from the
         // donor profile.
-        $this->recordResult(['blood_type_id' => $other->id])
+        $this->recordImmunohematology(['blood_type_id' => $other->id])
             ->assertStatus(409)
             ->assertJsonPath('code', 'blood_type_mismatch');
     }
@@ -164,7 +213,7 @@ class LaboratoryProcessingTest extends TestCase
         $profile = $this->donation->donorProfile;
         $profile->update(['blood_type_id' => null]);
 
-        $this->recordResult()->assertCreated();
+        $this->recordPassingTests();
 
         // Without this a counter-registered walk-in is stuck: inventory derives
         // a unit's type from the profile and refuses the donation as
@@ -172,11 +221,22 @@ class LaboratoryProcessingTest extends TestCase
         $this->assertSame($this->bloodType->id, $profile->fresh()->blood_type_id);
     }
 
+    public function test_typing_alone_does_not_fill_in_a_blood_type(): void
+    {
+        $profile = $this->donation->donorProfile;
+        $profile->update(['blood_type_id' => null]);
+
+        $this->recordImmunohematology()->assertCreated();
+
+        // Not until the donation has passed.
+        $this->assertNull($profile->fresh()->blood_type_id);
+    }
+
     public function test_filling_in_a_blood_type_is_audit_logged(): void
     {
         $this->donation->donorProfile->update(['blood_type_id' => null]);
 
-        $this->recordResult()->assertCreated();
+        $this->recordPassingTests();
 
         $this->assertDatabaseHas('audit_logs', [
             'actor_id' => $this->testing->id,
@@ -189,7 +249,8 @@ class LaboratoryProcessingTest extends TestCase
         $profile = $this->donation->donorProfile;
         $profile->update(['blood_type_id' => null]);
 
-        $this->recordResult(['result' => 'reactive'])->assertCreated();
+        $this->recordImmunohematology()->assertCreated();
+        $this->recordSerology(['hbsag' => 'reactive', 'confirm_reactive' => true])->assertCreated();
 
         // A bag that came back reactive is not a reliable typing to adopt.
         $this->assertNull($profile->fresh()->blood_type_id);
@@ -200,7 +261,7 @@ class LaboratoryProcessingTest extends TestCase
         $profile = $this->donation->donorProfile;
         $original = $profile->blood_type_id;
 
-        $this->recordResult()->assertCreated();
+        $this->recordPassingTests();
 
         $this->assertSame($original, $profile->fresh()->blood_type_id);
         $this->assertDatabaseMissing('audit_logs', ['action' => 'donor.blood_type_verified']);
@@ -208,7 +269,7 @@ class LaboratoryProcessingTest extends TestCase
 
     public function test_the_full_chain_clears_a_donation_for_issue(): void
     {
-        $this->recordResult()->assertCreated();
+        $this->recordPassingTests();
         $this->declareComponents()->assertCreated();
 
         $this->complete()
@@ -220,25 +281,56 @@ class LaboratoryProcessingTest extends TestCase
 
     public function test_a_reactive_donation_can_never_be_cleared_for_issue(): void
     {
-        $this->recordResult(['result' => 'reactive'])->assertCreated();
         $this->declareComponents()->assertCreated();
+        $this->recordImmunohematology()->assertCreated();
+        $this->recordSerology(['hiv' => 'reactive', 'confirm_reactive' => true])->assertCreated();
 
-        // The rule the whole department exists for.
+        // The rule the whole department exists for. A reactive panel rejects
+        // the donation outright, so there is nothing left to clear.
         $this->complete()
-            ->assertStatus(422)
-            ->assertJsonPath('code', 'result_not_passed');
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'donation_already_final');
 
-        $this->assertNotSame(DonationStatus::Completed, $this->donation->fresh()->status);
+        $this->assertSame(DonationStatus::Rejected, $this->donation->fresh()->status);
     }
 
-    public function test_an_inconclusive_donation_can_never_be_cleared_for_issue(): void
+    public function test_a_legacy_inconclusive_donation_can_never_be_cleared_for_issue(): void
     {
-        $this->recordResult(['result' => 'inconclusive'])->assertCreated();
+        $this->legacyResult(TestResult::Inconclusive);
         $this->declareComponents()->assertCreated();
 
         $this->complete()
             ->assertStatus(422)
             ->assertJsonPath('code', 'result_not_passed');
+    }
+
+    public function test_a_legacy_passed_donation_needs_serology_before_it_is_cleared(): void
+    {
+        $this->legacyResult(TestResult::Passed);
+        $this->declareComponents()->assertCreated();
+
+        // Every unit issued from now on has a reading for all five markers.
+        $this->complete()
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'serology_not_recorded');
+
+        $this->recordPassingTests();
+
+        $this->complete()->assertOk();
+    }
+
+    public function test_a_legacy_passed_donation_is_back_in_the_testing_queue(): void
+    {
+        $this->legacyResult(TestResult::Passed);
+
+        $ids = collect(
+            $this->actingAs($this->testing)
+                ->getJson('/api/blood-center/laboratory/queue?stage=testing')
+                ->assertOk()
+                ->json('data')
+        )->pluck('id');
+
+        $this->assertContains($this->donation->id, $ids);
     }
 
     public function test_a_donation_cannot_be_cleared_without_a_result(): void
@@ -248,9 +340,19 @@ class LaboratoryProcessingTest extends TestCase
             ->assertJsonPath('code', 'donation_not_tested');
     }
 
+    public function test_a_donation_cannot_be_cleared_with_only_one_section(): void
+    {
+        $this->recordImmunohematology()->assertCreated();
+        $this->declareComponents()->assertCreated();
+
+        $this->complete()
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'donation_not_tested');
+    }
+
     public function test_a_donation_cannot_be_cleared_without_a_declared_yield(): void
     {
-        $this->recordResult()->assertCreated();
+        $this->recordPassingTests();
 
         $this->complete()
             ->assertStatus(409)
@@ -276,7 +378,7 @@ class LaboratoryProcessingTest extends TestCase
             ->assertStatus(409)
             ->assertJsonPath('code', 'donation_not_tested');
 
-        $this->recordResult()->assertCreated();
+        $this->recordPassingTests();
         $this->complete()->assertOk();
 
         $this->assertSame(DonationStatus::Completed, $this->donation->fresh()->status);
@@ -293,7 +395,7 @@ class LaboratoryProcessingTest extends TestCase
 
     public function test_the_same_component_cannot_be_declared_twice(): void
     {
-        $this->recordResult()->assertCreated();
+        $this->recordPassingTests();
 
         $this->actingAs($this->processing)
             ->postJson("/api/blood-center/laboratory/donations/{$this->donation->id}/components", [
@@ -306,12 +408,15 @@ class LaboratoryProcessingTest extends TestCase
             ->assertJsonValidationErrors('components');
     }
 
-    public function test_a_reactive_donation_may_be_rejected(): void
+    public function test_processing_may_still_reject_a_donation_by_hand(): void
     {
-        $this->recordResult(['result' => 'reactive'])->assertCreated();
+        $this->recordPassingTests();
 
         $this->actingAs($this->processing)
-            ->patchJson("/api/blood-center/laboratory/donations/{$this->donation->id}/status", ['status' => 'rejected'])
+            ->patchJson("/api/blood-center/laboratory/donations/{$this->donation->id}/status", [
+                'status' => 'rejected',
+                'rejection_reason' => 'Clotted during separation.',
+            ])
             ->assertOk()
             ->assertJsonPath('data.status', 'rejected');
     }
@@ -335,7 +440,17 @@ class LaboratoryProcessingTest extends TestCase
         ]);
 
         $this->actingAs($this->testing)
-            ->postJson("/api/blood-center/laboratory/donations/{$foreign->id}/results", [
+            ->postJson("/api/blood-center/laboratory/donations/{$foreign->id}/immunohematology", [
+                'blood_type_id' => $this->bloodType->id,
+            ])
+            ->assertNotFound();
+    }
+
+    public function test_the_old_single_result_route_is_gone(): void
+    {
+        // Nothing may pass a donation without all five markers recorded.
+        $this->actingAs($this->testing)
+            ->postJson("/api/blood-center/laboratory/donations/{$this->donation->id}/results", [
                 'result' => 'passed',
                 'blood_type_id' => $this->bloodType->id,
             ])
@@ -349,8 +464,7 @@ class LaboratoryProcessingTest extends TestCase
         $this->actingAs($collection)->getJson('/api/blood-center/laboratory/queue')->assertForbidden();
 
         $this->actingAs($collection)
-            ->postJson("/api/blood-center/laboratory/donations/{$this->donation->id}/results", [
-                'result' => 'passed',
+            ->postJson("/api/blood-center/laboratory/donations/{$this->donation->id}/immunohematology", [
                 'blood_type_id' => $this->bloodType->id,
             ])
             ->assertForbidden();
@@ -377,7 +491,7 @@ class LaboratoryProcessingTest extends TestCase
 
     public function test_testing_staff_cannot_declare_components_or_clear_a_donation(): void
     {
-        $this->recordResult()->assertCreated();
+        $this->recordPassingTests();
 
         $this->actingAs($this->testing)
             ->postJson("/api/blood-center/laboratory/donations/{$this->donation->id}/components", [
@@ -394,17 +508,26 @@ class LaboratoryProcessingTest extends TestCase
         $this->actingAs($this->testing)
             ->patchJson("/api/blood-center/laboratory/donations/{$this->donation->id}/status", [
                 'status' => 'rejected',
-                'rejection_reason' => 'Reactive',
+                'rejection_reason' => 'Clotted',
             ])
             ->assertForbidden();
     }
 
-    public function test_processing_staff_cannot_record_a_test_result(): void
+    public function test_processing_staff_cannot_record_a_test_section(): void
     {
         $this->actingAs($this->processing)
-            ->postJson("/api/blood-center/laboratory/donations/{$this->donation->id}/results", [
-                'result' => 'passed',
+            ->postJson("/api/blood-center/laboratory/donations/{$this->donation->id}/immunohematology", [
                 'blood_type_id' => $this->bloodType->id,
+            ])
+            ->assertForbidden();
+
+        $this->actingAs($this->processing)
+            ->postJson("/api/blood-center/laboratory/donations/{$this->donation->id}/serology", [
+                'hiv' => 'non_reactive',
+                'hbsag' => 'non_reactive',
+                'hcv' => 'non_reactive',
+                'syphilis' => 'non_reactive',
+                'malaria' => 'non_reactive',
             ])
             ->assertForbidden();
     }

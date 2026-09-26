@@ -72,11 +72,39 @@ class Donation extends Model
     }
 
     /**
-     * The screening outcome the laboratory recorded, if any.
+     * The laboratory's outcome for this donation, if it has been decided.
+     *
+     * Derived by the Testing department from the two sections below once both
+     * are recorded (or serology is reactive). Legacy donations have this row
+     * without either section.
      */
     public function testResult(): HasOne
     {
         return $this->hasOne(DonationTestResult::class);
+    }
+
+    /**
+     * The Testing department's ABO/Rh typing, if recorded.
+     */
+    public function immunohematology(): HasOne
+    {
+        return $this->hasOne(DonationImmunohematology::class);
+    }
+
+    /**
+     * The Testing department's five-marker infection panel, if recorded.
+     */
+    public function serology(): HasOne
+    {
+        return $this->hasOne(DonationSerology::class);
+    }
+
+    /**
+     * The follow-up opened when serology came back reactive, if it did.
+     */
+    public function counsellingReferral(): HasOne
+    {
+        return $this->hasOne(CounsellingReferral::class);
     }
 
     /**

@@ -5,10 +5,12 @@ namespace App\Service;
 use App\Enums\AccountStatus;
 use App\Enums\IdentityStatus;
 use App\Enums\RoleName;
+use App\Enums\ScreeningOutcome;
 use App\Models\Donation;
 use App\Models\Facility;
 use App\Models\User;
 use App\Repository\BloodCenterRepository;
+use App\Repository\DonorDeferralRepository;
 use App\Repository\DonorDirectoryRepository;
 use App\Support\AccountIdentity;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
@@ -38,7 +40,8 @@ class DonorDirectoryService
     public function __construct(
         private readonly DonorDirectoryRepository $donorDirectoryRepository,
         private readonly BloodCenterRepository $bloodCenterRepository,
-        private readonly AuditLogger $auditLogger
+        private readonly AuditLogger $auditLogger,
+        private readonly DonorDeferralRepository $donorDeferralRepository
     ) {}
 
     /**
@@ -79,7 +82,16 @@ class DonorDirectoryService
             'scope' => $isOwn ? 'own_facility' : 'cross_facility',
         ]);
 
-        return $this->present($donor, $facility, $isOwn);
+        return [
+            ...$this->present($donor, $facility, $isOwn),
+
+            // The same notice the QR scan carries, for a donor found by the ID
+            // card in their hand instead. Without it a donor who left their
+            // phone at home walks past the one warning that they must never
+            // be bled. Outcome and date only — never a reason, never which
+            // department recorded it — so it is safe in either shape.
+            'prior_deferral' => $this->donorDeferralRepository->standingDeferralFor($donor->id)?->toArray(),
+        ];
     }
 
     /**
@@ -155,6 +167,16 @@ class DonorDirectoryService
                     'is_blocking' => $donation->screening->outcome?->isBlocking() ?? false,
                     'deferral_reason' => $donation->screening->deferral_reason,
                     'screened_at' => $donation->screening->screened_at?->toISOString(),
+                ],
+
+                // A reactive serology result permanently defers the donor. The
+                // counter sees that it happened and when — never the marker,
+                // which only the Testing department's referral list shows.
+                'laboratory_deferral' => $donation->counsellingReferral === null ? null : [
+                    'outcome' => ScreeningOutcome::PermanentlyDeferred->value,
+                    'outcome_label' => ScreeningOutcome::PermanentlyDeferred->label(),
+                    'is_blocking' => true,
+                    'recorded_at' => $donation->counsellingReferral->created_at?->toISOString(),
                 ],
             ])->all(),
         ];

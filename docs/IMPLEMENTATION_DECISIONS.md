@@ -235,7 +235,9 @@ the finalised organisational structure, not paper requirements.
 **SCOPE BOUNDARY:** RedAgos does not perform the assay. `donation_test_results`
 records what a qualified professional reported; `recorded_by` names the staff
 member who entered the record, not the professional who produced it. Nothing in
-`LaboratoryService` computes, infers or derives a result.
+`LaboratoryService` computes, infers or derives a result. *(Superseded in part
+by "Section II" below: the overall result is now rolled up from the recorded
+immunohematology and five serology readings. No reading is inferred.)*
 
 **DECISION (blood-type mismatch):** If the type the laboratory reads off the bag
 differs from the donor profile, recording the result is refused with
@@ -411,7 +413,9 @@ the form the counter must be able to read on screen. Sections I-A (Personal
 Data), I-B (Donor History, 29 questions) and I-C (Informed Consent) are in
 scope. Section I-D onward — physical examination, serology, phlebotomy — is
 not, and neither are the form's margin boxes (Sleep/Meal/Meds/Allergies,
-DH/DS), which are the screening officer's own working notes.
+DH/DS), which are the screening officer's own working notes. *(Since
+superseded: Section I-D and the margin boxes are recorded — see "Section I-D:
+Physical Examination" — and Section II — see "Section II" at the end.)*
 
 **DECISION (the donor side does not judge):** RedAgos no longer scores a
 donor's own questionnaire answers into a verdict. Every screening is recorded
@@ -745,3 +749,128 @@ not have. A supervisor moves whoever works the processing bench into Processing.
 
 **CONSEQUENCE (owning department):** `DonationStatus::owningDepartment()` now
 returns Testing for `collected` and Processing for `tested`.
+
+---
+
+## Section II: For Technical Management Use Only (phlebotomy and Testing)
+
+**SOURCE:** Section II of the DOH *Blood Donor's Health Questionnaire*
+(FORM002) holds three different stages under one heading: the fingerprick
+Hemoglobin / Blood Type table (screening), the "For Phlebotomist Use Only" box
+(collection), and the Immunohematology and Serology & NAT tables (laboratory
+testing, after collection). In scope: all three. Out of scope: I-E
+(post-donation care), I-F (the CUE slip), unit-level quarantine, lookback on a
+donor's earlier units, and voiding a reactive result.
+
+**DECIDED BY:** The project owner, on 2026-09-26.
+
+**DECISION (fingerprick typing):** Recorded at screening as
+`donation_screenings.fingerprick_blood_type_id`, optional. It is preliminary: it
+never fills the donor profile and never pre-fills the Testing department's
+typing, so a disagreement between the slide and the confirmatory typing stays
+visible. No value of it, or of haemoglobin, defers anyone — the screening
+officer's outcome is still the verdict.
+
+**DECISION (the phlebotomist box):** `blood_collections` gains
+`blood_bag_type` (single/double/triple), `segment_number`, `started_at` and
+`ended_at`. "Phlebotomist" is the existing `collected_by`: the authenticated
+user, never request input. `collection_datetime` is written as `ended_at` for
+anything still reading it. The bag is **record only** — it does not cap the
+component breakdown. No maximum draw duration is enforced; that is a clinical
+constant nobody owns. All four columns are nullable in the database (legacy
+rows) and required by `RecordCollectionRequest`.
+
+**DECISION (segment uniqueness):** Unique per facility, as
+`unique(facility_id, segment_number)`. `facility_id` is copied onto
+`blood_collections` (backfilled from `donations`) because a unique index cannot
+reach through the donation. The request gives the friendly error; the service
+catches the violation — outside the transaction, since Postgres aborts it — and
+returns the same error. The number is normalised (scanner control characters
+and whitespace stripped, uppercased) on the counter, in the request and in the
+Testing page's lookup, so a scanned and a typed copy collide.
+
+**DECISION (two sections, each with its own author):** Immunohematology
+(`donation_immunohematology`) and serology (`donation_serology`) are separate
+rows, saved separately, each stamped `recorded_by`/`recorded_at` — the form's
+"Screened by". Two medical technologists can split the work, in either order.
+
+**DECISION (ABO + Rh as one blood_type_id):** The form prints two rows; the
+server keeps the combined `blood_types` code every other table already uses.
+The client shows two pickers and resolves them to the one row, and refuses a
+combination the centre has not set up rather than guessing.
+
+**DECISION (the panel):** Exactly five markers — HIV, HBsAg, HCV, Syphilis,
+Malaria — as columns, `reactive | non_reactive`, all required. The printed
+form's NAT and "Others" rows are not recorded. Each reading is final: repeat
+testing happens at the bench, so there is no initial/repeat pair and no
+per-marker inconclusive. `SerologyMarker` is the single definition.
+
+**DECISION (the derived summary):** `donation_test_results` is unchanged and is
+now written only by the Testing service: `passed` once both sections are in
+and every marker is non-reactive (the donation moves to `tested`, handed to
+Processing), or `reactive` when serology is reactive and a typing exists. The
+route that let a result be entered directly (`POST …/results`) and
+`RecordTestResultRequest` are removed: nothing may pass a donation without all
+five readings. This supersedes the SCOPE BOUNDARY line above that "nothing in
+`LaboratoryService` computes, infers or derives a result": it still never
+infers a reading, but it does roll the five up by the form's own rule.
+
+**CONSEQUENCE (legacy results):** A donation that passed under the old screen
+has a summary row and no serology. `guardReadyToComplete` refuses it
+(`serology_not_recorded`) until Testing records the panel, and the Testing
+queue (`stage=testing`) includes it. Legacy `inconclusive` rows still display
+and can still be rejected; `TestResult::Inconclusive` is never written again.
+
+**DECISION (the reactive chain):** Any reactive marker, in the same
+transaction as the reading: the donation is rejected with the fixed reason
+`LaboratoryService::REACTIVE_REJECTION_REASON`, and a `counselling_referrals`
+row is opened. After the commit the donor gets `DonorContactRequested`. The
+server refuses a reactive panel without `confirm_reactive: true`, and the
+sections are locked (`results_locked`) once a donation is rejected or
+completed, so a reactive result cannot be quietly undone.
+
+**DECISION (Testing rejects without lab.update_status):** The automatic
+rejection is the one exception to the department split. It is not a
+discretionary status write but the consequence of a reading only Testing may
+record; leaving it for Processing would leave a reactive bag in a queue looking
+like any other. Processing still rejects by hand, for anything else.
+
+**DECISION (the deferral is derived, not tabled):** A reactive result
+permanently defers the donor, and the referral row *is* that deferral.
+`DonorDeferralRepository::standingDeferralFor()` reads it alongside blocking
+screening outcomes and reports both the same three keys, so the counter cannot
+tell a laboratory deferral from a screening one. The more severe wins, then the
+more recent — a permanent deferral is no longer hidden behind a newer indefinite
+one. Closing a referral does not lift the deferral. A `donor_deferrals` table
+becomes worth it only when a deferral can be lifted or voided.
+
+**DECISION (the valid-ID path shows the deferral too):** `GET /donors/lookup`
+now carries `prior_deferral`, and the counter shows it. Before, a donor found by
+the ID card instead of the QR code skipped the notice.
+
+**DECISION (the privacy boundary):** Which marker was reactive appears in
+exactly two places: the Testing department's own view of a donation, and the
+Counselling Referrals list (`lab.referrals`, Testing only; supervisors by
+`all()`). It is never in a rejection reason, an audit log context, the scan
+payload, the donor history, Processing's view of the donation, or anything the
+donor receives. The referral note is encrypted at rest. Every read of the list
+is audited (`referral.list_viewed`).
+
+**DECISION (referral workflow):** `pending → contacted → referred → closed`,
+forward only, a step may be skipped, `closed` is final and needs a note.
+
+**DECISION (the donor notice):** In-app only, by the project owner's decision.
+"Please contact your blood centre … about your donation at {venue} on {date}",
+the hotline, and no rebooking action. It says nothing of a result, a test, a
+marker, an infection or a deferral: Section I-C tells the donor no official
+result is issued, and that conversation belongs to counselling. `DonorDeferred`
+is not used because it prints the reason.
+
+**DECISION (a separate Testing page):** The client's Testing department works
+at `/blood-center/testing` (queue, the two sections, and the referral list as a
+tab). `/blood-center/laboratory` is now the Processing page, gated on
+`lab.record_components`, and shows Testing's outcome read-only.
+
+**KNOWN GAPS:** A mis-keyed reactive result cannot be undone in the app. Legacy
+reactive donations are not flagged retroactively. A permanently deferred donor
+can still book, as for screening deferrals.

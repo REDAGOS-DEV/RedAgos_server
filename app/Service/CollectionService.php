@@ -3,6 +3,7 @@
 namespace App\Service;
 
 use App\Enums\AppointmentStatus;
+use App\Enums\BloodBagType;
 use App\Enums\DonationStatus;
 use App\Enums\ScreeningOutcome;
 use App\Models\Donation;
@@ -12,14 +13,14 @@ use App\Models\User;
 use App\Notifications\DonationRecorded;
 use App\Notifications\DonorDeferred;
 use App\Repository\CollectionRepository;
+use App\Repository\DonorDeferralRepository;
 use App\Repository\DonorDirectoryRepository;
 use App\Support\OperationalDay;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\Exceptions\HttpResponseException;
-use Illuminate\Notifications\Notification;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
-use Throwable;
+use Illuminate\Validation\ValidationException;
 
 /**
  * The Collection counter: who is expected, who arrived, and what was drawn.
@@ -52,7 +53,9 @@ class CollectionService
         private readonly DonorDirectoryRepository $donorDirectoryRepository,
         private readonly AuditLogger $auditLogger,
         private readonly EligibilityRuleEvaluator $evaluator,
-        private readonly DonorQuestionnaireService $donorQuestionnaireService
+        private readonly DonorQuestionnaireService $donorQuestionnaireService,
+        private readonly DonorDeferralRepository $donorDeferralRepository,
+        private readonly DonorNotifier $donorNotifier
     ) {}
 
     /**
@@ -356,6 +359,13 @@ class CollectionService
                 'weight_kg' => $payload['weight_kg'] ?? null,
                 'haemoglobin_g_dl' => $payload['haemoglobin_g_dl'] ?? null,
 
+                // Section II's fingerprick table. Stored here and nowhere
+                // else: a capillary slide typing is preliminary, so it never
+                // fills the donor profile and never pre-fills the laboratory's
+                // confirmatory typing. Only the Testing department's
+                // immunohematology result does either.
+                'fingerprick_blood_type_id' => $payload['fingerprick_blood_type_id'] ?? null,
+
                 // Section I-D, observed.
                 'general_appearance' => $this->trimmedOrNull($payload['general_appearance'] ?? null),
                 'skin' => $this->trimmedOrNull($payload['skin'] ?? null),
@@ -390,7 +400,7 @@ class CollectionService
         ]);
 
         if (! $outcome->permitsCollection()) {
-            $this->notifyDonor(
+            $this->donorNotifier->send(
                 $donation,
                 // The outcome goes with it: a donor who may never donate again
                 // must not be sent an email inviting them to book another
@@ -422,7 +432,49 @@ class CollectionService
     {
         $facility = $this->requireFacility($staff);
 
-        $donation = DB::transaction(function () use ($staff, $facility, $donationId, $payload): Donation {
+        try {
+            $donation = $this->writeCollection($staff, $facility, $donationId, $payload);
+        } catch (QueryException $exception) {
+            // Caught outside the transaction on purpose: Postgres aborts the
+            // whole transaction on a unique violation, so nothing inside it
+            // could recover. The request's own unique rule answers the
+            // ordinary case; this is two counters scanning the same tube at
+            // the same moment.
+            $this->rethrowSegmentTaken($exception);
+
+            throw $exception;
+        }
+
+        $this->auditLogger->record($staff, 'collection.recorded', $donation, [
+            'facility_id' => $facility->id,
+            'volume_ml' => $donation->volume_ml,
+            'blood_bag_type' => $payload['blood_bag_type'],
+            'segment_number' => $payload['segment_number'],
+        ]);
+
+        $this->donorNotifier->send(
+            $donation,
+            fn (User $donor): DonationRecorded => new DonationRecorded(
+                $donation,
+                $this->evaluator->nextEligibleDate($donation->donation_date)
+            ),
+            'donation receipt'
+        );
+
+        return [
+            'message' => 'Collection recorded. The donation is now with the Testing department.',
+            'data' => $this->formatDonation($this->reload($donation, $facility)),
+        ];
+    }
+
+    /**
+     * Write the collection row and move the donation to `collected`, under a lock.
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    private function writeCollection(User $staff, Facility $facility, int $donationId, array $payload): Donation
+    {
+        return DB::transaction(function () use ($staff, $facility, $donationId, $payload): Donation {
             $locked = $this->collectionRepository->lockDonation($donationId, $facility->id)
                 ?? throw $this->refuse(404, 'donation_not_found', 'That donation was not found at your facility.');
 
@@ -448,10 +500,18 @@ class CollectionService
 
             $this->collectionRepository->createCollection([
                 'donation_id' => $locked->id,
+                'facility_id' => $facility->id,
                 // The authenticated staff member, never a name from the request.
-                // This is the traceability link between a bag and a person.
+                // This is the traceability link between a bag and a person,
+                // and the form's "Phlebotomist".
                 'collected_by' => $staff->id,
-                'collection_datetime' => $payload['collection_datetime'] ?? now(),
+                'blood_bag_type' => BloodBagType::from($payload['blood_bag_type']),
+                'segment_number' => $payload['segment_number'],
+                'started_at' => $payload['started_at'],
+                'ended_at' => $payload['ended_at'],
+                // Kept filled for anything that still reads the single
+                // timestamp: the draw is finished when it ends.
+                'collection_datetime' => $payload['ended_at'],
             ]);
 
             $locked->status = DonationStatus::Collected;
@@ -463,25 +523,21 @@ class CollectionService
 
             return $locked;
         });
+    }
 
-        $this->auditLogger->record($staff, 'collection.recorded', $donation, [
-            'facility_id' => $facility->id,
-            'volume_ml' => $donation->volume_ml,
+    /**
+     * Turn a segment-number unique violation into the same error the request gives.
+     */
+    private function rethrowSegmentTaken(QueryException $exception): void
+    {
+        if (! in_array($exception->errorInfo[0] ?? null, ['23000', '23505'], true)
+            || ! str_contains($exception->getMessage(), 'segment')) {
+            return;
+        }
+
+        throw ValidationException::withMessages([
+            'segment_number' => ['This segment number is already recorded at this facility. Scan the bag again.'],
         ]);
-
-        $this->notifyDonor(
-            $donation,
-            fn (User $donor): DonationRecorded => new DonationRecorded(
-                $donation,
-                $this->evaluator->nextEligibleDate($donation->donation_date)
-            ),
-            'donation receipt'
-        );
-
-        return [
-            'message' => 'Collection recorded. The donation is now with the laboratory.',
-            'data' => $this->formatDonation($this->reload($donation, $facility)),
-        ];
     }
 
     /**
@@ -589,34 +645,6 @@ class CollectionService
     }
 
     /**
-     * Tell the donor what was recorded about their visit.
-     *
-     * After the commit, and never allowed to fail the visit: the bag is already
-     * drawn or the donor already sent home, so a mailer error here is a message
-     * to chase up rather than a reason to refuse a request that has succeeded.
-     *
-     * @param  callable(User): Notification  $build
-     */
-    private function notifyDonor(Donation $donation, callable $build, string $what): void
-    {
-        $donor = $donation->donorProfile?->donor;
-
-        if ($donor === null) {
-            return;
-        }
-
-        try {
-            $donor->notify($build($donor));
-        } catch (Throwable $exception) {
-            Log::warning("Could not send the {$what}.", [
-                'donor_id' => $donor->id,
-                'donation_id' => $donation->id,
-                'exception' => $exception->getMessage(),
-            ]);
-        }
-    }
-
-    /**
      * Close the appointment a finished donation was booked against.
      *
      * Called for every terminal outcome, not only a successful draw. A donor
@@ -660,21 +688,15 @@ class CollectionService
     /**
      * The donor's standing permanent or indefinite deferral, if any.
      *
+     * Read from the screening officer's outcome or the laboratory's reactive
+     * result alike, and reported identically: the counter learns that a
+     * decision exists and when, never which department made it or why.
+     *
      * @return array<string, mixed>|null
      */
     private function formatPriorDeferral(int $donorId): ?array
     {
-        $deferral = $this->collectionRepository->blockingDeferralFor($donorId);
-
-        if ($deferral === null) {
-            return null;
-        }
-
-        return [
-            'outcome' => $deferral->outcome?->value,
-            'outcome_label' => $deferral->outcome?->label(),
-            'recorded_on' => $deferral->screened_at?->toDateString(),
-        ];
+        return $this->donorDeferralRepository->standingDeferralFor($donorId)?->toArray();
     }
 
     /**
@@ -729,6 +751,8 @@ class CollectionService
                 'temperature_c' => $screening->temperature_c,
                 'weight_kg' => $screening->weight_kg,
                 'haemoglobin_g_dl' => $screening->haemoglobin_g_dl,
+                'fingerprick_blood_type_id' => $screening->fingerprick_blood_type_id,
+                'fingerprick_blood_type' => $screening->fingerprickBloodType?->code,
                 'sleep' => $screening->sleep,
                 'meal' => $screening->meal,
                 'meds' => $screening->meds,
@@ -746,9 +770,41 @@ class CollectionService
                     ? trim($screening->recorder->first_name.' '.$screening->recorder->last_name)
                     : null,
             ],
+            'collection' => $this->formatCollection($donation),
             'appointment_id' => $donation->appointment_id,
             'donor' => $donation->relationLoaded('donorProfile') && $donation->donorProfile?->donor
                 ? $this->formatDonor($donation->donorProfile->donor)
+                : null,
+        ];
+    }
+
+    /**
+     * The "For Phlebotomist Use Only" box, or null before anything was drawn.
+     *
+     * Collections recorded before the box existed carry only who drew the bag
+     * and when; their bag, segment and times are null rather than invented.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function formatCollection(Donation $donation): ?array
+    {
+        $collection = $donation->relationLoaded('collection')
+            ? $donation->collection
+            : $donation->collection()->with('collector')->first();
+
+        if ($collection === null) {
+            return null;
+        }
+
+        return [
+            'blood_bag_type' => $collection->blood_bag_type?->value,
+            'blood_bag_type_label' => $collection->blood_bag_type?->label(),
+            'segment_number' => $collection->segment_number,
+            'started_at' => $collection->started_at?->toISOString(),
+            'ended_at' => $collection->ended_at?->toISOString(),
+            'collected_at' => $collection->collection_datetime?->toISOString(),
+            'phlebotomist' => $collection->collector
+                ? trim($collection->collector->first_name.' '.$collection->collector->last_name)
                 : null,
         ];
     }

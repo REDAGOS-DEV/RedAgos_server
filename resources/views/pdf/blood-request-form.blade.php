@@ -206,7 +206,7 @@
         </div>
     @endif
 
-    @if ($component['name'] === 'Platelets')
+    @if ($component['name'] === 'Platelet Concentrate')
         <div class="note">
             <strong>NOTE:</strong> Document platelet count before (within 8 hrs.) and after (within 1 hr.)
             transfusion. Dose: 1 unit/10 kg BW with a maximum of 8 units.

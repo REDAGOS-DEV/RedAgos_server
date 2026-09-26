@@ -66,10 +66,14 @@ RedAgos uses **five operational departments** within the Blood Center, supported
 
 ### Operational Responsibilities
 
-- Receive blood collection information for testing.
-- Record blood screening and laboratory results provided by authorized personnel.
-- Record the blood type the laboratory determined.
-- Validate and document testing-related results.
+- Receive blood collection information for testing, matched by the tube's segment number.
+- Record immunohematology: the confirmatory ABO group and Rh typing (Section II of the DOH donor form).
+- Record serology: the final reading of the five-marker panel — HIV, HBsAg, HCV, Syphilis and Malaria.
+- Validate and document testing-related results. Each section carries the name of the staff member who saved it.
+- Follow up donors whose serology is reactive, through the Counselling Referrals list (contacted, referred, closed).
+
+A reactive marker automatically rejects the donation, permanently defers the donor and opens a counselling
+referral. Which marker was reactive is visible only to this department.
 
 ### Scope Boundary
 

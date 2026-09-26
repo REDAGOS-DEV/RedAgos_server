@@ -53,6 +53,10 @@ class RecordScreeningRequest extends FormRequest
             'weight_kg' => ['sometimes', 'nullable', 'integer', 'min:20', 'max:400'],
             'haemoglobin_g_dl' => ['sometimes', 'nullable', 'numeric', 'min:3', 'max:25'],
 
+            // Section II's fingerprick typing. Optional and preliminary: it is
+            // recorded for reference and never reaches the donor profile.
+            'fingerprick_blood_type_id' => ['sometimes', 'nullable', 'integer', 'exists:blood_types,id'],
+
             'notes' => ['sometimes', 'nullable', 'string', 'max:500'],
 
             // Section I-D. Free text because the form gives ruled blanks and

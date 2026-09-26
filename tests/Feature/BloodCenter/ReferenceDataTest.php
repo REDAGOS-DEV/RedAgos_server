@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\BloodCenter;
 
+use App\Enums\BloodBagType;
 use App\Enums\BloodUnitStatus;
 use App\Models\BloodComponent;
 use App\Models\BloodType;
@@ -128,6 +129,24 @@ class ReferenceDataTest extends TestCase
         $this->assertSame(
             BloodUnitStatus::values(),
             array_column($response->json('statuses'), 'value')
+        );
+    }
+
+    public function test_section_two_pickers_are_projected_from_their_enums(): void
+    {
+        $staff = User::factory()->bloodCenterStaff()->create();
+
+        $response = $this->actingAs($staff)
+            ->getJson('/api/blood-center/reference-data')
+            ->assertOk();
+
+        $this->assertSame(BloodBagType::values(), array_column($response->json('blood_bag_types'), 'value'));
+        $this->assertSame(['S', 'D', 'T'], array_column($response->json('blood_bag_types'), 'code'));
+
+        // Exactly the five markers the Testing department records.
+        $this->assertSame(
+            ['hiv', 'hbsag', 'hcv', 'syphilis', 'malaria'],
+            array_column($response->json('serology_markers'), 'value')
         );
     }
 

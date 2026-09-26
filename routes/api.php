@@ -11,6 +11,7 @@ use App\Http\Controllers\BloodCenterInventoryController;
 use App\Http\Controllers\BloodCenterLaboratoryController;
 use App\Http\Controllers\BloodCenterProfileController;
 use App\Http\Controllers\BloodCenterReferenceController;
+use App\Http\Controllers\BloodCenterReferralController;
 use App\Http\Controllers\BloodCenterRequestController;
 use App\Http\Controllers\BloodCenterStaffController;
 use App\Http\Controllers\BookingCatalogController;
@@ -350,7 +351,8 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
 
         // Testing and Processing — the only place `completed` can be written,
         // and `completed` is what blood-unit intake gates on. Both departments
-        // read the same queue; Testing records results, Processing records
+        // read the same queue; Testing records immunohematology and serology
+        // (and works the counselling referral list), Processing records
         // components and completes or rejects.
         Route::prefix('laboratory')->group(function (): void {
             Route::get('/queue', [BloodCenterLaboratoryController::class, 'index'])
@@ -359,8 +361,23 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             Route::get('/donations/{donation}', [BloodCenterLaboratoryController::class, 'show'])
                 ->middleware('can:lab.view')->whereNumber('donation');
 
-            Route::post('/donations/{donation}/results', [BloodCenterLaboratoryController::class, 'recordResult'])
+            // Section II's two Testing tables, saved separately so each is
+            // stamped with its own "Screened by". There is no longer a route
+            // that records an overall result directly: it is derived from
+            // these, so nothing can pass a donation without all five markers.
+            Route::post('/donations/{donation}/immunohematology', [BloodCenterLaboratoryController::class, 'recordImmunohematology'])
                 ->middleware('can:lab.record_result')->whereNumber('donation');
+
+            Route::post('/donations/{donation}/serology', [BloodCenterLaboratoryController::class, 'recordSerology'])
+                ->middleware('can:lab.record_result')->whereNumber('donation');
+
+            // Its own ability rather than lab.record_result: this is the one
+            // list that names which marker each donor was reactive for.
+            Route::get('/referrals', [BloodCenterReferralController::class, 'index'])
+                ->middleware(['can:lab.referrals', 'throttle:60,1']);
+
+            Route::patch('/referrals/{referral}', [BloodCenterReferralController::class, 'update'])
+                ->middleware('can:lab.referrals')->whereNumber('referral');
 
             Route::post('/donations/{donation}/components', [BloodCenterLaboratoryController::class, 'declareComponents'])
                 ->middleware('can:lab.record_components')->whereNumber('donation');

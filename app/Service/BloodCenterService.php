@@ -2,7 +2,9 @@
 
 namespace App\Service;
 
+use App\Enums\BloodBagType;
 use App\Enums\BloodUnitStatus;
+use App\Enums\SerologyMarker;
 use App\Models\BloodComponent;
 use App\Models\BloodType;
 use App\Models\Facility;
@@ -160,6 +162,11 @@ class BloodCenterService
             ),
 
             'storage_locations' => config('blood_center.storage_locations', []),
+
+            // Section II of the DOH form: the phlebotomist's bag picker and
+            // the Testing department's serology panel, both from their enums.
+            'blood_bag_types' => BloodBagType::options(),
+            'serology_markers' => SerologyMarker::options(),
 
             'facility' => [
                 'id' => $facility->id,
