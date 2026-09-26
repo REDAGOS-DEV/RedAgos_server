@@ -26,7 +26,8 @@ class BloodCenterService
 {
     public function __construct(
         private readonly BloodCenterRepository $bloodCenterRepository,
-        private readonly BloodComponentRepository $bloodComponentRepository
+        private readonly BloodComponentRepository $bloodComponentRepository,
+        private readonly FacilityLogoService $facilityLogoService
     ) {}
 
     /**
@@ -58,6 +59,7 @@ class BloodCenterService
                 'doh_license_number' => $user->facility->doh_license_number,
                 'status' => $user->facility->status->value,
                 'operating_hours' => $user->facility->operating_hours,
+                'logo_url' => $this->facilityLogoService->urlFor($user->facility),
             ] : null,
             'account' => [
                 'username' => $user->username,
@@ -172,6 +174,7 @@ class BloodCenterService
                 'id' => $facility->id,
                 'facility_name' => $facility->name,
                 'address' => $facility->address,
+                'logo_url' => $this->facilityLogoService->urlFor($facility),
             ],
         ];
     }

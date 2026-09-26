@@ -26,6 +26,7 @@ class DonationComponentFactory extends Factory
             'donation_id' => Donation::factory(),
             'component_id' => BloodComponent::factory(),
             'quantity' => 1,
+            'volume_ml' => 250,
             'declared_by' => User::factory(),
         ];
     }

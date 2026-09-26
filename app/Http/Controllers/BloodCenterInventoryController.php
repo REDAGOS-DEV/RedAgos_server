@@ -7,14 +7,35 @@ use App\Http\Requests\ListInventoryRequest;
 use App\Http\Requests\StoreBloodUnitsRequest;
 use App\Http\Requests\UpdateBloodUnitRequest;
 use App\Service\InventoryService;
+use App\Service\StockReportService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Response;
 
 class BloodCenterInventoryController extends Controller
 {
     public function __construct(
-        private readonly InventoryService $inventoryService
+        private readonly InventoryService $inventoryService,
+        private readonly StockReportService $stockReportService
     ) {}
+
+    /**
+     * The Daily Blood Stock Inventory, as of now.
+     */
+    public function stockReport(Request $request): JsonResponse
+    {
+        return response()->json(
+            $this->stockReportService->build($request->user())
+        );
+    }
+
+    /**
+     * The Daily Blood Stock Inventory as the printable sheet.
+     */
+    public function stockReportPdf(Request $request): Response
+    {
+        return $this->stockReportService->download($request->user());
+    }
 
     /**
      * List the caller's facility stock, FEFO-ordered.

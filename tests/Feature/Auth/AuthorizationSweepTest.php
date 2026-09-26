@@ -59,6 +59,10 @@ class AuthorizationSweepTest extends TestCase
             'testing serology' => ['post', '/api/blood-center/laboratory/donations/1/serology'],
             'testing referral list' => ['get', '/api/blood-center/laboratory/referrals'],
             'testing referral update' => ['patch', '/api/blood-center/laboratory/referrals/1'],
+            'daily stock report' => ['get', '/api/blood-center/inventory/stock-report'],
+            'daily stock report pdf' => ['get', '/api/blood-center/inventory/stock-report/pdf'],
+            'facility logo upload' => ['post', '/api/blood-center/facility/logo'],
+            'facility logo removal' => ['delete', '/api/blood-center/facility/logo'],
         ];
     }
 

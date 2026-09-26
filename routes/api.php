@@ -7,6 +7,7 @@ use App\Http\Controllers\BloodCenterCollectionController;
 use App\Http\Controllers\BloodCenterComponentController;
 use App\Http\Controllers\BloodCenterDonorController;
 use App\Http\Controllers\BloodCenterDriveController;
+use App\Http\Controllers\BloodCenterFacilityController;
 use App\Http\Controllers\BloodCenterInventoryController;
 use App\Http\Controllers\BloodCenterLaboratoryController;
 use App\Http\Controllers\BloodCenterProfileController;
@@ -122,6 +123,14 @@ Route::get('/donors/{user}/avatar', [DonorProfileController::class, 'showAvatar'
     ->middleware('signed')
     ->name('donors.avatar.show');
 
+// Signed like the avatar above, so an <img> can load it without a bearer
+// token. A logo is the facility's public face on its printed reports, not
+// personal data, so an expiring link is enough.
+Route::get('/blood-center/facility/{facility}/logo', [BloodCenterFacilityController::class, 'showLogo'])
+    ->middleware('signed')
+    ->whereNumber('facility')
+    ->name('blood-center.facility.logo');
+
 // Authenticated rather than signed, unlike the avatar above: a link that opens a
 // government ID without credentials would be forwardable, and would leave nobody
 // to record in the audit trail. DonorProfilePolicy decides who may look.
@@ -176,6 +185,15 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
                 ->whereNumber('component');
         });
 
+        // The facility's own logo, printed on its reports. A supervisor's
+        // setting like shelf life and price, so the same ability. The facility
+        // is the caller's own, resolved from the token.
+        Route::post('/facility/logo', [BloodCenterFacilityController::class, 'uploadLogo'])
+            ->middleware(['can:center.configure', 'throttle:10,1']);
+
+        Route::delete('/facility/logo', [BloodCenterFacilityController::class, 'removeLogo'])
+            ->middleware('can:center.configure');
+
         Route::get('/inventory', [BloodCenterInventoryController::class, 'index'])
             ->middleware('can:inventory.view');
 
@@ -191,6 +209,16 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         // in, not a report.
         Route::get('/inventory/intake-queue', [BloodCenterInventoryController::class, 'intakeQueue'])
             ->middleware('can:inventory.create');
+
+        // The Daily Blood Stock Inventory. Declared before /inventory/{unit}
+        // for the same reason as the two above. Issuance prepares and signs
+        // it, so it carries Issuance's own ability rather than the shared
+        // inventory.view every laboratory department also holds.
+        Route::get('/inventory/stock-report', [BloodCenterInventoryController::class, 'stockReport'])
+            ->middleware('can:inventory.create');
+
+        Route::get('/inventory/stock-report/pdf', [BloodCenterInventoryController::class, 'stockReportPdf'])
+            ->middleware(['can:inventory.create', 'throttle:20,1']);
 
         Route::post('/inventory', [BloodCenterInventoryController::class, 'store'])
             ->middleware('can:inventory.create');

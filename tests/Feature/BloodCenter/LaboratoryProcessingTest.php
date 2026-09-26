@@ -8,6 +8,7 @@ use App\Enums\TestResult;
 use App\Models\BloodComponent;
 use App\Models\BloodType;
 use App\Models\Donation;
+use App\Models\DonationComponent;
 use App\Models\DonationTestResult;
 use App\Models\Facility;
 use App\Models\User;
@@ -105,11 +106,11 @@ class LaboratoryProcessingTest extends TestCase
         $this->recordSerology()->assertCreated();
     }
 
-    private function declareComponents(int $quantity = 2): TestResponse
+    private function declareComponents(int $volumeMl = 250): TestResponse
     {
         return $this->actingAs($this->processing)->postJson(
             "/api/blood-center/laboratory/donations/{$this->donation->id}/components",
-            ['components' => [['component_id' => $this->component->id, 'quantity' => $quantity]]]
+            ['components' => [['component_id' => $this->component->id, 'volume_ml' => $volumeMl]]]
         );
     }
 
@@ -393,19 +394,48 @@ class LaboratoryProcessingTest extends TestCase
             ->assertJsonPath('code', 'donation_not_collected');
     }
 
-    public function test_the_same_component_cannot_be_declared_twice(): void
+    public function test_two_bags_of_one_component_are_two_rows_with_their_own_volumes(): void
     {
         $this->recordPassingTests();
 
         $this->actingAs($this->processing)
             ->postJson("/api/blood-center/laboratory/donations/{$this->donation->id}/components", [
                 'components' => [
-                    ['component_id' => $this->component->id, 'quantity' => 1],
-                    ['component_id' => $this->component->id, 'quantity' => 2],
+                    ['component_id' => $this->component->id, 'volume_ml' => 250],
+                    ['component_id' => $this->component->id, 'volume_ml' => 230],
+                ],
+            ])
+            ->assertCreated()
+            ->assertJsonCount(2, 'data.components')
+            ->assertJsonPath('data.components.0.volume_ml', 250)
+            ->assertJsonPath('data.components.1.volume_ml', 230);
+
+        // One bag each: inventory may book in exactly two units of it.
+        $this->assertSame(2, (int) DonationComponent::where('donation_id', $this->donation->id)->sum('quantity'));
+    }
+
+    public function test_every_bag_needs_a_volume(): void
+    {
+        $this->actingAs($this->processing)
+            ->postJson("/api/blood-center/laboratory/donations/{$this->donation->id}/components", [
+                'components' => [
+                    ['component_id' => $this->component->id],
+                    ['component_id' => $this->component->id, 'volume_ml' => 0],
+                    ['component_id' => $this->component->id, 'volume_ml' => 5000],
                 ],
             ])
             ->assertStatus(422)
-            ->assertJsonValidationErrors('components');
+            ->assertJsonValidationErrors(['components.0.volume_ml', 'components.1.volume_ml', 'components.2.volume_ml']);
+    }
+
+    public function test_a_quantity_is_no_longer_accepted_in_place_of_a_volume(): void
+    {
+        $this->actingAs($this->processing)
+            ->postJson("/api/blood-center/laboratory/donations/{$this->donation->id}/components", [
+                'components' => [['component_id' => $this->component->id, 'quantity' => 2]],
+            ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('components.0.volume_ml');
     }
 
     public function test_processing_may_still_reject_a_donation_by_hand(): void
@@ -495,7 +525,7 @@ class LaboratoryProcessingTest extends TestCase
 
         $this->actingAs($this->testing)
             ->postJson("/api/blood-center/laboratory/donations/{$this->donation->id}/components", [
-                'components' => [['component_id' => $this->component->id, 'quantity' => 1]],
+                'components' => [['component_id' => $this->component->id, 'volume_ml' => 250]],
             ])
             ->assertForbidden();
 

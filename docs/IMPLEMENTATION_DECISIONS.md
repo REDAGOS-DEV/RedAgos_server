@@ -874,3 +874,80 @@ tab). `/blood-center/laboratory` is now the Processing page, gated on
 **KNOWN GAPS:** A mis-keyed reactive result cannot be undone in the app. Legacy
 reactive donations are not flagged retroactively. A permanently deferred donor
 can still book, as for screening deferrals.
+
+---
+
+## Daily Blood Stock Inventory, facility logos, and component volumes
+
+**SOURCE:** SNBC-Mindanao's hand-kept "Daily Blood Stock Inventory as of
+<date> at 8AM" sheet, signed by a medical technologist.
+
+**DECIDED BY:** The project owner, on 2026-09-26.
+
+**DECISION (what counts as stock):** Units that are `available` **and** not
+past their expiry date, the same rule the hospital availability search uses.
+A unit past its date that the nightly sweep has not reached yet is not
+counted; a unit expiring today is, since it may be issued until the day
+ends. Reserved, issued, expired and discarded units never count.
+
+**DECISION (layout):** The sheet's three tables, as it draws them:
+- Rh-positive Packed RBC by expiry date;
+- an Rh-negative table of PRBC, FFP, Cryo, Platelet Concentrate and
+  Cryosupernate (the sheet has no Rh-negative Cryosupernate column; it is added
+  so that stock cannot be hidden);
+- an Rh-positive table of Platelet Concentrate, FFP, Cryo and Cryosupernate.
+
+Every other catalogue component (Whole Blood, Washed RBC, anything a centre
+adds) goes in a fourth "Other components" table, always shown, zeros
+included. Which component fills which place is
+`config('blood_center.stock_report.roles')`. Rows follow the sheet: A, B, O,
+AB within each Rh, each in its ABO colour band.
+
+**DECISION (dated columns follow the shelf life):** A component gets one
+column per expiry date when its shelf life at this facility is at or under
+that facility's Packed RBC shelf life (`stock_report.reference_component`).
+Red cells and platelets fall under it; frozen plasma products do not, and
+show a total. When Packed RBC itself has no shelf life set, 42 days
+(`dated_fallback_days`) stands in, and the report says so. A component with
+no shelf life configured shows a total, flagged "Shelf life not configured".
+Counts expiring today or tomorrow are boxed.
+
+**DECISION (who prepares it):** Issuance, by `inventory.create` (supervisors
+by `all()`), not the `inventory.view` every laboratory department holds. The
+"BY:" line is the signed-in user's name and recorded position. Each PDF
+download is audited (`inventory.stock_report_downloaded`).
+
+**DECISION (header):** "Republic of the Philippines / Department of Health /
+Davao Center for Health Development", then the facility's own name — from
+`stock_report.header`, fixed to Davao for now because every named institution
+sits under it. The DOH seal is bundled (`resources/images/doh-seal.png`,
+supplied with the deployment) and the right-hand logo is the facility's own
+upload. dompdf needs PHP's GD extension to draw either; without it the PDF
+still renders, with no images, rather than failing.
+
+**DECISION (facility logo):** Uploaded by a supervisor (`center.configure`)
+for their own facility only — the facility comes from the token. PNG or JPEG,
+2 MB at most; WebP is refused because dompdf cannot reliably draw it. Stored
+on the private `local` disk, never the public one; served to browsers by a
+30-minute signed route (`blood-center.facility.logo`), and inlined as a data
+URI in PDFs because remote fetching is off. Replacing it deletes the old file
+after the new path is saved.
+
+**DECISION (catalogue):** "Platelets" is renamed "Platelet Concentrate" in
+place — same row and id, so units, settings and request items are untouched —
+and "Cryosupernate" is added. Migration
+`2026_09_27_000001_add_cryosupernate_and_rename_platelets` does both on a
+live database and does nothing to an empty one (the seeder carries the full
+catalogue). `IndicationCode` P1–P6 and the Blood Request Form PDF, which look
+the component up by name, were changed with it.
+
+**DECISION (Processing records volume, per bag):** The component breakdown is
+one row per bag, with its volume in mL, instead of a count per component. Two
+bags of the same component are two rows, so the unique
+`(donation_id, component_id)` index is gone. Each row carries `quantity` 1;
+the column stays because inventory's ledger of declared bags is its sum, and
+breakdowns recorded before volumes were kept still hold a real count there.
+At intake each unit takes the volume of its component's next un-booked bag,
+in declaration order, and keeps it in `blood_units.volume_ml`. The 1–1000 mL
+bound is a typing guard, not a clinical rule; nothing compares the bags to the
+collected volume.

@@ -26,6 +26,7 @@ class BloodUnit extends Model
         'id',
         'facility_id',
         'component_id',
+        'volume_ml',
         'blood_type_id',
         'donation_id',
         'storage_location',
@@ -43,6 +44,7 @@ class BloodUnit extends Model
             'expiry_date' => 'immutable_date',
             'expired_at' => 'immutable_datetime',
             'discarded_at' => 'immutable_datetime',
+            'volume_ml' => 'integer',
         ];
     }
 

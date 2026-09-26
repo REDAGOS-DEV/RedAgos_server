@@ -88,7 +88,7 @@ RedAgos does **not** perform the actual physical laboratory testing or cross-mat
 ### Operational Responsibilities
 
 - Receive blood collection information for processing.
-- Record blood component information (what each unit was separated into).
+- Record blood component information: each bag the unit was separated into, with its volume in mL. Two bags of the same component are two entries, and each becomes one unit in stock carrying that volume.
 - Record and update blood processing status.
 - Maintain processing records associated with collected blood.
 - Update blood status when processing requirements have been completed: clear the unit for issue, or reject it.

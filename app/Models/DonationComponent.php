@@ -22,6 +22,7 @@ class DonationComponent extends Model
         'donation_id',
         'component_id',
         'quantity',
+        'volume_ml',
         'declared_by',
     ];
 
@@ -29,6 +30,7 @@ class DonationComponent extends Model
     {
         return [
             'quantity' => 'integer',
+            'volume_ml' => 'integer',
         ];
     }
 

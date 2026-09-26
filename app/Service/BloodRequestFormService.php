@@ -5,6 +5,7 @@ namespace App\Service;
 use App\Enums\IndicationCode;
 use App\Models\BloodRequest;
 use App\Models\BloodRequestItem;
+use App\Support\BloodGroup;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Response;
 use Illuminate\Support\Collection;
@@ -134,9 +135,7 @@ class BloodRequestFormService
      */
     private function bloodGroup(BloodRequest $request): ?string
     {
-        $code = $request->bloodType?->code;
-
-        return $code === null ? null : rtrim($code, '+-');
+        return BloodGroup::abo($request->bloodType?->code);
     }
 
     /**
@@ -144,16 +143,8 @@ class BloodRequestFormService
      */
     private function rhesus(BloodRequest $request): ?string
     {
-        $code = $request->bloodType?->code;
+        $rh = BloodGroup::rh($request->bloodType?->code);
 
-        if ($code === null) {
-            return null;
-        }
-
-        return match (substr($code, -1)) {
-            '+' => 'Positive',
-            '-' => 'Negative',
-            default => null,
-        };
+        return $rh === null ? null : ucfirst($rh);
     }
 }

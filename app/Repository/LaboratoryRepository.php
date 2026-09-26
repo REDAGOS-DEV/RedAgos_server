@@ -183,9 +183,13 @@ class LaboratoryRepository
     }
 
     /**
-     * Replace the declared component breakdown for a donation.
+     * Replace the declared breakdown for a donation: one row per bag, with its volume.
      *
-     * @param  array<int, array{component_id: int, quantity: int}>  $components
+     * Every row carries `quantity` 1. The column stays because inventory's
+     * ledger of declared bags is its sum, and breakdowns recorded before
+     * volumes were kept still hold a real count there.
+     *
+     * @param  array<int, array{component_id: int, volume_ml: int}>  $components
      */
     public function replaceComponents(int $donationId, array $components, int $declaredBy): void
     {
@@ -195,14 +199,15 @@ class LaboratoryRepository
             DonationComponent::create([
                 'donation_id' => $donationId,
                 'component_id' => $component['component_id'],
-                'quantity' => $component['quantity'],
+                'quantity' => 1,
+                'volume_ml' => $component['volume_ml'],
                 'declared_by' => $declaredBy,
             ]);
         }
     }
 
     /**
-     * The components declared for a donation.
+     * The bags declared for a donation, in the order they were declared.
      *
      * @return Collection<int, DonationComponent>
      */
@@ -211,6 +216,7 @@ class LaboratoryRepository
         return DonationComponent::query()
             ->with('component')
             ->where('donation_id', $donationId)
+            ->orderBy('id')
             ->get();
     }
 

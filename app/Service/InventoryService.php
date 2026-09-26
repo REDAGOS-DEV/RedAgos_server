@@ -110,6 +110,7 @@ class InventoryService
     {
         $ledger = $this->declarationLedger($donation);
         $components = $donation->components->keyBy('component_id');
+        $bags = $this->bagVolumes($donation);
 
         $rows = [];
 
@@ -120,6 +121,10 @@ class InventoryService
             $rows[] = [
                 ...$row,
                 'component' => $component?->name,
+                // Every declared bag's volume, and those still to be shelved.
+                // Null for a bag declared before volumes were kept.
+                'volumes' => $bags[$componentId] ?? [],
+                'outstanding_volumes' => array_slice($bags[$componentId] ?? [], $row['recorded']),
                 // The intake screen refuses a component with no shelf life
                 // rather than letting someone type an expiry out of the air,
                 // so it has to know before offering the row. Read from this
@@ -344,9 +349,21 @@ class InventoryService
         $prefix = $this->generatedIdPrefix($facilityId, $donation->id);
         $sequence = $this->nextSequence($donation->id, $prefix);
 
+        // Each unit takes the volume of the next un-booked bag of its
+        // component. The donation lock held above is what makes "next" safe.
+        $bags = $this->bagVolumes($donation);
+        $booked = array_map(
+            fn (array $row): int => $row['recorded'],
+            $this->declarationLedger($donation)
+        );
+
         $units = [];
 
         foreach ($payload['units'] as $entry) {
+            $componentId = (int) $entry['component_id'];
+            $volume = $bags[$componentId][$booked[$componentId] ?? 0] ?? null;
+            $booked[$componentId] = ($booked[$componentId] ?? 0) + 1;
+
             $unitId = $entry['unit_id'] ?? null;
 
             if ($unitId === null) {
@@ -358,6 +375,8 @@ class InventoryService
                 'id' => $unitId,
                 'facility_id' => $facilityId,
                 'component_id' => $entry['component_id'],
+                // From the bag Processing declared, never from this request.
+                'volume_ml' => $volume,
                 // Derived server-side and never accepted from the client. It is
                 // the one field on a unit that can kill someone if it is wrong,
                 // and the donation already knows it.
@@ -488,6 +507,7 @@ class InventoryService
                 'id' => $unit->component_id,
                 'name' => $unit->component?->name,
             ],
+            'volume_ml' => $unit->volume_ml,
             'status' => $unit->status->value,
             'expiry_date' => $unit->expiry_date?->toDateString(),
             'days_remaining' => $unit->expiry_date
@@ -604,7 +624,12 @@ class InventoryService
      */
     private function declarationLedger(Donation $donation): array
     {
-        $declared = $donation->components()->pluck('quantity', 'component_id');
+        // Summed, not plucked: one row per bag means a component can appear
+        // on several rows, and a plucked map would keep only the last.
+        $declared = $donation->components()
+            ->selectRaw('component_id, SUM(quantity) as declared')
+            ->groupBy('component_id')
+            ->pluck('declared', 'component_id');
 
         $recorded = $donation->bloodUnits()
             ->selectRaw('component_id, count(*) as total')
@@ -625,6 +650,28 @@ class InventoryService
         }
 
         return $ledger;
+    }
+
+    /**
+     * Each component's declared bags in declaration order, as their volumes.
+     *
+     * A row declared before volumes were kept stands for `quantity` bags of
+     * unknown volume, so it expands to that many nulls. Units take these in
+     * order: the n-th unit booked for a component is its n-th bag.
+     *
+     * @return array<int, array<int, int|null>>
+     */
+    private function bagVolumes(Donation $donation): array
+    {
+        $bags = [];
+
+        foreach ($donation->components()->orderBy('id')->get(['component_id', 'quantity', 'volume_ml']) as $row) {
+            for ($i = 0; $i < max(1, (int) $row->quantity); $i++) {
+                $bags[(int) $row->component_id][] = $row->volume_ml === null ? null : (int) $row->volume_ml;
+            }
+        }
+
+        return $bags;
     }
 
     /**

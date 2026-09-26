@@ -89,8 +89,8 @@ class DonationToInventoryChainTest extends TestCase
         $this->actingAs($this->processing)
             ->postJson("/api/blood-center/laboratory/donations/{$donationId}/components", [
                 'components' => [
-                    ['component_id' => $this->packedRbc->id, 'quantity' => 1],
-                    ['component_id' => $this->plasma->id, 'quantity' => 1],
+                    ['component_id' => $this->packedRbc->id, 'volume_ml' => 250],
+                    ['component_id' => $this->plasma->id, 'volume_ml' => 220],
                 ],
             ])
             ->assertCreated();
@@ -119,6 +119,10 @@ class DonationToInventoryChainTest extends TestCase
         // Derived from the donor, never sent by any of the three departments.
         $this->assertTrue($units->every(fn (BloodUnit $u): bool => (int) $u->blood_type_id === (int) $bloodTypeId));
 
+        // Each unit carries the volume Processing recorded for its bag.
+        $this->assertSame(250, $units->firstWhere('component_id', $this->packedRbc->id)->volume_ml);
+        $this->assertSame(220, $units->firstWhere('component_id', $this->plasma->id)->volume_ml);
+
         // And it now shows up as issuable stock.
         $this->actingAs($this->inventory)
             ->getJson('/api/blood-center/inventory/summary')
@@ -126,10 +130,57 @@ class DonationToInventoryChainTest extends TestCase
             ->assertJsonPath('totals.available', 2);
     }
 
+    public function test_two_bags_of_one_component_book_in_as_two_units_in_order(): void
+    {
+        $donationId = $this->completedDonationDeclaring([
+            ['component_id' => $this->packedRbc->id, 'volume_ml' => 250],
+            ['component_id' => $this->packedRbc->id, 'volume_ml' => 230],
+        ]);
+
+        $unit = ['component_id' => $this->packedRbc->id, 'expiry_date' => now()->addDays(35)->toDateString()];
+
+        // Separate intakes: the second unit must take the second bag.
+        $this->actingAs($this->inventory)
+            ->postJson('/api/blood-center/inventory', ['donation_id' => $donationId, 'units' => [$unit]])
+            ->assertCreated()
+            ->assertJsonPath('units.0.volume_ml', 250);
+
+        $this->actingAs($this->inventory)
+            ->postJson('/api/blood-center/inventory', ['donation_id' => $donationId, 'units' => [$unit]])
+            ->assertCreated()
+            ->assertJsonPath('units.0.volume_ml', 230);
+
+        // And no third.
+        $this->actingAs($this->inventory)
+            ->postJson('/api/blood-center/inventory', ['donation_id' => $donationId, 'units' => [$unit]])
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'exceeds_declared_quantity');
+    }
+
+    public function test_the_intake_queue_shows_each_bag_still_to_shelve(): void
+    {
+        $donationId = $this->completedDonationDeclaring([
+            ['component_id' => $this->packedRbc->id, 'volume_ml' => 250],
+            ['component_id' => $this->packedRbc->id, 'volume_ml' => 230],
+            ['component_id' => $this->plasma->id, 'volume_ml' => 220],
+        ]);
+
+        $row = collect(
+            $this->actingAs($this->inventory)->getJson('/api/blood-center/inventory/intake-queue')->assertOk()->json('data')
+        )->firstWhere('donation_id', $donationId);
+
+        $packed = collect($row['components'])->firstWhere('component_id', $this->packedRbc->id);
+
+        $this->assertSame(2, $packed['declared']);
+        $this->assertSame([250, 230], $packed['volumes']);
+        $this->assertSame([250, 230], $packed['outstanding_volumes']);
+        $this->assertSame(3, $row['declared_units']);
+    }
+
     public function test_inventory_cannot_book_in_a_component_the_laboratory_never_declared(): void
     {
         $donationId = $this->completedDonationDeclaring([
-            ['component_id' => $this->packedRbc->id, 'quantity' => 1],
+            ['component_id' => $this->packedRbc->id, 'volume_ml' => 250],
         ]);
 
         $this->actingAs($this->inventory)
@@ -148,7 +199,7 @@ class DonationToInventoryChainTest extends TestCase
     public function test_inventory_cannot_exceed_the_declared_quantity(): void
     {
         $donationId = $this->completedDonationDeclaring([
-            ['component_id' => $this->packedRbc->id, 'quantity' => 1],
+            ['component_id' => $this->packedRbc->id, 'volume_ml' => 250],
         ]);
 
         $this->actingAs($this->inventory)
@@ -166,7 +217,7 @@ class DonationToInventoryChainTest extends TestCase
     public function test_the_declared_limit_holds_across_separate_intakes(): void
     {
         $donationId = $this->completedDonationDeclaring([
-            ['component_id' => $this->packedRbc->id, 'quantity' => 1],
+            ['component_id' => $this->packedRbc->id, 'volume_ml' => 250],
         ]);
 
         $unit = ['component_id' => $this->packedRbc->id, 'expiry_date' => now()->addDays(35)->toDateString()];
@@ -191,7 +242,7 @@ class DonationToInventoryChainTest extends TestCase
 
         $this->actingAs($this->processing)
             ->postJson("/api/blood-center/laboratory/donations/{$donationId}/components", [
-                'components' => [['component_id' => $this->packedRbc->id, 'quantity' => 1]],
+                'components' => [['component_id' => $this->packedRbc->id, 'volume_ml' => 250]],
             ])
             ->assertCreated();
 
@@ -278,7 +329,7 @@ class DonationToInventoryChainTest extends TestCase
     /**
      * Walk a donation all the way to `completed` with the given declaration.
      *
-     * @param  array<int, array{component_id: int, quantity: int}>  $components
+     * @param  array<int, array{component_id: int, volume_ml: int}>  $components
      */
     private function completedDonationDeclaring(array $components): int
     {

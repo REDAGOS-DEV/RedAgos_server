@@ -671,9 +671,14 @@ class LaboratoryService
 
             'components' => $this->laboratoryRepository
                 ->componentsFor($donation->id)
+                // One entry per bag. `quantity` is 1 for every bag declared with
+                // a volume; a breakdown recorded before volumes were kept has a
+                // null volume and its original count.
                 ->map(fn (DonationComponent $c): array => [
+                    'id' => $c->id,
                     'component_id' => $c->component_id,
                     'component' => $c->component?->name,
+                    'volume_ml' => $c->volume_ml,
                     'quantity' => $c->quantity,
                 ])->all(),
         ];

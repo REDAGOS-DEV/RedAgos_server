@@ -281,6 +281,38 @@ class InventoryRepository
     }
 
     /**
+     * Issuable stock counted by component, blood type and expiry date — the daily stock sheet's cells.
+     *
+     * Available AND not past its date, the same rule the hospital availability
+     * search applies: a unit whose date has passed but which the nightly sweep
+     * has not reached yet still says `available`, and counting it would report
+     * blood that cannot legally be issued. A unit expiring today still counts;
+     * it may be issued until the day ends.
+     *
+     * @return array<int, array{component_id: int, blood_type_code: string, expiry_date: string, units: int}>
+     */
+    public function stockReportRows(int $facilityId, string $operationalDate): array
+    {
+        return BloodUnit::query()
+            ->forFacility($facilityId)
+            ->where('blood_units.status', BloodUnitStatus::Available->value)
+            ->whereDate('blood_units.expiry_date', '>=', $operationalDate)
+            ->join('blood_types', 'blood_types.id', '=', 'blood_units.blood_type_id')
+            ->groupBy('blood_units.component_id', 'blood_types.code', 'blood_units.expiry_date')
+            ->orderBy('blood_units.expiry_date')
+            ->selectRaw('blood_units.component_id, blood_types.code as blood_type_code, blood_units.expiry_date, COUNT(*) as units')
+            ->get()
+            ->map(fn ($row): array => [
+                'component_id' => (int) $row->component_id,
+                'blood_type_code' => (string) $row->blood_type_code,
+                // Normalised: SQLite hands back a date string, Postgres may add a time.
+                'expiry_date' => CarbonImmutable::parse($row->expiry_date)->toDateString(),
+                'units' => (int) $row->units,
+            ])
+            ->all();
+    }
+
+    /**
      * The storage locations this facility has actually recorded against units.
      *
      * @return array<int, string>
