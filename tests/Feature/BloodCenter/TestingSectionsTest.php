@@ -5,6 +5,7 @@ namespace Tests\Feature\BloodCenter;
 use App\Enums\Department;
 use App\Enums\DonationStatus;
 use App\Enums\ReferralStatus;
+use App\Enums\StaffRole;
 use App\Models\AuditLog;
 use App\Models\BloodType;
 use App\Models\CounsellingReferral;
@@ -17,6 +18,7 @@ use App\Service\LaboratoryService;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Testing\TestResponse;
+use Tests\Concerns\RecordsTyping;
 use Tests\TestCase;
 
 /**
@@ -30,11 +32,13 @@ use Tests\TestCase;
  */
 class TestingSectionsTest extends TestCase
 {
-    use LazilyRefreshDatabase;
+    use LazilyRefreshDatabase, RecordsTyping;
 
     private Facility $facility;
 
     private User $testing;
+
+    private User $typist;
 
     private User $processing;
 
@@ -51,8 +55,9 @@ class TestingSectionsTest extends TestCase
         Notification::fake();
 
         $this->facility = Facility::factory()->approved()->create();
-        $this->testing = User::factory()->bloodCenterStaff($this->facility, Department::Testing)->create();
-        $this->processing = User::factory()->bloodCenterStaff($this->facility, Department::Processing)->create();
+        $this->testing = User::factory()->bloodCenterStaff($this->facility, StaffRole::SerologyTechnologist)->create();
+        $this->typist = User::factory()->bloodCenterStaff($this->facility, StaffRole::SerologyTechnologist)->create();
+        $this->processing = User::factory()->bloodCenterStaff($this->facility, StaffRole::ComponentTechnologist)->create();
 
         $this->donor = User::factory()->donor()->create();
         $this->bloodType = $this->donor->donorProfile->bloodType;
@@ -66,9 +71,9 @@ class TestingSectionsTest extends TestCase
 
     private function typing(?User $as = null): TestResponse
     {
-        return $this->actingAs($as ?? $this->testing)->postJson(
+        return $this->actingAs($as ?? $this->typist)->postJson(
             "/api/blood-center/laboratory/donations/{$this->donation->id}/immunohematology",
-            ['blood_type_id' => $this->bloodType->id]
+            $this->concordantTyping($this->bloodType)
         );
     }
 
@@ -124,14 +129,14 @@ class TestingSectionsTest extends TestCase
 
     public function test_each_section_is_stamped_with_whoever_saved_it(): void
     {
-        $colleague = User::factory()->bloodCenterStaff($this->facility, Department::Testing)->create();
+        $colleague = User::factory()->bloodCenterStaff($this->facility, StaffRole::SerologyTechnologist)->create();
 
         $this->typing()->assertCreated();
         $this->serology([], $colleague)->assertCreated();
 
         $this->assertDatabaseHas('donation_immunohematology', [
             'donation_id' => $this->donation->id,
-            'recorded_by' => $this->testing->id,
+            'recorded_by' => $this->typist->id,
         ]);
         $this->assertDatabaseHas('donation_serology', [
             'donation_id' => $this->donation->id,
@@ -141,7 +146,7 @@ class TestingSectionsTest extends TestCase
 
     public function test_screened_by_is_never_taken_from_the_request(): void
     {
-        $someoneElse = User::factory()->bloodCenterStaff($this->facility, Department::Testing)->create();
+        $someoneElse = User::factory()->bloodCenterStaff($this->facility, StaffRole::SerologyTechnologist)->create();
 
         $this->serology(['recorded_by' => $someoneElse->id])->assertCreated();
 
@@ -157,7 +162,7 @@ class TestingSectionsTest extends TestCase
 
         $this->serology()
             ->assertCreated()
-            ->assertJsonPath('data.immunohematology.recorded_by', trim($this->testing->first_name.' '.$this->testing->last_name))
+            ->assertJsonPath('data.immunohematology.recorded_by', trim($this->typist->first_name.' '.$this->typist->last_name))
             ->assertJsonPath('data.serology.recorded_by', trim($this->testing->first_name.' '.$this->testing->last_name));
     }
 
@@ -282,12 +287,41 @@ class TestingSectionsTest extends TestCase
         $this->reactive()->assertCreated()->assertJsonPath('data.test_result.result', 'reactive');
     }
 
-    public function test_changing_a_passed_panel_to_reactive_still_rejects(): void
+    public function test_correcting_a_non_reactive_panel_to_reactive_still_rejects(): void
     {
-        $this->typing()->assertCreated();
-        $this->serology()->assertCreated()->assertJsonPath('data.status', 'tested');
+        $this->serology()->assertCreated()->assertJsonPath('data.status', 'collected');
 
-        $this->reactive('hiv')->assertCreated()->assertJsonPath('data.status', 'rejected');
+        // The saved panel is already TTI-cleared, but its bags have not left
+        // quarantine, so it is corrected — through a request the Laboratory
+        // Supervisor approves.
+        $correction = $this->actingAs($this->testing)
+            ->postJson("/api/blood-center/donations/{$this->donation->id}/corrections", [
+                'subject' => 'serology',
+                'reason' => 'HIV well read against the wrong row.',
+                'changes' => [
+                    'hiv' => 'reactive', 'hbsag' => 'non_reactive', 'hcv' => 'non_reactive',
+                    'syphilis' => 'non_reactive', 'malaria' => 'non_reactive',
+                    'confirm_reactive' => true,
+                ],
+            ])
+            ->assertCreated()
+            ->json('data.id');
+
+        $this->actingAs(User::factory()->bloodCenterStaff($this->facility, StaffRole::LabSupervisor)->create())
+            ->postJson("/api/blood-center/corrections/{$correction}/approve")
+            ->assertOk();
+
+        $this->assertSame(DonationStatus::Rejected, $this->donation->fresh()->status);
+        $this->assertDatabaseCount('counselling_referrals', 1);
+    }
+
+    public function test_a_reactive_result_rejects_a_donation_processing_already_completed(): void
+    {
+        // Processing does not wait for the laboratory, so a reactive result can
+        // arrive after the bags were handed to Issuance. It still rejects.
+        $this->donation->update(['status' => DonationStatus::Completed]);
+
+        $this->reactive()->assertCreated()->assertJsonPath('data.status', 'rejected');
 
         $this->assertDatabaseCount('counselling_referrals', 1);
     }
@@ -307,13 +341,12 @@ class TestingSectionsTest extends TestCase
             ->assertJsonPath('code', 'results_locked');
     }
 
-    public function test_results_are_locked_once_the_donation_is_completed(): void
+    public function test_a_completed_donation_can_still_be_tested(): void
     {
         $this->donation->update(['status' => DonationStatus::Completed]);
 
-        $this->typing()
-            ->assertStatus(409)
-            ->assertJsonPath('code', 'results_locked');
+        $this->typing()->assertCreated();
+        $this->serology()->assertCreated()->assertJsonPath('data.status', 'completed');
     }
 
     // --- Who sees which marker ----------------------------------------------

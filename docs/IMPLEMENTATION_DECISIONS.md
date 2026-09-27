@@ -64,6 +64,8 @@ Do not build fulfillment on unresolved facility-isolation or inventory foundatio
 
 ## Donation status that may become issuable stock (Module 3 blocker)
 
+> **SUPERSEDED (2026-09-28)** by "Quarantine lifecycle" below: Branch B is now implemented. `completed` no longer means cleared for issue; units are booked in `quarantined` and released on two clearance tokens. The text below is kept as the record of the earlier decision.
+
 **DECISION:** `donations.status = completed` means the donation has finished transfusion-transmissible-infection testing and is **cleared for issue to a patient**. Blood-unit intake gates on `completed` and creates units as `available`. This is "Branch A" of the Module 3 plan.
 
 **DECIDED BY:** The project owner, on 2026-08-25, on the evidence of the schema's own ordering: `donations.status` is declared `registered | screening | collected | tested | completed | rejected` in `2026_07_06_000010_create_donations_table.php`, where `tested` precedes `completed`. Read in sequence, a donation cannot reach `completed` without having passed `tested`.
@@ -710,6 +712,8 @@ consumes, but the page was already broken and fixing it is separate work.
 
 ## Blood-centre departments: five, not four
 
+> **SUPERSEDED (2026-09-28)** by "Staff roles: seven departments, eighteen roles" below. The five stored values are unchanged; two departments were added and access is now keyed by role.
+
 **DECISION:** A blood centre has five operational departments instead of four:
 
 | Value | Label | Was |
@@ -953,6 +957,79 @@ At intake each unit takes the volume of its component's next un-booked bag,
 in declaration order, and keeps it in `blood_units.volume_ml`. The 1–1000 mL
 bound is a typing guard, not a clinical rule; nothing compares the bags to the
 collected volume.
+
+## Staff roles: seven departments, eighteen roles
+
+> **REVISED (2026-09-27)** by "Staff form: five departments, custom roles, privileges" below: the Recruitment and Immunohematology departments and their six roles were withdrawn.
+
+**DECISION:** Access is keyed by a fixed **staff role** per account (`users.staff_role`, `App\Enums\StaffRole`), not by department. Each role sits in exactly one department, and `users.department` is derived from the role by `User`'s saving hook — it is never assigned on its own. The matrix in `DepartmentPermissions` is keyed by role; `for()` keeps its signature.
+
+| Department (value) | Roles |
+|---|---|
+| Donor Recruitment & Marketing (`recruitment`, new) | recruitment_officer, pr_specialist, drive_logistics_coordinator |
+| Blood Collection & Apheresis (`collection`) | screening_physician, phlebotomist, apheresis_specialist, medical_receptionist |
+| Component Processing & Manufacturing (`processing`) | component_technologist, processing_assistant |
+| TTI Testing (`testing`) | serology_technologist, lab_supervisor |
+| Immunohematology (`immunohematology`, new) | bloodbank_technologist, crossmatch_technician, reference_lab_consultant |
+| Inventory, Distribution & Quarantine (`issuance`) | inventory_control_officer, dispatch_coordinator, it_data_clerk |
+| Billing / Payment (`billing`, kept at the project owner's request) | billing_clerk |
+
+- `is_supervisor` stays the **Center Admin**: it holds every ability, but the clinical hard rules are enforced in services and models, so it is bound by them too.
+- Abilities split: `donations.record` → `donations.register | screen | collect | close`; `lab.record_result` → `lab.record_serology | lab.record_immunohematology`. New: `donors.view_contact`, `donors.view_clinical`, `donors.view_identity`, `inventory.release_quarantine`, `corrections.request`, `corrections.approve`. `requests.process` now gates allocation (the cross-matching technician's act).
+- Counselling referrals are the Laboratory Supervisor's alone: the technologists who record markers are blind to the donor.
+- Incoming blood-request notifications go to roles holding `requests.approve` or `requests.process`, not to a department.
+
+**BACKFILL:** `2026_09_28_000001_add_staff_role_to_users_table` gives each existing staff member their department's least-privileged core role (collection → phlebotomist, testing → serology_technologist, processing → component_technologist, issuance → inventory_control_officer, billing → billing_clerk). No account gains a data ability it lacked. **Caveat:** non-supervisor collection staff can no longer register or screen, and testing staff can no longer type ABO/Rh, until a supervisor reassigns them; the migration logs them by id for review.
+
+**CONSOLE:** `facility:add-user` takes `--role=` (with `--supervisor` for a working supervisor); `--department=` is gone.
+
+## Donor identity blinding
+
+**DECISION:** Laboratory and inventory payloads (`LaboratoryService::format`, the intake queue) carry the donor's name, code and uuid only to a viewer holding `donors.view_identity` — the receptionist, physician, chair roles, the Laboratory Supervisor and the Center Admin. Everyone else gets `{blinded: true, blood_type}` and works by segment number and donation id; the intake queue now carries the segment number for that reason (`App\Support\DonorBlinding`).
+
+Donor directory projections by role: `donors.view_contact` alone (Recruitment) gets a contact list — no blood type, birth date, history or deferrals; `donors.view` gets the registration record; the donation history (deferral reasons, final lab result, never the marker) needs `donors.view_clinical` (the physician). Collection payloads show screening vitals and reasons only to `donors.view_clinical`; everyone else sees the outcome.
+
+## Quarantine lifecycle
+
+**DECISION (Branch B, implemented):** Processing no longer waits for test results — plasma must be frozen within hours of the draw. `completed` now means *processed*: components declared, bags handed to Issuance. Units are booked in `quarantined` (new `BloodUnitStatus`, migration `2026_09_28_100001`), and leave quarantine only through `POST /inventory/quarantine/{donation}/release` (`inventory.release_quarantine`, the Inventory Control Officer), which requires:
+
+- both **clearance tokens** (`donation_clearances`: kinds `tti` and `immunohematology`, at most one in force per donation and kind; never deleted, and never edited except to be revoked once by an approved correction — the model refuses anything else);
+- a donation that was not rejected (a reactive result locks its bags in quarantine; discard is the only way out);
+- no bag past its date (all or nothing per donation).
+
+Other rules: the expiry sweep, allocation, hospital availability and the stock report ignore quarantined units; `InventoryService::update` never changes a quarantined unit's status; `FulfillmentService::release` refuses any unit whose donation lacks a token. `tested` now means both tokens were issued while the donation was still `collected`; a donation completed first stays `completed`.
+
+**BACKFILL:** `completed` donations get both tokens (their units are already available); `tested` donations get tokens for the sections actually recorded, and any missing one returns the donation to `collected`.
+
+**STILL OUTSTANDING:** Clinical sign-off from the capstone adviser or the partner blood center, as for the earlier decision.
+
+## Immunohematology clearance
+
+**DECISION:** The typing records forward group, reverse group and antibody screen alongside `blood_type_id` (whose ABO must equal the forward group). The immunohematology token is issued the moment a typing is concordant — forward equals reverse and the screen is negative — and the donor profile adopts the blood type at that moment, so a first-time donor's bags can be booked into quarantine before serology is back. A discrepant or antibody-positive typing is saved but held (`clearance_hold`), and changes only through a correction decided by the Reference Laboratory Consultant. A cleared typing is final.
+
+## Serology is cleared on save (no analytical runs)
+
+**DECISION (project owner, 2026-09-27):** Serology follows the DOH form's Section II — a result and who screened it — with no analytical run, run code, kit lot, analyzer or batch validation. Saving a non-reactive panel issues the TTI clearance at once; a reactive one rejects the donation at once. `DonationSerology` refuses to update or delete a reactive row, and there is no route that deletes a result. An analytical-run design with supervisor batch validation and QC failure was built and withdrawn at the owner's request before it reached any data.
+
+**UI:** TTI Testing and Immunohematology share one page (`/blood-center/testing`), each role seeing only its own card; the Immunohematology department and its roles are unchanged on the server.
+
+## Correction requests
+
+**DECISION (requested by the project owner, 2026-09-27):** A saved record — screening, collection box, immunohematology typing, serology panel, component breakdown — is never saved over, by anyone (`409 correction_required`). The staff member whose role writes it files a correction request (`POST /donations/{id}/corrections`) with the corrected values and a reason; the values are validated with the original write's own form request. The department's approver (`Department::correctionApprover()`: Collection → screening physician, Processing → component technologist, TTI Testing → lab supervisor, Immunohematology → reference lab consultant) or the Center Admin approves or rejects it. Nobody decides their own request, and an approver's own request goes to the Center Admin rather than a peer.
+
+An approved correction is applied through the original write, as the requester, inside the approval's transaction — so every guard still applies. A reactive serology result can never be corrected. A cleared result (typing or serology) can be corrected only while none of the donation's bags has left quarantine (`409 units_released`, re-checked at approval): approving revokes the token in force, resets `tested` and the derived `passed` summary, and the corrected result earns a new token only if it qualifies. An approval that a guard refuses applies nothing — no revocation either — and leaves the request pending. The collection box has its own correction write (`CollectionService::correctCollection`), refused once units are booked against the donation. Audit: `correction.requested | approved | rejected | applied` (field names only, never marker values).
+
+**NOT YET BUILT (Phase 3):** fleet and assets for drives, apheresis procedure metrics, processing environment logs and label printing, electronic crossmatch verification, rare-antibody profiles and rare-unit tags, shipping manifests and transit temperatures, a facility audit viewer and barcode verification, anonymous aggregate statistics for PR, recruitment outreach records.
+
+## Staff form: five departments, custom roles, privileges
+
+**DECISION (project owner, 2026-09-27):** The Add Staff use case sets access with: first and last name, email, a temporary password (typed or generated, as in the super admin form), **Title** (typed, or RMT / RN), **Department**, **Role** and **Privileges**.
+
+- **Five departments:** Donor/Collection (`collection`), Processing, Testing, Issuance, Billing. The Recruitment roles (recruitment officer, PR specialist, drive logistics) and Immunohematology roles (blood bank specialist, cross-matching technician, reference lab consultant) were dropped at the owner's choice. Testing took over typing — the serology technologist and lab supervisor hold `lab.record_immunohematology`, and the lab supervisor approves typing corrections; allocation stays with the Inventory Control Officer; the medical receptionist took over drives. Migration `2026_09_28_100006` leaves any account holding a dropped role role-less (fail-closed).
+- **Role** is typed or picked. A picked role is a `StaffRole` with its exact matrix entry, and fixes the department. A typed role that names a predefined one becomes it; otherwise it is stored as `users.custom_role`, needs a department, and holds that department's combined ability set less `corrections.approve` (approval belongs to the named approver role).
+- **Privileges** (`users.staff_privileges`: read / write / update / delete) cap the role — `DepartmentPermissions::KIND` sorts every ability into one of the four, and only ticked kinds survive; `reference.view` and `reports.view_own` survive any cap. Null (every account created earlier) means all four. The Center Admin is never capped. Changes are audited as `staff.privileges_changed`.
+- **Title** is `users.position`, a label only.
+
 
 ## Walk-in requests, partial fulfilment and follow-ups
 

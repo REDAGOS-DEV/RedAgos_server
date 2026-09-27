@@ -5,6 +5,7 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\BloodCenterBillingController;
 use App\Http\Controllers\BloodCenterCollectionController;
 use App\Http\Controllers\BloodCenterComponentController;
+use App\Http\Controllers\BloodCenterCorrectionController;
 use App\Http\Controllers\BloodCenterDonorController;
 use App\Http\Controllers\BloodCenterDriveController;
 use App\Http\Controllers\BloodCenterFacilityController;
@@ -224,6 +225,14 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         Route::post('/inventory', [BloodCenterInventoryController::class, 'store'])
             ->middleware('can:inventory.create');
 
+        // Quarantine release, on both clearance tokens. Per donation, because
+        // the tokens are the donation's. Its own ability, held by the
+        // Inventory Control Officer; the service re-checks the tokens for
+        // everyone, supervisors included.
+        Route::post('/inventory/quarantine/{donation}/release', [BloodCenterInventoryController::class, 'releaseQuarantine'])
+            ->middleware('can:inventory.release_quarantine')
+            ->whereNumber('donation');
+
         Route::patch('/inventory/{unit}', [BloodCenterInventoryController::class, 'update'])
             ->middleware('can:inventory.update')
             ->where('unit', '[A-Za-z0-9\-]+');
@@ -278,8 +287,12 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
                 ->middleware('can:requests.view')
                 ->whereNumber('bloodRequest');
 
+            // Linking a bag to a request, and so to its patient: the
+            // crossmatch technician's act, and Issuance's. Its own ability
+            // since staff roles, so crossmatch can allocate without also being
+            // able to reject a hospital's request.
             Route::post('/{bloodRequest}/allocate', [BloodCenterRequestController::class, 'allocate'])
-                ->middleware('can:requests.approve')
+                ->middleware('can:requests.process')
                 ->whereNumber('bloodRequest');
 
             Route::post('/{bloodRequest}/reject', [BloodCenterRequestController::class, 'reject'])
@@ -340,12 +353,17 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         // so DonorDirectoryService is what decides whether a caller sees a full
         // record or the standardised cross-facility summary.
         Route::prefix('donors')->group(function (): void {
+            // donors.view_contact, which Recruitment also holds: the service
+            // returns a contact-only list to anyone without donors.view.
             Route::get('/', [BloodCenterDonorController::class, 'index'])
-                ->middleware('can:donors.view');
+                ->middleware('can:donors.view_contact');
 
             // Declared before /{uuid}: 'lookup' would otherwise be read as one.
+            // appointments.verify rather than donors.view, so the collection
+            // chair can match the ID card in front of them; the service
+            // narrows the answer to identity for anyone without donors.view.
             Route::get('/lookup', [BloodCenterDonorController::class, 'lookup'])
-                ->middleware('can:donors.view');
+                ->middleware('can:appointments.verify');
 
             Route::post('/', [BloodCenterDonorController::class, 'store'])
                 ->middleware('can:donors.manage');
@@ -353,8 +371,9 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             Route::get('/{uuid}', [BloodCenterDonorController::class, 'show'])
                 ->middleware('can:donors.view')->whereUuid('uuid');
 
+            // The donor's clinical record: deferral reasons and final results.
             Route::get('/{uuid}/history', [BloodCenterDonorController::class, 'history'])
-                ->middleware('can:donors.view')->whereUuid('uuid');
+                ->middleware('can:donors.view_clinical')->whereUuid('uuid');
 
             // Its own ability, not donors.view: reading a donor's declared
             // health answers is a different act from looking them up, and the
@@ -390,17 +409,21 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             Route::get('/', [BloodCenterCollectionController::class, 'index'])
                 ->middleware('can:donations.view');
 
+            // One ability per part of the visit, by who performs it: the
+            // receptionist opens the donation, the screening physician accepts
+            // or defers, the chair collects. Closing a visit that cannot go
+            // ahead is open to all three.
             Route::post('/', [BloodCenterCollectionController::class, 'store'])
-                ->middleware('can:donations.record');
+                ->middleware('can:donations.register');
 
             Route::patch('/{donation}/status', [BloodCenterCollectionController::class, 'updateStatus'])
-                ->middleware('can:donations.record')->whereNumber('donation');
+                ->middleware('can:donations.close')->whereNumber('donation');
 
             Route::post('/{donation}/screening', [BloodCenterCollectionController::class, 'recordScreening'])
-                ->middleware('can:donations.record')->whereNumber('donation');
+                ->middleware('can:donations.screen')->whereNumber('donation');
 
             Route::post('/{donation}/collection', [BloodCenterCollectionController::class, 'recordCollection'])
-                ->middleware('can:donations.record')->whereNumber('donation');
+                ->middleware('can:donations.collect')->whereNumber('donation');
         });
 
         // Testing and Processing — the only place `completed` can be written,
@@ -416,17 +439,20 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
                 ->middleware('can:lab.view')->whereNumber('donation');
 
             // Section II's two Testing tables, saved separately so each is
-            // stamped with its own "Screened by". There is no longer a route
-            // that records an overall result directly: it is derived from
-            // these, so nothing can pass a donation without all five markers.
+            // stamped with its own "Screened by", and recorded by two
+            // departments: Immunohematology types the unit, TTI Testing runs
+            // the serology panel. There is no route that records an overall
+            // result directly: it is derived from these, so nothing can pass a
+            // donation without all five markers.
             Route::post('/donations/{donation}/immunohematology', [BloodCenterLaboratoryController::class, 'recordImmunohematology'])
-                ->middleware('can:lab.record_result')->whereNumber('donation');
+                ->middleware('can:lab.record_immunohematology')->whereNumber('donation');
 
             Route::post('/donations/{donation}/serology', [BloodCenterLaboratoryController::class, 'recordSerology'])
-                ->middleware('can:lab.record_result')->whereNumber('donation');
+                ->middleware('can:lab.record_serology')->whereNumber('donation');
 
-            // Its own ability rather than lab.record_result: this is the one
-            // list that names which marker each donor was reactive for.
+            // Its own ability rather than lab.record_serology: this is the one
+            // list that names which marker each donor was reactive for, and
+            // the technologists recording markers are blind to identity.
             Route::get('/referrals', [BloodCenterReferralController::class, 'index'])
                 ->middleware(['can:lab.referrals', 'throttle:60,1']);
 
@@ -440,11 +466,32 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
                 ->middleware('can:lab.update_status')->whereNumber('donation');
         });
 
+        // Correction requests. A saved record is changed only this way: its
+        // writer asks, and the department's approver or the Center Admin
+        // decides. CorrectionService checks the requester writes that record
+        // and the decider is the right one; the gates only say who may reach.
+        Route::get('/corrections', [BloodCenterCorrectionController::class, 'index'])
+            ->middleware('can:corrections.request');
+
+        Route::post('/donations/{donation}/corrections', [BloodCenterCorrectionController::class, 'store'])
+            ->middleware(['can:corrections.request', 'throttle:30,1'])->whereNumber('donation');
+
+        Route::post('/corrections/{correction}/approve', [BloodCenterCorrectionController::class, 'approve'])
+            ->middleware('can:corrections.approve')->whereNumber('correction');
+
+        Route::post('/corrections/{correction}/reject', [BloodCenterCorrectionController::class, 'reject'])
+            ->middleware('can:corrections.approve')->whereNumber('correction');
+
         // Roster management, held by the supervisor alone. staff.manage says
         // the caller may manage staff; StaffService is what scopes every
         // lookup to their own facility.
         Route::middleware('can:staff.manage')->prefix('staff')->group(function (): void {
             Route::get('/', [BloodCenterStaffController::class, 'index']);
+
+            // Declared before /{uuid}, which is uuid-constrained and would not
+            // match "roles" anyway, but the specific route stays first.
+            Route::get('/roles', [BloodCenterStaffController::class, 'roles']);
+
             Route::post('/', [BloodCenterStaffController::class, 'store']);
             Route::get('/{uuid}', [BloodCenterStaffController::class, 'show'])->whereUuid('uuid');
             Route::patch('/{uuid}', [BloodCenterStaffController::class, 'update'])->whereUuid('uuid');

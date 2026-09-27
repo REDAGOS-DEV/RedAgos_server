@@ -6,6 +6,7 @@ use App\Http\Requests\ListStaffRequest;
 use App\Http\Requests\StoreStaffRequest;
 use App\Http\Requests\UpdateStaffRequest;
 use App\Service\StaffService;
+use App\Support\DepartmentPermissions;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -30,6 +31,17 @@ class BloodCenterStaffController extends Controller
     }
 
     /**
+     * List the departments and the roles a staff member can be given.
+     *
+     * Served rather than mirrored in the SPA so the staff form describes each
+     * role in the same words the matrix enforces it.
+     */
+    public function roles(): JsonResponse
+    {
+        return response()->json(['data' => DepartmentPermissions::catalogue()]);
+    }
+
+    /**
      * Show one staff account from the caller's facility.
      */
     public function show(Request $request, string $uuid): JsonResponse
@@ -51,7 +63,7 @@ class BloodCenterStaffController extends Controller
     }
 
     /**
-     * Update a colleague's department, management level, posting or account status.
+     * Update a colleague's role, management level, posting or account status.
      */
     public function update(UpdateStaffRequest $request, string $uuid): JsonResponse
     {

@@ -2,6 +2,7 @@
 
 namespace App\Service;
 
+use App\Enums\ClearanceKind;
 use App\Enums\DonationStatus;
 use App\Enums\MarkerResult;
 use App\Enums\SerologyMarker;
@@ -13,7 +14,9 @@ use App\Models\DonationSerology;
 use App\Models\Facility;
 use App\Models\User;
 use App\Notifications\DonorContactRequested;
+use App\Repository\ClearanceRepository;
 use App\Repository\LaboratoryRepository;
+use App\Support\DonorBlinding;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Facades\DB;
@@ -50,7 +53,8 @@ class LaboratoryService
     public function __construct(
         private readonly LaboratoryRepository $laboratoryRepository,
         private readonly AuditLogger $auditLogger,
-        private readonly DonorNotifier $donorNotifier
+        private readonly DonorNotifier $donorNotifier,
+        private readonly ClearanceRepository $clearanceRepository
     ) {}
 
     /**
@@ -86,21 +90,33 @@ class LaboratoryService
      * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
      */
-    public function recordImmunohematology(User $staff, int $donationId, array $payload): array
+    public function recordImmunohematology(User $staff, int $donationId, array $payload, bool $correcting = false): array
     {
         $facility = $this->requireFacility($staff);
         $bloodTypeId = (int) $payload['blood_type_id'];
 
-        [$donation, $amended, $settled] = DB::transaction(function () use ($staff, $facility, $donationId, $payload, $bloodTypeId): array {
+        [$donation, $amended, $settled] = DB::transaction(function () use ($staff, $facility, $donationId, $payload, $bloodTypeId, $correcting): array {
             $locked = $this->lockOrFail($donationId, $facility);
 
-            $this->guardResultsWritable($locked);
+            $this->guardResultsWritable($locked, ClearanceKind::Immunohematology);
             $this->guardBloodTypeMatchesDonor($locked, $bloodTypeId);
 
             $amended = $this->laboratoryRepository->immunohematologyFor($locked->id) !== null;
 
-            $this->laboratoryRepository->upsertImmunohematology($locked->id, [
+            // Saved once, changed only through an approved correction request.
+            if (! $correcting && $amended) {
+                throw $this->refuse(
+                    409,
+                    'correction_required',
+                    'The typing is already recorded. Request a correction to change it.'
+                );
+            }
+
+            $typing = $this->laboratoryRepository->upsertImmunohematology($locked->id, [
                 'blood_type_id' => $bloodTypeId,
+                'forward_group' => $payload['forward_group'],
+                'reverse_group' => $payload['reverse_group'],
+                'antibody_screen' => $payload['antibody_screen'],
                 'notes' => $this->trimmedOrNull($payload['notes'] ?? null),
                 // "Screened by": the authenticated staff member, never a name
                 // from the request.
@@ -108,22 +124,45 @@ class LaboratoryService
                 'recorded_at' => now(),
             ]);
 
-            return [$locked, $amended, $this->settle($locked, $staff)];
+            // Immunohematology's clearance, issued the moment the typing can
+            // be trusted: forward and reverse agree and the screen is
+            // negative. Otherwise the typing is saved, held, and may be
+            // corrected. A cleared typing is also what the donor's profile
+            // may adopt — so a first-time donor's bags can be booked into
+            // quarantine before the serology run is back.
+            $hold = $typing->clearanceHold();
+            $adopted = false;
+
+            if ($hold === null) {
+                $this->clearanceRepository->issue($locked->id, ClearanceKind::Immunohematology, $staff, 'concordant_typing');
+                $adopted = $this->adoptVerifiedBloodType($locked, $bloodTypeId, TestResult::Passed);
+            }
+
+            $settled = $this->settle($locked, $staff);
+
+            return [$locked, $amended, [...$settled, 'adopted' => $adopted, 'hold' => $hold]];
         });
 
         $this->auditLogger->record($staff, 'laboratory.immunohematology_recorded', $donation, [
             'facility_id' => $facility->id,
             'blood_type_id' => $bloodTypeId,
             'amended' => $amended,
+            'cleared' => $settled['hold'] === null,
+            'hold' => $settled['hold'],
             'result' => $settled['result'],
         ]);
 
         $this->recordAdoption($staff, $donation, $facility, $settled);
 
         return [
-            'message' => $settled['result'] === TestResult::Passed->value
-                ? 'Immunohematology recorded. Both sections are complete; the donation is with Processing.'
-                : 'Immunohematology recorded.',
+            'message' => match ($settled['hold']) {
+                'abo_discrepancy' => 'Typing saved but not cleared: forward and reverse grouping disagree. Resolve the discrepancy and correct the record.',
+                'antibody_screen_positive' => 'Typing saved but not cleared: the antibody screen is positive and must be identified first.',
+                default => $settled['result'] === TestResult::Passed->value
+                    ? 'Typing cleared. Both sections are cleared; its units may leave quarantine.'
+                    : 'Typing cleared.',
+            },
+            'clearance_hold' => $settled['hold'],
             'data' => $this->format($this->findOrFail($donationId, $facility), $staff),
         ];
     }
@@ -139,7 +178,7 @@ class LaboratoryService
      * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
      */
-    public function recordSerology(User $staff, int $donationId, array $payload): array
+    public function recordSerology(User $staff, int $donationId, array $payload, bool $correcting = false): array
     {
         $facility = $this->requireFacility($staff);
 
@@ -151,12 +190,21 @@ class LaboratoryService
 
         $reactive = in_array(MarkerResult::Reactive, $readings, true);
 
-        [$donation, $amended, $settled, $referral] = DB::transaction(function () use ($staff, $facility, $donationId, $readings, $reactive): array {
+        [$donation, $amended, $settled, $referral] = DB::transaction(function () use ($staff, $facility, $donationId, $readings, $reactive, $correcting): array {
             $locked = $this->lockOrFail($donationId, $facility);
 
-            $this->guardResultsWritable($locked);
+            $this->guardResultsWritable($locked, ClearanceKind::Tti);
 
             $amended = $this->laboratoryRepository->serologyFor($locked->id) !== null;
+
+            // Saved once, changed only through an approved correction request.
+            if (! $correcting && $amended) {
+                throw $this->refuse(
+                    409,
+                    'correction_required',
+                    'The serology panel is already recorded. Request a correction to change it.'
+                );
+            }
 
             $this->laboratoryRepository->upsertSerology($locked->id, [
                 ...$readings,
@@ -167,6 +215,11 @@ class LaboratoryService
             if ($reactive) {
                 return [$locked, $amended, ['result' => TestResult::Reactive->value, 'adopted' => false], $this->rejectForReactive($locked, $staff, $facility)];
             }
+
+            // A saved non-reactive panel is TTI Testing's clearance. It can
+            // still be corrected, with approval, while the donation's bags
+            // are in quarantine — see CorrectionService.
+            $this->clearanceRepository->issue($locked->id, ClearanceKind::Tti, $staff, 'serology');
 
             return [$locked, $amended, $this->settle($locked, $staff), null];
         });
@@ -204,8 +257,8 @@ class LaboratoryService
         return [
             'message' => match (true) {
                 $referral !== null => 'Serology recorded. The donation has been rejected, the donor permanently deferred and referred for counselling.',
-                $settled['result'] === TestResult::Passed->value => 'Serology recorded. Both sections are complete; the donation is with Processing.',
-                default => 'Serology recorded.',
+                $settled['result'] === TestResult::Passed->value => 'Serology recorded. Both sections are cleared; its units may leave quarantine.',
+                default => 'Serology recorded and cleared.',
             },
             'data' => $this->format($this->findOrFail($donationId, $facility), $staff),
         ];
@@ -221,18 +274,18 @@ class LaboratoryService
      * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
      */
-    public function declareComponents(User $staff, int $donationId, array $payload): array
+    public function declareComponents(User $staff, int $donationId, array $payload, bool $correcting = false): array
     {
         $facility = $this->requireFacility($staff);
 
-        $donation = DB::transaction(function () use ($staff, $facility, $donationId, $payload): Donation {
+        $donation = DB::transaction(function () use ($staff, $facility, $donationId, $payload, $correcting): Donation {
             $locked = $this->lockOrFail($donationId, $facility);
 
             // Separating the unit and testing a sample are two things the bench
-            // does at the same time, so neither waits on the other to be
-            // recorded. The order is re-imposed where it actually matters, in
-            // guardReadyToComplete(): a unit cannot be cleared for issue until
-            // both a passing result and a breakdown exist.
+            // does at the same time, so neither waits on the other. The order
+            // is re-imposed where it actually matters, at the shelf: a unit is
+            // booked in quarantined and released only on both clearance
+            // tokens.
             if (! in_array($locked->status, [DonationStatus::Collected, DonationStatus::Tested], true)) {
                 throw $this->refuse(
                     409,
@@ -248,6 +301,14 @@ class LaboratoryService
                     409,
                     'units_already_recorded',
                     'Inventory has already recorded units for this donation, so the component breakdown is fixed.'
+                );
+            }
+
+            if (! $correcting && $this->laboratoryRepository->hasComponents($locked->id)) {
+                throw $this->refuse(
+                    409,
+                    'correction_required',
+                    'The component breakdown is already recorded. Request a correction to change it.'
                 );
             }
 
@@ -310,20 +371,22 @@ class LaboratoryService
 
         return [
             'message' => $target === DonationStatus::Completed
-                ? 'Donation cleared for issue. Inventory may now record its units.'
+                ? 'Processing complete. Inventory may now book its units into quarantine.'
                 : 'Donation rejected.',
             'data' => $this->format($this->findOrFail($donationId, $facility), $staff),
         ];
     }
 
     /**
-     * Write the donation's overall outcome once both non-reactive sections are in.
+     * Write the overall outcome once both departments have cleared the donation.
      *
-     * Must run inside the caller's transaction, with the donation locked. Until
-     * both sections exist nothing changes: the donation stays `collected`,
-     * with the Testing department. Once they do, the summary row the rest of
-     * the system reads is written as `passed` and the donation moves to
-     * `tested` — handed to Processing.
+     * Must run inside the caller's transaction, with the donation locked. The
+     * tokens are issued by their own departments' acts — a concordant typing,
+     * a cleared serology panel — and this only notices when both exist. Then
+     * the summary row the rest of the system reads is written as `passed`, and
+     * a donation still at `collected` moves to `tested`. One that Processing
+     * has already completed stays `completed`: its units are on the shelf in
+     * quarantine, and the tokens are what release them.
      *
      * @return array{result: string|null, adopted: bool}
      */
@@ -332,7 +395,8 @@ class LaboratoryService
         $immunohematology = $this->laboratoryRepository->immunohematologyFor($locked->id);
         $serology = $this->laboratoryRepository->serologyFor($locked->id);
 
-        if ($immunohematology === null || $serology === null || $serology->isReactive()) {
+        if ($immunohematology === null || $serology === null || $serology->isReactive()
+            || ! $this->clearanceRepository->hasBoth($locked->id)) {
             return ['result' => null, 'adopted' => false];
         }
 
@@ -344,20 +408,23 @@ class LaboratoryService
             'notes' => $immunohematology->notes,
         ]);
 
-        $adopted = $this->adoptVerifiedBloodType($locked, $immunohematology->blood_type_id, TestResult::Passed);
+        if ($locked->status === DonationStatus::Collected) {
+            $locked->status = DonationStatus::Tested;
+            $locked->save();
+        }
 
-        // Recording both sections is what moves a donation to `tested`. It
-        // stays there — clearing it for issue is Processing's deliberate act.
-        $locked->status = DonationStatus::Tested;
-        $locked->save();
-
-        return ['result' => TestResult::Passed->value, 'adopted' => $adopted];
+        // Adoption happens where the typing is cleared, not here.
+        return ['result' => TestResult::Passed->value, 'adopted' => false];
     }
 
     /**
      * Reject a donation for a reactive marker and refer its donor for counselling.
      *
-     * Must run inside the caller's transaction, with the donation locked.
+     * Must run inside the caller's transaction, with the donation locked. It
+     * applies to a donation Processing has already completed too: its units
+     * are then on the shelf in quarantine, and a rejected donation is what
+     * locks them there — releaseFromQuarantine() refuses it, so the only way
+     * out is discard.
      *
      * THE ONE EXCEPTION TO THE DEPARTMENT SPLIT. Testing does not hold
      * `lab.update_status`, and still writes `rejected` here. It is not a
@@ -419,38 +486,51 @@ class LaboratoryService
      * stock, and a rejected one may already have deferred and referred its
      * donor. Rewriting its results would rewrite the justification for both.
      */
-    private function guardResultsWritable(Donation $donation): void
+    private function guardResultsWritable(Donation $donation, ClearanceKind $kind): void
     {
-        if ($donation->status->isTerminal()) {
+        // A rejected donation may already have deferred and referred its
+        // donor. Rewriting its results would rewrite the justification.
+        if ($donation->status === DonationStatus::Rejected) {
             throw $this->refuse(
                 409,
                 'results_locked',
-                "This donation is already {$donation->status->label()}, so its test results can no longer be changed."
+                'This donation has been rejected, so its test results can no longer be changed.'
             );
         }
 
         // Results belong to a donation the counter has finished with. A
-        // donation still being screened has no bag to test.
-        if (! in_array($donation->status, [DonationStatus::Collected, DonationStatus::Tested], true)) {
+        // donation still being screened has no bag to test. A completed one
+        // is still testable: Processing does not wait for the laboratory.
+        if (! in_array($donation->status, [DonationStatus::Collected, DonationStatus::Tested, DonationStatus::Completed], true)) {
             throw $this->refuse(
                 409,
                 'donation_not_collected',
                 "A donation that is {$donation->status->label()} is not ready for testing."
             );
         }
+
+        // A token is what releases units. The result it stands on cannot be
+        // rewritten underneath it — by anyone, a supervisor included.
+        if ($this->clearanceRepository->has($donation->id, $kind)) {
+            throw $this->refuse(
+                409,
+                'results_cleared',
+                "{$kind->label()} has already been issued for this donation, so this section can no longer be changed."
+            );
+        }
     }
 
     /**
-     * Refuse to clear a donation that is not genuinely ready.
+     * Refuse to complete a donation Processing has not finished with.
      *
-     * The conditions are the whole point of this department. `completed`
-     * is what blood-unit intake gates on, so anything that reaches it without
-     * a passing result is blood going to a patient untested.
+     * Completing no longer clears anything for issue: it hands the bags to
+     * Issuance, which books them in quarantined. Test results are therefore
+     * not a condition here — plasma cannot wait for the serology run. What
+     * keeps untested blood from a patient is the quarantine release, which
+     * demands both clearance tokens.
      */
     private function guardReadyToComplete(Donation $donation): void
     {
-        // A finished donation first: "record the tests" would be the wrong
-        // advice for one Testing has already rejected.
         if ($donation->status->isTerminal()) {
             throw $this->refuse(
                 409,
@@ -459,48 +539,11 @@ class LaboratoryService
             );
         }
 
-        if ($donation->status !== DonationStatus::Tested) {
+        if (! in_array($donation->status, [DonationStatus::Collected, DonationStatus::Tested], true)) {
             throw $this->refuse(
                 409,
-                'donation_not_tested',
-                'The Testing department must record immunohematology and serology before this donation can be cleared for issue.'
-            );
-        }
-
-        $result = $donation->testResult()->first();
-
-        if ($result === null) {
-            throw $this->refuse(
-                409,
-                'result_missing',
-                'The Testing department must record immunohematology and serology before this donation can be cleared for issue.'
-            );
-        }
-
-        if (! $result->result->clearsForIssue()) {
-            throw $this->refuse(
-                422,
-                'result_not_passed',
-                "A {$result->result->label()} donation cannot be cleared for issue. Reject it instead."
-            );
-        }
-
-        // A donation that passed under the old single-result screen has no
-        // itemised panel. It is not cleared on that alone: every unit issued
-        // from now on has a recorded reading for all five markers.
-        if ($this->laboratoryRepository->serologyFor($donation->id) === null) {
-            throw $this->refuse(
-                409,
-                'serology_not_recorded',
-                'This donation has no serology panel recorded. The Testing department must record it before it can be cleared for issue.'
-            );
-        }
-
-        if ($this->laboratoryRepository->immunohematologyFor($donation->id) === null) {
-            throw $this->refuse(
-                409,
-                'immunohematology_not_recorded',
-                'This donation has no blood typing recorded. The Testing department must record it before it can be cleared for issue.'
+                'donation_not_collected',
+                "A donation that is {$donation->status->label()} is not ready for processing."
             );
         }
 
@@ -508,7 +551,7 @@ class LaboratoryService
             throw $this->refuse(
                 409,
                 'components_missing',
-                'Declare the component breakdown before clearing a donation for issue.'
+                'Declare the component breakdown before completing the donation.'
             );
         }
     }
@@ -627,12 +670,13 @@ class LaboratoryService
             'owning_department' => $donation->status?->owningDepartment()?->value,
             'volume_ml' => $donation->volume_ml,
             'rejection_reason' => $donation->rejection_reason,
-            'donor' => $donation->donorProfile?->donor ? [
-                'uuid' => $donation->donorProfile->donor->uuid,
-                'donor_code' => 'DONOR-'.str_pad((string) $donation->donorProfile->donor->id, 6, '0', STR_PAD_LEFT),
-                'full_name' => trim($donation->donorProfile->donor->first_name.' '.$donation->donorProfile->donor->last_name),
-                'blood_type' => $donation->donorProfile->bloodType?->code,
-            ] : null,
+            // Blind to the laboratory roles, who match sample to record by the
+            // segment number below. See DonorBlinding.
+            'donor' => DonorBlinding::block(
+                $donation->donorProfile?->donor,
+                $donation->donorProfile?->bloodType?->code,
+                $staff
+            ),
 
             // The tube's identity, so the bench can match sample to record.
             'collection' => $collection === null ? null : [
@@ -662,12 +706,22 @@ class LaboratoryService
             'immunohematology' => $immunohematology === null ? null : [
                 'blood_type_id' => $immunohematology->blood_type_id,
                 'blood_type' => $immunohematology->bloodType?->code,
+                'forward_group' => $immunohematology->forward_group?->value,
+                'reverse_group' => $immunohematology->reverse_group?->value,
+                'antibody_screen' => $immunohematology->antibody_screen?->value,
+                'antibody_screen_label' => $immunohematology->antibody_screen?->label(),
+                // Null for a typing recorded before grouping was itemised.
+                'clearance_hold' => $immunohematology->forward_group === null ? null : $immunohematology->clearanceHold(),
                 'notes' => $immunohematology->notes,
                 'recorded_by' => $this->staffName($immunohematology->recorder),
                 'recorded_at' => $immunohematology->recorded_at?->toISOString(),
             ],
 
             'serology' => $serology === null ? null : $this->formatSerology($serology, $staff),
+
+            // Which departments have cleared this donation. A unit leaves
+            // quarantine only when both have.
+            'clearances' => $this->formatClearances($donation),
 
             'components' => $this->laboratoryRepository
                 ->componentsFor($donation->id)
@@ -702,7 +756,7 @@ class LaboratoryService
             'outcome_label' => $reactive ? MarkerResult::Reactive->label() : MarkerResult::NonReactive->label(),
             'recorded_by' => $this->staffName($serology->recorder),
             'recorded_at' => $serology->recorded_at?->toISOString(),
-            'markers' => $staff->can('lab.record_result')
+            'markers' => $staff->can('lab.record_serology')
                 ? array_map(fn (SerologyMarker $marker): array => [
                     'marker' => $marker->value,
                     'label' => $marker->label(),
@@ -711,6 +765,24 @@ class LaboratoryService
                 ], SerologyMarker::cases())
                 : null,
         ];
+    }
+
+    /**
+     * @return array<string, bool>
+     */
+    private function formatClearances(Donation $donation): array
+    {
+        $issued = ($donation->relationLoaded('clearances') ? $donation->clearances : $donation->clearances()->get())
+            ->map(fn ($clearance): string => $clearance->kind->value)
+            ->all();
+
+        $clearances = [];
+
+        foreach (ClearanceKind::cases() as $kind) {
+            $clearances[$kind->value] = in_array($kind->value, $issued, true);
+        }
+
+        return $clearances;
     }
 
     private function staffName(?User $user): ?string

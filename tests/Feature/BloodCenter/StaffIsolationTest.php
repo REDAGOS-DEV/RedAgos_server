@@ -3,6 +3,7 @@
 namespace Tests\Feature\BloodCenter;
 
 use App\Enums\Department;
+use App\Enums\StaffRole;
 use App\Models\Facility;
 use App\Models\User;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
@@ -59,7 +60,7 @@ class StaffIsolationTest extends TestCase
     {
         $this->actingAs($this->supervisor)
             ->{$method}("/api/blood-center/staff/{$this->foreignStaff->uuid}{$suffix}", [
-                'department' => Department::Billing->value,
+                'staff_role' => StaffRole::BillingClerk->value,
             ])
             ->assertNotFound()
             ->assertJsonPath('code', 'staff_not_found');

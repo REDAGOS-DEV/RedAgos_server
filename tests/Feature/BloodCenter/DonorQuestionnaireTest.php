@@ -5,6 +5,7 @@ namespace Tests\Feature\BloodCenter;
 use App\Enums\AppointmentStatus;
 use App\Enums\Department;
 use App\Enums\EligibilityStatus;
+use App\Enums\StaffRole;
 use App\Models\AuditLog;
 use App\Models\DonationAppointment;
 use App\Models\DonorQrToken;
@@ -47,7 +48,7 @@ class DonorQuestionnaireTest extends TestCase
         $this->seed(EligibilityQuestionSeeder::class);
 
         $this->facility = Facility::factory()->approved()->create();
-        $this->staff = User::factory()->bloodCenterStaff($this->facility, Department::Collection)->create();
+        $this->staff = User::factory()->bloodCenterStaff($this->facility, StaffRole::ScreeningPhysician)->create();
 
         $this->donor = User::factory()->donor()->create(['middle_name' => 'Reyes']);
         $this->donor->donorProfile->update([

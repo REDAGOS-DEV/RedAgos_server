@@ -5,11 +5,13 @@ namespace Tests\Feature\BloodCenter;
 use App\Enums\AppointmentStatus;
 use App\Enums\Department;
 use App\Enums\DonationStatus;
+use App\Enums\StaffRole;
 use App\Models\BloodCollection;
 use App\Models\BloodComponent;
 use App\Models\BloodType;
 use App\Models\Donation;
 use App\Models\DonationAppointment;
+use App\Models\DonationScreening;
 use App\Models\Facility;
 use App\Models\User;
 use App\Notifications\DonationRecorded;
@@ -32,7 +34,20 @@ class CollectionWorkflowTest extends TestCase
 
     private Facility $facility;
 
+    /**
+     * The collection chair: records the draw and closes a visit that cannot go ahead.
+     */
     private User $staff;
+
+    /**
+     * Opens the visit's donation at the counter.
+     */
+    private User $receptionist;
+
+    /**
+     * Accepts or defers the donor.
+     */
+    private User $physician;
 
     private User $donor;
 
@@ -41,7 +56,9 @@ class CollectionWorkflowTest extends TestCase
         parent::setUp();
 
         $this->facility = Facility::factory()->approved()->create();
-        $this->staff = User::factory()->bloodCenterStaff($this->facility, Department::Collection)->create();
+        $this->staff = User::factory()->bloodCenterStaff($this->facility, StaffRole::Phlebotomist)->create();
+        $this->receptionist = User::factory()->bloodCenterStaff($this->facility, StaffRole::MedicalReceptionist)->create();
+        $this->physician = User::factory()->bloodCenterStaff($this->facility, StaffRole::ScreeningPhysician)->create();
         $this->donor = User::factory()->donor()->create();
     }
 
@@ -50,7 +67,7 @@ class CollectionWorkflowTest extends TestCase
      */
     private function openDonation(): int
     {
-        return $this->actingAs($this->staff)
+        return $this->actingAs($this->receptionist)
             ->postJson('/api/blood-center/donations', ['donor_uuid' => $this->donor->uuid])
             ->assertCreated()
             ->json('data.id');
@@ -61,7 +78,7 @@ class CollectionWorkflowTest extends TestCase
      */
     private function screenDonation(int $id): void
     {
-        $this->actingAs($this->staff)
+        $this->actingAs($this->physician)
             ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'accepted'])
             ->assertCreated();
     }
@@ -91,17 +108,22 @@ class CollectionWorkflowTest extends TestCase
     /**
      * Open and screen a donation for a fresh donor, ready to be collected.
      */
-    private function screenedDonationForNewDonor(?User $staff = null): int
+    private function screenedDonationForNewDonor(?Facility $facility = null): int
     {
-        $staff ??= $this->staff;
+        $receptionist = $facility === null
+            ? $this->receptionist
+            : User::factory()->bloodCenterStaff($facility, StaffRole::MedicalReceptionist)->create();
+        $physician = $facility === null
+            ? $this->physician
+            : User::factory()->bloodCenterStaff($facility, StaffRole::ScreeningPhysician)->create();
         $donor = User::factory()->donor()->create();
 
-        $id = $this->actingAs($staff)
+        $id = $this->actingAs($receptionist)
             ->postJson('/api/blood-center/donations', ['donor_uuid' => $donor->uuid])
             ->assertCreated()
             ->json('data.id');
 
-        $this->actingAs($staff)
+        $this->actingAs($physician)
             ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'accepted'])
             ->assertCreated();
 
@@ -121,7 +143,7 @@ class CollectionWorkflowTest extends TestCase
     {
         $id = $this->openDonation();
 
-        $this->actingAs($this->staff)
+        $this->actingAs($this->physician)
             ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'accepted'])
             ->assertCreated()
             ->assertJsonPath('data.status', 'screening');
@@ -217,7 +239,7 @@ class CollectionWorkflowTest extends TestCase
     {
         $this->openDonation();
 
-        $this->actingAs($this->staff)
+        $this->actingAs($this->receptionist)
             ->postJson('/api/blood-center/donations', ['donor_uuid' => $this->donor->uuid])
             ->assertStatus(409)
             ->assertJsonPath('code', 'donation_already_open');
@@ -228,7 +250,7 @@ class CollectionWorkflowTest extends TestCase
         $id = $this->openDonation();
         $this->actingAs($this->staff)->patchJson("/api/blood-center/donations/{$id}/status", ['status' => 'rejected']);
 
-        $this->actingAs($this->staff)
+        $this->actingAs($this->receptionist)
             ->postJson('/api/blood-center/donations', ['donor_uuid' => $this->donor->uuid])
             ->assertCreated();
     }
@@ -240,7 +262,7 @@ class CollectionWorkflowTest extends TestCase
             'facility_id' => Facility::factory()->approved()->create()->id,
         ]);
 
-        $this->actingAs($this->staff)
+        $this->actingAs($this->receptionist)
             ->postJson('/api/blood-center/donations', [
                 'donor_uuid' => $this->donor->uuid,
                 'appointment_id' => $foreign->id,
@@ -257,7 +279,7 @@ class CollectionWorkflowTest extends TestCase
             'facility_id' => $this->facility->id,
         ]);
 
-        $this->actingAs($this->staff)
+        $this->actingAs($this->receptionist)
             ->postJson('/api/blood-center/donations', [
                 'donor_uuid' => $this->donor->uuid,
                 'appointment_id' => $appointment->id,
@@ -274,7 +296,7 @@ class CollectionWorkflowTest extends TestCase
             'status' => 'confirmed',
         ]);
 
-        $id = $this->actingAs($this->staff)
+        $id = $this->actingAs($this->receptionist)
             ->postJson('/api/blood-center/donations', [
                 'donor_uuid' => $this->donor->uuid,
                 'appointment_id' => $appointment->id,
@@ -290,7 +312,7 @@ class CollectionWorkflowTest extends TestCase
     {
         $id = $this->openDonation();
 
-        $this->actingAs($this->staff)
+        $this->actingAs($this->physician)
             ->postJson("/api/blood-center/donations/{$id}/screening", [
                 'outcome' => 'accepted',
                 'systolic_bp' => 118,
@@ -310,14 +332,14 @@ class CollectionWorkflowTest extends TestCase
     {
         $id = $this->openDonation();
 
-        $this->actingAs($this->staff)
+        $this->actingAs($this->physician)
             ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'accepted'])
             ->assertCreated();
 
         // recorded_by is the authenticated staff member, never request input.
         $this->assertDatabaseHas('donation_screenings', [
             'donation_id' => $id,
-            'recorded_by' => $this->staff->id,
+            'recorded_by' => $this->physician->id,
             'facility_id' => $this->facility->id,
         ]);
     }
@@ -326,7 +348,7 @@ class CollectionWorkflowTest extends TestCase
     {
         $id = $this->openDonation();
 
-        $this->actingAs($this->staff)
+        $this->actingAs($this->physician)
             ->postJson("/api/blood-center/donations/{$id}/screening", [
                 'outcome' => 'temporarily_deferred',
                 'deferral_reason' => 'Haemoglobin below the accepted threshold.',
@@ -340,7 +362,7 @@ class CollectionWorkflowTest extends TestCase
     {
         $id = $this->openDonation();
 
-        $this->actingAs($this->staff)
+        $this->actingAs($this->physician)
             ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'temporarily_deferred'])
             ->assertStatus(422)
             ->assertJsonValidationErrors('deferral_reason');
@@ -350,19 +372,37 @@ class CollectionWorkflowTest extends TestCase
     {
         $id = $this->openDonation();
 
-        $this->actingAs($this->staff)
+        $this->actingAs($this->physician)
             ->postJson("/api/blood-center/donations/{$id}/screening", [
                 'outcome' => 'accepted',
                 'haemoglobin_g_dl' => 12.1,
             ])->assertCreated();
 
-        $this->actingAs($this->staff)
-            ->postJson("/api/blood-center/donations/{$id}/screening", [
-                'outcome' => 'accepted',
-                'haemoglobin_g_dl' => 14.5,
+        // Saving over it is refused: a saved screening changes only through
+        // an approved correction.
+        $this->actingAs($this->physician)
+            ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'accepted', 'haemoglobin_g_dl' => 14.5])
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'correction_required');
+
+        $correction = $this->actingAs($this->physician)
+            ->postJson("/api/blood-center/donations/{$id}/corrections", [
+                'subject' => 'screening',
+                'reason' => 'Typed 12.1 for 14.5.',
+                'changes' => ['outcome' => 'accepted', 'haemoglobin_g_dl' => 14.5],
             ])
             ->assertCreated()
-            ->assertJsonPath('data.screening.haemoglobin_g_dl', 14.5);
+            ->json('data.id');
+
+        // The physician is Collection's approver, so their own request goes
+        // to the Center Admin.
+        $admin = User::factory()->bloodCenterSupervisor($this->facility)->create();
+
+        $this->actingAs($admin)
+            ->postJson("/api/blood-center/corrections/{$correction}/approve")
+            ->assertOk();
+
+        $this->assertSame('14.5', (string) (float) DonationScreening::where('donation_id', $id)->value('haemoglobin_g_dl'));
 
         // One assessment per donation, so there is never an ambiguity about
         // which one let the donor proceed.
@@ -377,7 +417,7 @@ class CollectionWorkflowTest extends TestCase
             ->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload())
             ->assertCreated();
 
-        $this->actingAs($this->staff)
+        $this->actingAs($this->physician)
             ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'temporarily_deferred', 'deferral_reason' => 'Changed my mind.'])
             ->assertStatus(409)
             ->assertJsonPath('code', 'screening_not_amendable');
@@ -402,13 +442,13 @@ class CollectionWorkflowTest extends TestCase
             'facility_id' => $this->facility->id,
         ]);
 
-        $id = $this->actingAs($this->staff)
+        $id = $this->actingAs($this->receptionist)
             ->postJson('/api/blood-center/donations', [
                 'donor_uuid' => $this->donor->uuid,
                 'appointment_id' => $appointment->id,
             ])->json('data.id');
 
-        $this->actingAs($this->staff)
+        $this->actingAs($this->physician)
             ->postJson("/api/blood-center/donations/{$id}/screening", [
                 'outcome' => 'temporarily_deferred',
                 'deferral_reason' => 'Haemoglobin below the accepted threshold.',
@@ -475,7 +515,7 @@ class CollectionWorkflowTest extends TestCase
 
         $id = $this->openDonation();
 
-        $this->actingAs($this->staff)
+        $this->actingAs($this->physician)
             ->postJson("/api/blood-center/donations/{$id}/screening", [
                 'outcome' => 'temporarily_deferred',
                 'deferral_reason' => 'Haemoglobin below the accepted threshold.',
@@ -628,10 +668,10 @@ class CollectionWorkflowTest extends TestCase
     public function test_the_same_segment_number_is_allowed_at_another_facility(): void
     {
         $otherFacility = Facility::factory()->approved()->create();
-        $otherStaff = User::factory()->bloodCenterStaff($otherFacility, Department::Collection)->create();
+        $otherStaff = User::factory()->bloodCenterStaff($otherFacility, StaffRole::Phlebotomist)->create();
 
         $here = $this->screenedDonationForNewDonor();
-        $there = $this->screenedDonationForNewDonor($otherStaff);
+        $there = $this->screenedDonationForNewDonor($otherFacility);
 
         $this->actingAs($this->staff)
             ->postJson("/api/blood-center/donations/{$here}/collection", $this->collectionPayload(['segment_number' => 'SEG-0001']))
@@ -689,7 +729,7 @@ class CollectionWorkflowTest extends TestCase
 
     public function test_the_phlebotomist_is_never_taken_from_the_request(): void
     {
-        $someoneElse = User::factory()->bloodCenterStaff($this->facility, Department::Collection)->create();
+        $someoneElse = User::factory()->bloodCenterStaff($this->facility, StaffRole::Phlebotomist)->create();
         $id = $this->openDonation();
         $this->screenDonation($id);
 
@@ -711,7 +751,7 @@ class CollectionWorkflowTest extends TestCase
         $this->donor->donorProfile->update(['blood_type_id' => null]);
         $id = $this->openDonation();
 
-        $this->actingAs($this->staff)
+        $this->actingAs($this->physician)
             ->postJson("/api/blood-center/donations/{$id}/screening", [
                 'outcome' => 'accepted',
                 'haemoglobin_g_dl' => 13.8,
@@ -733,7 +773,7 @@ class CollectionWorkflowTest extends TestCase
     {
         $id = $this->openDonation();
 
-        $this->actingAs($this->staff)
+        $this->actingAs($this->physician)
             ->postJson("/api/blood-center/donations/{$id}/screening", [
                 'outcome' => 'accepted',
                 'fingerprick_blood_type_id' => 999999,
@@ -741,7 +781,7 @@ class CollectionWorkflowTest extends TestCase
             ->assertStatus(422)
             ->assertJsonValidationErrors('fingerprick_blood_type_id');
 
-        $this->actingAs($this->staff)
+        $this->actingAs($this->physician)
             ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'accepted'])
             ->assertCreated()
             ->assertJsonPath('data.screening.fingerprick_blood_type', null);

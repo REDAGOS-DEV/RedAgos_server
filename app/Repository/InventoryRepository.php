@@ -4,6 +4,7 @@ namespace App\Repository;
 
 use App\Enums\AllocationStatus;
 use App\Enums\BloodUnitStatus;
+use App\Enums\ClearanceKind;
 use App\Enums\DonationStatus;
 use App\Models\BloodUnit;
 use App\Models\Donation;
@@ -31,7 +32,10 @@ class InventoryRepository
     public function paginateUnits(int $facilityId, array $filters, int $perPage): LengthAwarePaginator
     {
         return $this->filtered($facilityId, $filters)
-            ->with(['bloodType', 'component'])
+            // The donation and its clearances, for the quarantine state of a
+            // held unit. Constrained so a page of available stock does not
+            // drag every donation's columns along.
+            ->with(['bloodType', 'component', 'donation:id,status', 'donation.clearances'])
             ->fefo()
             ->paginate($perPage)
             ->withQueryString();
@@ -59,6 +63,49 @@ class InventoryRepository
      * Must be called inside a transaction; a lock taken outside one is released
      * immediately and proves nothing.
      */
+    /**
+     * The ids, among these, of units whose donation lacks either clearance token.
+     *
+     * @param  array<int, string>  $unitIds
+     * @return array<int, string>
+     */
+    public function unitsLackingClearance(array $unitIds): array
+    {
+        if ($unitIds === []) {
+            return [];
+        }
+
+        return BloodUnit::query()
+            ->whereIn('id', $unitIds)
+            ->where(function (Builder $query): void {
+                foreach (ClearanceKind::cases() as $kind) {
+                    $query->orWhereDoesntHave(
+                        'donation.clearances',
+                        fn (Builder $clearance): Builder => $clearance->where('kind', $kind->value)
+                    );
+                }
+            })
+            ->orderBy('id')
+            ->pluck('id')
+            ->all();
+    }
+
+    /**
+     * Lock a donation's quarantined units, for release.
+     *
+     * @return Collection<int, BloodUnit>
+     */
+    public function lockQuarantinedUnits(int $donationId, int $facilityId): Collection
+    {
+        return BloodUnit::query()
+            ->forFacility($facilityId)
+            ->where('donation_id', $donationId)
+            ->where('status', BloodUnitStatus::Quarantined)
+            ->orderBy('id')
+            ->lockForUpdate()
+            ->get();
+    }
+
     public function lockUnit(string $unitId, int $facilityId): ?BloodUnit
     {
         return BloodUnit::query()
@@ -96,7 +143,7 @@ class InventoryRepository
     public function paginateIntakeQueue(int $facilityId, int $perPage): LengthAwarePaginator
     {
         return Donation::query()
-            ->with(['donorProfile.donor', 'donorProfile.bloodType', 'testResult.bloodType', 'components.component'])
+            ->with(['donorProfile.donor', 'donorProfile.bloodType', 'testResult.bloodType', 'components.component', 'collection'])
             ->where('facility_id', $facilityId)
             ->where('status', DonationStatus::Completed->value)
             ->whereRaw(

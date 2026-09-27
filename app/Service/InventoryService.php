@@ -3,13 +3,16 @@
 namespace App\Service;
 
 use App\Enums\BloodUnitStatus;
+use App\Enums\ClearanceKind;
 use App\Enums\DonationStatus;
 use App\Models\BloodUnit;
 use App\Models\Donation;
 use App\Models\FacilityBloodComponent;
 use App\Models\User;
 use App\Repository\BloodComponentRepository;
+use App\Repository\ClearanceRepository;
 use App\Repository\InventoryRepository;
+use App\Support\DonorBlinding;
 use App\Support\OperationalDay;
 use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
@@ -35,22 +38,22 @@ class InventoryService
     private const ID_ATTEMPTS = 3;
 
     /**
-     * The donation status that may become issuable stock.
+     * The donation status whose bags may be booked in.
      *
-     * Kept as the named gate even though DonationStatus::isIssuable() is what
-     * the check calls, so that grepping for the intake rule still lands here.
-     * Confirmed as "tested and cleared for issue" — see the donation-status
-     * entry in docs/IMPLEMENTATION_DECISIONS.md. If that confirmation is ever
-     * overturned, isIssuable() is the single place to change, but the module
-     * would then also need a quarantine state before units could be created
-     * available.
+     * Kept as the named gate even though DonationStatus::acceptsIntake() is
+     * what the check calls, so that grepping for the intake rule still lands
+     * here. `completed` means Processing has finished — not that the blood is
+     * cleared: units are booked in quarantined and leave quarantine only
+     * through releaseFromQuarantine(). See "Quarantine lifecycle" in
+     * docs/IMPLEMENTATION_DECISIONS.md.
      */
-    private const ISSUABLE_DONATION_STATUS = DonationStatus::Completed;
+    private const INTAKE_DONATION_STATUS = DonationStatus::Completed;
 
     public function __construct(
         private readonly InventoryRepository $inventoryRepository,
         private readonly BloodComponentRepository $bloodComponentRepository,
-        private readonly AuditLogger $auditLogger
+        private readonly AuditLogger $auditLogger,
+        private readonly ClearanceRepository $clearanceRepository
     ) {}
 
     /**
@@ -97,7 +100,7 @@ class InventoryService
 
         return $this->inventoryRepository
             ->paginateIntakeQueue($facilityId, $perPage)
-            ->through(fn (Donation $donation): array => $this->formatIntake($donation, $settings));
+            ->through(fn (Donation $donation): array => $this->formatIntake($donation, $settings, $user));
     }
 
     /**
@@ -106,7 +109,7 @@ class InventoryService
      * @param  SupportCollection<int, FacilityBloodComponent>  $settings
      * @return array<string, mixed>
      */
-    private function formatIntake(Donation $donation, SupportCollection $settings): array
+    private function formatIntake(Donation $donation, SupportCollection $settings, User $viewer): array
     {
         $ledger = $this->declarationLedger($donation);
         $components = $donation->components->keyBy('component_id');
@@ -138,13 +141,18 @@ class InventoryService
             'donation_id' => $donation->id,
             'donation_date' => $donation->donation_date?->toISOString(),
             'volume_ml' => $donation->volume_ml,
-            'donor' => $donation->donorProfile?->donor ? [
-                'donor_code' => 'DONOR-'.str_pad((string) $donation->donorProfile->donor->id, 6, '0', STR_PAD_LEFT),
-                'full_name' => trim($donation->donorProfile->donor->first_name.' '.$donation->donorProfile->donor->last_name),
-                // The type on the profile, which is what intake stamps onto
-                // every unit. Shown so staff can see it matches the bag.
-                'blood_type' => $donation->donorProfile->bloodType?->code,
-            ] : null,
+            // The type on the profile, which is what intake stamps onto every
+            // unit, shown so staff can see it matches the bag. The donor's
+            // identity only to a role that meets donors: Issuance books in by
+            // barcode. See DonorBlinding.
+            'donor' => DonorBlinding::block(
+                $donation->donorProfile?->donor,
+                $donation->donorProfile?->bloodType?->code,
+                $viewer
+            ),
+
+            // What is printed on the bag, so it can be matched without a name.
+            'segment_number' => $donation->collection?->segment_number,
             'components' => $rows,
             'declared_units' => array_sum(array_column($ledger, 'declared')),
             'recorded_units' => array_sum(array_column($ledger, 'recorded')),
@@ -190,8 +198,8 @@ class InventoryService
 
                 return [
                     'message' => count($units) === 1
-                        ? 'Blood unit recorded.'
-                        : count($units).' blood units recorded.',
+                        ? 'Blood unit booked into quarantine.'
+                        : count($units).' blood units booked into quarantine.',
                     'units' => array_map(fn (BloodUnit $unit): array => $this->format($unit), $units),
                 ];
             } catch (QueryException $exception) {
@@ -287,7 +295,9 @@ class InventoryService
             $unit = $this->inventoryRepository->lockUnit($unitId, $facilityId)
                 ?? throw $this->refuse(404, 'unit_not_found', 'This blood unit was not found.');
 
-            if (! in_array($unit->status, [BloodUnitStatus::Available, BloodUnitStatus::Expired], true)) {
+            // A quarantined unit may be discarded: for a donation that came
+            // back reactive it is the only way off the shelf.
+            if (! in_array($unit->status, [BloodUnitStatus::Available, BloodUnitStatus::Expired, BloodUnitStatus::Quarantined], true)) {
                 throw $this->refuse(
                     409,
                     'unit_not_discardable',
@@ -320,6 +330,95 @@ class InventoryService
     }
 
     /**
+     * Release a donation's quarantined units to available stock.
+     *
+     * The Inventory Control Officer's act, and possible only on both clearance
+     * tokens: TTI Testing's validated serology and Immunohematology's
+     * concordant typing. The check is here, in the service, rather than in the
+     * gate, so a supervisor — who holds every ability — is bound by it too.
+     *
+     * All or nothing per donation. The tokens belong to the donation, so its
+     * bags are cleared together; a bag past its date must be discarded first
+     * rather than silently left behind.
+     *
+     * @return array<string, mixed>
+     */
+    public function releaseFromQuarantine(User $user, int $donationId): array
+    {
+        $facilityId = $this->requireFacilityId($user);
+
+        [$donation, $units] = DB::transaction(function () use ($facilityId, $donationId): array {
+            $donation = $this->inventoryRepository->lockDonation($donationId, $facilityId)
+                ?? throw $this->refuse(404, 'donation_not_found', 'This donation was not found at your facility.');
+
+            if ($donation->status === DonationStatus::Rejected) {
+                throw $this->refuse(
+                    409,
+                    'donation_rejected',
+                    'This donation was rejected. Its units stay in quarantine and can only be discarded.'
+                );
+            }
+
+            if (! $this->clearanceRepository->has($donation->id, ClearanceKind::Tti)) {
+                throw $this->refuse(
+                    409,
+                    'tti_not_cleared',
+                    'TTI Testing has not cleared this donation. Its units stay in quarantine.'
+                );
+            }
+
+            if (! $this->clearanceRepository->has($donation->id, ClearanceKind::Immunohematology)) {
+                throw $this->refuse(
+                    409,
+                    'immunohematology_not_cleared',
+                    'Immunohematology has not cleared this donation. Its units stay in quarantine.'
+                );
+            }
+
+            $held = $this->inventoryRepository->lockQuarantinedUnits($donation->id, $facilityId);
+
+            if ($held->isEmpty()) {
+                throw $this->refuse(
+                    409,
+                    'nothing_quarantined',
+                    'This donation has no units in quarantine.'
+                );
+            }
+
+            $today = OperationalDay::todayAsDate();
+
+            if ($held->contains(fn (BloodUnit $unit): bool => $unit->expiry_date !== null && $unit->expiry_date->toDateString() < $today)) {
+                throw $this->refuse(
+                    409,
+                    'unit_past_expiry',
+                    'A unit from this donation is past its expiry date. Discard it before releasing the rest.'
+                );
+            }
+
+            foreach ($held as $unit) {
+                $unit->status = BloodUnitStatus::Available;
+                $unit->save();
+            }
+
+            return [$donation, $held];
+        });
+
+        foreach ($units as $unit) {
+            $this->auditLogger->record($user, 'inventory.released_from_quarantine', $unit, [
+                'facility_id' => $facilityId,
+                'donation_id' => $donation->id,
+            ]);
+        }
+
+        return [
+            'message' => $units->count() === 1
+                ? 'Unit released from quarantine.'
+                : $units->count().' units released from quarantine.',
+            'units' => $units->map(fn (BloodUnit $unit): array => $this->format($unit))->values()->all(),
+        ];
+    }
+
+    /**
      * Insert the units, under the donation lock.
      *
      * Everything happens after the lock — status check, blood-type read,
@@ -334,11 +433,11 @@ class InventoryService
         $donation = $this->inventoryRepository->lockDonation((int) $payload['donation_id'], $facilityId)
             ?? throw $this->refuse(404, 'donation_not_found', 'This donation was not found at your facility.');
 
-        if (! $donation->status->isIssuable()) {
+        if (! $donation->status->acceptsIntake()) {
             throw $this->refuse(
                 409,
                 'donation_not_completed',
-                'This donation has not been completed, so its blood cannot enter inventory yet.'
+                'Processing has not completed this donation, so its bags cannot be booked in yet.'
             );
         }
 
@@ -384,7 +483,10 @@ class InventoryService
                 'donation_id' => $donation->id,
                 'storage_location' => $entry['storage_location'] ?? null,
                 'expiry_date' => $entry['expiry_date'],
-                'status' => BloodUnitStatus::Available,
+                // Never available on arrival. Testing may not have finished,
+                // and even when it has, leaving quarantine is its own recorded
+                // act — releaseFromQuarantine().
+                'status' => BloodUnitStatus::Quarantined,
             ]);
         }
 
@@ -453,7 +555,10 @@ class InventoryService
      */
     private function guardEditable(BloodUnit $unit, array $payload): void
     {
-        if ($unit->status === BloodUnitStatus::Available) {
+        // A quarantined unit can have its shelf and date corrected like any
+        // other. Its status is untouched here: update() only ever changes the
+        // status of an expired unit, so no edit can move one out of quarantine.
+        if (in_array($unit->status, [BloodUnitStatus::Available, BloodUnitStatus::Quarantined], true)) {
             return;
         }
 
@@ -519,6 +624,39 @@ class InventoryService
             'expired_at' => $unit->expired_at?->toIso8601String(),
             'discarded_at' => $unit->discarded_at?->toIso8601String(),
             'discard_reason' => $unit->discard_reason,
+            'quarantine' => $unit->status === BloodUnitStatus::Quarantined ? $this->quarantineState($unit) : null,
+        ];
+    }
+
+    /**
+     * What stands between a quarantined unit and the shelf.
+     *
+     * `locked` is a unit whose donation was rejected — a reactive result — and
+     * which can therefore only be discarded.
+     *
+     * @return array<string, bool>
+     */
+    private function quarantineState(BloodUnit $unit): array
+    {
+        $donation = $unit->relationLoaded('donation')
+            ? $unit->donation
+            : $unit->donation()->with('clearances')->first();
+
+        $kinds = $donation === null
+            ? []
+            : ($donation->relationLoaded('clearances') ? $donation->clearances : $donation->clearances()->get())
+                ->map(fn ($clearance): string => $clearance->kind->value)
+                ->all();
+
+        $tti = in_array(ClearanceKind::Tti->value, $kinds, true);
+        $typing = in_array(ClearanceKind::Immunohematology->value, $kinds, true);
+        $locked = $donation?->status === DonationStatus::Rejected;
+
+        return [
+            'tti' => $tti,
+            'immunohematology' => $typing,
+            'locked' => $locked,
+            'releasable' => ! $locked && $tti && $typing,
         ];
     }
 

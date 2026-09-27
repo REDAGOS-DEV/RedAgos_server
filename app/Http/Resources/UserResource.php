@@ -3,6 +3,7 @@
 namespace App\Http\Resources;
 
 use App\Support\AdminPrivileges;
+use App\Support\DepartmentPermissions;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -37,6 +38,14 @@ class UserResource extends JsonResource
             ),
             'department' => $this->department?->value,
             'department_label' => $this->department?->label(),
+            'staff_role' => $this->staff_role?->value,
+            'staff_role_label' => $this->staff_role?->label(),
+            'custom_role' => $this->custom_role,
+            'role_label' => $this->resource->roleLabel(),
+            'staff_privileges' => array_map(
+                fn ($privilege): string => $privilege->value,
+                DepartmentPermissions::privilegesOf($this->resource)
+            ),
             'is_supervisor' => (bool) $this->is_supervisor,
             'is_super_admin' => (bool) $this->is_super_admin,
             // The raw grant, separate from `permissions` below. An unrestricted

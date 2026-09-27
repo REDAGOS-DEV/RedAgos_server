@@ -14,7 +14,7 @@ class BloodUnitStatusEnumTest extends TestCase
     public function test_values_matches_the_cases(): void
     {
         $this->assertSame(
-            ['available', 'reserved', 'issued', 'expired', 'discarded'],
+            ['available', 'reserved', 'issued', 'expired', 'discarded', 'quarantined'],
             BloodUnitStatus::values()
         );
     }

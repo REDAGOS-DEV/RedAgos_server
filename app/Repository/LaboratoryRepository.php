@@ -2,6 +2,7 @@
 
 namespace App\Repository;
 
+use App\Enums\ClearanceKind;
 use App\Enums\DonationStatus;
 use App\Enums\ReferralStatus;
 use App\Models\CounsellingReferral;
@@ -37,6 +38,7 @@ class LaboratoryRepository
         'collection',
         'screening.fingerprickBloodType',
         'components.component',
+        'clearances',
     ];
 
     /**
@@ -65,22 +67,47 @@ class LaboratoryRepository
             ->when(
                 isset($filters['status']),
                 fn (Builder $q): Builder => $q->where('status', $filters['status']),
-                fn (Builder $q): Builder => ($filters['stage'] ?? null) === 'testing'
-                    ? $q->where(fn (Builder $w): Builder => $w
-                        ->where('status', DonationStatus::Collected->value)
-                        ->orWhere(fn (Builder $legacy): Builder => $legacy
-                            ->where('status', DonationStatus::Tested->value)
-                            ->whereDoesntHave('serology')))
+                fn (Builder $q): Builder => match ($filters['stage'] ?? null) {
+                    // A testing department's queue: every drawn donation not
+                    // rejected and still without that department's token —
+                    // completed ones included, since Processing does not wait.
+                    'serology' => $this->awaitingClearance($q, [ClearanceKind::Tti]),
+                    'immunohematology' => $this->awaitingClearance($q, [ClearanceKind::Immunohematology]),
+                    'testing' => $this->awaitingClearance($q, ClearanceKind::cases()),
                     // The laboratory's own queue by default: everything handed
-                    // over by collection and not yet cleared or rejected.
-                    : $q->whereIn('status', [
+                    // over by collection and not yet completed or rejected.
+                    default => $q->whereIn('status', [
                         DonationStatus::Collected->value,
                         DonationStatus::Tested->value,
-                    ])
+                    ]),
+                }
             )
             ->orderBy('donation_date')
             ->orderBy('id')
             ->paginate($perPage);
+    }
+
+    /**
+     * Constrain to drawn donations still missing any of the given clearances.
+     *
+     * @param  array<int, ClearanceKind>  $kinds
+     */
+    private function awaitingClearance(Builder $query, array $kinds): Builder
+    {
+        return $query
+            ->whereIn('status', [
+                DonationStatus::Collected->value,
+                DonationStatus::Tested->value,
+                DonationStatus::Completed->value,
+            ])
+            ->where(function (Builder $missing) use ($kinds): void {
+                foreach ($kinds as $kind) {
+                    $missing->orWhereDoesntHave(
+                        'clearances',
+                        fn (Builder $clearance): Builder => $clearance->where('kind', $kind->value)
+                    );
+                }
+            });
     }
 
     /**

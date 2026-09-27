@@ -5,6 +5,7 @@ namespace Tests\Feature\BloodCenter;
 use App\Enums\Department;
 use App\Enums\DonationStatus;
 use App\Enums\ReferralStatus;
+use App\Enums\StaffRole;
 use App\Models\CounsellingReferral;
 use App\Models\Donation;
 use App\Models\Facility;
@@ -40,7 +41,7 @@ class CounsellingReferralTest extends TestCase
         Notification::fake();
 
         $this->facility = Facility::factory()->approved()->create();
-        $this->testing = User::factory()->bloodCenterStaff($this->facility, Department::Testing)->create();
+        $this->testing = User::factory()->bloodCenterStaff($this->facility, StaffRole::LabSupervisor)->create();
         $this->donor = User::factory()->donor()->create();
 
         $this->donation = Donation::factory()->create([
@@ -103,10 +104,16 @@ class CounsellingReferralTest extends TestCase
         $this->actingAs($supervisor)->getJson('/api/blood-center/laboratory/referrals')->assertOk();
     }
 
-    public function test_no_other_department_may_read_the_list(): void
+    public function test_no_role_but_the_lab_supervisor_may_read_the_list(): void
     {
-        foreach ([Department::Processing, Department::Collection, Department::Issuance, Department::Billing] as $department) {
-            $staff = User::factory()->bloodCenterStaff($this->facility, $department)->create();
+        // The serology technologists who record the markers included: they
+        // work blind to who the donor is, and this list names them.
+        foreach (StaffRole::cases() as $role) {
+            if ($role === StaffRole::LabSupervisor) {
+                continue;
+            }
+
+            $staff = User::factory()->bloodCenterStaff($this->facility, $role)->create();
 
             $this->actingAs($staff)
                 ->getJson('/api/blood-center/laboratory/referrals')
@@ -118,7 +125,7 @@ class CounsellingReferralTest extends TestCase
     {
         $this->reactiveReferral();
 
-        $otherTesting = User::factory()->bloodCenterStaff(Facility::factory()->approved()->create(), Department::Testing)->create();
+        $otherTesting = User::factory()->bloodCenterStaff(Facility::factory()->approved()->create(), StaffRole::LabSupervisor)->create();
 
         $this->actingAs($otherTesting)
             ->getJson('/api/blood-center/laboratory/referrals?status=all')
@@ -242,7 +249,7 @@ class CounsellingReferralTest extends TestCase
     public function test_closing_a_referral_does_not_lift_the_deferral(): void
     {
         $referral = $this->reactiveReferral();
-        $collection = User::factory()->bloodCenterStaff($this->facility, Department::Collection)->create();
+        $collection = User::factory()->bloodCenterStaff($this->facility, StaffRole::ScreeningPhysician)->create();
 
         $this->actingAs($this->testing)
             ->patchJson("/api/blood-center/laboratory/referrals/{$referral->id}", [

@@ -79,6 +79,21 @@ class FulfillmentService
             }
 
             $unitIds = $holds->pluck('unit_id')->all();
+
+            // The last gate before a unit leaves the building. A reserved unit
+            // was released from quarantine on both tokens, so this should never
+            // refuse — it is here so that nothing else, however it came to be
+            // reserved, can send untested blood to a patient.
+            $uncleared = $this->inventoryRepository->unitsLackingClearance($unitIds);
+
+            if ($uncleared !== []) {
+                throw $this->refuse(
+                    409,
+                    'unit_not_cleared',
+                    'Unit '.implode(', ', $uncleared).' has not been cleared by testing and cannot be dispatched.'
+                );
+            }
+
             $issued = $this->inventoryRepository->markIssued($unitIds);
 
             if ($issued !== count($unitIds)) {

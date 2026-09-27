@@ -45,6 +45,10 @@ class StaffRepository
                 fn (Builder $query): Builder => $query->where('department', $filters['department'])
             )
             ->when(
+                isset($filters['staff_role']),
+                fn (Builder $query): Builder => $query->where('staff_role', $filters['staff_role'])
+            )
+            ->when(
                 isset($filters['account_status']),
                 fn (Builder $query): Builder => $query->where('account_status', $filters['account_status'])
             )

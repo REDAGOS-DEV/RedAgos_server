@@ -5,6 +5,7 @@ namespace Tests\Feature\BloodCenter;
 use App\Enums\AppointmentStatus;
 use App\Enums\Department;
 use App\Enums\DonationStatus;
+use App\Enums\StaffRole;
 use App\Models\Donation;
 use App\Models\DonationAppointment;
 use App\Models\DonorProfile;
@@ -36,7 +37,7 @@ class MobileEventTest extends TestCase
         Notification::fake();
 
         $this->facility = Facility::factory()->approved()->create();
-        $this->staff = User::factory()->bloodCenterStaff($this->facility, Department::Collection)->create();
+        $this->staff = User::factory()->bloodCenterStaff($this->facility, StaffRole::MedicalReceptionist)->create();
     }
 
     /**

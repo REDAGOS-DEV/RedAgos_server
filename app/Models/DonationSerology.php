@@ -6,6 +6,7 @@ use App\Enums\MarkerResult;
 use App\Enums\SerologyMarker;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use LogicException;
 
 /**
  * The Testing department's five-marker infection panel for a donation.
@@ -16,6 +17,11 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * Which marker was reactive is the most sensitive fact RedAgos holds. It is
  * shown to the Testing department and on its referral list, and nowhere else:
  * not in rejection reasons, not in audit context, not to the donor.
+ *
+ * A reactive panel is immutable. It has already rejected the donation,
+ * deferred the donor and referred them, so the model refuses to change or
+ * delete it whoever asks — the service guards are the first line, this is the
+ * last.
  */
 class DonationSerology extends Model
 {
@@ -44,9 +50,41 @@ class DonationSerology extends Model
         ];
     }
 
+    protected static function booted(): void
+    {
+        static::updating(function (DonationSerology $serology): void {
+            if ($serology->wasReactive()) {
+                throw new LogicException('A reactive serology result cannot be changed.');
+            }
+        });
+
+        static::deleting(function (DonationSerology $serology): void {
+            if ($serology->wasReactive()) {
+                throw new LogicException('A reactive serology result cannot be deleted.');
+            }
+        });
+    }
+
     public function donation(): BelongsTo
     {
         return $this->belongsTo(Donation::class);
+    }
+
+    /**
+     * Whether the panel as stored — before any pending change — was reactive.
+     */
+    public function wasReactive(): bool
+    {
+        foreach (SerologyMarker::cases() as $marker) {
+            $original = $this->getOriginal($marker->value);
+            $value = $original instanceof MarkerResult ? $original : MarkerResult::tryFrom((string) $original);
+
+            if ($value?->isReactive()) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

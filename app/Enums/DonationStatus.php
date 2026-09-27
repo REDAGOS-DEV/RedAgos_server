@@ -42,14 +42,15 @@ enum DonationStatus: string
     }
 
     /**
-     * Determine whether this status means the blood may be issued to a patient.
+     * Determine whether inventory may book this donation's bags in.
      *
-     * `completed` means transfusion-transmissible-infection testing has finished
-     * and the donation is cleared for issue. `tested` is the separate, earlier
-     * status. Blood-unit intake gates on exactly this distinction; see the
-     * donation-status entry in docs/IMPLEMENTATION_DECISIONS.md.
+     * `completed` means Processing has finished: the components are declared
+     * and the bags go to Issuance. It no longer means "cleared for issue" —
+     * that moved to the unit, which is booked in quarantined and released only
+     * on both clearance tokens. See "Quarantine lifecycle" in
+     * docs/IMPLEMENTATION_DECISIONS.md.
      */
-    public function isIssuable(): bool
+    public function acceptsIntake(): bool
     {
         return $this === self::Completed;
     }

@@ -2,9 +2,11 @@
 
 namespace Tests\Feature\Admin;
 
+use App\Console\Commands\AddFacilityUser;
 use App\Enums\AccountStatus;
 use App\Enums\Department;
 use App\Enums\RoleName;
+use App\Enums\StaffRole;
 use App\Models\Facility;
 use App\Models\User;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
@@ -17,7 +19,7 @@ use Tests\TestCase;
  * The roster endpoint resolves the facility from its caller, so it cannot serve
  * a facility whose first account does not exist — the seeded blood centres are
  * exactly that case. These tests pin the two things the command decides on its
- * own as a result: which role it grants, and whether a department means
+ * own as a result: which access role it grants, and whether a staff role means
  * anything for the type of facility in question.
  */
 class AddFacilityUserTest extends TestCase
@@ -34,18 +36,6 @@ class AddFacilityUserTest extends TestCase
         '--password' => 'Sup3rSecret',
     ];
 
-    /**
-     * @var array<string, string>
-     */
-    private const LEVELS = [
-        'collection' => 'Collection',
-        'testing' => 'Testing',
-        'processing' => 'Processing',
-        'issuance' => 'Issuance',
-        'billing' => 'Billing / Payment',
-        'supervisor' => 'Supervisor (management level, no department)',
-    ];
-
     private User $admin;
 
     private Facility $bloodCenter;
@@ -58,17 +48,18 @@ class AddFacilityUserTest extends TestCase
         $this->bloodCenter = Facility::factory()->approved()->create();
     }
 
-    public function test_it_adds_a_departmental_account_to_a_blood_center(): void
+    public function test_it_adds_a_staff_member_in_a_role_to_a_blood_center(): void
     {
         $this->artisan('facility:add-user', [
             '--facility' => $this->bloodCenter->id,
-            '--department' => 'issuance',
+            '--role' => 'inventory_control_officer',
             ...self::ACCOUNT,
         ])->assertSuccessful();
 
         $staff = User::where('email', 'jomar@redagos.test')->sole();
 
         $this->assertSame($this->bloodCenter->id, $staff->facility_id);
+        $this->assertSame(StaffRole::InventoryControlOfficer, $staff->staff_role);
         $this->assertSame(Department::Issuance, $staff->department);
         $this->assertFalse($staff->is_supervisor);
         $this->assertTrue($staff->hasRole(RoleName::BloodCenter));
@@ -88,7 +79,24 @@ class AddFacilityUserTest extends TestCase
         $staff = User::where('email', 'jomar@redagos.test')->sole();
 
         $this->assertTrue($staff->is_supervisor);
+        $this->assertNull($staff->staff_role);
         $this->assertNull($staff->department);
+    }
+
+    public function test_a_supervisor_may_also_hold_a_role(): void
+    {
+        $this->artisan('facility:add-user', [
+            '--facility' => $this->bloodCenter->id,
+            '--supervisor' => true,
+            '--role' => 'lab_supervisor',
+            ...self::ACCOUNT,
+        ])->assertSuccessful();
+
+        $staff = User::where('email', 'jomar@redagos.test')->sole();
+
+        $this->assertTrue($staff->is_supervisor);
+        $this->assertSame(StaffRole::LabSupervisor, $staff->staff_role);
+        $this->assertSame(Department::Testing, $staff->department);
     }
 
     public function test_a_blood_center_account_must_be_posted_or_promoted(): void
@@ -102,17 +110,26 @@ class AddFacilityUserTest extends TestCase
         $this->assertDatabaseMissing('users', ['email' => 'jomar@redagos.test']);
     }
 
-    public function test_an_interactive_run_asks_for_the_department(): void
+    public function test_an_interactive_run_asks_for_the_role(): void
     {
         $this->artisan('facility:add-user', [
             '--facility' => $this->bloodCenter->id,
             ...self::ACCOUNT,
-        ])->expectsChoice('Department', 'testing', self::LEVELS)->assertSuccessful();
+        ])->expectsChoice('Role', 'serology_technologist', AddFacilityUser::levelChoices())->assertSuccessful();
 
         $staff = User::where('email', 'jomar@redagos.test')->sole();
 
+        $this->assertSame(StaffRole::SerologyTechnologist, $staff->staff_role);
         $this->assertSame(Department::Testing, $staff->department);
         $this->assertFalse($staff->is_supervisor);
+    }
+
+    public function test_the_prompt_offers_every_role_and_the_management_level(): void
+    {
+        $choices = AddFacilityUser::levelChoices();
+
+        $this->assertSame([...StaffRole::values(), 'supervisor'], array_keys($choices));
+        $this->assertSame('Testing — Laboratory Supervisor', $choices['lab_supervisor']);
     }
 
     public function test_an_interactive_run_can_choose_the_management_level(): void
@@ -120,7 +137,7 @@ class AddFacilityUserTest extends TestCase
         $this->artisan('facility:add-user', [
             '--facility' => $this->bloodCenter->id,
             ...self::ACCOUNT,
-        ])->expectsChoice('Department', 'supervisor', self::LEVELS)->assertSuccessful();
+        ])->expectsChoice('Role', 'supervisor', AddFacilityUser::levelChoices())->assertSuccessful();
 
         $staff = User::where('email', 'jomar@redagos.test')->sole();
 
@@ -128,11 +145,11 @@ class AddFacilityUserTest extends TestCase
         $this->assertNull($staff->department);
     }
 
-    public function test_an_unknown_department_creates_nothing(): void
+    public function test_an_unknown_role_creates_nothing(): void
     {
         $this->artisan('facility:add-user', [
             '--facility' => $this->bloodCenter->id,
-            '--department' => 'radiology',
+            '--role' => 'radiologist',
             ...self::ACCOUNT,
         ])->assertFailed();
 
@@ -161,7 +178,7 @@ class AddFacilityUserTest extends TestCase
 
         $this->artisan('facility:add-user', [
             '--facility' => $bloodBank->id,
-            '--department' => 'issuance',
+            '--role' => 'inventory_control_officer',
             ...self::ACCOUNT,
         ])->assertFailed();
 
@@ -189,7 +206,7 @@ class AddFacilityUserTest extends TestCase
 
         $this->artisan('facility:add-user', [
             '--facility' => $this->bloodCenter->id,
-            '--department' => 'issuance',
+            '--role' => 'inventory_control_officer',
             ...self::ACCOUNT,
         ])->assertSuccessful();
 
@@ -206,7 +223,7 @@ class AddFacilityUserTest extends TestCase
     {
         $this->artisan('facility:add-user', [
             '--facility' => $this->bloodCenter->id + 999,
-            '--department' => 'issuance',
+            '--role' => 'inventory_control_officer',
             ...self::ACCOUNT,
         ])->assertFailed();
 
@@ -219,7 +236,7 @@ class AddFacilityUserTest extends TestCase
 
         $this->artisan('facility:add-user', [
             '--facility' => $this->bloodCenter->id,
-            '--department' => 'issuance',
+            '--role' => 'inventory_control_officer',
             '--employee-id' => '001',
             ...self::ACCOUNT,
         ])->assertSuccessful();
@@ -227,7 +244,7 @@ class AddFacilityUserTest extends TestCase
         // The same badge at a different centre is a different person's badge.
         $this->artisan('facility:add-user', [
             '--facility' => $other->id,
-            '--department' => 'issuance',
+            '--role' => 'inventory_control_officer',
             '--employee-id' => '001',
             ...[...self::ACCOUNT, '--email' => 'second@redagos.test'],
         ])->assertSuccessful();
@@ -235,7 +252,7 @@ class AddFacilityUserTest extends TestCase
         // The same badge at the same centre is a collision.
         $this->artisan('facility:add-user', [
             '--facility' => $this->bloodCenter->id,
-            '--department' => 'issuance',
+            '--role' => 'inventory_control_officer',
             '--employee-id' => '001',
             ...[...self::ACCOUNT, '--email' => 'third@redagos.test'],
         ])->assertFailed();
@@ -247,7 +264,7 @@ class AddFacilityUserTest extends TestCase
     {
         $this->artisan('facility:add-user', [
             '--facility' => $this->bloodCenter->id,
-            '--department' => 'issuance',
+            '--role' => 'inventory_control_officer',
             ...self::ACCOUNT,
         ])->assertSuccessful();
 
@@ -263,7 +280,7 @@ class AddFacilityUserTest extends TestCase
 
         $this->artisan('facility:add-user', [
             '--facility' => $this->bloodCenter->id,
-            '--department' => 'issuance',
+            '--role' => 'inventory_control_officer',
             ...self::ACCOUNT,
         ])->assertFailed();
 

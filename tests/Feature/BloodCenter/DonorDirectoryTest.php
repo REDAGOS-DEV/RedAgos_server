@@ -4,6 +4,7 @@ namespace Tests\Feature\BloodCenter;
 
 use App\Enums\Department;
 use App\Enums\IdentityStatus;
+use App\Enums\StaffRole;
 use App\Enums\ValidIdType;
 use App\Models\Donation;
 use App\Models\DonationAppointment;
@@ -38,7 +39,7 @@ class DonorDirectoryTest extends TestCase
         Notification::fake();
 
         $this->facility = Facility::factory()->approved()->create();
-        $this->staff = User::factory()->bloodCenterStaff($this->facility, Department::Collection)->create();
+        $this->staff = User::factory()->bloodCenterStaff($this->facility, StaffRole::ScreeningPhysician)->create();
     }
 
     /**

@@ -5,9 +5,9 @@ namespace Tests\Feature\BloodCenter;
 use App\Enums\Department;
 use App\Enums\DonationStatus;
 use App\Enums\ScreeningOutcome;
+use App\Enums\StaffRole;
 use App\Models\Donation;
 use App\Models\DonationScreening;
-use App\Models\EligibilityQuestion;
 use App\Models\EligibilityScreening;
 use App\Models\EligibilityScreeningAnswer;
 use App\Models\Facility;
@@ -15,6 +15,7 @@ use App\Models\User;
 use Database\Seeders\EligibilityQuestionSeeder;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Support\Facades\Notification;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -44,7 +45,7 @@ class PhysicalExaminationTest extends TestCase
         Notification::fake();
 
         $this->facility = Facility::factory()->approved()->create();
-        $this->officer = User::factory()->bloodCenterStaff($this->facility, Department::Collection)->create();
+        $this->officer = User::factory()->bloodCenterStaff($this->facility, StaffRole::ScreeningPhysician)->create();
         $this->donor = User::factory()->donor()->create();
 
         $this->donationId = Donation::factory()->create([
@@ -222,7 +223,7 @@ class PhysicalExaminationTest extends TestCase
         ];
     }
 
-    #[\PHPUnit\Framework\Attributes\DataProvider('deferralOutcomes')]
+    #[DataProvider('deferralOutcomes')]
     public function test_every_deferral_ends_the_visit_the_same_way(string $outcome, string $label): void
     {
         // The three differ in what the donor is told and what the next counter
@@ -235,7 +236,7 @@ class PhysicalExaminationTest extends TestCase
             ->assertJsonPath('data.rejection_reason', 'Recorded by the officer.');
     }
 
-    #[\PHPUnit\Framework\Attributes\DataProvider('deferralOutcomes')]
+    #[DataProvider('deferralOutcomes')]
     public function test_every_deferral_requires_a_reason(string $outcome): void
     {
         // The old rule compared against one value, so a permanent deferral

@@ -6,6 +6,7 @@ use App\Enums\AppointmentStatus;
 use App\Enums\BloodBagType;
 use App\Enums\DonationStatus;
 use App\Enums\ScreeningOutcome;
+use App\Models\BloodCollection;
 use App\Models\Donation;
 use App\Models\DonationAppointment;
 use App\Models\Facility;
@@ -82,7 +83,7 @@ class CollectionService
                 ->map(fn (DonationAppointment $a): array => $this->formatAppointment($a))
                 ->all(),
             'in_progress' => collect($open->items())
-                ->map(fn (Donation $d): array => $this->formatDonation($d))
+                ->map(fn (Donation $d): array => $this->formatDonation($d, $staff))
                 ->all(),
         ];
     }
@@ -135,7 +136,7 @@ class CollectionService
             'data' => [
                 'donor' => $this->formatDonor($donor),
                 'appointment' => $appointment ? $this->formatAppointment($appointment) : null,
-                'open_donation' => $this->openDonationFor($donor->id, $facility->id),
+                'open_donation' => $this->openDonationFor($donor->id, $facility->id, $staff),
                 // A reference, never the document. The questionnaire holds
                 // thirty declared health answers, and this response is about
                 // who is at the counter -- the drawer fetches the rest from
@@ -244,7 +245,7 @@ class CollectionService
 
         return [
             'message' => 'Donation opened for '.$donor->first_name.'.',
-            'data' => $this->formatDonation($this->reload($donation, $facility)),
+            'data' => $this->formatDonation($this->reload($donation, $facility), $staff),
         ];
     }
 
@@ -290,7 +291,7 @@ class CollectionService
 
         return [
             'message' => 'Donation marked '.$target->label().'.',
-            'data' => $this->formatDonation($this->reload($donation, $facility)),
+            'data' => $this->formatDonation($this->reload($donation, $facility), $staff),
         ];
     }
 
@@ -307,12 +308,12 @@ class CollectionService
      * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
      */
-    public function recordScreening(User $staff, int $donationId, array $payload): array
+    public function recordScreening(User $staff, int $donationId, array $payload, bool $correcting = false): array
     {
         $facility = $this->requireFacility($staff);
         $outcome = ScreeningOutcome::from($payload['outcome']);
 
-        $donation = DB::transaction(function () use ($staff, $facility, $donationId, $payload, $outcome): Donation {
+        $donation = DB::transaction(function () use ($staff, $facility, $donationId, $payload, $outcome, $correcting): Donation {
             $locked = $this->collectionRepository->lockDonation($donationId, $facility->id)
                 ?? throw $this->refuse(404, 'donation_not_found', 'That donation was not found at your facility.');
 
@@ -325,6 +326,15 @@ class CollectionService
                     409,
                     'screening_not_amendable',
                     "A donation that is {$locked->status->label()} can no longer have its screening recorded."
+                );
+            }
+
+            // Saved once, changed only through an approved correction request.
+            if (! $correcting && $this->collectionRepository->screeningExists($locked->id)) {
+                throw $this->refuse(
+                    409,
+                    'correction_required',
+                    'The screening is already recorded. Request a correction to change it.'
                 );
             }
 
@@ -397,6 +407,7 @@ class CollectionService
         $this->auditLogger->record($staff, 'collection.screening_recorded', $donation, [
             'facility_id' => $facility->id,
             'outcome' => $outcome->value,
+            'correction' => $correcting,
         ]);
 
         if (! $outcome->permitsCollection()) {
@@ -418,7 +429,7 @@ class CollectionService
             'message' => $outcome->permitsCollection()
                 ? 'Screening recorded. The donor may proceed to collection.'
                 : 'Screening recorded. '.$outcome->label().'.',
-            'data' => $this->formatDonation($this->reload($donation, $facility)),
+            'data' => $this->formatDonation($this->reload($donation, $facility), $staff),
         ];
     }
 
@@ -463,7 +474,67 @@ class CollectionService
 
         return [
             'message' => 'Collection recorded. The donation is now with the Testing department.',
-            'data' => $this->formatDonation($this->reload($donation, $facility)),
+            'data' => $this->formatDonation($this->reload($donation, $facility), $staff),
+        ];
+    }
+
+    /**
+     * Apply an approved correction to the "For Phlebotomist Use Only" box.
+     *
+     * Only reachable through CorrectionService, and only while the bag is still
+     * in the laboratory: once Issuance has booked units against it the segment
+     * number is on the shelf, and once the donation is rejected nothing about
+     * it changes. The phlebotomist stays whoever drew the bag.
+     *
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    public function correctCollection(User $staff, int $donationId, array $payload): array
+    {
+        $facility = $this->requireFacility($staff);
+
+        try {
+            $donation = DB::transaction(function () use ($facility, $donationId, $payload): Donation {
+                $locked = $this->collectionRepository->lockDonation($donationId, $facility->id)
+                    ?? throw $this->refuse(404, 'donation_not_found', 'That donation was not found at your facility.');
+
+                if ($locked->status === DonationStatus::Rejected || $locked->bloodUnits()->exists()) {
+                    throw $this->refuse(
+                        409,
+                        'collection_not_amendable',
+                        'This collection can no longer be corrected: the donation is rejected or its units are already booked in.'
+                    );
+                }
+
+                $collection = BloodCollection::query()->where('donation_id', $locked->id)->lockForUpdate()->first()
+                    ?? throw $this->refuse(409, 'nothing_to_correct', 'No collection is recorded for this donation.');
+
+                $collection->blood_bag_type = BloodBagType::from($payload['blood_bag_type']);
+                $collection->segment_number = $payload['segment_number'];
+                $collection->started_at = $payload['started_at'];
+                $collection->ended_at = $payload['ended_at'];
+                $collection->collection_datetime = $payload['ended_at'];
+                $collection->save();
+
+                $locked->volume_ml = $payload['volume_ml'];
+                $locked->save();
+
+                return $locked;
+            });
+        } catch (QueryException $exception) {
+            $this->rethrowSegmentTaken($exception);
+
+            throw $exception;
+        }
+
+        $this->auditLogger->record($staff, 'collection.corrected', $donation, [
+            'facility_id' => $facility->id,
+            'segment_number' => $payload['segment_number'],
+        ]);
+
+        return [
+            'message' => 'Collection record corrected.',
+            'data' => $this->formatDonation($this->reload($donation, $facility), $staff),
         ];
     }
 
@@ -552,7 +623,7 @@ class CollectionService
 
         return $this->collectionRepository
             ->paginateDonations($facility->id, $filters, $perPage)
-            ->through(fn (Donation $donation): array => $this->formatDonation($donation));
+            ->through(fn (Donation $donation): array => $this->formatDonation($donation, $staff));
     }
 
     /**
@@ -678,11 +749,11 @@ class CollectionService
      *
      * @return array<string, mixed>|null
      */
-    private function openDonationFor(int $donorId, int $facilityId): ?array
+    private function openDonationFor(int $donorId, int $facilityId, User $viewer): ?array
     {
         $open = $this->donorDirectoryRepository->openDonationAtFacility($donorId, $facilityId);
 
-        return $open === null ? null : $this->formatDonation($open);
+        return $open === null ? null : $this->formatDonation($open, $viewer);
     }
 
     /**
@@ -725,13 +796,24 @@ class CollectionService
     }
 
     /**
+     * Shape a donation for the counter, in the detail the viewer's role allows.
+     *
+     * Everyone at the counter learns the screening *outcome* — the chair needs
+     * to know the donor was accepted before drawing. The vitals, the physical
+     * examination and any reason for a deferral or rejection are the donor's
+     * clinical record, and go only to a viewer holding donors.view_clinical:
+     * the screening physician, and a supervisor. A receptionist booking the
+     * donor's next visit sees that a decision exists, never why.
+     *
      * @return array<string, mixed>
      */
-    private function formatDonation(Donation $donation): array
+    private function formatDonation(Donation $donation, User $viewer): array
     {
         $screening = $donation->relationLoaded('screening')
             ? $donation->screening
             : $donation->screening()->first();
+
+        $clinical = $viewer->can('donors.view_clinical');
 
         return [
             'id' => $donation->id,
@@ -740,36 +822,49 @@ class CollectionService
             'status_label' => $donation->status?->label(),
             'owning_department' => $donation->status?->owningDepartment()?->value,
             'volume_ml' => $donation->volume_ml,
-            'rejection_reason' => $donation->rejection_reason,
-            'screening' => $screening === null ? null : [
-                'outcome' => $screening->outcome?->value,
-                'outcome_label' => $screening->outcome?->label(),
-                'deferral_reason' => $screening->deferral_reason,
-                'systolic_bp' => $screening->systolic_bp,
-                'diastolic_bp' => $screening->diastolic_bp,
-                'pulse_bpm' => $screening->pulse_bpm,
-                'temperature_c' => $screening->temperature_c,
-                'weight_kg' => $screening->weight_kg,
-                'haemoglobin_g_dl' => $screening->haemoglobin_g_dl,
-                'fingerprick_blood_type_id' => $screening->fingerprick_blood_type_id,
-                'fingerprick_blood_type' => $screening->fingerprickBloodType?->code,
-                'sleep' => $screening->sleep,
-                'meal' => $screening->meal,
-                'meds' => $screening->meds,
-                'allergies' => $screening->allergies,
-                'general_appearance' => $screening->general_appearance,
-                'skin' => $screening->skin,
-                'heent' => $screening->heent,
-                'heart_and_lungs' => $screening->heart_and_lungs,
-                'notes' => $screening->notes,
-                'screened_at' => $screening->screened_at?->toISOString(),
-                // The screening officer, resolved from the authenticated user
-                // who recorded it — this is what the form's signature line
-                // stands for.
-                'recorded_by' => $screening->recorder
-                    ? trim($screening->recorder->first_name.' '.$screening->recorder->last_name)
-                    : null,
-            ],
+            'rejection_reason' => $clinical ? $donation->rejection_reason : null,
+            'screening' => match (true) {
+                $screening === null => null,
+                ! $clinical => [
+                    'outcome' => $screening->outcome?->value,
+                    'outcome_label' => $screening->outcome?->label(),
+                    'screened_at' => $screening->screened_at?->toISOString(),
+                    'recorded_by' => $screening->recorder
+                        ? trim($screening->recorder->first_name.' '.$screening->recorder->last_name)
+                        : null,
+                    'restricted' => true,
+                ],
+                default => [
+                    'outcome' => $screening->outcome?->value,
+                    'outcome_label' => $screening->outcome?->label(),
+                    'deferral_reason' => $screening->deferral_reason,
+                    'systolic_bp' => $screening->systolic_bp,
+                    'diastolic_bp' => $screening->diastolic_bp,
+                    'pulse_bpm' => $screening->pulse_bpm,
+                    'temperature_c' => $screening->temperature_c,
+                    'weight_kg' => $screening->weight_kg,
+                    'haemoglobin_g_dl' => $screening->haemoglobin_g_dl,
+                    'fingerprick_blood_type_id' => $screening->fingerprick_blood_type_id,
+                    'fingerprick_blood_type' => $screening->fingerprickBloodType?->code,
+                    'sleep' => $screening->sleep,
+                    'meal' => $screening->meal,
+                    'meds' => $screening->meds,
+                    'allergies' => $screening->allergies,
+                    'general_appearance' => $screening->general_appearance,
+                    'skin' => $screening->skin,
+                    'heent' => $screening->heent,
+                    'heart_and_lungs' => $screening->heart_and_lungs,
+                    'notes' => $screening->notes,
+                    'screened_at' => $screening->screened_at?->toISOString(),
+                    // The screening officer, resolved from the authenticated user
+                    // who recorded it — this is what the form's signature line
+                    // stands for.
+                    'recorded_by' => $screening->recorder
+                        ? trim($screening->recorder->first_name.' '.$screening->recorder->last_name)
+                        : null,
+                    'restricted' => false,
+                ],
+            },
             'collection' => $this->formatCollection($donation),
             'appointment_id' => $donation->appointment_id,
             'donor' => $donation->relationLoaded('donorProfile') && $donation->donorProfile?->donor

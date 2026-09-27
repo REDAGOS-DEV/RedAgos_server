@@ -3,8 +3,8 @@
 namespace Tests\Feature\BloodCenter;
 
 use App\Enums\BloodUnitStatus;
-use App\Enums\Department;
 use App\Enums\RoleName;
+use App\Enums\StaffRole;
 use App\Models\AuditLog;
 use App\Models\BloodComponent;
 use App\Models\BloodType;
@@ -75,7 +75,8 @@ class InventoryIntakeTest extends TestCase
 
         $this->assertCount(1, $response->json('units'));
         $this->assertSame('O+', $response->json('units.0.blood_type.code'));
-        $this->assertSame(BloodUnitStatus::Available->value, $response->json('units.0.status'));
+        // Booked in held back: completing a donation no longer clears it.
+        $this->assertSame(BloodUnitStatus::Quarantined->value, $response->json('units.0.status'));
     }
 
     public function test_blood_type_is_derived_and_never_taken_from_the_client(): void
@@ -376,13 +377,13 @@ class InventoryIntakeTest extends TestCase
 
     /**
      * inventory.create, not inventory.view: this is a worklist for the people
-     * who book stock in. Collection and Laboratory both hold inventory.view.
+     * who book stock in. Processing holds inventory.view but never books in.
      */
     public function test_a_department_that_cannot_record_stock_cannot_read_the_queue(): void
     {
         $lab = User::factory()->bloodCenterStaff()->create([
             'facility_id' => $this->facilityId,
-            'department' => Department::Testing,
+            'staff_role' => StaffRole::ComponentTechnologist,
             'is_supervisor' => false,
         ]);
 

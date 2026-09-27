@@ -4,6 +4,7 @@ namespace Tests\Feature\BloodCenter;
 
 use App\Enums\Department;
 use App\Enums\ScreeningOutcome;
+use App\Enums\StaffRole;
 use App\Models\CounsellingReferral;
 use App\Models\Donation;
 use App\Models\DonationScreening;
@@ -46,7 +47,7 @@ class PriorDeferralTest extends TestCase
         Notification::fake();
 
         $this->facility = Facility::factory()->approved()->create();
-        $this->staff = User::factory()->bloodCenterStaff($this->facility, Department::Collection)->create();
+        $this->staff = User::factory()->bloodCenterStaff($this->facility, StaffRole::ScreeningPhysician)->create();
         $this->donor = User::factory()->donor()->create();
         $this->donor->donorProfile->update(['birth_date' => now()->subYears(30)->toDateString()]);
     }

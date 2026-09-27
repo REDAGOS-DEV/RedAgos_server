@@ -62,7 +62,7 @@ class FacilityRepository
      *
      * facility_id and is_supervisor are assigned directly for the same reason
      * the approval trail is: the first is the facility-isolation boundary and
-     * the second grants every ability in the portal. department stays null —
+     * the second grants every ability in the portal. staff_role stays null —
      * a supervisor holds the full ability set regardless of where they sit,
      * and the primary account is management rather than a posting.
      *
@@ -74,7 +74,7 @@ class FacilityRepository
 
         $user->fill($attributes);
         $user->facility_id = $facility->id;
-        $user->department = null;
+        $user->staff_role = null;
         $user->is_supervisor = true;
         $user->save();
 

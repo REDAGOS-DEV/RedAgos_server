@@ -4,11 +4,16 @@ namespace Tests\Feature\BloodCenter;
 
 use App\Enums\BloodUnitStatus;
 use App\Enums\Department;
+use App\Enums\DonationStatus;
+use App\Enums\StaffRole;
 use App\Models\BloodComponent;
+use App\Models\BloodRequest;
 use App\Models\BloodUnit;
+use App\Models\Donation;
 use App\Models\Facility;
 use App\Models\User;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Tests\Concerns\RecordsTyping;
 use Tests\TestCase;
 
 /**
@@ -21,11 +26,17 @@ use Tests\TestCase;
  */
 class DonationToInventoryChainTest extends TestCase
 {
-    use LazilyRefreshDatabase;
+    use LazilyRefreshDatabase, RecordsTyping;
 
     private Facility $facility;
 
+    private User $receptionist;
+
+    private User $physician;
+
     private User $collection;
+
+    private User $typing;
 
     private User $testing;
 
@@ -44,10 +55,13 @@ class DonationToInventoryChainTest extends TestCase
         parent::setUp();
 
         $this->facility = Facility::factory()->approved()->create();
-        $this->collection = User::factory()->bloodCenterStaff($this->facility, Department::Collection)->create();
-        $this->testing = User::factory()->bloodCenterStaff($this->facility, Department::Testing)->create();
-        $this->processing = User::factory()->bloodCenterStaff($this->facility, Department::Processing)->create();
-        $this->inventory = User::factory()->bloodCenterStaff($this->facility, Department::Issuance)->create();
+        $this->receptionist = User::factory()->bloodCenterStaff($this->facility, StaffRole::MedicalReceptionist)->create();
+        $this->physician = User::factory()->bloodCenterStaff($this->facility, StaffRole::ScreeningPhysician)->create();
+        $this->collection = User::factory()->bloodCenterStaff($this->facility, StaffRole::Phlebotomist)->create();
+        $this->typing = User::factory()->bloodCenterStaff($this->facility, StaffRole::SerologyTechnologist)->create();
+        $this->testing = User::factory()->bloodCenterStaff($this->facility, StaffRole::SerologyTechnologist)->create();
+        $this->processing = User::factory()->bloodCenterStaff($this->facility, StaffRole::ComponentTechnologist)->create();
+        $this->inventory = User::factory()->bloodCenterStaff($this->facility, StaffRole::InventoryControlOfficer)->create();
 
         $this->donor = User::factory()->donor()->create();
         $this->packedRbc = BloodComponent::factory()->create(['name' => 'Packed RBC']);
@@ -57,12 +71,12 @@ class DonationToInventoryChainTest extends TestCase
     public function test_a_donation_travels_from_the_counter_to_issuable_stock(): void
     {
         // --- Collection -----------------------------------------------
-        $donationId = $this->actingAs($this->collection)
+        $donationId = $this->actingAs($this->receptionist)
             ->postJson('/api/blood-center/donations', ['donor_uuid' => $this->donor->uuid])
             ->assertCreated()
             ->json('data.id');
 
-        $this->actingAs($this->collection)
+        $this->actingAs($this->physician)
             ->postJson("/api/blood-center/donations/{$donationId}/screening", ['outcome' => 'accepted'])
             ->assertCreated();
 
@@ -74,10 +88,8 @@ class DonationToInventoryChainTest extends TestCase
         // --- Testing and Processing ---------------------------------------
         $bloodTypeId = $this->donor->donorProfile->blood_type_id;
 
-        $this->actingAs($this->testing)
-            ->postJson("/api/blood-center/laboratory/donations/{$donationId}/immunohematology", [
-                'blood_type_id' => $bloodTypeId,
-            ])
+        $this->actingAs($this->typing)
+            ->postJson("/api/blood-center/laboratory/donations/{$donationId}/immunohematology", $this->concordantTyping($bloodTypeId))
             ->assertCreated()
             ->assertJsonPath('data.status', 'collected');
 
@@ -85,6 +97,8 @@ class DonationToInventoryChainTest extends TestCase
             ->postJson("/api/blood-center/laboratory/donations/{$donationId}/serology", $this->nonReactivePanel())
             ->assertCreated()
             ->assertJsonPath('data.status', 'tested');
+
+        $this->assertSame(DonationStatus::Tested, Donation::findOrFail($donationId)->status);
 
         $this->actingAs($this->processing)
             ->postJson("/api/blood-center/laboratory/donations/{$donationId}/components", [
@@ -114,6 +128,17 @@ class DonationToInventoryChainTest extends TestCase
         $units = BloodUnit::where('donation_id', $donationId)->get();
 
         $this->assertCount(2, $units);
+
+        // Booked in held back, and released on the Inventory Control
+        // Officer's act once testing has cleared the donation.
+        $this->assertTrue($units->every(fn (BloodUnit $u): bool => $u->status === BloodUnitStatus::Quarantined));
+
+        $this->actingAs($this->inventory)
+            ->postJson("/api/blood-center/inventory/quarantine/{$donationId}/release")
+            ->assertOk();
+
+        $units = BloodUnit::where('donation_id', $donationId)->get();
+
         $this->assertTrue($units->every(fn (BloodUnit $u): bool => $u->status === BloodUnitStatus::Available));
 
         // Derived from the donor, never sent by any of the three departments.
@@ -279,11 +304,11 @@ class DonationToInventoryChainTest extends TestCase
      */
     private function collectedDonation(): int
     {
-        $id = $this->actingAs($this->collection)
+        $id = $this->actingAs($this->receptionist)
             ->postJson('/api/blood-center/donations', ['donor_uuid' => $this->donor->uuid])
             ->json('data.id');
 
-        $this->actingAs($this->collection)
+        $this->actingAs($this->physician)
             ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'accepted']);
 
         $this->actingAs($this->collection)
@@ -299,6 +324,102 @@ class DonationToInventoryChainTest extends TestCase
      *
      * @return array<string, mixed>
      */
+    /**
+     * Every role doing exactly its own part, from the counter to the hospital.
+     *
+     * Nobody here holds more than their role grants, and the donor's name
+     * never reaches a laboratory or inventory role along the way.
+     */
+    public function test_every_role_plays_its_part_from_the_counter_to_the_hospital(): void
+    {
+        $clerk = User::factory()->bloodCenterStaff($this->facility, StaffRole::ItDataClerk)->create();
+        $dispatch = User::factory()->bloodCenterStaff($this->facility, StaffRole::DispatchCoordinator)->create();
+
+        // Counter: receptionist opens, physician screens, phlebotomist draws.
+        $donationId = $this->actingAs($this->receptionist)
+            ->postJson('/api/blood-center/donations', ['donor_uuid' => $this->donor->uuid])
+            ->assertCreated()->json('data.id');
+
+        $this->actingAs($this->physician)
+            ->postJson("/api/blood-center/donations/{$donationId}/screening", ['outcome' => 'accepted'])
+            ->assertCreated();
+
+        $this->actingAs($this->collection)
+            ->postJson("/api/blood-center/donations/{$donationId}/collection", $this->collectionPayload())
+            ->assertCreated();
+
+        // Processing does not wait for the laboratory.
+        $this->actingAs($this->processing)
+            ->postJson("/api/blood-center/laboratory/donations/{$donationId}/components", [
+                'components' => [['component_id' => $this->packedRbc->id, 'volume_ml' => 250]],
+            ])->assertCreated();
+
+        $this->actingAs($this->processing)
+            ->patchJson("/api/blood-center/laboratory/donations/{$donationId}/status", ['status' => 'completed'])
+            ->assertOk();
+
+        // Issuance books the bag in, held back.
+        $unitId = $this->actingAs($this->inventory)
+            ->postJson('/api/blood-center/inventory', [
+                'donation_id' => $donationId,
+                'units' => [['component_id' => $this->packedRbc->id, 'expiry_date' => now()->addDays(35)->toDateString()]],
+            ])
+            ->assertCreated()
+            ->assertJsonPath('units.0.status', 'quarantined')
+            ->json('units.0.id');
+
+        $this->actingAs($this->inventory)
+            ->postJson("/api/blood-center/inventory/quarantine/{$donationId}/release")
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'tti_not_cleared');
+
+        // Immunohematology types the unit, blind.
+        $this->actingAs($this->typing)
+            ->postJson("/api/blood-center/laboratory/donations/{$donationId}/immunohematology", $this->concordantTyping($this->donor->donorProfile->blood_type_id))
+            ->assertCreated()
+            ->assertJsonPath('data.donor.blinded', true);
+
+        // TTI Testing reads the panel, blind; saving it clears it.
+        $this->actingAs($this->testing)
+            ->postJson("/api/blood-center/laboratory/donations/{$donationId}/serology", $this->nonReactivePanel())
+            ->assertCreated()
+            ->assertJsonPath('data.donor.blinded', true);
+
+        // Issuance releases it from quarantine.
+        $this->actingAs($this->inventory)
+            ->postJson("/api/blood-center/inventory/quarantine/{$donationId}/release")
+            ->assertOk();
+
+        $this->assertSame(BloodUnitStatus::Available, BloodUnit::findOrFail($unitId)->status);
+
+        // A hospital asks; the Inventory Control Officer reserves the bag; dispatch sends it.
+        $hospital = Facility::factory()->bloodBank()->approved()->create();
+        $request = BloodRequest::factory()
+            ->raisedBy($hospital, User::factory()->bloodBankStaff($hospital)->create())
+            ->addressedTo($this->facility)
+            ->forStock($this->donor->donorProfile->bloodType, $this->packedRbc, 1)
+            ->create();
+
+        $this->actingAs($dispatch)
+            ->postJson("/api/blood-center/blood-requests/{$request->id}/allocate", ['quantity' => 1])
+            ->assertForbidden();
+
+        $this->actingAs($this->inventory)
+            ->postJson("/api/blood-center/blood-requests/{$request->id}/allocate", ['quantity' => 1])
+            ->assertOk();
+
+        // The IT clerk reads stock and nothing more.
+        $this->actingAs($clerk)
+            ->postJson("/api/blood-center/blood-requests/{$request->id}/release")
+            ->assertForbidden();
+
+        $this->actingAs($dispatch)
+            ->postJson("/api/blood-center/blood-requests/{$request->id}/release")
+            ->assertOk();
+
+        $this->assertSame(BloodUnitStatus::Issued, BloodUnit::findOrFail($unitId)->status);
+    }
+
     private function collectionPayload(): array
     {
         $this->segments++;
@@ -335,10 +456,8 @@ class DonationToInventoryChainTest extends TestCase
     {
         $id = $this->collectedDonation();
 
-        $this->actingAs($this->testing)
-            ->postJson("/api/blood-center/laboratory/donations/{$id}/immunohematology", [
-                'blood_type_id' => $this->donor->donorProfile->blood_type_id,
-            ]);
+        $this->actingAs($this->typing)
+            ->postJson("/api/blood-center/laboratory/donations/{$id}/immunohematology", $this->concordantTyping($this->donor->donorProfile->blood_type_id));
 
         $this->actingAs($this->testing)
             ->postJson("/api/blood-center/laboratory/donations/{$id}/serology", $this->nonReactivePanel());

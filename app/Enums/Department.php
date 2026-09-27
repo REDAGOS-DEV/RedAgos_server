@@ -5,28 +5,25 @@ namespace App\Enums;
 /**
  * The operational departments of a blood centre.
  *
- * Laboratory/Processing was split into Testing and Processing, and
- * Inventory/Storage & Blood Request/Release became Issuance. Recorded in
- * docs/IMPLEMENTATION_DECISIONS.md, "Blood-centre departments: five, not four".
+ * Five, as the staff form lists them. A staff member holding a predefined
+ * StaffRole takes that role's department; one holding a custom role is
+ * assigned a department directly. Recorded in
+ * docs/IMPLEMENTATION_DECISIONS.md, "Staff roles".
  */
 enum Department: string
 {
     case Collection = 'collection';
 
-    case Testing = 'testing';
-
     case Processing = 'processing';
+
+    case Testing = 'testing';
 
     case Issuance = 'issuance';
 
     case Billing = 'billing';
 
     /**
-     * Get every accepted department value, in the order the organisation chart declares them.
-     *
-     * This is the canonical list. Validation rules and the API both project it,
-     * so a staff account cannot be filed under a department the matrix has
-     * never heard of.
+     * Get every accepted department value, in the order the staff form lists them.
      *
      * @return array<int, string>
      */
@@ -36,16 +33,43 @@ enum Department: string
     }
 
     /**
-     * Get the department's full name as docs/BLOOD-CENTER.md writes it.
+     * Get the department's name as the staff form writes it.
      */
     public function label(): string
     {
         return match ($this) {
-            self::Collection => 'Collection',
-            self::Testing => 'Testing',
+            self::Collection => 'Donor/Collection',
             self::Processing => 'Processing',
+            self::Testing => 'Testing',
             self::Issuance => 'Issuance',
-            self::Billing => 'Billing / Payment',
+            self::Billing => 'Billing',
         };
+    }
+
+    /**
+     * The role that approves correction requests for this department's records.
+     *
+     * The department's senior post. Null where no record of the department is
+     * correctable, and for an approver's own request the Center Admin (a
+     * supervisor) decides instead — see CorrectionService.
+     */
+    public function correctionApprover(): ?StaffRole
+    {
+        return match ($this) {
+            self::Collection => StaffRole::ScreeningPhysician,
+            self::Processing => StaffRole::ComponentTechnologist,
+            self::Testing => StaffRole::LabSupervisor,
+            self::Issuance, self::Billing => null,
+        };
+    }
+
+    /**
+     * Get the roles that sit in this department.
+     *
+     * @return array<int, StaffRole>
+     */
+    public function roles(): array
+    {
+        return StaffRole::forDepartment($this);
     }
 }

@@ -5,6 +5,7 @@ namespace Database\Factories;
 use App\Enums\AccountStatus;
 use App\Enums\Department;
 use App\Enums\RoleName;
+use App\Enums\StaffRole;
 use App\Models\DonorProfile;
 use App\Models\Facility;
 use App\Models\Role;
@@ -148,19 +149,19 @@ class UserFactory extends Factory
      * suspended. Calling this with ->count(n) attaches every user to the same
      * facility, which is what a real centre looks like.
      */
-    public function bloodCenterStaff(?Facility $facility = null, ?Department $department = null): static
+    public function bloodCenterStaff(?Facility $facility = null, Department|StaffRole|null $post = null): static
     {
         $facility ??= Facility::factory()->approved()->create();
 
-        // Defaults to Issuance because it holds the widest set of endpoints,
-        // so a test that just wants "some approved blood-centre staff" gets an
-        // account that can actually reach them.
-        $department ??= Department::Issuance;
+        // Defaults to the Inventory Control Officer because it holds the widest
+        // set of endpoints, so a test that just wants "some approved
+        // blood-centre staff" gets an account that can actually reach them.
+        $role = self::roleFor($post) ?? StaffRole::InventoryControlOfficer;
 
         return $this->state(fn (array $attributes): array => [
             'facility_id' => $facility->id,
             'position' => 'Medical Technologist',
-            'department' => $department,
+            'staff_role' => $role,
             'is_supervisor' => false,
         ])->withRole(RoleName::BloodCenter);
     }
@@ -168,20 +169,57 @@ class UserFactory extends Factory
     /**
      * Create a blood-centre supervisor: the management level, holding every ability.
      *
-     * Passing a department produces a working supervisor. Leaving it null
-     * produces a management-only one. Neither narrows what they may do — the
-     * department only records where they sit.
+     * Passing a role (or a department, read as its default role) produces a
+     * working supervisor. Leaving it null produces a management-only one.
+     * Neither narrows what they may do — the role only records where they sit.
      */
-    public function bloodCenterSupervisor(?Facility $facility = null, ?Department $department = null): static
+    public function bloodCenterSupervisor(?Facility $facility = null, Department|StaffRole|null $post = null): static
+    {
+        $facility ??= Facility::factory()->approved()->create();
+        $role = self::roleFor($post);
+
+        return $this->state(fn (array $attributes): array => [
+            'facility_id' => $facility->id,
+            'position' => 'Blood Center Supervisor',
+            'staff_role' => $role,
+            'is_supervisor' => true,
+        ])->withRole(RoleName::BloodCenter);
+    }
+
+    /**
+     * Create blood-centre staff holding a custom, typed role in a department.
+     */
+    public function bloodCenterCustomStaff(?Facility $facility, Department $department, string $role = 'Quality Officer'): static
     {
         $facility ??= Facility::factory()->approved()->create();
 
         return $this->state(fn (array $attributes): array => [
             'facility_id' => $facility->id,
-            'position' => 'Blood Center Supervisor',
+            'position' => 'RMT',
+            'staff_role' => null,
+            'custom_role' => $role,
             'department' => $department,
-            'is_supervisor' => true,
+            'is_supervisor' => false,
         ])->withRole(RoleName::BloodCenter);
+    }
+
+    /**
+     * Cap the account with the given Read / Write / Update / Delete privileges.
+     *
+     * @param  array<int, string>  $privileges
+     */
+    public function withPrivileges(array $privileges): static
+    {
+        return $this->state(fn (array $attributes): array => ['staff_privileges' => $privileges]);
+    }
+
+    /**
+     * Read a department as its default role, so tests written against
+     * departments keep meaning the department's core post.
+     */
+    private static function roleFor(Department|StaffRole|null $post): ?StaffRole
+    {
+        return $post instanceof Department ? StaffRole::defaultFor($post) : $post;
     }
 
     /**
@@ -199,7 +237,7 @@ class UserFactory extends Factory
         return $this->state(fn (array $attributes): array => [
             'facility_id' => $facility->id,
             'position' => 'Medical Technologist',
-            'department' => null,
+            'staff_role' => null,
             'is_supervisor' => false,
         ])->withRole(RoleName::BloodBank);
     }

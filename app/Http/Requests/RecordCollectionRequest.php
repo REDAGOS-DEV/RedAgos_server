@@ -40,7 +40,9 @@ class RecordCollectionRequest extends FormRequest
                 'string',
                 'max:50',
                 Rule::unique('blood_collections', 'segment_number')
-                    ->where('facility_id', $this->user()?->facility_id),
+                    ->where('facility_id', $this->user()?->facility_id)
+                    // A correction keeps its own segment number.
+                    ->ignore($this->correctingDonationId, 'donation_id'),
             ],
 
             // No maximum draw duration: that is a clinical constant nobody has
@@ -57,6 +59,12 @@ class RecordCollectionRequest extends FormRequest
      * whatever case. Without this a scanned and a hand-typed copy of the same
      * tube would be two different numbers, and uniqueness would mean nothing.
      */
+    /**
+     * The donation being corrected, when CorrectionService validates a
+     * corrected box, so the bag's own segment number is not a collision.
+     */
+    public ?int $correctingDonationId = null;
+
     protected function prepareForValidation(): void
     {
         $segment = $this->input('segment_number');

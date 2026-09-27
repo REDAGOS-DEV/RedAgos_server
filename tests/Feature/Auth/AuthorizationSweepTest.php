@@ -2,8 +2,8 @@
 
 namespace Tests\Feature\Auth;
 
-use App\Enums\Department;
 use App\Enums\RoleName;
+use App\Enums\StaffRole;
 use App\Models\User;
 use App\Support\DepartmentPermissions;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
@@ -119,7 +119,7 @@ class AuthorizationSweepTest extends TestCase
             'incoming queue' => ['get', '/api/blood-center/blood-requests', 'requests.view'],
             'queue summary' => ['get', '/api/blood-center/blood-requests/summary', 'requests.view'],
             'request review' => ['get', '/api/blood-center/blood-requests/1', 'requests.view'],
-            'allocate units' => ['post', '/api/blood-center/blood-requests/1/allocate', 'requests.approve'],
+            'allocate units' => ['post', '/api/blood-center/blood-requests/1/allocate', 'requests.process'],
             'reject request' => ['post', '/api/blood-center/blood-requests/1/reject', 'requests.approve'],
             'release holds' => ['post', '/api/blood-center/blood-requests/1/release-holds', 'requests.approve'],
             'release units' => ['post', '/api/blood-center/blood-requests/1/release', 'requests.release'],
@@ -130,24 +130,66 @@ class AuthorizationSweepTest extends TestCase
             'record walk-in' => ['post', '/api/blood-center/blood-requests/walk-in', 'requests.record'],
             'billing show' => ['get', '/api/blood-center/billings/1', 'billing.view'],
             'record payment' => ['post', '/api/blood-center/billings/1/payments', 'billing.record_payment'],
+            'donor list' => ['get', '/api/blood-center/donors', 'donors.view_contact'],
+            'donor lookup' => ['get', '/api/blood-center/donors/lookup', 'appointments.verify'],
+            'donor history' => ['get', '/api/blood-center/donors/00000000-0000-4000-8000-000000000000/history', 'donors.view_clinical'],
+            'open donation' => ['post', '/api/blood-center/donations', 'donations.register'],
+            'record screening' => ['post', '/api/blood-center/donations/1/screening', 'donations.screen'],
+            'record collection' => ['post', '/api/blood-center/donations/1/collection', 'donations.collect'],
+            'close donation' => ['patch', '/api/blood-center/donations/1/status', 'donations.close'],
+            'record immunohematology' => ['post', '/api/blood-center/laboratory/donations/1/immunohematology', 'lab.record_immunohematology'],
+            'record serology' => ['post', '/api/blood-center/laboratory/donations/1/serology', 'lab.record_serology'],
+            'referral list' => ['get', '/api/blood-center/laboratory/referrals', 'lab.referrals'],
+            'staff roles catalogue' => ['get', '/api/blood-center/staff/roles', 'staff.manage'],
+            'release from quarantine' => ['post', '/api/blood-center/inventory/quarantine/1/release', 'inventory.release_quarantine'],
+            'correction list' => ['get', '/api/blood-center/corrections', 'corrections.request'],
+            'request correction' => ['post', '/api/blood-center/donations/1/corrections', 'corrections.request'],
+            'approve correction' => ['post', '/api/blood-center/corrections/1/approve', 'corrections.approve'],
+            'reject correction' => ['post', '/api/blood-center/corrections/1/reject', 'corrections.approve'],
         ];
     }
 
     /**
-     * Blood-centre staff holding the role but no department must be refused everywhere.
+     * Blood-centre staff holding the access role but no staff role must be refused everywhere.
      *
      * This is the regression that matters most: before departments existed the
-     * role alone opened all of these, so an account that slips through without
-     * an assignment must fail closed rather than inherit the old behaviour.
+     * access role alone opened all of these, so an account that slips through
+     * without an assignment must fail closed rather than inherit the old
+     * behaviour.
      */
     #[DataProvider('departmentGatedRoutes')]
-    public function test_department_gated_routes_reject_staff_with_no_department(string $method, string $uri): void
+    public function test_department_gated_routes_reject_staff_with_no_role(string $method, string $uri): void
     {
         $staff = User::factory()->bloodCenterStaff()->create();
-        $staff->department = null;
+        $staff->staff_role = null;
         $staff->save();
 
         $this->actingAs($staff->fresh())->json($method, $uri)->assertForbidden();
+    }
+
+    /**
+     * Each role reaches exactly the gated routes whose ability it holds.
+     *
+     * The route table above states the ability each route demands, and the
+     * matrix states what each role holds; this is the check that the two
+     * agree on every pairing, not just that a supervisor gets through.
+     */
+    public function test_each_role_is_admitted_exactly_where_the_matrix_says(): void
+    {
+        foreach (StaffRole::cases() as $role) {
+            $staff = User::factory()->bloodCenterStaff(null, $role)->create();
+            $holds = DepartmentPermissions::forRole($role);
+
+            foreach (self::departmentGatedRoutes() as $name => [$method, $uri, $ability]) {
+                $status = $this->actingAs($staff)->json($method, $uri)->getStatusCode();
+
+                if (in_array($ability, $holds, true)) {
+                    $this->assertNotSame(403, $status, "{$role->value} holds [{$ability}] but was refused {$name}.");
+                } else {
+                    $this->assertSame(403, $status, "{$role->value} lacks [{$ability}] but reached {$name}.");
+                }
+            }
+        }
     }
 
     #[DataProvider('departmentGatedRoutes')]
@@ -173,12 +215,12 @@ class AuthorizationSweepTest extends TestCase
         }
     }
 
-    public function test_a_donor_cannot_reach_a_blood_center_route_even_with_a_department_column_set(): void
+    public function test_a_donor_cannot_reach_a_blood_center_route_even_with_a_staff_role_set(): void
     {
-        // department is a plain column, so it can be set on an account that
-        // holds no blood_center role. role: must still refuse first.
+        // staff_role is a plain column, so it can be set on an account that
+        // holds no blood_center access role. role: must still refuse first.
         $donor = User::factory()->donor()->create();
-        $donor->department = Department::Issuance;
+        $donor->staff_role = StaffRole::InventoryControlOfficer;
         $donor->save();
 
         $this->actingAs($donor->fresh())

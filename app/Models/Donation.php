@@ -124,13 +124,21 @@ class Donation extends Model
     }
 
     /**
-     * Limit the query to donations cleared for issue.
+     * The clearance tokens in force for this donation — issued by TTI Testing
+     * and Immunohematology, and not revoked by a correction.
+     */
+    public function clearances(): HasMany
+    {
+        return $this->hasMany(DonationClearance::class)->whereNull('revoked_at');
+    }
+
+    /**
+     * Limit the query to donations Processing has finished with.
      *
-     * `completed` means testing is finished and the blood may reach a patient —
-     * `tested` is the separate, earlier status. The two are not the same, and
-     * this docblock previously said "reached collection" while the query
-     * filtered on `completed`. Blood-unit intake gates on this distinction; see
-     * the donation-status entry in docs/IMPLEMENTATION_DECISIONS.md.
+     * `completed` means the components are declared and the bags may be booked
+     * in — quarantined. Whether a unit may reach a patient is decided per unit,
+     * by the clearance tokens; see "Quarantine lifecycle" in
+     * docs/IMPLEMENTATION_DECISIONS.md.
      */
     public function scopeCompleted(Builder $query): Builder
     {
