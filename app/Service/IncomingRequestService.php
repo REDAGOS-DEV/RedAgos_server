@@ -3,10 +3,10 @@
 namespace App\Service;
 
 use App\Enums\BloodRequestStatus;
+use App\Enums\RequestSource;
 use App\Enums\UrgencyLevel;
 use App\Models\BloodRequest;
 use App\Models\BloodRequestItem;
-use App\Models\RequestAllocation;
 use App\Models\User;
 use App\Repository\AvailabilityRepository;
 use App\Repository\BloodRequestRepository;
@@ -28,7 +28,9 @@ class IncomingRequestService
         private readonly BloodRequestRepository $bloodRequestRepository,
         private readonly AvailabilityRepository $availabilityRepository,
         private readonly BloodRequestProjector $projector,
-        private readonly BloodRequestFormService $formService
+        private readonly BloodRequestFormService $formService,
+        private readonly RequestStatusResolver $resolver,
+        private readonly BloodRequestHistory $history
     ) {}
 
     /**
@@ -79,11 +81,48 @@ class IncomingRequestService
             ->whereHas('allocations', fn ($query) => $query->where('status', 'allocated'))
             ->count();
 
+        // Open requests by where they were keyed in, so the queue can show how
+        // much of its work arrived at the counter rather than through the
+        // portal.
+        $openBySource = BloodRequest::query()
+            ->addressedTo($facilityId)
+            ->open()
+            ->groupBy('request_source')
+            ->selectRaw('request_source, COUNT(*) as aggregate')
+            ->pluck('aggregate', 'request_source')
+            ->all();
+
+        $bySource = [];
+
+        foreach (RequestSource::values() as $source) {
+            $bySource[$source] = (int) ($openBySource[$source] ?? 0);
+        }
+
         return [
             'totals' => $totals,
             'open_emergencies' => $emergencies,
             'awaiting_release' => $awaitingRelease,
+            'open_by_source' => $bySource,
             'as_of' => OperationalDay::today()->toIso8601String(),
+        ];
+    }
+
+    /**
+     * Show an incoming request's history, oldest first.
+     *
+     * @return array<string, mixed>
+     */
+    public function history(User $user, int $requestId): array
+    {
+        $facilityId = $this->requireFacilityId($user);
+
+        $request = $this->bloodRequestRepository->findAddressedTo($requestId, $facilityId)
+            ?? throw $this->refuse(404, 'request_not_found', 'Blood request not found.');
+
+        return [
+            'request_id' => $request->id,
+            'reference_number' => $request->reference_number,
+            'events' => $this->history->timeline($request),
         ];
     }
 
@@ -103,15 +142,12 @@ class IncomingRequestService
         $request = $this->bloodRequestRepository->findAddressedTo($requestId, $facilityId)
             ?? throw $this->refuse(404, 'request_not_found', 'Blood request not found.');
 
-        $claimed = $request->allocations->filter(
-            fn (RequestAllocation $allocation): bool => $allocation->status->claimsUnit()
-        );
-        $heldPerItem = $claimed->groupBy('request_item_id');
+        $figures = $this->resolver->figures($request);
 
         // Stock is counted per line, not per request: a form asking for packed
         // cells and platelets has two different shelves to answer it from, and
         // one figure covering both would say nothing useful about either.
-        $lines = $request->items->map(function (BloodRequestItem $item) use ($facilityId, $request, $heldPerItem): array {
+        $lines = $request->items->sortBy('id')->values()->map(function (BloodRequestItem $item) use ($facilityId, $request, $figures): array {
             $available = $this->availabilityRepository->availableAt(
                 $facilityId,
                 (int) $request->blood_type_id,
@@ -119,7 +155,12 @@ class IncomingRequestService
                 OperationalDay::todayAsDate()
             );
 
-            $outstanding = max(0, $item->quantity - ($heldPerItem->get($item->id)?->count() ?? 0));
+            $figure = $figures->get($item->id);
+
+            // What this facility still has to find for the line: nothing
+            // already held or released, nothing forwarded elsewhere, and
+            // nothing once the rest of the line was closed.
+            $outstanding = (int) ($figure['allocatable'] ?? 0);
 
             return [
                 'request_item_id' => $item->id,
@@ -136,6 +177,14 @@ class IncomingRequestService
                 'outstanding' => $outstanding,
                 'can_fully_cover' => $available >= $outstanding,
                 'can_cover_now' => min($available, $outstanding),
+                'reserved' => (int) ($figure['reserved'] ?? 0),
+                'fulfilled' => (int) ($figure['fulfilled'] ?? 0),
+                'received' => (int) ($figure['received'] ?? 0),
+                'forwarded' => (int) ($figure['forwarded'] ?? 0),
+                'remaining' => (int) ($figure['remaining'] ?? $item->quantity),
+                'closed' => (bool) ($figure['closed'] ?? false),
+                'line_status' => ($figure['status'] ?? null)?->value,
+                'line_status_label' => ($figure['status'] ?? null)?->label(),
             ];
         });
 

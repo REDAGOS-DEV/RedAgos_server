@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Enums\BloodRequestStatus;
 use App\Enums\RequestPurpose;
+use App\Enums\RequestSource;
 use App\Enums\UrgencyLevel;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Casts\Attribute;
@@ -32,10 +33,13 @@ class BloodRequest extends Model
 
     protected $fillable = [
         'reference_number',
+        'parent_request_id',
         'facility_id',
         'target_facility_id',
         'requested_by',
+        'recorded_by',
         'request_purpose',
+        'request_source',
         'patient_surname',
         'patient_first_name',
         'patient_middle_name',
@@ -49,6 +53,17 @@ class BloodRequest extends Model
         'reviewed_at',
         'request_date',
         'fulfilled_at',
+        'closed_at',
+    ];
+
+    /**
+     * Mirrors the column default, so a request built in PHP carries its source
+     * before it is ever read back — Eloquent does not fetch defaults on insert.
+     *
+     * @var array<string, mixed>
+     */
+    protected $attributes = [
+        'request_source' => 'blood_bank_portal',
     ];
 
     protected function casts(): array
@@ -57,10 +72,12 @@ class BloodRequest extends Model
             'status' => BloodRequestStatus::class,
             'urgency_level' => UrgencyLevel::class,
             'request_purpose' => RequestPurpose::class,
+            'request_source' => RequestSource::class,
             'patient_age' => 'integer',
             'request_date' => 'immutable_datetime',
             'reviewed_at' => 'immutable_datetime',
             'fulfilled_at' => 'immutable_datetime',
+            'closed_at' => 'immutable_datetime',
         ];
     }
 
@@ -82,10 +99,56 @@ class BloodRequest extends Model
 
     /**
      * The blood-bank staff member who submitted the request.
+     *
+     * Null on a walk-in: nobody at the hospital submitted it. The hospital
+     * confirmed it by phone and a blood-centre staff member entered it, who is
+     * recorder() below.
      */
     public function requester(): BelongsTo
     {
         return $this->belongsTo(User::class, 'requested_by');
+    }
+
+    /**
+     * The blood-centre staff member who entered a walk-in request.
+     */
+    public function recorder(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'recorded_by');
+    }
+
+    /**
+     * The request whose remaining quantity this follow-up carries elsewhere.
+     */
+    public function parent(): BelongsTo
+    {
+        return $this->belongsTo(self::class, 'parent_request_id');
+    }
+
+    /**
+     * Requests raised to source this request's remainder from other facilities.
+     */
+    public function followUps(): HasMany
+    {
+        return $this->hasMany(self::class, 'parent_request_id');
+    }
+
+    /**
+     * The representative and phone-verification record of a walk-in request.
+     */
+    public function walkIn(): HasOne
+    {
+        return $this->hasOne(BloodRequestWalkIn::class, 'request_id');
+    }
+
+    /**
+     * Everything that has happened to this request, oldest first.
+     */
+    public function events(): HasMany
+    {
+        return $this->hasMany(BloodRequestEvent::class, 'request_id')
+            ->orderBy('created_at')
+            ->orderBy('id');
     }
 
     /**
@@ -144,6 +207,19 @@ class BloodRequest extends Model
     }
 
     /**
+     * Determine whether nothing more may be done to fill this request.
+     *
+     * A terminal status says so outright. A partially fulfilled request whose
+     * every remaining line was closed or forwarded says so through closed_at,
+     * because it keeps the `partial` status — what was actually supplied —
+     * while being finished.
+     */
+    public function isClosed(): bool
+    {
+        return $this->status->isTerminal() || $this->closed_at !== null;
+    }
+
+    /**
      * Get the patient's name as the request form prints it, if there is one.
      */
     public function patientFullName(): ?string
@@ -160,6 +236,19 @@ class BloodRequest extends Model
         $surname = mb_strtoupper((string) $this->patient_surname);
 
         return $given === '' ? $surname : "{$surname}, {$given}";
+    }
+
+    /**
+     * Limit the query to requests that may still be acted on.
+     */
+    public function scopeOpen(Builder $query): Builder
+    {
+        return $query
+            ->whereIn('status', array_values(array_map(
+                fn (BloodRequestStatus $status): string => $status->value,
+                array_filter(BloodRequestStatus::cases(), fn (BloodRequestStatus $status): bool => ! $status->isTerminal())
+            )))
+            ->whereNull('closed_at');
     }
 
     /**

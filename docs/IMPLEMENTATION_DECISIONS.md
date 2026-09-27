@@ -403,7 +403,9 @@ to be, it is a Laboratory concern with its own states, not a relabelling of
 **DECISION (receipt stays with the requester):** Confirming arrival is done from
 the hospital's request page. The dispatching centre cannot assert on the
 hospital's behalf that blood arrived, which is why the endpoint has always sat
-on the requester side of the API.
+on the requester side of the API. *(Receipt no longer moves the request's
+status — fulfilment is counted at dispatch; see "Walk-in requests, partial
+fulfilment and follow-ups" at the end.)*
 
 ## Blood Donor's Health Questionnaire (DOH-DCHD-RD-SNBC-DMS-FORM002)
 
@@ -951,3 +953,17 @@ At intake each unit takes the volume of its component's next un-booked bag,
 in declaration order, and keeps it in `blood_units.volume_ml`. The 1–1000 mL
 bound is a typing guard, not a clinical rule; nothing compares the bags to the
 collected volume.
+
+## Walk-in requests, partial fulfilment and follow-ups
+
+**DECISION (project owner, 2026-09-27):** There are still two request purposes — Blood Bank Replenishment and Patient Transfusion. What is new is the *source*: `blood_requests.request_source` is `blood_bank_portal` (every request before this, and every portal submission) or `blood_center_walk_in`.
+
+- **Walk-in (D1):** a watcher who brings a patient's request straight to a blood centre. Issuance phones the hospital blood bank first; while they are on the call nothing is saved, and if the hospital does not confirm, nothing is recorded. Only a confirmed request is created (`POST /blood-center/blood-requests/walk-in`, ability `requests.record`, held by the Inventory Control Officer and Dispatch Coordinator). It is the hospital's request — `facility_id` is the hospital, it takes the next number in the hospital's `RQ-{hospital}` sequence, it appears in the hospital's own list — with `requested_by` null and `recorded_by` the centre staff member. The watcher is stored as the representative who presented it, and the hospital staff member who confirmed it (name, position, number called, time) on `blood_request_walk_ins`. None of that is written to `audit_logs`. Purpose is forced to Patient Transfusion; replenishment stays portal-only.
+- **Registered hospitals only (D2):** the hospital must be an approved `blood_bank` facility.
+- **Duplicates:** before the call, `POST …/walk-in/duplicates` looks for the hospital's active requests for the patient (reference number, or name and blood type within 14 days). A request already at this centre is opened instead; one part-filled elsewhere can be continued as a follow-up; anything else needs a written reason (`duplicate_acknowledgement`), re-checked under the hospital's lock on save. The portal warns the hospital the same way (`POST /hospital/blood-requests/patient-matches`).
+- **Fulfilment is counted at dispatch (D3):** `RequestStatusResolver` is the one place a status is derived. Anything released makes a request Partially Fulfilled; every requested unit released makes it Fulfilled. Receipt is still stamped per unit by the hospital and reported as "received x of y", but no longer moves the status. This replaces the rule that a request was only fulfilled on receipt, and fixes a top-up knocking a partial request back to Processing. `php artisan requests:resettle` (with `--dry-run`) brings requests settled under the old rule into line.
+- **Requested versus fulfilled:** a line's `quantity` is never changed. A remainder the centre cannot supply is closed with a reason (`unavailable`); one the hospital no longer needs is closed as `not_needed`. When every line is supplied, closed or forwarded, a short request stays `partial` with `closed_at` set — shown as "Partially Fulfilled (Closed)" — and can no longer be allocated. Closing every line of a request nothing was supplied on is refused: that is a rejection or a cancellation.
+- **Remainder from another facility (D4):** a follow-up (`parent_request_id`, per-line `parent_item_id`) asks another centre for what is left — from the portal (`POST /hospital/blood-requests/{id}/follow-up`) or as a walk-in at that centre. What it carries is subtracted from what the original may still allocate, under the original's row lock, so a unit is never asked of two facilities at once; a follow-up that is rejected or cancelled gives its quantity back.
+- **History:** every change writes one append-only `blood_request_events` row — who, from which facility, status from and to, and every line's requested / reserved / fulfilled / received / forwarded / remaining at that moment. Both portals read it (`GET …/{id}/history`).
+
+**CONSEQUENCE:** There is still no MOA/partner relationship between a hospital and a blood centre in the schema; a request may be addressed to any approved centre. A walk-in's billing is raised against the hospital like any other request (every component is subsidised today).

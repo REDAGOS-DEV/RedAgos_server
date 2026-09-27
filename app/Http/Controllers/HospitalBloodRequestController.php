@@ -3,10 +3,14 @@
 namespace App\Http\Controllers;
 
 use App\Http\Requests\CancelBloodRequestRequest;
+use App\Http\Requests\CloseRequestLineRequest;
 use App\Http\Requests\ConfirmReceiptRequest;
+use App\Http\Requests\FindPatientRequestsRequest;
 use App\Http\Requests\ListBloodRequestsRequest;
 use App\Http\Requests\StoreBloodRequestRequest;
+use App\Http\Requests\StoreFollowUpRequestRequest;
 use App\Service\BloodRequestService;
+use App\Service\FollowUpRequestService;
 use App\Service\FulfillmentService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -19,8 +23,55 @@ class HospitalBloodRequestController extends Controller
 {
     public function __construct(
         private readonly BloodRequestService $bloodRequestService,
-        private readonly FulfillmentService $fulfillmentService
+        private readonly FulfillmentService $fulfillmentService,
+        private readonly FollowUpRequestService $followUpRequestService
     ) {}
+
+    /**
+     * Find this hospital's active requests for a patient, before raising another.
+     */
+    public function patientMatches(FindPatientRequestsRequest $request): JsonResponse
+    {
+        return response()->json(
+            $this->bloodRequestService->patientMatches($request->user(), $request->validated())
+        );
+    }
+
+    /**
+     * Show everything that has happened to one of this blood bank's requests.
+     */
+    public function history(Request $request, int $bloodRequest): JsonResponse
+    {
+        return response()->json(
+            $this->bloodRequestService->history($request->user(), $bloodRequest)
+        );
+    }
+
+    /**
+     * Close the rest of one line this blood bank no longer needs.
+     */
+    public function closeLine(CloseRequestLineRequest $request, int $bloodRequest, int $item): JsonResponse
+    {
+        return response()->json(
+            $this->bloodRequestService->closeLine(
+                $request->user(),
+                $bloodRequest,
+                $item,
+                $request->validated()['note'] ?? null
+            )
+        );
+    }
+
+    /**
+     * Ask another facility for what this request could not get.
+     */
+    public function followUp(StoreFollowUpRequestRequest $request, int $bloodRequest): JsonResponse
+    {
+        return response()->json(
+            $this->followUpRequestService->createFromPortal($request->user(), $bloodRequest, $request->validated()),
+            201
+        );
+    }
 
     /**
      * Confirm that dispatched units have arrived.

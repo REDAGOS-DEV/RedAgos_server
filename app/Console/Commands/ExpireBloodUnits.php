@@ -3,10 +3,15 @@
 namespace App\Console\Commands;
 
 use App\Enums\AllocationStatus;
+use App\Enums\BloodRequestStatus;
 use App\Enums\BloodUnitStatus;
+use App\Enums\RequestEventType;
+use App\Models\BloodRequest;
 use App\Models\RequestAllocation;
 use App\Repository\InventoryRepository;
 use App\Service\AuditLogger;
+use App\Service\BloodRequestHistory;
+use App\Service\RequestStatusResolver;
 use App\Support\OperationalDay;
 use Illuminate\Console\Command;
 use Illuminate\Support\Collection;
@@ -38,7 +43,9 @@ class ExpireBloodUnits extends Command
 
     public function __construct(
         private readonly InventoryRepository $inventoryRepository,
-        private readonly AuditLogger $auditLogger
+        private readonly AuditLogger $auditLogger,
+        private readonly RequestStatusResolver $resolver,
+        private readonly BloodRequestHistory $history
     ) {
         parent::__construct();
     }
@@ -154,12 +161,18 @@ class ExpireBloodUnits extends Command
      */
     private function releaseExpiredHolds(string $operationalDate, string $runId): int
     {
-        return DB::transaction(function () use ($operationalDate, $runId): int {
+        $affectedRequests = [];
+
+        $released = DB::transaction(function () use ($operationalDate, $runId, &$affectedRequests): int {
             $holds = $this->inventoryRepository->lockExpiredHolds($operationalDate);
 
             if ($holds->isEmpty()) {
                 return 0;
             }
+
+            $affectedRequests = $holds->groupBy('request_id')
+                ->map(fn (Collection $group): array => $group->pluck('unit_id')->all())
+                ->all();
 
             $unitIds = $holds->pluck('unit_id')->all();
             $returned = $this->inventoryRepository->markAvailable($unitIds);
@@ -187,5 +200,49 @@ class ExpireBloodUnits extends Command
 
             return count($unitIds);
         });
+
+        $this->settleAffectedRequests($affectedRequests);
+
+        return $released;
+    }
+
+    /**
+     * Bring each request that lost a hold back in line with what it still holds.
+     *
+     * Done after the holds are given up and committed, one request per
+     * transaction, rather than inside the sweep's own transaction: the sweep
+     * locks allocations and units first, and taking request locks on top of
+     * those would invert the order allocation takes them in.
+     *
+     * @param  array<int|string, array<int, string>>  $affectedRequests  unit ids keyed by request id
+     */
+    private function settleAffectedRequests(array $affectedRequests): void
+    {
+        foreach ($affectedRequests as $requestId => $unitIds) {
+            DB::transaction(function () use ($requestId, $unitIds): void {
+                $request = BloodRequest::query()->whereKey($requestId)->lockForUpdate()->first();
+
+                if ($request === null) {
+                    return;
+                }
+
+                $from = $request->status;
+
+                if ($this->resolver->settle($request) === BloodRequestStatus::Pending && $from !== BloodRequestStatus::Pending) {
+                    $request->reviewed_by = null;
+                    $request->reviewed_at = null;
+                    $request->save();
+                }
+
+                $this->history->record(
+                    $request,
+                    RequestEventType::HoldExpired,
+                    null,
+                    $from,
+                    count($unitIds).' reserved unit(s) passed their expiry date and were returned to stock.',
+                    $unitIds,
+                );
+            });
+        }
     }
 }

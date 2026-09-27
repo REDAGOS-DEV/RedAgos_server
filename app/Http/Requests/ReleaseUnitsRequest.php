@@ -28,6 +28,8 @@ class ReleaseUnitsRequest extends FormRequest
         return [
             'allocation_ids' => ['sometimes', 'array', 'min:1'],
             'allocation_ids.*' => ['integer'],
+            // Who physically took the units — for a walk-in, the watcher.
+            'handed_to' => ['sometimes', 'nullable', 'string', 'max:150'],
         ];
     }
 }

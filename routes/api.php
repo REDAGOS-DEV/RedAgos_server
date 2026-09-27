@@ -15,6 +15,7 @@ use App\Http\Controllers\BloodCenterReferenceController;
 use App\Http\Controllers\BloodCenterReferralController;
 use App\Http\Controllers\BloodCenterRequestController;
 use App\Http\Controllers\BloodCenterStaffController;
+use App\Http\Controllers\BloodCenterWalkInController;
 use App\Http\Controllers\BookingCatalogController;
 use App\Http\Controllers\DonorAppointmentController;
 use App\Http\Controllers\DonorDashboardController;
@@ -248,6 +249,24 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             Route::get('/summary', [BloodCenterRequestController::class, 'summary'])
                 ->middleware('can:requests.view');
 
+            // Walk-in Patient Transfusion requests: a watcher who came to the
+            // centre instead of the hospital blood bank. Issuance phones the
+            // hospital and records the request only once it is confirmed.
+            // The duplicate lookup is a POST so a patient's name never sits in
+            // a URL or an access log.
+            Route::get('/walk-in/reference', [BloodCenterWalkInController::class, 'reference'])
+                ->middleware('can:requests.record');
+
+            Route::post('/walk-in/duplicates', [BloodCenterWalkInController::class, 'duplicates'])
+                ->middleware(['can:requests.record', 'throttle:60,1']);
+
+            Route::post('/walk-in', [BloodCenterWalkInController::class, 'store'])
+                ->middleware(['can:requests.record', 'throttle:30,1']);
+
+            Route::get('/{bloodRequest}/history', [BloodCenterRequestController::class, 'history'])
+                ->middleware('can:requests.view')
+                ->whereNumber('bloodRequest');
+
             // Declared before /{bloodRequest}, which is numeric-constrained and
             // so would not swallow this, but keeping the specific route first
             // matches how /summary and /track are placed elsewhere.
@@ -276,6 +295,13 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             Route::post('/{bloodRequest}/release', [BloodCenterRequestController::class, 'release'])
                 ->middleware('can:requests.release')
                 ->whereNumber('bloodRequest');
+
+            // Closing the rest of a line the centre cannot supply is a
+            // decision on the hospital's request, like a rejection.
+            Route::post('/{bloodRequest}/items/{item}/close', [BloodCenterRequestController::class, 'closeLine'])
+                ->middleware('can:requests.approve')
+                ->whereNumber('bloodRequest')
+                ->whereNumber('item');
         });
 
         // Billing. Issuance holds billing.view read-only so release can check
@@ -483,6 +509,12 @@ Route::middleware(['auth:sanctum', 'role:blood_bank', 'facility.operational'])
         Route::get('/blood-requests', [HospitalBloodRequestController::class, 'index']);
         Route::post('/blood-requests', [HospitalBloodRequestController::class, 'store']);
 
+        // The check before raising a second request for the same patient —
+        // including one a blood centre recorded here after a walk-in. A POST so
+        // the patient's name stays out of URLs and access logs.
+        Route::post('/blood-requests/patient-matches', [HospitalBloodRequestController::class, 'patientMatches'])
+            ->middleware('throttle:60,1');
+
         // Declared before the {bloodRequest} route below, which would otherwise
         // swallow "track" and then fail to match it as an integer.
         Route::get('/blood-requests/track/{reference}', [HospitalBloodRequestController::class, 'track'])
@@ -495,6 +527,17 @@ Route::middleware(['auth:sanctum', 'role:blood_bank', 'facility.operational'])
             ->whereNumber('bloodRequest');
         Route::post('/blood-requests/{bloodRequest}/cancel', [HospitalBloodRequestController::class, 'cancel'])
             ->whereNumber('bloodRequest');
+
+        Route::get('/blood-requests/{bloodRequest}/history', [HospitalBloodRequestController::class, 'history'])
+            ->whereNumber('bloodRequest');
+
+        // Sourcing what the request could not get from a different facility.
+        Route::post('/blood-requests/{bloodRequest}/follow-up', [HospitalBloodRequestController::class, 'followUp'])
+            ->whereNumber('bloodRequest');
+
+        Route::post('/blood-requests/{bloodRequest}/items/{item}/close', [HospitalBloodRequestController::class, 'closeLine'])
+            ->whereNumber('bloodRequest')
+            ->whereNumber('item');
 
         // Receipt is confirmed by the receiving facility and nobody else. The
         // centre that dispatched the units cannot assert on the hospital's

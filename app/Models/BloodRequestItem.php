@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\IndicationCode;
+use App\Enums\LineClosureReason;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -20,8 +21,14 @@ class BloodRequestItem extends Model
 {
     use HasFactory;
 
+    /**
+     * The closure columns are deliberately absent. Closing a line is a decision
+     * with an owner, made through RequestLineCloser, so no mass-assignment path
+     * may reach it.
+     */
     protected $fillable = [
         'request_id',
+        'parent_item_id',
         'component_id',
         'quantity',
         'indication_code',
@@ -33,7 +40,33 @@ class BloodRequestItem extends Model
         return [
             'indication_code' => IndicationCode::class,
             'quantity' => 'integer',
+            'closed_at' => 'immutable_datetime',
+            'closure_reason' => LineClosureReason::class,
         ];
+    }
+
+    /**
+     * The line on another request whose remainder this line carries.
+     */
+    public function parentItem(): BelongsTo
+    {
+        return $this->belongsTo(self::class, 'parent_item_id');
+    }
+
+    /**
+     * Lines on follow-up requests that source part of this line elsewhere.
+     */
+    public function followUpItems(): HasMany
+    {
+        return $this->hasMany(self::class, 'parent_item_id');
+    }
+
+    /**
+     * The staff member who closed the remainder of this line.
+     */
+    public function closer(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'closed_by');
     }
 
     /**

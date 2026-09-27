@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Requests\AllocateUnitsRequest;
+use App\Http\Requests\CloseRequestLineRequest;
 use App\Http\Requests\ListBloodRequestsRequest;
 use App\Http\Requests\RejectBloodRequestRequest;
 use App\Http\Requests\ReleaseUnitsRequest;
@@ -119,8 +120,34 @@ class BloodCenterRequestController extends Controller
             $this->fulfillmentService->release(
                 $request->user(),
                 $bloodRequest,
-                $request->validated()['allocation_ids'] ?? null
+                $request->validated()['allocation_ids'] ?? null,
+                $request->validated()['handed_to'] ?? null
             )
+        );
+    }
+
+    /**
+     * Close the rest of one line this facility cannot supply.
+     */
+    public function closeLine(CloseRequestLineRequest $request, int $bloodRequest, int $item): JsonResponse
+    {
+        return response()->json(
+            $this->requestAllocationService->closeLine(
+                $request->user(),
+                $bloodRequest,
+                $item,
+                $request->validated()['note'] ?? null
+            )
+        );
+    }
+
+    /**
+     * Show everything that has happened to an incoming request.
+     */
+    public function history(Request $request, int $bloodRequest): JsonResponse
+    {
+        return response()->json(
+            $this->incomingRequestService->history($request->user(), $bloodRequest)
         );
     }
 }

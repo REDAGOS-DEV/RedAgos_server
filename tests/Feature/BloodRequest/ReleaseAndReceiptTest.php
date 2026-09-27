@@ -23,8 +23,9 @@ use Tests\TestCase;
  * Dispatch, receipt, and the payment gate between them.
  *
  * Two separations carry this file. Releasing a unit is not receiving it — only
- * the hospital can confirm arrival — and a request is not fulfilled until every
- * unit it asked for has actually been confirmed.
+ * the hospital can confirm arrival — and fulfilment is counted at dispatch: a
+ * request is fulfilled once every unit it asked for has been released, while
+ * receipt is stamped per unit and reported beside it without moving the status.
  */
 class ReleaseAndReceiptTest extends TestCase
 {
@@ -95,10 +96,46 @@ class ReleaseAndReceiptTest extends TestCase
             RequestAllocation::query()->where('request_id', $request->id)->first()->received_at,
             'Only the receiving facility can say a bag arrived.'
         );
-        $this->assertDatabaseHas('blood_requests', [
-            'id' => $request->id,
-            'status' => BloodRequestStatus::Processing->value,
-        ]);
+    }
+
+    public function test_releasing_every_unit_asked_for_fulfils_the_request_at_dispatch(): void
+    {
+        $request = $this->allocatedRequest(2);
+
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/blood-requests/{$request->id}/release")
+            ->assertOk()
+            ->assertJsonPath('status', BloodRequestStatus::Fulfilled->value);
+
+        $request = $request->fresh();
+        $this->assertSame(BloodRequestStatus::Fulfilled, $request->status);
+        $this->assertNotNull($request->fulfilled_at);
+        $this->assertNotNull($request->closed_at);
+    }
+
+    public function test_releasing_fewer_units_than_asked_makes_the_request_partial(): void
+    {
+        $request = $this->allocatedRequest(2, askedFor: 5);
+
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/blood-requests/{$request->id}/release")
+            ->assertOk()
+            ->assertJsonPath('status', BloodRequestStatus::Partial->value);
+
+        $request = $request->fresh();
+        $this->assertNull($request->fulfilled_at, 'A partly filled request has not been fulfilled.');
+        $this->assertNull($request->closed_at, 'A partly filled request stays open for the rest.');
+    }
+
+    public function test_releasing_only_some_of_the_held_units_makes_the_request_partial(): void
+    {
+        $request = $this->allocatedRequest(2);
+        $first = RequestAllocation::query()->where('request_id', $request->id)->orderBy('id')->value('id');
+
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/blood-requests/{$request->id}/release", ['allocation_ids' => [$first]])
+            ->assertOk()
+            ->assertJsonPath('status', BloodRequestStatus::Partial->value);
     }
 
     public function test_release_is_refused_while_a_priced_statement_is_unpaid(): void
@@ -167,35 +204,64 @@ class ReleaseAndReceiptTest extends TestCase
             ->assertJsonPath('code', 'nothing_to_release');
     }
 
-    public function test_confirming_receipt_of_every_unit_fulfils_the_request(): void
+    public function test_confirming_receipt_stamps_the_units_without_moving_the_status(): void
     {
         $request = $this->releasedRequest(2);
+        $fulfilledAt = $request->fulfilled_at;
 
         $this->actingAs($this->requester)
             ->postJson("/api/hospital/blood-requests/{$request->id}/confirm-receipt")
             ->assertOk()
-            ->assertJsonPath('status', BloodRequestStatus::Fulfilled->value);
+            ->assertJsonPath('status', BloodRequestStatus::Fulfilled->value)
+            ->assertJsonPath('received_count', 2)
+            ->assertJsonPath('fulfilled_quantity', 2);
 
         $this->assertDatabaseHas('blood_requests', [
             'id' => $request->id,
             'status' => BloodRequestStatus::Fulfilled->value,
         ]);
-        $this->assertNotNull($request->fresh()->fulfilled_at);
+        $this->assertEquals($fulfilledAt, $request->fresh()->fulfilled_at, 'Fulfilment was dated at dispatch.');
+        $this->assertSame(
+            2,
+            RequestAllocation::query()->where('request_id', $request->id)->received()->count()
+        );
     }
 
-    public function test_confirming_fewer_units_than_asked_leaves_the_request_partial(): void
+    public function test_confirming_receipt_on_a_partly_filled_request_leaves_it_partial(): void
     {
         $request = $this->releasedRequest(2, askedFor: 5);
 
         $this->actingAs($this->requester)
             ->postJson("/api/hospital/blood-requests/{$request->id}/confirm-receipt")
             ->assertOk()
-            ->assertJsonPath('status', BloodRequestStatus::Partial->value);
+            ->assertJsonPath('status', BloodRequestStatus::Partial->value)
+            ->assertJsonPath('received_count', 2);
 
         $this->assertNull(
             $request->fresh()->fulfilled_at,
             'A partly filled request has not been fulfilled.'
         );
+    }
+
+    public function test_the_hospital_view_reports_received_beside_fulfilled(): void
+    {
+        $request = $this->releasedRequest(2, askedFor: 3);
+        $first = RequestAllocation::query()->where('request_id', $request->id)->orderBy('id')->value('id');
+
+        $this->actingAs($this->requester)
+            ->postJson("/api/hospital/blood-requests/{$request->id}/confirm-receipt", ['allocation_ids' => [$first]])
+            ->assertOk();
+
+        $this->actingAs($this->requester)
+            ->getJson("/api/hospital/blood-requests/{$request->id}")
+            ->assertOk()
+            ->assertJsonPath('request.quantity', 3)
+            ->assertJsonPath('request.fulfilled_quantity', 2)
+            ->assertJsonPath('request.remaining_quantity', 1)
+            ->assertJsonPath('request.items.0.quantity', 3)
+            ->assertJsonPath('request.items.0.fulfilled_quantity', 2)
+            ->assertJsonPath('request.items.0.received_quantity', 1)
+            ->assertJsonPath('request.items.0.line_status', 'partial');
     }
 
     public function test_a_partial_request_can_still_be_topped_up(): void
@@ -209,10 +275,13 @@ class ReleaseAndReceiptTest extends TestCase
 
         $this->stock(2);
 
+        // A top-up must not knock a partly fulfilled request back to
+        // processing: one unit has already been supplied.
         $this->actingAs($this->staff)
             ->postJson("/api/blood-center/blood-requests/{$request->id}/allocate")
             ->assertOk()
-            ->assertJsonPath('held_total', 3);
+            ->assertJsonPath('held_total', 3)
+            ->assertJsonPath('status', BloodRequestStatus::Partial->value);
     }
 
     public function test_only_named_units_are_confirmed_when_a_delivery_arrives_short(): void

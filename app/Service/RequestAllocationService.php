@@ -4,12 +4,13 @@ namespace App\Service;
 
 use App\Enums\AllocationStatus;
 use App\Enums\BloodRequestStatus;
+use App\Enums\LineClosureReason;
+use App\Enums\RequestEventType;
 use App\Models\BloodRequest;
 use App\Models\BloodRequestItem;
 use App\Models\BloodUnit;
 use App\Models\RequestAllocation;
 use App\Models\User;
-use App\Notifications\BloodRequestDecided;
 use App\Repository\BloodRequestRepository;
 use App\Repository\InventoryRepository;
 use App\Support\OperationalDay;
@@ -30,6 +31,10 @@ use RuntimeException;
  * storyboard separates them, but approving without reserving leaves a window in
  * which another request takes the units, and a requester told "approved" who
  * then receives nothing is worse than one told "we can only cover three".
+ *
+ * The request's status is never written here directly. RequestStatusResolver
+ * derives it from the lines after every change, so a top-up on a partly
+ * fulfilled request can no longer knock it back to `processing`.
  */
 class RequestAllocationService
 {
@@ -37,17 +42,26 @@ class RequestAllocationService
         private readonly BloodRequestRepository $bloodRequestRepository,
         private readonly InventoryRepository $inventoryRepository,
         private readonly BillingService $billingService,
-        private readonly AuditLogger $auditLogger
+        private readonly AuditLogger $auditLogger,
+        private readonly RequestStatusResolver $resolver,
+        private readonly BloodRequestHistory $history,
+        private readonly BloodRequestNotifier $notifier,
+        private readonly RequestLineCloser $lineCloser,
+        private readonly FollowUpRequestService $followUps
     ) {}
 
     /**
-     * Hold stock for a request, up to what was asked and what is on the shelf.
+     * Hold stock for a request, up to what it still needs and what is on the shelf.
      *
      * A request asks per component, so stock is held per component. Given a
      * line, only that line is filled; given none, every line is walked in form
      * order until the request is covered or the shelves run out. $wanted is a
      * budget across the whole walk rather than a figure per line, so a caller
      * asking for three units of a two-line request still gets three.
+     *
+     * What a line still needs is its allocatable quantity: asked for, less what
+     * is already held or released, less what was forwarded to another facility,
+     * and nothing at all once the line is closed.
      *
      * @return array<string, mixed>
      */
@@ -57,23 +71,24 @@ class RequestAllocationService
 
         $result = DB::transaction(function () use ($user, $requestId, $facilityId, $wanted, $requestItemId): array {
             $request = $this->lockRequestForDecision($requestId, $facilityId);
+            $from = $request->status;
 
+            $figures = $this->resolver->freshFigures($request);
             $lines = $this->linesToFill($request, $requestItemId);
-            $heldPerLine = $this->claimedPerLine($request);
 
             $outstandingTotal = $lines->sum(
-                fn (BloodRequestItem $line): int => max(0, $line->quantity - ($heldPerLine[$line->id] ?? 0))
+                fn (BloodRequestItem $line): int => (int) ($figures->get($line->id)['allocatable'] ?? 0)
             );
 
             if ($outstandingTotal < 1) {
                 throw $this->refuse(
                     409,
                     'request_fully_allocated',
-                    'Every unit this request asked for is already held.'
+                    'Every unit this request still needs from this facility is already held.'
                 );
             }
 
-            // Never more than the request asked for, whatever the caller sent.
+            // Never more than the request still needs, whatever the caller sent.
             $budget = min($wanted ?? $outstandingTotal, $outstandingTotal);
 
             $taken = collect();
@@ -84,7 +99,7 @@ class RequestAllocationService
                     break;
                 }
 
-                $outstanding = max(0, $line->quantity - ($heldPerLine[$line->id] ?? 0));
+                $outstanding = (int) ($figures->get($line->id)['allocatable'] ?? 0);
 
                 if ($outstanding < 1) {
                     continue;
@@ -119,13 +134,16 @@ class RequestAllocationService
                 );
             }
 
-            $heldNow = array_sum($heldPerLine) + $taken->count();
-
-            $request->status = BloodRequestStatus::Processing;
             $request->reviewed_by = $user->id;
             $request->reviewed_at = now();
             $request->rejection_reason = null;
             $request->save();
+
+            $this->resolver->settle($request);
+
+            $after = $this->resolver->figures($request);
+            $heldNow = (int) ($after->sum('reserved') + $after->sum('fulfilled'));
+            $shortBy = (int) $after->sum('allocatable');
 
             $request->load('items.component');
             $billing = $this->billingService->syncFor($request, $user);
@@ -145,20 +163,29 @@ class RequestAllocationService
                 ]);
             }
 
+            $this->history->record(
+                $request,
+                RequestEventType::Allocated,
+                $user,
+                $from,
+                $shortBy > 0 ? "{$shortBy} unit(s) still outstanding at this facility." : null,
+                $taken->pluck('id')->all(),
+            );
+
             return [
                 'request' => $request,
                 'allocations' => $allocations,
                 'billing' => $billing,
                 'held_total' => $heldNow,
-                'short_by' => max(0, $request->quantity - $heldNow),
+                'short_by' => $shortBy,
             ];
         });
 
-        $this->notifyRequester($result['request'], 'allocated');
+        $this->notifier->requester($result['request'], 'allocated');
 
         return [
             'message' => $result['short_by'] > 0
-                ? "Partially fulfilled. {$result['short_by']} unit(s) still outstanding."
+                ? "Units reserved. {$result['short_by']} unit(s) still outstanding."
                 : 'Request fully allocated.',
             'request_id' => $result['request']->id,
             'status' => $result['request']->status->value,
@@ -166,6 +193,34 @@ class RequestAllocationService
             'short_by' => $result['short_by'],
             'allocated_units' => $result['allocations']->pluck('unit_id')->all(),
             'billing' => $this->billingService->format($result['billing']),
+        ];
+    }
+
+    /**
+     * Close the rest of one line that this facility cannot supply.
+     *
+     * The request keeps what it asked for. The remainder is recorded as
+     * unavailable here, with the reason, and may still be sourced from another
+     * facility through a follow-up.
+     *
+     * @return array<string, mixed>
+     */
+    public function closeLine(User $user, int $requestId, int $itemId, ?string $note): array
+    {
+        $facilityId = $this->requireFacilityId($user);
+
+        $request = DB::transaction(function () use ($user, $requestId, $itemId, $note, $facilityId): BloodRequest {
+            $request = $this->lockRequestForDecision($requestId, $facilityId);
+
+            return $this->lineCloser->close($request, $itemId, LineClosureReason::Unavailable, $note, $user);
+        });
+
+        return [
+            'message' => 'The remaining quantity was closed as unavailable.',
+            'request_id' => $request->id,
+            'status' => $request->status->value,
+            'status_label' => $request->status->label(),
+            'is_open' => ! $request->isClosed(),
         ];
     }
 
@@ -192,21 +247,6 @@ class RequestAllocationService
     }
 
     /**
-     * Count the units already claimed against each line, keyed by line id.
-     *
-     * @return array<int, int>
-     */
-    private function claimedPerLine(BloodRequest $request): array
-    {
-        return $request->allocations()->claiming()
-            ->groupBy('request_item_id')
-            ->selectRaw('request_item_id, COUNT(*) as held')
-            ->pluck('held', 'request_item_id')
-            ->map(fn ($held): int => (int) $held)
-            ->all();
-    }
-
-    /**
      * Refuse a request, with a reason the requester will see.
      *
      * @return array<string, mixed>
@@ -226,6 +266,8 @@ class RequestAllocationService
                 );
             }
 
+            $from = $request->status;
+
             $request->status = BloodRequestStatus::Rejected;
             $request->rejection_reason = $reason;
             $request->reviewed_by = $user->id;
@@ -238,10 +280,16 @@ class RequestAllocationService
                 'reason' => $reason,
             ]);
 
+            $this->history->record($request, RequestEventType::Rejected, $user, $from, $reason);
+
+            // A refused follow-up no longer carries its parent's remainder, so
+            // the parent gets that quantity back and may be reopened.
+            $this->followUps->returnRemainderToParent($request, $user);
+
             return $request;
         });
 
-        $this->notifyRequester($request, 'rejected');
+        $this->notifier->requester($request, 'rejected');
 
         return [
             'message' => 'Blood request rejected.',
@@ -263,6 +311,8 @@ class RequestAllocationService
         $freed = DB::transaction(function () use ($user, $requestId, $facilityId, $allocationIds, $reason): int {
             $request = $this->bloodRequestRepository->lockAddressedTo($requestId, $facilityId)
                 ?? throw $this->refuse(404, 'request_not_found', 'Blood request not found.');
+
+            $from = $request->status;
 
             $holds = $request->allocations()
                 ->where('status', AllocationStatus::Allocated)
@@ -292,8 +342,7 @@ class RequestAllocationService
             // Back to pending when nothing is held any more: the request is
             // undecided again, and leaving it "processing" would hide it from
             // the queue that needs to act on it.
-            if ($this->claimedCount($request->fresh()) === 0) {
-                $request->status = BloodRequestStatus::Pending;
+            if ($this->resolver->settle($request) === BloodRequestStatus::Pending) {
                 $request->reviewed_by = null;
                 $request->reviewed_at = null;
                 $request->save();
@@ -304,6 +353,8 @@ class RequestAllocationService
                 'units' => $unitIds,
                 'reason' => $reason,
             ]);
+
+            $this->history->record($request, RequestEventType::HoldsReturned, $user, $from, $reason, $unitIds);
 
             return count($unitIds);
         });
@@ -322,11 +373,13 @@ class RequestAllocationService
         $request = $this->bloodRequestRepository->lockAddressedTo($requestId, $facilityId)
             ?? throw $this->refuse(404, 'request_not_found', 'Blood request not found.');
 
-        if (! $request->status->acceptsAllocation()) {
+        if (! $request->status->acceptsAllocation() || $request->closed_at !== null) {
             throw $this->refuse(
                 409,
                 'request_closed',
-                "This request is {$request->status->label()} and can no longer be acted on."
+                $request->closed_at !== null
+                    ? 'This request is closed: every remaining quantity was supplied, closed or forwarded.'
+                    : "This request is {$request->status->label()} and can no longer be acted on."
             );
         }
 
@@ -377,20 +430,6 @@ class RequestAllocationService
     private function claimedCount(BloodRequest $request): int
     {
         return $request->allocations()->claiming()->count();
-    }
-
-    /**
-     * Tell the requesting facility what was decided.
-     *
-     * Outside the transaction on purpose: a notification failure must not roll
-     * back a committed allocation, and blood that is physically reserved should
-     * stay reserved even if the mail queue is down.
-     */
-    private function notifyRequester(BloodRequest $request, string $outcome): void
-    {
-        $request->loadMissing('requester');
-
-        $request->requester?->notify(new BloodRequestDecided($request, $outcome));
     }
 
     /**

@@ -3,24 +3,21 @@
 namespace App\Service;
 
 use App\Enums\BloodRequestStatus;
-use App\Enums\Department;
-use App\Enums\IndicationCode;
+use App\Enums\LineClosureReason;
+use App\Enums\RequestEventType;
 use App\Enums\RequestPurpose;
-use App\Enums\UrgencyLevel;
-use App\Models\BloodComponent;
+use App\Enums\RequestSource;
 use App\Models\BloodRequest;
-use App\Models\BloodType;
 use App\Models\Facility;
 use App\Models\User;
-use App\Notifications\BloodRequestSubmitted;
 use App\Repository\AvailabilityRepository;
 use App\Repository\BloodRequestRepository;
+use App\Support\RequestFormReferenceData;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Notification;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -47,7 +44,11 @@ class BloodRequestService
         private readonly AvailabilityRepository $availabilityRepository,
         private readonly BloodRequestProjector $projector,
         private readonly BloodRequestFormService $formService,
-        private readonly AuditLogger $auditLogger
+        private readonly AuditLogger $auditLogger,
+        private readonly BloodRequestHistory $history,
+        private readonly BloodRequestNotifier $notifier,
+        private readonly RequestLineCloser $lineCloser,
+        private readonly FollowUpRequestService $followUps
     ) {}
 
     /**
@@ -69,7 +70,7 @@ class BloodRequestService
 
                 // After the commit, never inside it: a notification failure
                 // must not roll back a request the requester was told landed.
-                $this->notifyTargetFacility($request);
+                $this->notifier->targetFacility($request);
 
                 return [
                     'message' => 'Blood request submitted.',
@@ -133,11 +134,8 @@ class BloodRequestService
     /**
      * Serve everything the request form needs to be filled in.
      *
-     * The indication codes are projected from the IndicationCode enum rather
-     * than duplicated in the client. They are the criteria a physician
-     * certifies against, and two copies of a clinical list are two chances to
-     * disagree — a dropdown offering a code the API would reject, or worse,
-     * offering the wrong criterion text beside the right code.
+     * Built by RequestFormReferenceData, which the blood centre's walk-in form
+     * reads too, so the two forms can never offer different clinical lists.
      *
      * @return array<string, mixed>
      */
@@ -145,50 +143,87 @@ class BloodRequestService
     {
         $this->requireFacilityId($user);
 
+        return RequestFormReferenceData::build();
+    }
+
+    /**
+     * Show one of the caller facility's requests' history, oldest first.
+     *
+     * @return array<string, mixed>
+     */
+    public function history(User $user, int $requestId): array
+    {
+        $facilityId = $this->requireFacilityId($user);
+        $request = $this->bloodRequestRepository->findRaisedBy($requestId, $facilityId)
+            ?? throw $this->refuse(404, 'request_not_found', 'Blood request not found.');
+
         return [
-            'blood_types' => BloodType::query()->orderBy('code')->get()
-                ->map(fn (BloodType $type): array => [
-                    'id' => $type->id,
-                    'code' => $type->code,
-                    'label' => $type->label,
-                ])->all(),
+            'request_id' => $request->id,
+            'reference_number' => $request->reference_number,
+            'events' => $this->history->timeline($request),
+        ];
+    }
 
-            'components' => BloodComponent::query()->orderBy('name')->get()
-                ->map(fn (BloodComponent $component): array => [
-                    'id' => $component->id,
-                    'name' => $component->name,
-                    'indication_codes' => array_map(
-                        fn (IndicationCode $code): array => [
-                            'code' => $code->value,
-                            'label' => $code->label(),
-                            'description' => $code->description(),
-                            // The client uses this to reveal the "please
-                            // specify" box, so the rule for when an
-                            // explanation is required lives in one place.
-                            'requires_explanation' => $code->triggersReview(),
-                        ],
-                        IndicationCode::forComponentName((string) $component->name)
-                    ),
-                ])->all(),
+    /**
+     * Close the rest of one line the hospital no longer needs.
+     *
+     * The line keeps what was asked for; the remainder is recorded as not
+     * needed, which — unlike a centre's "unavailable" — may not then be sourced
+     * from another facility.
+     *
+     * @return array<string, mixed>
+     */
+    public function closeLine(User $user, int $requestId, int $itemId, ?string $note): array
+    {
+        $facilityId = $this->requireFacilityId($user);
 
-            'purposes' => array_map(
-                fn (RequestPurpose $purpose): array => [
-                    'value' => $purpose->value,
-                    'label' => $purpose->label(),
-                    'requires_patient' => $purpose->requiresPatient(),
-                ],
-                RequestPurpose::cases()
-            ),
+        $request = DB::transaction(function () use ($user, $requestId, $itemId, $note, $facilityId): BloodRequest {
+            $request = $this->bloodRequestRepository->lockRaisedBy($requestId, $facilityId)
+                ?? throw $this->refuse(404, 'request_not_found', 'Blood request not found.');
 
-            // Labelled for the form, which prints ROUTINE and STAT. The stored
-            // value stays `emergency`, which the rest of the workflow keys off.
-            'priorities' => array_map(
-                fn (UrgencyLevel $level): array => [
-                    'value' => $level->value,
-                    'label' => $level->isPrioritised() ? 'STAT' : 'Routine',
-                ],
-                UrgencyLevel::cases()
-            ),
+            return $this->lineCloser->close($request, $itemId, LineClosureReason::NotNeeded, $note, $user);
+        });
+
+        return [
+            'message' => 'The remaining quantity was closed as no longer needed.',
+            'request_id' => $request->id,
+            'status' => $request->status->value,
+            'status_label' => $request->status->label(),
+            'is_open' => ! $request->isClosed(),
+        ];
+    }
+
+    /**
+     * Find this hospital's active requests for a patient it is about to request for.
+     *
+     * The warning a hospital sees before raising a second request for the same
+     * patient — including one a blood centre recorded on its behalf when the
+     * watcher went there first.
+     *
+     * @param  array<string, mixed>  $criteria
+     * @return array<string, mixed>
+     */
+    public function patientMatches(User $user, array $criteria): array
+    {
+        $facilityId = $this->requireFacilityId($user);
+
+        $matches = $this->bloodRequestRepository->patientMatches($facilityId, $criteria);
+
+        return [
+            'matches' => $matches->map(fn (BloodRequest $request): array => [
+                'id' => $request->id,
+                'reference_number' => $request->reference_number,
+                'facility' => $request->targetFacility ? [
+                    'id' => $request->targetFacility->id,
+                    'name' => $request->targetFacility->name,
+                ] : null,
+                'request_source' => $request->request_source->value,
+                'source_label' => $request->request_source->label(),
+                'status' => $request->status->value,
+                'status_label' => $request->status->label(),
+                'is_open' => ! $request->isClosed(),
+                'request_date' => $request->request_date?->toIso8601String(),
+            ])->values()->all(),
         ];
     }
 
@@ -236,6 +271,8 @@ class BloodRequestService
                 );
             }
 
+            $from = $request->status;
+
             $request->status = BloodRequestStatus::Cancelled;
             $request->save();
 
@@ -244,6 +281,11 @@ class BloodRequestService
                 'reference_number' => $request->reference_number,
                 'reason' => $reason,
             ], fn ($value): bool => $value !== null));
+
+            $this->history->record($request, RequestEventType::Cancelled, $user, $from, $reason);
+
+            // A withdrawn follow-up no longer carries its parent's remainder.
+            $this->followUps->returnRemainderToParent($request, $user);
 
             return $request;
         });
@@ -267,11 +309,12 @@ class BloodRequestService
         $purpose = RequestPurpose::from($payload['request_purpose']);
 
         $request = BloodRequest::query()->create([
-            'reference_number' => $this->nextReference($facilityId),
+            'reference_number' => $this->bloodRequestRepository->nextReference($facilityId),
             'facility_id' => $facilityId,
             'target_facility_id' => $target->id,
             'requested_by' => $user->id,
             'request_purpose' => $purpose,
+            'request_source' => RequestSource::BloodBankPortal,
             // Patient identity is dropped rather than trusted when the request
             // is a restock. Validation already refuses to require it there, and
             // storing a name a replenishment order should not carry would put
@@ -306,31 +349,9 @@ class BloodRequestService
             'urgency_level' => $request->urgency_level->value,
         ]);
 
+        $this->history->record($request, RequestEventType::Submitted, $user);
+
         return $request;
-    }
-
-    /**
-     * Derive the next reference number for a facility.
-     *
-     * The sequence is parsed in PHP rather than taken from a lexicographic MAX,
-     * for the same reason InventoryService derives unit ids that way: as a
-     * string, 'RQ-4-100' sorts before 'RQ-4-99', so the maximum stops being the
-     * latest once a facility passes its ninety-ninth request.
-     */
-    private function nextReference(int $facilityId): string
-    {
-        $prefix = "RQ-{$facilityId}-";
-        $highest = 0;
-
-        foreach ($this->bloodRequestRepository->existingReferences($prefix) as $reference) {
-            $suffix = substr($reference, strlen($prefix));
-
-            if (ctype_digit($suffix)) {
-                $highest = max($highest, (int) $suffix);
-            }
-        }
-
-        return $prefix.str_pad((string) ($highest + 1), 4, '0', STR_PAD_LEFT);
     }
 
     /**
@@ -363,27 +384,6 @@ class BloodRequestService
     private function format(BloodRequest $request, bool $withAllocations = false): array
     {
         return $this->projector->project($request, $withAllocations);
-    }
-
-    /**
-     * Notify the staff who will have to act on a newly submitted request.
-     *
-     * Addressed to the target facility's Issuance department, which
-     * docs/BLOOD-CENTER.md charters to receive and process incoming requests.
-     * Supervisors are included because they hold every ability and may be the
-     * only account staffing a small centre out of hours.
-     */
-    private function notifyTargetFacility(BloodRequest $request): void
-    {
-        $recipients = User::query()
-            ->where('facility_id', $request->target_facility_id)
-            ->where(function ($query): void {
-                $query->where('department', Department::Issuance->value)
-                    ->orWhere('is_supervisor', true);
-            })
-            ->get();
-
-        Notification::send($recipients, new BloodRequestSubmitted($request));
     }
 
     /**

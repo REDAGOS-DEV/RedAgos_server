@@ -3,11 +3,10 @@
 namespace App\Service;
 
 use App\Enums\AllocationStatus;
-use App\Enums\BloodRequestStatus;
+use App\Enums\RequestEventType;
 use App\Models\BloodRequest;
 use App\Models\RequestAllocation;
 use App\Models\User;
-use App\Notifications\BloodRequestDecided;
 use App\Repository\BloodRequestRepository;
 use App\Repository\InventoryRepository;
 use Illuminate\Http\Exceptions\HttpResponseException;
@@ -20,8 +19,13 @@ use RuntimeException;
  * Release and receipt are separate operations performed by different facilities,
  * and neither may assert the other. The releasing centre says a bag left; only
  * the receiving hospital can say it arrived. Collapsing the two would make the
- * chain of custody a formality and let a request close on stock nobody ever
- * physically received.
+ * chain of custody a formality.
+ *
+ * Fulfilment is counted at dispatch: releasing units is what moves a request to
+ * Partially Fulfilled or Fulfilled, because fulfilment is what the centre was
+ * able to provide. Receipt is still stamped per unit, by the hospital alone,
+ * and reported beside it as "received x of y" — the chain of custody is kept
+ * in full; it just no longer decides the request's status.
  */
 class FulfillmentService
 {
@@ -29,22 +33,31 @@ class FulfillmentService
         private readonly BloodRequestRepository $bloodRequestRepository,
         private readonly InventoryRepository $inventoryRepository,
         private readonly BillingService $billingService,
-        private readonly AuditLogger $auditLogger
+        private readonly AuditLogger $auditLogger,
+        private readonly RequestStatusResolver $resolver,
+        private readonly BloodRequestHistory $history,
+        private readonly BloodRequestNotifier $notifier
     ) {}
 
     /**
      * Dispatch the units held for a request.
      *
+     * $handedTo names who physically took the units — for a walk-in, the
+     * watcher carrying them to the hospital. It goes on the request's history,
+     * never on the audit log.
+     *
      * @param  array<int, int>|null  $allocationIds
      * @return array<string, mixed>
      */
-    public function release(User $user, int $requestId, ?array $allocationIds = null): array
+    public function release(User $user, int $requestId, ?array $allocationIds = null, ?string $handedTo = null): array
     {
         $facilityId = $this->requireFacilityId($user);
 
-        $result = DB::transaction(function () use ($user, $requestId, $facilityId, $allocationIds): array {
+        $result = DB::transaction(function () use ($user, $requestId, $facilityId, $allocationIds, $handedTo): array {
             $request = $this->bloodRequestRepository->lockAddressedTo($requestId, $facilityId)
                 ?? throw $this->refuse(404, 'request_not_found', 'Blood request not found.');
+
+            $from = $request->status;
 
             // The money gate. Under the present subsidy every statement is zero
             // and already settled, so this passes — but it is the real check,
@@ -93,14 +106,30 @@ class FulfillmentService
                 ]);
             }
 
+            $this->resolver->settle($request);
+
+            $handedTo = $handedTo !== null ? trim($handedTo) : null;
+
+            $this->history->record(
+                $request,
+                RequestEventType::Released,
+                $user,
+                $from,
+                $handedTo ? "Handed to {$handedTo}." : null,
+                $unitIds,
+                meta: $handedTo ? ['handed_to' => $handedTo] : [],
+            );
+
             return ['request' => $request, 'units' => $unitIds];
         });
 
-        $this->notifyRequester($result['request'], 'released');
+        $this->notifier->requester($result['request'], 'released');
 
         return [
             'message' => count($result['units']).' unit(s) released for dispatch.',
             'released_units' => $result['units'],
+            'status' => $result['request']->status->value,
+            'status_label' => $result['request']->status->label(),
         ];
     }
 
@@ -138,7 +167,10 @@ class FulfillmentService
                 'received_by' => $user->id,
             ]);
 
-            $this->settleStatus($request);
+            // Receipt does not move the status — dispatch already did — but
+            // the request is settled anyway so the figures are read fresh.
+            $from = $request->status;
+            $this->resolver->settle($request);
 
             $this->auditLogger->record($user, 'request.receipt_confirmed', $request, [
                 'facility_id' => $facilityId,
@@ -147,52 +179,27 @@ class FulfillmentService
                 'status' => $request->status->value,
             ]);
 
+            $this->history->record(
+                $request,
+                RequestEventType::ReceiptConfirmed,
+                $user,
+                $from,
+                null,
+                $awaiting->pluck('unit_id')->all(),
+            );
+
             return $request;
         });
+
+        $lines = $this->resolver->figures($request);
 
         return [
             'message' => 'Receipt confirmed.',
             'status' => $request->status->value,
             'status_label' => $request->status->label(),
+            'received_count' => (int) $lines->sum('received'),
+            'fulfilled_quantity' => (int) $lines->sum('fulfilled'),
         ];
-    }
-
-    /**
-     * Move the request to whatever its received units now justify.
-     *
-     * Fulfilled only when every unit asked for has been confirmed received.
-     * Anything less that has received something is Partial, which deliberately
-     * stays open to further allocation — a request short-filled from one batch
-     * can still be topped up as stock arrives, and closing it would force the
-     * requester to raise a second request for the same patient need.
-     */
-    private function settleStatus(BloodRequest $request): void
-    {
-        $received = $request->allocations()->claiming()->whereNotNull('received_at')->count();
-
-        // quantity sums the request's lines, so they have to be loaded before
-        // it is read. loadMissing rather than load: the caller usually has them
-        // already and reloading would throw away the lock-time state.
-        $request->loadMissing('items');
-
-        if ($received >= $request->quantity) {
-            $request->status = BloodRequestStatus::Fulfilled;
-            $request->fulfilled_at = now();
-        } elseif ($received > 0) {
-            $request->status = BloodRequestStatus::Partial;
-        }
-
-        $request->save();
-    }
-
-    /**
-     * Tell the requesting facility their units are on the way.
-     */
-    private function notifyRequester(BloodRequest $request, string $outcome): void
-    {
-        $request->loadMissing('requester');
-
-        $request->requester?->notify(new BloodRequestDecided($request, $outcome));
     }
 
     /**
