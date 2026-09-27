@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class DonationAppointment extends Model
 {
@@ -48,6 +49,17 @@ class DonationAppointment extends Model
     public function mobileEvent(): BelongsTo
     {
         return $this->belongsTo(MobileEvent::class, 'event_id');
+    }
+
+    /**
+     * The donation opened against this booking, if the donor got that far.
+     *
+     * A collected visit and a deferred one both close the appointment as
+     * `completed`; this is what tells them apart.
+     */
+    public function donation(): HasOne
+    {
+        return $this->hasOne(Donation::class, 'appointment_id')->latestOfMany();
     }
 
     /**

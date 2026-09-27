@@ -30,7 +30,7 @@ class CollectionRepository
     public function appointmentsForDay(int $facilityId, string $date, ?string $status = null): Collection
     {
         return DonationAppointment::query()
-            ->with(['donorProfile.donor', 'donorProfile.bloodType'])
+            ->with(['donorProfile.donor', 'donorProfile.bloodType', 'donation'])
             ->where('facility_id', $facilityId)
             ->whereBetween('appointment_datetime', OperationalDay::boundsFor($date))
             ->when($status !== null, fn (Builder $q): Builder => $q->where('status', $status))

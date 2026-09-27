@@ -138,6 +138,48 @@ class CounterCheckInTest extends TestCase
             ->assertJsonPath('data.appointment.id', $appointment->id);
     }
 
+    public function test_scanning_the_qr_checks_the_donor_in(): void
+    {
+        [$donor, $raw] = $this->issueQrToken();
+
+        $appointment = DonationAppointment::factory()->create([
+            'donor_id' => $donor->id,
+            'facility_id' => $this->facility->id,
+            'appointment_datetime' => now(),
+            'status' => 'scheduled',
+        ]);
+
+        // The donor is at the counter holding the code, so the scan is the
+        // arrival: the queue shows the visit under way without a second click.
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/collection/verify-qr', ['token' => $raw])
+            ->assertOk()
+            ->assertJsonPath('data.appointment.status', 'confirmed')
+            ->assertJsonPath('data.appointment.status_label', 'In progress');
+
+        $this->assertSame(AppointmentStatus::Confirmed, $appointment->fresh()->status);
+    }
+
+    public function test_scanning_a_donor_already_checked_in_is_not_refused(): void
+    {
+        [$donor, $raw] = $this->issueQrToken();
+
+        $appointment = DonationAppointment::factory()->confirmed()->create([
+            'donor_id' => $donor->id,
+            'facility_id' => $this->facility->id,
+            'appointment_datetime' => now(),
+        ]);
+
+        // A second counter scanning the same donor is ordinary, unlike a second
+        // click on Check in, which is refused.
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/collection/verify-qr', ['token' => $raw])
+            ->assertOk()
+            ->assertJsonPath('data.appointment.status', 'confirmed');
+
+        $this->assertSame(AppointmentStatus::Confirmed, $appointment->fresh()->status);
+    }
+
     public function test_an_appointment_at_another_facility_is_not_surfaced(): void
     {
         [$donor, $raw] = $this->issueQrToken();

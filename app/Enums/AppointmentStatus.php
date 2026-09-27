@@ -27,18 +27,19 @@ enum AppointmentStatus: string
     /**
      * Get the human-readable label shown in the counter queue.
      *
-     * Three labels deliberately differ from the stored value. `confirmed` is
-     * written at check-in, so to staff it means "the donor is here" rather than
-     * "the booking was acknowledged"; `completed` is written when the collection
-     * is recorded, which to staff reads as "donated". The client already renders
-     * exactly these words — see STATUS_LABELS in blood-center/appointments.vue.
+     * Two labels deliberately differ from the stored value. `confirmed` is
+     * written when the donor's QR is scanned (or they are checked in by hand),
+     * so to staff it means "the visit is under way" rather than "the booking
+     * was acknowledged"; `completed` is written when the collection is recorded,
+     * which to staff reads as "collected". The client renders exactly these
+     * words — see STATUS_LABELS in blood-center/appointments.vue.
      */
     public function label(): string
     {
         return match ($this) {
             self::Scheduled => 'Scheduled',
-            self::Confirmed => 'Arrived',
-            self::Completed => 'Donated',
+            self::Confirmed => 'In progress',
+            self::Completed => 'Collected',
             self::Cancelled => 'Cancelled',
             self::NoShow => 'No-show',
         };

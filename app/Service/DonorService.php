@@ -40,7 +40,8 @@ class DonorService
         private readonly AuthRepository $authRepository,
         private readonly DonorRepository $donorRepository,
         private readonly EligibilityRepository $eligibilityRepository,
-        private readonly EligibilityRuleEvaluator $eligibilityRuleEvaluator
+        private readonly EligibilityRuleEvaluator $eligibilityRuleEvaluator,
+        private readonly EligibilityService $eligibilityService
     ) {}
 
     /**
@@ -179,6 +180,10 @@ class DonorService
                 'account_status' => $donor->account_status?->value,
             ],
             'eligibility_status' => $this->eligibilityStatus($donor->id)->value,
+            // What the onboarding checklist and QR badge read. Every screening
+            // is now recorded `pending` -- the centre decides at the counter --
+            // so eligibility_status alone never reports the questionnaire done.
+            'questionnaire_status' => $this->eligibilityService->statusForProfile($profile)->value,
             'blood_type' => $profile->bloodType?->code,
             'total_donations' => $this->donorRepository->countCompletedDonations($donor->id),
             'upcoming_appointment' => $this->formatAppointment($upcomingAppointment),
@@ -236,6 +241,7 @@ class DonorService
             'contact_person_number' => $profile->contact_person_number,
             'avatar_url' => $profile->profile_image_path,
             'eligibility_status' => $dashboard['eligibility_status'],
+            'questionnaire_status' => $dashboard['questionnaire_status'],
             'total_donations' => $dashboard['total_donations'],
             'last_donation_date' => $this->lastDonationDate($profile)?->toDateString(),
             'next_eligible_date' => $this->eligibilityRuleEvaluator

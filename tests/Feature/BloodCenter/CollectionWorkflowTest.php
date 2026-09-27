@@ -461,6 +461,56 @@ class CollectionWorkflowTest extends TestCase
         $this->assertSame(AppointmentStatus::Completed, $appointment->fresh()->status);
     }
 
+    public function test_opening_a_donation_checks_in_a_scheduled_appointment(): void
+    {
+        $appointment = DonationAppointment::factory()->create([
+            'donor_id' => $this->donor->id,
+            'facility_id' => $this->facility->id,
+            'status' => 'scheduled',
+        ]);
+
+        // A donor found by valid ID rather than a scan never passes through
+        // check-in, but is no less at the counter.
+        $this->actingAs($this->receptionist)
+            ->postJson('/api/blood-center/donations', [
+                'donor_uuid' => $this->donor->uuid,
+                'appointment_id' => $appointment->id,
+            ])
+            ->assertCreated();
+
+        $this->assertSame(AppointmentStatus::Confirmed, $appointment->fresh()->status);
+    }
+
+    public function test_the_queue_tells_a_deferred_visit_from_a_collected_one(): void
+    {
+        $appointment = DonationAppointment::factory()->confirmed()->create([
+            'donor_id' => $this->donor->id,
+            'facility_id' => $this->facility->id,
+            'appointment_datetime' => now(),
+        ]);
+
+        $id = $this->actingAs($this->receptionist)
+            ->postJson('/api/blood-center/donations', [
+                'donor_uuid' => $this->donor->uuid,
+                'appointment_id' => $appointment->id,
+            ])->json('data.id');
+
+        $this->actingAs($this->physician)
+            ->postJson("/api/blood-center/donations/{$id}/screening", [
+                'outcome' => 'temporarily_deferred',
+                'deferral_reason' => 'Haemoglobin below the accepted threshold.',
+            ])
+            ->assertCreated();
+
+        // Both close the booking as `completed`; only the donation says which.
+        $this->actingAs($this->receptionist)
+            ->getJson('/api/blood-center/collection/queue')
+            ->assertOk()
+            ->assertJsonPath('appointments.0.id', $appointment->id)
+            ->assertJsonPath('appointments.0.status', 'completed')
+            ->assertJsonPath('appointments.0.donation_status', 'rejected');
+    }
+
     public function test_a_rejection_records_the_reason_it_was_given(): void
     {
         $id = $this->openDonation();

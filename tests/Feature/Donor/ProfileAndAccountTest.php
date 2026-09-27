@@ -3,6 +3,7 @@
 namespace Tests\Feature\Donor;
 
 use App\Enums\AccountStatus;
+use App\Enums\EligibilityStatus;
 use App\Enums\RoleName;
 use App\Models\Donation;
 use App\Models\DonorQrToken;
@@ -208,7 +209,33 @@ class ProfileAndAccountTest extends TestCase
         $this->actingAs($this->donor)
             ->getJson('/api/donors/dashboard')
             ->assertOk()
-            ->assertJsonPath('eligibility_status', 'expired');
+            ->assertJsonPath('eligibility_status', 'expired')
+            ->assertJsonPath('questionnaire_status', 'expired');
+    }
+
+    public function test_the_dashboard_reports_the_questionnaire_answered_while_the_centre_has_not_ruled(): void
+    {
+        $this->actingAs($this->donor)
+            ->getJson('/api/donors/dashboard')
+            ->assertOk()
+            ->assertJsonPath('questionnaire_status', 'not_answered');
+
+        // What a real submission records: answered, awaiting the centre.
+        EligibilityScreening::factory()->create([
+            'donor_id' => $this->donor->id,
+            'result' => EligibilityStatus::Pending,
+        ]);
+
+        $this->actingAs($this->donor)
+            ->getJson('/api/donors/dashboard')
+            ->assertOk()
+            ->assertJsonPath('eligibility_status', 'pending')
+            ->assertJsonPath('questionnaire_status', 'answered');
+
+        $this->actingAs($this->donor)
+            ->getJson('/api/donors/profile')
+            ->assertOk()
+            ->assertJsonPath('questionnaire_status', 'answered');
     }
 
     public function test_the_dashboard_monthly_trend_works_without_mysql(): void

@@ -126,6 +126,12 @@ class CollectionService
             OperationalDay::todayAsDate()
         );
 
+        // Presenting the QR is the check-in: the donor is standing at the
+        // counter holding it. A visit already under way is left as it is.
+        if ($appointment?->status === AppointmentStatus::Scheduled) {
+            $appointment = $this->arriveIfScheduled($staff, $appointment->id, $facility->id) ?? $appointment;
+        }
+
         $this->auditLogger->record($staff, 'collection.qr_verified', $donor, [
             'facility_id' => $facility->id,
             'appointment_id' => $appointment?->id,
@@ -226,6 +232,14 @@ class CollectionService
 
                 if ((int) $appointment->donor_id !== (int) $donor->id) {
                     throw $this->refuse(422, 'appointment_donor_mismatch', 'That appointment belongs to a different donor.');
+                }
+
+                // An open donation is a visit under way, however the donor was
+                // found. Without this a donor looked up by valid ID would sit
+                // on the queue as "Scheduled" while being screened and bled.
+                if ($appointment->status === AppointmentStatus::Scheduled) {
+                    $appointment->status = AppointmentStatus::Confirmed;
+                    $appointment->save();
                 }
             }
 
@@ -716,6 +730,39 @@ class CollectionService
     }
 
     /**
+     * Move a scheduled appointment to `confirmed`, and nothing else.
+     *
+     * Unlike checkIn() this never refuses an appointment that has already
+     * moved: two counters scanning the same donor is ordinary, and the second
+     * scan should simply find the visit already under way.
+     */
+    private function arriveIfScheduled(User $staff, int $appointmentId, int $facilityId): ?DonationAppointment
+    {
+        $moved = false;
+
+        $appointment = DB::transaction(function () use ($appointmentId, $facilityId, &$moved): ?DonationAppointment {
+            $locked = $this->collectionRepository->lockAppointment($appointmentId, $facilityId);
+
+            if ($locked?->status === AppointmentStatus::Scheduled) {
+                $locked->status = AppointmentStatus::Confirmed;
+                $locked->save();
+                $moved = true;
+            }
+
+            return $locked;
+        });
+
+        if ($moved) {
+            $this->auditLogger->record($staff, 'collection.checked_in', $appointment, [
+                'facility_id' => $facilityId,
+                'via' => 'qr',
+            ]);
+        }
+
+        return $appointment;
+    }
+
+    /**
      * Close the appointment a finished donation was booked against.
      *
      * Called for every terminal outcome, not only a successful draw. A donor
@@ -914,6 +961,12 @@ class CollectionService
             'appointment_datetime' => $appointment->appointment_datetime?->toISOString(),
             'status' => $appointment->status->value,
             'status_label' => $appointment->status->label(),
+            // A collected visit and a deferred one both close as `completed`;
+            // the donation behind it is what tells the queue which. Only read
+            // when the caller loaded it, so no path pays a query per row.
+            'donation_status' => $appointment->relationLoaded('donation')
+                ? $appointment->donation?->status?->value
+                : null,
             'event_id' => $appointment->event_id,
             'donor' => $appointment->donorProfile?->donor
                 ? $this->formatDonor($appointment->donorProfile->donor)
