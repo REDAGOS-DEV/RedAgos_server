@@ -11,19 +11,23 @@ use App\Models\RequestAllocation;
 use Illuminate\Support\Collection;
 
 /**
- * The one place a request's figures and status are derived.
+ * The one place one request's figures and status are derived.
  *
  * A request is what was asked for; its fulfilment is what was provided. The two
  * are stored apart — the lines hold the requested quantities and never change,
- * the allocations hold every unit reserved, released and received, the
- * follow-up lines hold what was forwarded elsewhere — and everything a screen
- * shows about progress is read from them here. Before this class the status
- * was written from three services, each with its own idea of what it meant,
- * and a top-up on a partly filled request knocked it back to `processing`.
+ * the allocations hold every unit reserved, released and received — and
+ * everything a screen shows about progress is read from them here. Before this
+ * class the status was written from three services, each with its own idea of
+ * what it meant, and a top-up on a partly filled request knocked it back to
+ * `processing`.
  *
  * Fulfilment is counted at dispatch: a unit is fulfilled when it has been
  * released. Receipt is still stamped per unit by the hospital and reported as
  * a figure, but it no longer moves the status.
+ *
+ * For a Patient Transfusion this is one facility allocation.
+ * TransfusionRequestResolver adds the allocations' figures up into the
+ * patient's requirement.
  */
 class RequestStatusResolver
 {
@@ -34,7 +38,6 @@ class RequestStatusResolver
      */
     public const RELATIONS = [
         'items',
-        'items.followUpItems.request:id,status',
         'allocations',
     ];
 
@@ -59,8 +62,7 @@ class RequestStatusResolver
             ->filter(fn (RequestAllocation $allocation): bool => $allocation->status->claimsUnit())
             ->groupBy(fn (RequestAllocation $allocation): int => (int) ($allocation->request_item_id ?? $firstLineId));
 
-        // A refused or withdrawn request supplies nothing further and has
-        // nothing to forward: the hospital raises a fresh request instead.
+        // A refused or withdrawn request supplies nothing further.
         $finished = in_array($request->status, [BloodRequestStatus::Rejected, BloodRequestStatus::Cancelled], true);
 
         return $items->mapWithKeys(function (BloodRequestItem $item) use ($claimed, $finished): array {
@@ -72,27 +74,25 @@ class RequestStatusResolver
             $reserved = $held->filter(fn (RequestAllocation $allocation): bool => $allocation->status === AllocationStatus::Allocated)->count();
             $fulfilled = $released->count();
             $received = $released->filter(fn (RequestAllocation $allocation): bool => $allocation->received_at !== null)->count();
-            $forwarded = $this->forwardedQuantity($item);
             $closed = $item->closed_at !== null;
 
-            $open = max(0, $requested - $reserved - $fulfilled - $forwarded);
-            $allocatable = ($finished || $closed) ? 0 : $open;
-            $forwardable = ($finished || ($closed && ! $item->closure_reason?->allowsForwarding())) ? 0 : $open;
+            $open = max(0, $requested - $reserved - $fulfilled);
 
             return [$item->id => [
                 'request_item_id' => $item->id,
+                'transfusion_request_item_id' => $item->transfusion_request_item_id,
                 'component_id' => $item->component_id,
                 'requested' => $requested,
                 'reserved' => $reserved,
                 'fulfilled' => $fulfilled,
                 'received' => $received,
-                'forwarded' => $forwarded,
                 'remaining' => max(0, $requested - $fulfilled),
-                'allocatable' => $allocatable,
-                'forwardable' => $forwardable,
+                // What this facility may still hold for the line: nothing once
+                // the line is closed or the request refused or withdrawn.
+                'allocatable' => ($finished || $closed) ? 0 : $open,
                 'closed' => $closed,
-                'resolved' => $this->isResolved($requested, $reserved, $fulfilled, $forwarded, $closed),
-                'status' => $this->lineStatus($requested, $reserved, $fulfilled, $forwarded, $closed),
+                'resolved' => $this->isResolved($requested, $reserved, $fulfilled, $closed),
+                'status' => $this->lineStatus($requested, $reserved, $fulfilled, $closed),
             ]];
         });
     }
@@ -115,9 +115,9 @@ class RequestStatusResolver
      * Rejected and cancelled are decisions, never derived, and are left alone.
      * Everything else follows from the lines:
      *
-     *  - every line resolved and every line fully released here: Fulfilled;
-     *  - every line resolved but some short — closed or forwarded: Partial and
-     *    closed, which is terminal;
+     *  - every line resolved and every line fully released: Fulfilled;
+     *  - every line resolved but some closed short: Partial and closed, which
+     *    is terminal;
      *  - anything released: Partial, still open to top-ups;
      *  - anything reserved: Processing;
      *  - otherwise Pending.
@@ -187,43 +187,27 @@ class RequestStatusResolver
     }
 
     /**
-     * Whether resolving the given lines would leave a request with nothing supplied.
+     * Whether closing the given lines would leave a request with nothing supplied.
      *
-     * Every closing and forwarding path asks this before it acts. A request
-     * whose lines are all closed or forwarded without a single unit released or
-     * reserved here is not partially fulfilled — it was never fulfilled at all,
-     * and the honest ending for that is a rejection or a cancellation.
+     * Every closing path asks this before it acts. A request whose lines are
+     * all closed without a single unit released or reserved is not partially
+     * fulfilled — it was never fulfilled at all, and the honest ending for that
+     * is a rejection or a cancellation.
      *
      * @param  Collection<int, array<string, mixed>>  $lines
-     * @param  array<int, int>  $forwarding  quantity about to be forwarded, keyed by line id
      * @param  array<int, int>  $closing  line ids about to be closed
      */
-    public function wouldEmpty(Collection $lines, array $forwarding = [], array $closing = []): bool
+    public function wouldEmpty(Collection $lines, array $closing = []): bool
     {
         if ($lines->sum('fulfilled') + $lines->sum('reserved') > 0) {
             return false;
         }
 
-        return $lines->every(function (array $line) use ($forwarding, $closing): bool {
-            $forwarded = $line['forwarded'] + ($forwarding[$line['request_item_id']] ?? 0);
+        return $lines->every(function (array $line) use ($closing): bool {
             $closed = $line['closed'] || in_array($line['request_item_id'], $closing, true);
 
-            return $this->isResolved($line['requested'], $line['reserved'], $line['fulfilled'], $forwarded, $closed);
+            return $this->isResolved($line['requested'], $line['reserved'], $line['fulfilled'], $closed);
         });
-    }
-
-    /**
-     * Sum what other facilities have been asked to supply of this line.
-     *
-     * A follow-up that was refused or withdrawn no longer covers anything, so
-     * its quantity comes back to this line.
-     */
-    private function forwardedQuantity(BloodRequestItem $item): int
-    {
-        return (int) $item->followUpItems
-            ->filter(fn (BloodRequestItem $child): bool => $child->request !== null
-                && ! in_array($child->request->status, [BloodRequestStatus::Rejected, BloodRequestStatus::Cancelled], true))
-            ->sum('quantity');
     }
 
     /**
@@ -232,16 +216,15 @@ class RequestStatusResolver
      * A closed line with units still reserved is not resolved: those units are
      * still to be released or returned.
      */
-    private function isResolved(int $requested, int $reserved, int $fulfilled, int $forwarded, bool $closed): bool
+    private function isResolved(int $requested, int $reserved, int $fulfilled, bool $closed): bool
     {
-        return $fulfilled + $forwarded >= $requested || ($closed && $reserved === 0);
+        return $fulfilled >= $requested || ($closed && $reserved === 0);
     }
 
-    private function lineStatus(int $requested, int $reserved, int $fulfilled, int $forwarded, bool $closed): LineFulfilmentStatus
+    private function lineStatus(int $requested, int $reserved, int $fulfilled, bool $closed): LineFulfilmentStatus
     {
         return match (true) {
             $fulfilled >= $requested => LineFulfilmentStatus::Fulfilled,
-            $fulfilled + $forwarded >= $requested => LineFulfilmentStatus::Forwarded,
             $closed && $reserved === 0 => LineFulfilmentStatus::ClosedShort,
             $fulfilled > 0 => LineFulfilmentStatus::Partial,
             default => LineFulfilmentStatus::Unfulfilled,

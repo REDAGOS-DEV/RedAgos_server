@@ -5,37 +5,25 @@ namespace App\Http\Controllers;
 use App\Http\Requests\CancelBloodRequestRequest;
 use App\Http\Requests\CloseRequestLineRequest;
 use App\Http\Requests\ConfirmReceiptRequest;
-use App\Http\Requests\FindPatientRequestsRequest;
 use App\Http\Requests\ListBloodRequestsRequest;
 use App\Http\Requests\StoreBloodRequestRequest;
-use App\Http\Requests\StoreFollowUpRequestRequest;
 use App\Service\BloodRequestService;
-use App\Service\FollowUpRequestService;
 use App\Service\FulfillmentService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 
 /**
- * The requester side: a hospital blood bank raising and tracking its requests.
+ * The requester side: a hospital blood bank's replenishment orders, and each
+ * facility allocation of its Patient Transfusion Requests — where receipt is
+ * confirmed and the DOH form printed.
  */
 class HospitalBloodRequestController extends Controller
 {
     public function __construct(
         private readonly BloodRequestService $bloodRequestService,
-        private readonly FulfillmentService $fulfillmentService,
-        private readonly FollowUpRequestService $followUpRequestService
+        private readonly FulfillmentService $fulfillmentService
     ) {}
-
-    /**
-     * Find this hospital's active requests for a patient, before raising another.
-     */
-    public function patientMatches(FindPatientRequestsRequest $request): JsonResponse
-    {
-        return response()->json(
-            $this->bloodRequestService->patientMatches($request->user(), $request->validated())
-        );
-    }
 
     /**
      * Show everything that has happened to one of this blood bank's requests.
@@ -59,17 +47,6 @@ class HospitalBloodRequestController extends Controller
                 $item,
                 $request->validated()['note'] ?? null
             )
-        );
-    }
-
-    /**
-     * Ask another facility for what this request could not get.
-     */
-    public function followUp(StoreFollowUpRequestRequest $request, int $bloodRequest): JsonResponse
-    {
-        return response()->json(
-            $this->followUpRequestService->createFromPortal($request->user(), $bloodRequest, $request->validated()),
-            201
         );
     }
 

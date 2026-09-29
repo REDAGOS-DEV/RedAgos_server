@@ -16,10 +16,13 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * clinical criterion and its own unit count, and a request for packed cells and
  * platelets is one sheet of paper with two lines, not two requests. This row is
  * that line.
+ *
+ * On a facility allocation, the line is the part of a patient's requirement
+ * line (TransfusionRequestItem) asked of this one centre.
  */
 class BloodRequestItem extends Model
 {
-    use HasFactory;
+    use HasFactory, HasIndication;
 
     /**
      * The closure columns are deliberately absent. Closing a line is a decision
@@ -28,7 +31,7 @@ class BloodRequestItem extends Model
      */
     protected $fillable = [
         'request_id',
-        'parent_item_id',
+        'transfusion_request_item_id',
         'component_id',
         'quantity',
         'indication_code',
@@ -46,19 +49,11 @@ class BloodRequestItem extends Model
     }
 
     /**
-     * The line on another request whose remainder this line carries.
+     * The patient requirement line this allocation line is a share of.
      */
-    public function parentItem(): BelongsTo
+    public function transfusionRequestItem(): BelongsTo
     {
-        return $this->belongsTo(self::class, 'parent_item_id');
-    }
-
-    /**
-     * Lines on follow-up requests that source part of this line elsewhere.
-     */
-    public function followUpItems(): HasMany
-    {
-        return $this->hasMany(self::class, 'parent_item_id');
+        return $this->belongsTo(TransfusionRequestItem::class, 'transfusion_request_item_id');
     }
 
     /**
@@ -91,23 +86,5 @@ class BloodRequestItem extends Model
     public function allocations(): HasMany
     {
         return $this->hasMany(RequestAllocation::class, 'request_item_id');
-    }
-
-    /**
-     * Get the indication as it should read on paper and on screen.
-     *
-     * An "Others" code carries no criterion of its own — the requester's own
-     * words are the indication — so those are shown instead of the placeholder
-     * text the enum holds for them.
-     */
-    public function indicationText(): ?string
-    {
-        if ($this->indication_code === null) {
-            return null;
-        }
-
-        return $this->indication_code->triggersReview() && $this->indication_other !== null
-            ? $this->indication_other
-            : $this->indication_code->description();
     }
 }

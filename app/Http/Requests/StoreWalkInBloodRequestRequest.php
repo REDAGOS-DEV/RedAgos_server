@@ -16,10 +16,11 @@ use Illuminate\Validation\Rule;
  * is fixed, and the request cannot be saved without the watcher who presented
  * it and the hospital staff member who confirmed it by phone.
  *
- * A follow-up names its parent request and, per line, the parent line it
- * carries. Patient, blood type, component and indication then come from the
- * parent — they were certified once, on the original — so they are only
- * required when there is no parent.
+ * A continuation names the Patient Transfusion Request it adds this centre's
+ * share to and, per line, the requirement line the share answers. Patient,
+ * blood type, component and indication then come from the requirement — they
+ * were certified once, when it was recorded — so they are only required when
+ * a new requirement is being recorded.
  */
 class StoreWalkInBloodRequestRequest extends StoreBloodRequestRequest
 {
@@ -28,19 +29,19 @@ class StoreWalkInBloodRequestRequest extends StoreBloodRequestRequest
      */
     public function rules(): array
     {
-        $unlessFollowUp = 'required_without:parent_request_id';
+        $unlessContinuing = 'required_without:transfusion_request_id';
 
         return [
             'hospital_id' => ['required', 'integer', 'exists:facilities,id'],
-            'parent_request_id' => ['nullable', 'integer', 'exists:blood_requests,id'],
+            'transfusion_request_id' => ['nullable', 'integer', 'exists:transfusion_requests,id'],
             'urgency_level' => ['required', Rule::in(UrgencyLevel::values())],
 
-            'patient_surname' => [$unlessFollowUp, 'nullable', 'string', 'max:100'],
-            'patient_first_name' => [$unlessFollowUp, 'nullable', 'string', 'max:100'],
+            'patient_surname' => [$unlessContinuing, 'nullable', 'string', 'max:100'],
+            'patient_first_name' => [$unlessContinuing, 'nullable', 'string', 'max:100'],
             'patient_middle_name' => ['nullable', 'string', 'max:100'],
-            'patient_age' => [$unlessFollowUp, 'nullable', 'integer', 'min:0', 'max:130'],
-            'patient_sex' => [$unlessFollowUp, 'nullable', Rule::in(['male', 'female'])],
-            'blood_type_id' => [$unlessFollowUp, 'nullable', 'integer', 'exists:blood_types,id'],
+            'patient_age' => [$unlessContinuing, 'nullable', 'integer', 'min:0', 'max:130'],
+            'patient_sex' => [$unlessContinuing, 'nullable', Rule::in(['male', 'female'])],
+            'blood_type_id' => [$unlessContinuing, 'nullable', 'integer', 'exists:blood_types,id'],
 
             // What the watcher carries from the hospital. All optional.
             'presented_reference' => ['nullable', 'string', 'max:60'],
@@ -49,8 +50,8 @@ class StoreWalkInBloodRequestRequest extends StoreBloodRequestRequest
             'patient_record_number' => ['nullable', 'string', 'max:60'],
 
             'items' => ['required', 'array', 'min:1', 'max:6'],
-            'items.*.component_id' => [$unlessFollowUp, 'nullable', 'integer', 'exists:blood_components,id', 'distinct'],
-            'items.*.parent_item_id' => ['required_with:parent_request_id', 'nullable', 'integer', 'distinct'],
+            'items.*.component_id' => [$unlessContinuing, 'nullable', 'integer', 'exists:blood_components,id', 'distinct'],
+            'items.*.transfusion_request_item_id' => ['required_with:transfusion_request_id', 'nullable', 'integer', 'distinct'],
             'items.*.quantity' => ['required', 'integer', 'min:1', 'max:100'],
             'items.*.indication_code' => ['nullable', Rule::in(IndicationCode::values())],
             'items.*.indication_other' => ['nullable', 'string', 'max:255'],
@@ -93,8 +94,8 @@ class StoreWalkInBloodRequestRequest extends StoreBloodRequestRequest
             'patient_sex.required_without' => 'Select the patient sex.',
             'blood_type_id.required_without' => 'Select the blood type required.',
             'items.*.component_id.required_without' => 'Select the blood component required.',
-            'items.*.parent_item_id.required_with' => 'Say which component of the original request this line carries.',
-            'items.*.parent_item_id.distinct' => 'Each component can only be listed once on a request.',
+            'items.*.transfusion_request_item_id.required_with' => 'Say which component of the patient\'s request this line answers.',
+            'items.*.transfusion_request_item_id.distinct' => 'Each component can only be listed once on a request.',
             'representative.name.required' => 'Enter the name of the watcher presenting the request.',
             'representative.relationship.required' => 'Enter how the watcher is related to the patient.',
             'representative.contact.required' => "Enter the watcher's contact number.",

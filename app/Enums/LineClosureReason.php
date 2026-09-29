@@ -6,10 +6,11 @@ namespace App\Enums;
  * Why the rest of a request line will not be supplied by the facility handling it.
  *
  * Each reason belongs to one side of the exchange. The fulfilling centre closes
- * a line it cannot supply; the requesting hospital closes a line it no longer
- * needs. The difference matters afterwards: stock the centre could not supply
- * may still be sourced from another facility, while a need the hospital has
- * dropped may not.
+ * a line it cannot supply; the requesting hospital closes a replenishment line
+ * it no longer needs. On a Patient Transfusion allocation only the centre
+ * closes lines — the hospital closes the rest of the patient's requirement
+ * instead — and what a centre could not supply returns to the requirement as
+ * unallocated, to be asked of another facility.
  */
 enum LineClosureReason: string
 {
@@ -31,13 +32,5 @@ enum LineClosureReason: string
             self::Unavailable => 'Unavailable at this facility',
             self::NotNeeded => 'No longer needed',
         };
-    }
-
-    /**
-     * Determine whether the closed remainder may still be sourced from another facility.
-     */
-    public function allowsForwarding(): bool
-    {
-        return $this === self::Unavailable;
     }
 }

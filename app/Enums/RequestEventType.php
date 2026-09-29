@@ -4,6 +4,11 @@ namespace App\Enums;
 
 /**
  * The things that can happen to a blood request, as its history records them.
+ *
+ * Most happen to one facility allocation. The requirement-level ones —
+ * TransfusionCreated, AllocationsAdded, RequirementClosed,
+ * TransfusionCancelled — happen to a patient's requirement as a whole and name
+ * no single allocation.
  */
 enum RequestEventType: string
 {
@@ -11,11 +16,15 @@ enum RequestEventType: string
 
     case WalkInRecorded = 'walk_in_recorded';
 
-    case FollowUpCreated = 'follow_up_created';
+    case TransfusionCreated = 'transfusion_created';
 
-    case RemainderForwarded = 'remainder_forwarded';
+    case AllocationsAdded = 'allocations_added';
 
-    case FollowUpWithdrawn = 'follow_up_withdrawn';
+    case AllocationWithdrawn = 'allocation_withdrawn';
+
+    case RequirementClosed = 'requirement_closed';
+
+    case TransfusionCancelled = 'transfusion_cancelled';
 
     case Allocated = 'allocated';
 
@@ -39,12 +48,14 @@ enum RequestEventType: string
     public function label(): string
     {
         return match ($this) {
-            self::Submitted => 'Submitted through the Blood Bank Portal',
-            self::WalkInRecorded => 'Walk-in request recorded after hospital verification',
-            self::FollowUpCreated => 'Created as a follow-up for a remaining quantity',
-            self::RemainderForwarded => 'Remaining quantity forwarded to another facility',
-            self::FollowUpWithdrawn => 'Follow-up withdrawn — remainder returned to this request',
-            self::Allocated => 'Units reserved',
+            self::Submitted => 'Sent to the facility',
+            self::WalkInRecorded => 'Walk-in recorded after hospital verification',
+            self::TransfusionCreated => 'Patient Transfusion Request created',
+            self::AllocationsAdded => 'Remaining units allocated to more facilities',
+            self::AllocationWithdrawn => 'Allocation withdrawn by the hospital',
+            self::RequirementClosed => 'Remaining quantity closed — no longer needed',
+            self::TransfusionCancelled => 'Patient Transfusion Request cancelled',
+            self::Allocated => 'Approved — units reserved',
             self::HoldsReturned => 'Reserved units returned to stock',
             self::HoldExpired => 'Reserved units expired and were returned to stock',
             self::Released => 'Units released',

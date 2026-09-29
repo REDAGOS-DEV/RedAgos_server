@@ -34,23 +34,30 @@ class RequestHistoryTest extends TestCase
     public function test_a_portal_request_records_each_step_from_submission_to_receipt(): void
     {
         $response = $this->actingAs($this->requester)
-            ->postJson('/api/hospital/blood-requests', [
-                'target_facility_id' => $this->centre->id,
+            ->postJson('/api/hospital/transfusion-requests', [
+                'internal_stock_confirmed' => true,
                 'blood_type_id' => $this->bloodType->id,
                 'urgency_level' => 'routine',
-                'request_purpose' => 'patient_transfusion',
                 'patient_surname' => 'Reyes',
                 'patient_first_name' => 'Ana',
                 'patient_age' => 40,
                 'patient_sex' => 'female',
-                'items' => [
+                'lines' => [
                     ['component_id' => $this->prbc->id, 'quantity' => 2, 'indication_code' => 'R-1'],
                     ['component_id' => $this->ffp->id, 'quantity' => 2, 'indication_code' => 'F-1'],
                 ],
+                'allocations' => [[
+                    'facility_id' => $this->centre->id,
+                    'lines' => [
+                        ['component_id' => $this->prbc->id, 'quantity' => 2],
+                        ['component_id' => $this->ffp->id, 'quantity' => 2],
+                    ],
+                ]],
             ])
             ->assertCreated();
 
-        $request = BloodRequest::query()->findOrFail($response->json('request.id'));
+        $requirementId = $response->json('request.id');
+        $request = BloodRequest::query()->findOrFail($response->json('request.allocations.0.id'));
         $this->stock($this->centre, $this->prbc, 2);
         $this->stock($this->centre, $this->ffp, 1);
         $this->allocateAndRelease($request);
@@ -90,6 +97,21 @@ class RequestHistoryTest extends TestCase
         $this->assertSame('Partially Fulfilled', $ffp['status_label']);
 
         $this->assertSame(3, collect($received['lines'])->sum('received'));
+
+        // The requirement's own timeline: its creation, then every step of
+        // the allocation, each naming the allocation it happened to.
+        $timeline = $this->actingAs($this->requester)
+            ->getJson("/api/hospital/transfusion-requests/{$requirementId}/history")
+            ->assertOk()
+            ->json('events');
+
+        $this->assertSame(
+            ['transfusion_created', 'submitted', 'allocated', 'released', 'receipt_confirmed'],
+            array_column($timeline, 'event')
+        );
+        $this->assertNull($timeline[0]['allocation']);
+        $this->assertSame($request->reference_number, $timeline[1]['allocation']['reference_number']);
+        $this->assertSame(2, collect($timeline[0]['lines'])->firstWhere('component', 'Fresh Frozen Plasma')['required']);
     }
 
     public function test_the_snapshot_keeps_the_figures_as_they_stood_at_the_time(): void

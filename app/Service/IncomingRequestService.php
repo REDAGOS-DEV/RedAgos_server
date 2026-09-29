@@ -158,8 +158,8 @@ class IncomingRequestService
             $figure = $figures->get($item->id);
 
             // What this facility still has to find for the line: nothing
-            // already held or released, nothing forwarded elsewhere, and
-            // nothing once the rest of the line was closed.
+            // already held or released, and nothing once the rest of the line
+            // was closed.
             $outstanding = (int) ($figure['allocatable'] ?? 0);
 
             return [
@@ -180,7 +180,6 @@ class IncomingRequestService
                 'reserved' => (int) ($figure['reserved'] ?? 0),
                 'fulfilled' => (int) ($figure['fulfilled'] ?? 0),
                 'received' => (int) ($figure['received'] ?? 0),
-                'forwarded' => (int) ($figure['forwarded'] ?? 0),
                 'remaining' => (int) ($figure['remaining'] ?? $item->quantity),
                 'closed' => (bool) ($figure['closed'] ?? false),
                 'line_status' => ($figure['status'] ?? null)?->value,

@@ -50,9 +50,15 @@ class BloodRequestDecided extends Notification
             'meta' => $this->request->reference_number,
             'tone' => $this->tone(),
             'action_label' => 'View request',
-            'action_route' => '/hospital/bloodrequests/'.$this->request->id,
+            // A facility allocation is followed on the patient's requirement,
+            // beside every other centre's share; receipt is confirmed from
+            // there too.
+            'action_route' => $this->request->transfusion_request_id !== null
+                ? '/hospital/transfusion-requests/'.$this->request->transfusion_request_id
+                : '/hospital/bloodrequests/'.$this->request->id,
             'request_id' => $this->request->id,
             'reference_number' => $this->request->reference_number,
+            'transfusion_request_id' => $this->request->transfusion_request_id,
             'status' => $this->request->status->value,
             'outcome' => $this->outcome,
         ];
@@ -76,7 +82,10 @@ class BloodRequestDecided extends Notification
         return match ($this->outcome) {
             'allocated' => "{$facility} has reserved stock for request {$reference}.",
             'rejected' => "{$facility} could not fulfil request {$reference}. "
-                .($this->request->rejection_reason ?? 'No reason was recorded.'),
+                .($this->request->rejection_reason ?? 'No reason was recorded.')
+                .($this->request->transfusion_request_id !== null
+                    ? ' Its units are unallocated again; ask another facility for them.'
+                    : ''),
             'released' => "{$facility} has dispatched the units for request {$reference}. "
                 .'Confirm receipt once they arrive.',
             default => "Request {$reference} has been updated.",

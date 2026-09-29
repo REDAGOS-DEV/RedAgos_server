@@ -47,7 +47,7 @@ class RequestAllocationService
         private readonly BloodRequestHistory $history,
         private readonly BloodRequestNotifier $notifier,
         private readonly RequestLineCloser $lineCloser,
-        private readonly FollowUpRequestService $followUps
+        private readonly TransfusionRequestResolver $transfusionResolver
     ) {}
 
     /**
@@ -60,8 +60,7 @@ class RequestAllocationService
      * asking for three units of a two-line request still gets three.
      *
      * What a line still needs is its allocatable quantity: asked for, less what
-     * is already held or released, less what was forwarded to another facility,
-     * and nothing at all once the line is closed.
+     * is already held or released, and nothing at all once the line is closed.
      *
      * @return array<string, mixed>
      */
@@ -140,6 +139,7 @@ class RequestAllocationService
             $request->save();
 
             $this->resolver->settle($request);
+            $this->transfusionResolver->settleParentOf($request);
 
             $after = $this->resolver->figures($request);
             $heldNow = (int) ($after->sum('reserved') + $after->sum('fulfilled'));
@@ -200,8 +200,9 @@ class RequestAllocationService
      * Close the rest of one line that this facility cannot supply.
      *
      * The request keeps what it asked for. The remainder is recorded as
-     * unavailable here, with the reason, and may still be sourced from another
-     * facility through a follow-up.
+     * unavailable here, with the reason. On a facility allocation those units
+     * flow back to the patient's requirement as unallocated, for the hospital
+     * to ask another facility for.
      *
      * @return array<string, mixed>
      */
@@ -212,7 +213,10 @@ class RequestAllocationService
         $request = DB::transaction(function () use ($user, $requestId, $itemId, $note, $facilityId): BloodRequest {
             $request = $this->lockRequestForDecision($requestId, $facilityId);
 
-            return $this->lineCloser->close($request, $itemId, LineClosureReason::Unavailable, $note, $user);
+            $this->lineCloser->close($request, $itemId, LineClosureReason::Unavailable, $note, $user);
+            $this->transfusionResolver->settleParentOf($request);
+
+            return $request;
         });
 
         return [
@@ -282,9 +286,9 @@ class RequestAllocationService
 
             $this->history->record($request, RequestEventType::Rejected, $user, $from, $reason);
 
-            // A refused follow-up no longer carries its parent's remainder, so
-            // the parent gets that quantity back and may be reopened.
-            $this->followUps->returnRemainderToParent($request, $user);
+            // A refused allocation's units are unallocated again on the
+            // patient's requirement, for the hospital to ask elsewhere.
+            $this->transfusionResolver->settleParentOf($request);
 
             return $request;
         });
@@ -356,6 +360,8 @@ class RequestAllocationService
 
             $this->history->record($request, RequestEventType::HoldsReturned, $user, $from, $reason, $unitIds);
 
+            $this->transfusionResolver->settleParentOf($request);
+
             return count($unitIds);
         });
 
@@ -378,7 +384,7 @@ class RequestAllocationService
                 409,
                 'request_closed',
                 $request->closed_at !== null
-                    ? 'This request is closed: every remaining quantity was supplied, closed or forwarded.'
+                    ? 'This request is closed: every remaining quantity was supplied or closed.'
                     : "This request is {$request->status->label()} and can no longer be acted on."
             );
         }

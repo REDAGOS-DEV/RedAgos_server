@@ -233,11 +233,7 @@ class BillingAndNotificationTest extends TestCase
                 'target_facility_id' => $this->centre->id,
                 'blood_type_id' => $this->bloodType->id,
                 'urgency_level' => 'emergency',
-                'request_purpose' => RequestPurpose::PatientTransfusion->value,
-                'patient_surname' => 'Dela Cruz',
-                'patient_first_name' => 'Juan',
-                'patient_age' => 47,
-                'patient_sex' => 'male',
+                'request_purpose' => RequestPurpose::Replenishment->value,
                 'items' => [
                     [
                         'component_id' => $this->component->id,
@@ -262,11 +258,7 @@ class BillingAndNotificationTest extends TestCase
                 'target_facility_id' => $this->centre->id,
                 'blood_type_id' => $this->bloodType->id,
                 'urgency_level' => 'routine',
-                'request_purpose' => RequestPurpose::PatientTransfusion->value,
-                'patient_surname' => 'Dela Cruz',
-                'patient_first_name' => 'Juan',
-                'patient_age' => 47,
-                'patient_sex' => 'male',
+                'request_purpose' => RequestPurpose::Replenishment->value,
                 'items' => [
                     [
                         'component_id' => $this->component->id,
@@ -286,11 +278,7 @@ class BillingAndNotificationTest extends TestCase
                 'target_facility_id' => $this->centre->id,
                 'blood_type_id' => $this->bloodType->id,
                 'urgency_level' => 'routine',
-                'request_purpose' => RequestPurpose::PatientTransfusion->value,
-                'patient_surname' => 'Dela Cruz',
-                'patient_first_name' => 'Juan',
-                'patient_age' => 47,
-                'patient_sex' => 'male',
+                'request_purpose' => RequestPurpose::Replenishment->value,
                 'items' => [
                     [
                         'component_id' => $this->component->id,

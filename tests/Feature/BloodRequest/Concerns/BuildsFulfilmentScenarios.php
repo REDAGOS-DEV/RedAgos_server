@@ -12,10 +12,11 @@ use App\Models\BloodUnit;
 use App\Models\Donation;
 use App\Models\DonorProfile;
 use App\Models\Facility;
+use App\Models\TransfusionRequest;
 use App\Models\User;
 
 /**
- * The world the walk-in, partial-fulfilment and follow-up tests share.
+ * The world the walk-in, partial-fulfilment and Patient Transfusion tests share.
  *
  * Two blood centres, so a remainder has somewhere else to go; one hospital
  * blood bank, which is the institutional party behind every request; and the
@@ -69,8 +70,10 @@ trait BuildsFulfilmentScenarios
 
     /**
      * Put issuable units of one component on a centre's shelf.
+     *
+     * They expire in thirty days unless told otherwise — the factory default.
      */
-    protected function stock(Facility $facility, BloodComponent $component, int $count): void
+    protected function stock(Facility $facility, BloodComponent $component, int $count, ?int $expiresInDays = null): void
     {
         if ($count < 1) {
             return;
@@ -87,6 +90,7 @@ trait BuildsFulfilmentScenarios
             'component_id' => $component->id,
             'donation_id' => $donation->id,
             'status' => BloodUnitStatus::Available,
+            ...($expiresInDays !== null ? ['expiry_date' => now()->addDays($expiresInDays)->toDateString()] : []),
         ]);
     }
 
@@ -105,6 +109,91 @@ trait BuildsFulfilmentScenarios
                 [$this->platelets, 1],
             ])
             ->create();
+    }
+
+    /**
+     * Record a Patient Transfusion Request through the hospital portal, split as given.
+     *
+     * Lines are [component, required]; shares are [centre, [[component,
+     * quantity], ...]]. Goes through the real endpoint, so every test starts
+     * from a requirement written exactly as the hospital would write it.
+     *
+     * @param  array<int, array{0: BloodComponent, 1: int}>  $lines
+     * @param  array<int, array{0: Facility, 1: array<int, array{0: BloodComponent, 1: int}>}>  $shares
+     * @param  array<string, mixed>  $overrides
+     */
+    protected function recordTransfusion(array $lines, array $shares, array $overrides = []): TransfusionRequest
+    {
+        $id = $this->actingAs($this->requester)
+            ->postJson('/api/hospital/transfusion-requests', $this->transfusionPayload($lines, $shares, $overrides))
+            ->assertCreated()
+            ->json('request.id');
+
+        return TransfusionRequest::query()->findOrFail($id);
+    }
+
+    /**
+     * The payload recordTransfusion() sends, for a test that wants the response itself.
+     *
+     * @param  array<int, array{0: BloodComponent, 1: int}>  $lines
+     * @param  array<int, array{0: Facility, 1: array<int, array{0: BloodComponent, 1: int}>}>  $shares
+     * @param  array<string, mixed>  $overrides
+     * @return array<string, mixed>
+     */
+    protected function transfusionPayload(array $lines, array $shares, array $overrides = []): array
+    {
+        $indications = [
+            $this->prbc->id => IndicationCode::R1->value,
+            $this->ffp->id => IndicationCode::F1->value,
+            $this->platelets->id => IndicationCode::P1->value,
+        ];
+
+        return [
+            'internal_stock_confirmed' => true,
+            'blood_type_id' => $this->bloodType->id,
+            'urgency_level' => 'emergency',
+            'patient_surname' => 'Dela Cruz',
+            'patient_first_name' => 'Juan',
+            'patient_age' => 54,
+            'patient_sex' => 'male',
+            'lines' => array_map(fn (array $line): array => [
+                'component_id' => $line[0]->id,
+                'quantity' => $line[1],
+                'indication_code' => $indications[$line[0]->id] ?? null,
+            ], $lines),
+            'allocations' => array_map(fn (array $share): array => [
+                'facility_id' => $share[0]->id,
+                'lines' => array_map(fn (array $line): array => [
+                    'component_id' => $line[0]->id,
+                    'quantity' => $line[1],
+                ], $share[1]),
+            ], $shares),
+            ...$overrides,
+        ];
+    }
+
+    /**
+     * The scenario's requirement — PRBC 2, FFP 2, platelets 1 — asked in full of one centre.
+     *
+     * @param  array<string, mixed>  $overrides
+     */
+    protected function scenarioTransfusion(?Facility $centre = null, array $overrides = []): TransfusionRequest
+    {
+        $lines = [[$this->prbc, 2], [$this->ffp, 2], [$this->platelets, 1]];
+
+        return $this->recordTransfusion($lines, [[$centre ?? $this->centre, $lines]], $overrides);
+    }
+
+    /**
+     * A requirement's allocation at one centre — the newest, if it was asked more than once.
+     */
+    protected function allocationAt(TransfusionRequest $requirement, Facility $centre): BloodRequest
+    {
+        return BloodRequest::query()
+            ->where('transfusion_request_id', $requirement->id)
+            ->where('target_facility_id', $centre->id)
+            ->latest('id')
+            ->firstOrFail();
     }
 
     /**

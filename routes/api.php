@@ -33,6 +33,7 @@ use App\Http\Controllers\FacilityNotificationController;
 use App\Http\Controllers\HospitalAvailabilityController;
 use App\Http\Controllers\HospitalBloodRequestController;
 use App\Http\Controllers\HospitalReferenceController;
+use App\Http\Controllers\HospitalTransfusionRequestController;
 use App\Http\Controllers\PasswordResetController;
 use App\Http\Controllers\UserController;
 use App\Http\Resources\UserResource;
@@ -559,14 +560,54 @@ Route::middleware(['auth:sanctum', 'role:blood_bank', 'facility.operational'])
         Route::get('/availability', [HospitalAvailabilityController::class, 'index']);
         Route::get('/facilities', [HospitalAvailabilityController::class, 'facilities']);
 
+        // A patient's need, split across the centres asked to supply it. Each
+        // share is a facility allocation — a blood request below — which the
+        // centre works exactly as it always has.
+        Route::prefix('transfusion-requests')->group(function (): void {
+            Route::get('/', [HospitalTransfusionRequestController::class, 'index']);
+            Route::post('/', [HospitalTransfusionRequestController::class, 'store']);
+
+            // Advisory: which centres hold matching stock, earliest expiry
+            // first. A POST so it can carry the component lines.
+            Route::post('/sourcing', [HospitalTransfusionRequestController::class, 'draftSourcing'])
+                ->middleware('throttle:60,1');
+
+            // The check before recording a second requirement for the same
+            // patient — including one a blood centre recorded here after a
+            // walk-in. A POST so the patient's name stays out of URLs and
+            // access logs.
+            Route::post('/patient-matches', [HospitalTransfusionRequestController::class, 'patientMatches'])
+                ->middleware('throttle:60,1');
+
+            // Either reference on the watcher's paperwork: the PTR, or the RQ
+            // of any of its allocations. Declared before {transfusionRequest}.
+            Route::get('/track/{reference}', [HospitalTransfusionRequestController::class, 'track'])
+                ->where('reference', '[A-Za-z0-9\-]+');
+
+            Route::get('/{transfusionRequest}', [HospitalTransfusionRequestController::class, 'show'])
+                ->whereNumber('transfusionRequest');
+            Route::get('/{transfusionRequest}/history', [HospitalTransfusionRequestController::class, 'history'])
+                ->whereNumber('transfusionRequest');
+            Route::get('/{transfusionRequest}/sourcing', [HospitalTransfusionRequestController::class, 'sourcing'])
+                ->whereNumber('transfusionRequest')
+                ->middleware('throttle:60,1');
+
+            Route::post('/{transfusionRequest}/allocations', [HospitalTransfusionRequestController::class, 'addAllocations'])
+                ->whereNumber('transfusionRequest');
+            Route::post('/{transfusionRequest}/allocations/{allocation}/withdraw', [HospitalTransfusionRequestController::class, 'withdrawAllocation'])
+                ->whereNumber('transfusionRequest')
+                ->whereNumber('allocation');
+            Route::post('/{transfusionRequest}/items/{item}/close', [HospitalTransfusionRequestController::class, 'closeLine'])
+                ->whereNumber('transfusionRequest')
+                ->whereNumber('item');
+            Route::post('/{transfusionRequest}/cancel', [HospitalTransfusionRequestController::class, 'cancel'])
+                ->whereNumber('transfusionRequest');
+        });
+
+        // Replenishment orders, and every facility allocation's own page:
+        // receipt, the DOH form and its history live on the allocation.
         Route::get('/blood-requests', [HospitalBloodRequestController::class, 'index']);
         Route::post('/blood-requests', [HospitalBloodRequestController::class, 'store']);
-
-        // The check before raising a second request for the same patient —
-        // including one a blood centre recorded here after a walk-in. A POST so
-        // the patient's name stays out of URLs and access logs.
-        Route::post('/blood-requests/patient-matches', [HospitalBloodRequestController::class, 'patientMatches'])
-            ->middleware('throttle:60,1');
 
         // Declared before the {bloodRequest} route below, which would otherwise
         // swallow "track" and then fail to match it as an integer.
@@ -582,10 +623,6 @@ Route::middleware(['auth:sanctum', 'role:blood_bank', 'facility.operational'])
             ->whereNumber('bloodRequest');
 
         Route::get('/blood-requests/{bloodRequest}/history', [HospitalBloodRequestController::class, 'history'])
-            ->whereNumber('bloodRequest');
-
-        // Sourcing what the request could not get from a different facility.
-        Route::post('/blood-requests/{bloodRequest}/follow-up', [HospitalBloodRequestController::class, 'followUp'])
             ->whereNumber('bloodRequest');
 
         Route::post('/blood-requests/{bloodRequest}/items/{item}/close', [HospitalBloodRequestController::class, 'closeLine'])

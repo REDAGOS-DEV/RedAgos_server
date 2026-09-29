@@ -24,6 +24,7 @@ class BloodRequestEvent extends Model
 
     protected $fillable = [
         'request_id',
+        'transfusion_request_id',
         'request_item_id',
         'event',
         'from_status',
@@ -57,9 +58,21 @@ class BloodRequestEvent extends Model
         });
     }
 
+    /**
+     * The facility allocation this happened to. Null for an event on the
+     * patient requirement itself — created, allocations added, cancelled.
+     */
     public function request(): BelongsTo
     {
         return $this->belongsTo(BloodRequest::class, 'request_id');
+    }
+
+    /**
+     * The patient requirement this event belongs to, for a transfusion.
+     */
+    public function transfusionRequest(): BelongsTo
+    {
+        return $this->belongsTo(TransfusionRequest::class, 'transfusion_request_id');
     }
 
     public function requestItem(): BelongsTo

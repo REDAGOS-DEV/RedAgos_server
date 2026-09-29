@@ -48,11 +48,15 @@ class BloodRequestService
         private readonly BloodRequestHistory $history,
         private readonly BloodRequestNotifier $notifier,
         private readonly RequestLineCloser $lineCloser,
-        private readonly FollowUpRequestService $followUps
+        private readonly TransfusionRequestResolver $transfusionResolver
     ) {}
 
     /**
-     * Raise a request against a chosen facility.
+     * Raise a replenishment request against a chosen facility.
+     *
+     * A restock order goes to one centre. A patient's need is recorded as a
+     * Patient Transfusion Request instead, which may be split across several
+     * (TransfusionRequestService).
      *
      * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
@@ -60,6 +64,13 @@ class BloodRequestService
     public function submit(User $user, array $payload): array
     {
         $facilityId = $this->requireFacilityId($user);
+
+        if (($payload['request_purpose'] ?? null) !== RequestPurpose::Replenishment->value) {
+            throw ValidationException::withMessages([
+                'request_purpose' => ['Record a patient\'s need as a Patient Transfusion Request.'],
+            ]);
+        }
+
         $target = $this->requireEligibleTarget((int) $payload['target_facility_id'], $facilityId);
 
         foreach (range(1, self::REFERENCE_ATTEMPTS) as $attempt) {
@@ -165,11 +176,11 @@ class BloodRequestService
     }
 
     /**
-     * Close the rest of one line the hospital no longer needs.
+     * Close the rest of one replenishment line the hospital no longer needs.
      *
      * The line keeps what was asked for; the remainder is recorded as not
-     * needed, which — unlike a centre's "unavailable" — may not then be sourced
-     * from another facility.
+     * needed. A patient's need is closed on the Patient Transfusion Request
+     * instead, which stops asking every facility for it at once.
      *
      * @return array<string, mixed>
      */
@@ -181,6 +192,16 @@ class BloodRequestService
             $request = $this->bloodRequestRepository->lockRaisedBy($requestId, $facilityId)
                 ?? throw $this->refuse(404, 'request_not_found', 'Blood request not found.');
 
+            if ($request->transfusion_request_id !== null) {
+                $reference = $request->transfusionRequest()->value('reference_number');
+
+                throw $this->refuse(
+                    409,
+                    'close_on_transfusion_request',
+                    "Close the remaining quantity on Patient Transfusion Request {$reference}."
+                );
+            }
+
             return $this->lineCloser->close($request, $itemId, LineClosureReason::NotNeeded, $note, $user);
         });
 
@@ -190,40 +211,6 @@ class BloodRequestService
             'status' => $request->status->value,
             'status_label' => $request->status->label(),
             'is_open' => ! $request->isClosed(),
-        ];
-    }
-
-    /**
-     * Find this hospital's active requests for a patient it is about to request for.
-     *
-     * The warning a hospital sees before raising a second request for the same
-     * patient — including one a blood centre recorded on its behalf when the
-     * watcher went there first.
-     *
-     * @param  array<string, mixed>  $criteria
-     * @return array<string, mixed>
-     */
-    public function patientMatches(User $user, array $criteria): array
-    {
-        $facilityId = $this->requireFacilityId($user);
-
-        $matches = $this->bloodRequestRepository->patientMatches($facilityId, $criteria);
-
-        return [
-            'matches' => $matches->map(fn (BloodRequest $request): array => [
-                'id' => $request->id,
-                'reference_number' => $request->reference_number,
-                'facility' => $request->targetFacility ? [
-                    'id' => $request->targetFacility->id,
-                    'name' => $request->targetFacility->name,
-                ] : null,
-                'request_source' => $request->request_source->value,
-                'source_label' => $request->request_source->label(),
-                'status' => $request->status->value,
-                'status_label' => $request->status->label(),
-                'is_open' => ! $request->isClosed(),
-                'request_date' => $request->request_date?->toIso8601String(),
-            ])->values()->all(),
         ];
     }
 
@@ -282,10 +269,17 @@ class BloodRequestService
                 'reason' => $reason,
             ], fn ($value): bool => $value !== null));
 
-            $this->history->record($request, RequestEventType::Cancelled, $user, $from, $reason);
+            // A facility allocation withdrawn is one share of a patient's need
+            // no longer asked of this centre; its units are unallocated again.
+            $this->history->record(
+                $request,
+                $request->transfusion_request_id !== null ? RequestEventType::AllocationWithdrawn : RequestEventType::Cancelled,
+                $user,
+                $from,
+                $reason
+            );
 
-            // A withdrawn follow-up no longer carries its parent's remainder.
-            $this->followUps->returnRemainderToParent($request, $user);
+            $this->transfusionResolver->settleParentOf($request);
 
             return $request;
         });
@@ -306,8 +300,11 @@ class BloodRequestService
         $this->bloodRequestRepository->lockFacility($facilityId)
             ?? throw $this->refuse(404, 'facility_missing', 'This account is not linked to a facility.');
 
-        $purpose = RequestPurpose::from($payload['request_purpose']);
+        $purpose = RequestPurpose::Replenishment;
 
+        // No patient columns: a restock order has no patient, and storing a
+        // name it should not carry would put patient data on a record that has
+        // none.
         $request = BloodRequest::query()->create([
             'reference_number' => $this->bloodRequestRepository->nextReference($facilityId),
             'facility_id' => $facilityId,
@@ -315,15 +312,6 @@ class BloodRequestService
             'requested_by' => $user->id,
             'request_purpose' => $purpose,
             'request_source' => RequestSource::BloodBankPortal,
-            // Patient identity is dropped rather than trusted when the request
-            // is a restock. Validation already refuses to require it there, and
-            // storing a name a replenishment order should not carry would put
-            // patient data on a record that has no patient.
-            'patient_surname' => $purpose->requiresPatient() ? $payload['patient_surname'] : null,
-            'patient_first_name' => $purpose->requiresPatient() ? $payload['patient_first_name'] : null,
-            'patient_middle_name' => $purpose->requiresPatient() ? ($payload['patient_middle_name'] ?? null) : null,
-            'patient_age' => $purpose->requiresPatient() ? $payload['patient_age'] : null,
-            'patient_sex' => $purpose->requiresPatient() ? $payload['patient_sex'] : null,
             'blood_type_id' => $payload['blood_type_id'],
             'urgency_level' => $payload['urgency_level'],
             'status' => BloodRequestStatus::Pending,

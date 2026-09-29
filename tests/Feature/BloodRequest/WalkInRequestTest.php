@@ -11,6 +11,7 @@ use App\Models\AuditLog;
 use App\Models\BloodRequest;
 use App\Models\BloodRequestWalkIn;
 use App\Models\Facility;
+use App\Models\TransfusionRequest;
 use App\Models\User;
 use App\Notifications\BloodRequestDecided;
 use App\Notifications\BloodRequestSubmitted;
@@ -63,6 +64,38 @@ class WalkInRequestTest extends TestCase
         $this->assertSame($this->issuance->id, $request->recorded_by);
         $this->assertSame($this->issuance->id, $request->walkIn->verification_recorded_by);
         $this->assertSame(3, $request->items()->count());
+    }
+
+    public function test_a_walk_in_records_the_patients_requirement_with_this_centre_asked_for_all_of_it(): void
+    {
+        $response = $this->actingAs($this->issuance)
+            ->postJson('/api/blood-center/blood-requests/walk-in', $this->walkInPayload())
+            ->assertCreated()
+            ->assertJsonPath('request.transfusion_request.reference_number', "PTR-{$this->hospital->id}-0001")
+            ->assertJsonPath('message', "Walk-in request PTR-{$this->hospital->id}-0001 recorded for Southern Hospital Blood Bank.");
+
+        $requirement = TransfusionRequest::query()->sole();
+        $allocation = BloodRequest::query()->findOrFail($response->json('request.id'));
+
+        $this->assertSame($requirement->id, $allocation->transfusion_request_id);
+        $this->assertSame(RequestSource::BloodCenterWalkIn, $requirement->request_source);
+        $this->assertNull($requirement->requested_by);
+        $this->assertSame($this->issuance->id, $requirement->recorded_by);
+        $this->assertNull($requirement->internal_stock_checked_at, 'Nobody at the hospital checked its shelf in the system.');
+        $this->assertSame(
+            $requirement->items()->orderBy('component_id')->pluck('quantity', 'component_id')->all(),
+            $allocation->items()->orderBy('component_id')->pluck('quantity', 'component_id')->all()
+        );
+
+        // The hospital follows it as its own Patient Transfusion Request.
+        $this->actingAs($this->requester)
+            ->getJson("/api/hospital/transfusion-requests/{$requirement->id}")
+            ->assertOk()
+            ->assertJsonPath('request.is_walk_in', true)
+            ->assertJsonPath('request.totals.required', 5)
+            ->assertJsonPath('request.totals.awaiting', 5)
+            ->assertJsonPath('request.walk_in.representative.name', 'Pedro Dela Cruz')
+            ->assertJsonPath('request.walk_in.verification.verifier_name', 'Ana Lim');
     }
 
     public function test_a_walk_in_takes_the_next_number_in_the_hospitals_own_sequence(): void

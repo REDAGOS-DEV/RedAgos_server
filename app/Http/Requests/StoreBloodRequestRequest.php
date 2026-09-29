@@ -31,29 +31,21 @@ class StoreBloodRequestRequest extends FormRequest
      * service, not here — "exists" and "eligible" are different questions, and
      * the eligibility rule lives in one place so widening it later is one edit.
      *
-     * Patient fields are required only for a transfusion. A replenishment order
-     * restocks the requester's own shelves and has no patient to name, so the
-     * columns are nullable in the schema and the obligation is expressed here,
-     * where the purpose is known.
+     * Replenishment only. A restock order goes to one centre and has no
+     * patient; a patient's need is a Patient Transfusion Request, recorded
+     * through its own endpoint and split across centres there. The purpose is
+     * still required, so a client still sending a transfusion here is told
+     * where it goes rather than having it silently turned into a restock.
      *
      * @return array<string, array<int, mixed>>
      */
     public function rules(): array
     {
-        $forPatient = 'required_if:request_purpose,'.RequestPurpose::PatientTransfusion->value;
-
         return [
             'target_facility_id' => ['required', 'integer', 'exists:facilities,id'],
             'blood_type_id' => ['required', 'integer', 'exists:blood_types,id'],
             'urgency_level' => ['required', Rule::in(UrgencyLevel::values())],
-            'request_purpose' => ['required', Rule::in(RequestPurpose::values())],
-
-            'patient_surname' => [$forPatient, 'nullable', 'string', 'max:100'],
-            'patient_first_name' => [$forPatient, 'nullable', 'string', 'max:100'],
-            'patient_middle_name' => ['nullable', 'string', 'max:100'],
-            // 130 is a sanity guard on a typed figure, not a clinical rule.
-            'patient_age' => [$forPatient, 'nullable', 'integer', 'min:0', 'max:130'],
-            'patient_sex' => [$forPatient, 'nullable', Rule::in(['male', 'female'])],
+            'request_purpose' => ['required', Rule::in([RequestPurpose::Replenishment->value])],
 
             // Six components exist and a component may be ticked once, so six
             // lines is the most a form can carry.
@@ -82,7 +74,8 @@ class StoreBloodRequestRequest extends FormRequest
     public function withValidator(Validator $validator): void
     {
         $validator->after(function (Validator $validator): void {
-            $items = $this->input('items');
+            $key = $this->linesKey();
+            $items = $this->input($key);
 
             if (! is_array($items)) {
                 return;
@@ -101,7 +94,7 @@ class StoreBloodRequestRequest extends FormRequest
                 if ($code === null) {
                     if ($componentName !== null && IndicationCode::forComponentName($componentName) !== []) {
                         $validator->errors()->add(
-                            "items.{$index}.indication_code",
+                            "{$key}.{$index}.indication_code",
                             "Select the indication for {$componentName}."
                         );
                     }
@@ -111,14 +104,14 @@ class StoreBloodRequestRequest extends FormRequest
 
                 if ($componentName !== null && ! $code->belongsToComponent($componentName)) {
                     $validator->errors()->add(
-                        "items.{$index}.indication_code",
+                        "{$key}.{$index}.indication_code",
                         "Indication {$code->value} does not apply to {$componentName}."
                     );
                 }
 
                 if ($code->triggersReview() && trim((string) ($item['indication_other'] ?? '')) === '') {
                     $validator->errors()->add(
-                        "items.{$index}.indication_other",
+                        "{$key}.{$index}.indication_other",
                         "Indication {$code->value} requires you to specify the reason."
                     );
                 }
@@ -138,11 +131,7 @@ class StoreBloodRequestRequest extends FormRequest
             'blood_type_id.required' => 'Select the blood type required.',
             'urgency_level.in' => 'Urgency must be either routine or emergency.',
             'request_purpose.required' => 'Say whether this request is for a patient or to replenish stock.',
-            'request_purpose.in' => 'A request is either for a patient transfusion or for replenishment.',
-            'patient_surname.required_if' => 'Enter the patient surname.',
-            'patient_first_name.required_if' => 'Enter the patient first name.',
-            'patient_age.required_if' => 'Enter the patient age.',
-            'patient_sex.required_if' => 'Select the patient sex.',
+            'request_purpose.in' => "Record a patient's need as a Patient Transfusion Request.",
             'items.required' => 'Add at least one blood component to this request.',
             'items.max' => 'A request cannot ask for more than six components.',
             'items.*.component_id.required' => 'Select the blood component required.',
@@ -151,6 +140,17 @@ class StoreBloodRequestRequest extends FormRequest
             'items.*.quantity.max' => 'A single component cannot exceed 100 units.',
             'items.*.indication_code.in' => 'That is not an indication code on the request form.',
         ];
+    }
+
+    /**
+     * The payload key the component lines arrive under.
+     *
+     * "items" on a blood request; a Patient Transfusion Request's requirement
+     * arrives as "lines", beside the allocations that split it.
+     */
+    protected function linesKey(): string
+    {
+        return 'items';
     }
 
     /**

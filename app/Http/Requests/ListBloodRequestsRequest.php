@@ -3,6 +3,7 @@
 namespace App\Http\Requests;
 
 use App\Enums\BloodRequestStatus;
+use App\Enums\RequestPurpose;
 use App\Enums\RequestSource;
 use App\Enums\UrgencyLevel;
 use Illuminate\Foundation\Http\FormRequest;
@@ -33,6 +34,7 @@ class ListBloodRequestsRequest extends FormRequest
             'status' => ['sometimes', Rule::in(BloodRequestStatus::values())],
             'urgency_level' => ['sometimes', Rule::in(UrgencyLevel::values())],
             'request_source' => ['sometimes', Rule::in(RequestSource::values())],
+            'request_purpose' => ['sometimes', Rule::in(RequestPurpose::values())],
             'blood_type_id' => ['sometimes', 'integer', 'exists:blood_types,id'],
             'component_id' => ['sometimes', 'integer', 'exists:blood_components,id'],
             'search' => ['sometimes', 'string', 'max:40'],

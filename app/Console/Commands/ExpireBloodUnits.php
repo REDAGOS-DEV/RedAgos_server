@@ -12,6 +12,7 @@ use App\Repository\InventoryRepository;
 use App\Service\AuditLogger;
 use App\Service\BloodRequestHistory;
 use App\Service\RequestStatusResolver;
+use App\Service\TransfusionRequestResolver;
 use App\Support\OperationalDay;
 use Illuminate\Console\Command;
 use Illuminate\Support\Collection;
@@ -45,7 +46,8 @@ class ExpireBloodUnits extends Command
         private readonly InventoryRepository $inventoryRepository,
         private readonly AuditLogger $auditLogger,
         private readonly RequestStatusResolver $resolver,
-        private readonly BloodRequestHistory $history
+        private readonly BloodRequestHistory $history,
+        private readonly TransfusionRequestResolver $transfusionResolver
     ) {
         parent::__construct();
     }
@@ -242,6 +244,9 @@ class ExpireBloodUnits extends Command
                     count($unitIds).' reserved unit(s) passed their expiry date and were returned to stock.',
                     $unitIds,
                 );
+
+                // Allocation, then requirement: the order every path takes.
+                $this->transfusionResolver->settleParentOf($request);
             });
         }
     }

@@ -39,19 +39,27 @@ class WalkInRequestRecorded extends Notification
     {
         $centre = $this->request->targetFacility?->name ?? 'A blood centre';
         $patient = $this->request->patientFullName();
+        $requirement = $this->request->transfusionRequest;
+        $reference = $requirement?->reference_number ?? $this->request->reference_number;
 
         return [
             'category' => 'request',
             'title' => 'Walk-in request recorded on your behalf',
-            'desc' => "{$centre} recorded walk-in request {$this->request->reference_number}"
+            'desc' => "{$centre} recorded walk-in request {$reference}"
                 .($patient ? " for {$patient}" : '')
                 .' after your blood bank confirmed it by phone.',
-            'meta' => $this->request->reference_number,
+            'meta' => $reference,
             'tone' => 'info',
             'action_label' => 'View request',
-            'action_route' => '/hospital/bloodrequests/'.$this->request->id,
+            // The patient's requirement, where every centre's share of it is
+            // followed together.
+            'action_route' => $requirement
+                ? '/hospital/transfusion-requests/'.$requirement->id
+                : '/hospital/bloodrequests/'.$this->request->id,
             'request_id' => $this->request->id,
             'reference_number' => $this->request->reference_number,
+            'transfusion_request_id' => $requirement?->id,
+            'transfusion_reference_number' => $requirement?->reference_number,
             'request_source' => $this->request->request_source->value,
         ];
     }

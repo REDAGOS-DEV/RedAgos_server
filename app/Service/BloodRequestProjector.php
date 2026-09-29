@@ -8,8 +8,9 @@ use App\Models\BloodRequestItem;
 use App\Models\BloodRequestWalkIn;
 use App\Models\Facility;
 use App\Models\RequestAllocation;
+use App\Models\TransfusionRequest;
+use App\Models\TransfusionRequestItem;
 use App\Models\User;
-use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Collection;
 
 /**
@@ -82,23 +83,20 @@ class BloodRequestProjector
             'allocated_count' => $allocatedCount,
             'received_count' => $receivedCount,
             // What this facility still has to find: asked for, less what is
-            // held, forwarded elsewhere or closed. Before lines could be closed
-            // or forwarded this was simply quantity less allocated_count, and
-            // it still is for any request that has neither.
+            // held or closed. Before lines could be closed this was simply
+            // quantity less allocated_count, and it still is for any request
+            // that has none closed.
             'outstanding_quantity' => $figures->isNotEmpty()
                 ? (int) $figures->sum('allocatable')
                 : max(0, $quantity - $allocatedCount),
             // Fulfilment is counted at dispatch: released units.
             'fulfilled_quantity' => $fulfilled,
             'remaining_quantity' => max(0, $quantity - $fulfilled),
-            'forwarded_quantity' => (int) $figures->sum('forwarded'),
-            'forwardable_quantity' => (int) $figures->sum('forwardable'),
             'rejection_reason' => $request->rejection_reason,
             'request_date' => $request->request_date?->toIso8601String(),
             'reviewed_at' => $request->reviewed_at?->toIso8601String(),
             'fulfilled_at' => $request->fulfilled_at?->toIso8601String(),
-            'parent' => $this->parent($request),
-            'follow_ups' => $this->followUps($request),
+            'transfusion_request' => $this->transfusionRequest($request),
             'walk_in' => $this->walkIn($request),
         ];
 
@@ -133,15 +131,6 @@ class BloodRequestProjector
             return collect();
         }
 
-        // Follow-up lines are optional here: a request loaded without them is
-        // treated as having forwarded nothing, which is true of every request
-        // raised before forwarding existed.
-        foreach ($request->items as $item) {
-            if (! $item->relationLoaded('followUpItems')) {
-                $item->setRelation('followUpItems', new EloquentCollection);
-            }
-        }
-
         return $this->resolver->figures($request);
     }
 
@@ -165,7 +154,7 @@ class BloodRequestProjector
             ->map(function (BloodRequestItem $item) use ($figures, $heldPerItem, $withCoverage): array {
                 $line = [
                     'id' => $item->id,
-                    'parent_item_id' => $item->parent_item_id,
+                    'transfusion_request_item_id' => $item->transfusion_request_item_id,
                     'component' => [
                         'id' => $item->component_id,
                         'name' => $item->component?->name,
@@ -192,10 +181,8 @@ class BloodRequestProjector
                         'reserved_quantity' => $figure['reserved'],
                         'fulfilled_quantity' => $figure['fulfilled'],
                         'received_quantity' => $figure['received'],
-                        'forwarded_quantity' => $figure['forwarded'],
                         'remaining_quantity' => $figure['remaining'],
                         'allocatable_quantity' => $figure['allocatable'],
-                        'forwardable_quantity' => $figure['forwardable'],
                         'line_status' => $status->value,
                         'line_status_label' => $status->label(),
                     ];
@@ -213,53 +200,42 @@ class BloodRequestProjector
     }
 
     /**
-     * Project the request this follow-up carries a remainder for.
+     * Project the patient requirement this facility allocation is a share of.
      *
-     * A stub only. The parent was addressed to another facility, and a centre
-     * handling the follow-up needs to know which request and where, not to read
-     * the other centre's record.
+     * A stub only: a centre is shown which requirement, and how much of each
+     * component the patient needs in all, so it can read its own share against
+     * it — "you are asked for 1 of the 5 the patient needs". It is not shown
+     * which other centres were asked, or what they answered.
      *
      * @return array<string, mixed>|null
      */
-    private function parent(BloodRequest $request): ?array
+    private function transfusionRequest(BloodRequest $request): ?array
     {
-        if ($request->parent_request_id === null || ! $request->relationLoaded('parent') || ! $request->parent) {
+        if ($request->transfusion_request_id === null || ! $request->relationLoaded('transfusionRequest')) {
             return null;
         }
 
-        return $this->requestStub($request->parent);
-    }
+        /** @var TransfusionRequest|null $requirement */
+        $requirement = $request->transfusionRequest;
 
-    /**
-     * Project the follow-ups raised to source this request's remainder elsewhere.
-     *
-     * @return array<int, array<string, mixed>>
-     */
-    private function followUps(BloodRequest $request): array
-    {
-        if (! $request->relationLoaded('followUps')) {
-            return [];
+        if ($requirement === null) {
+            return null;
         }
 
-        return $request->followUps
-            ->sortBy('id')
-            ->map(fn (BloodRequest $followUp): array => $this->requestStub($followUp))
-            ->values()
-            ->all();
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private function requestStub(BloodRequest $request): array
-    {
         return [
-            'id' => $request->id,
-            'reference_number' => $request->reference_number,
-            'facility' => $this->facilityStub($request->targetFacility),
-            'status' => $request->status->value,
-            'status_label' => $request->status->label(),
-            'is_open' => ! $request->isClosed(),
+            'id' => $requirement->id,
+            'reference_number' => $requirement->reference_number,
+            'status' => $requirement->status->value,
+            'status_label' => $requirement->status->label(),
+            'is_open' => ! $requirement->isClosed(),
+            'required' => $requirement->relationLoaded('items')
+                ? $requirement->items->sortBy('id')->values()->map(fn (TransfusionRequestItem $item): array => [
+                    'transfusion_request_item_id' => $item->id,
+                    'component_id' => $item->component_id,
+                    'component' => $item->relationLoaded('component') ? $item->component?->name : null,
+                    'quantity' => (int) $item->quantity,
+                ])->all()
+                : [],
         ];
     }
 
@@ -274,9 +250,16 @@ class BloodRequestProjector
             return null;
         }
 
-        /** @var BloodRequestWalkIn|null $walkIn */
-        $walkIn = $request->walkIn;
+        return $this->walkInBlock($request->walkIn);
+    }
 
+    /**
+     * Project one walk-in row. Shared with TransfusionRequestProjector.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function walkInBlock(?BloodRequestWalkIn $walkIn): ?array
+    {
         if ($walkIn === null) {
             return null;
         }
@@ -320,6 +303,16 @@ class BloodRequestProjector
             return null;
         }
 
+        return $this->patientBlock($request);
+    }
+
+    /**
+     * Project the patient columns a request or a requirement carries.
+     *
+     * @return array<string, mixed>
+     */
+    public function patientBlock(BloodRequest|TransfusionRequest $request): array
+    {
         return [
             'surname' => $request->patient_surname,
             'first_name' => $request->patient_first_name,
@@ -330,7 +323,7 @@ class BloodRequestProjector
         ];
     }
 
-    private function personName(?User $user): ?string
+    public function personName(?User $user): ?string
     {
         if ($user === null) {
             return null;
@@ -346,7 +339,7 @@ class BloodRequestProjector
      *
      * @return array<string, mixed>|null
      */
-    private function facilityStub(?Facility $facility): ?array
+    public function facilityStub(?Facility $facility): ?array
     {
         return $facility ? [
             'id' => $facility->id,

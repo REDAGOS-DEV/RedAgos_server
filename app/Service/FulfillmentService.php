@@ -36,7 +36,8 @@ class FulfillmentService
         private readonly AuditLogger $auditLogger,
         private readonly RequestStatusResolver $resolver,
         private readonly BloodRequestHistory $history,
-        private readonly BloodRequestNotifier $notifier
+        private readonly BloodRequestNotifier $notifier,
+        private readonly TransfusionRequestResolver $transfusionResolver
     ) {}
 
     /**
@@ -122,6 +123,7 @@ class FulfillmentService
             }
 
             $this->resolver->settle($request);
+            $this->transfusionResolver->settleParentOf($request);
 
             $handedTo = $handedTo !== null ? trim($handedTo) : null;
 
@@ -186,6 +188,7 @@ class FulfillmentService
             // the request is settled anyway so the figures are read fresh.
             $from = $request->status;
             $this->resolver->settle($request);
+            $this->transfusionResolver->settleParentOf($request);
 
             $this->auditLogger->record($user, 'request.receipt_confirmed', $request, [
                 'facility_id' => $facilityId,

@@ -26,14 +26,20 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * components on one DOH form, each with its own indication and unit count, so
  * component and quantity moved to blood_request_items and the quantity below
  * is a sum of them rather than a column.
+ *
+ * For a Patient Transfusion this row is a *facility allocation*: the share of
+ * a patient's requirement (TransfusionRequest) asked of one centre, which that
+ * centre approves or rejects on its own. Not to be confused with
+ * RequestAllocation, which is one reserved bag. A replenishment request has no
+ * requirement above it.
  */
 class BloodRequest extends Model
 {
-    use HasFactory;
+    use HasFactory, HasPatient;
 
     protected $fillable = [
         'reference_number',
-        'parent_request_id',
+        'transfusion_request_id',
         'facility_id',
         'target_facility_id',
         'requested_by',
@@ -118,19 +124,11 @@ class BloodRequest extends Model
     }
 
     /**
-     * The request whose remaining quantity this follow-up carries elsewhere.
+     * The patient requirement this allocation is a share of, for a transfusion.
      */
-    public function parent(): BelongsTo
+    public function transfusionRequest(): BelongsTo
     {
-        return $this->belongsTo(self::class, 'parent_request_id');
-    }
-
-    /**
-     * Requests raised to source this request's remainder from other facilities.
-     */
-    public function followUps(): HasMany
-    {
-        return $this->hasMany(self::class, 'parent_request_id');
+        return $this->belongsTo(TransfusionRequest::class, 'transfusion_request_id');
     }
 
     /**
@@ -210,32 +208,13 @@ class BloodRequest extends Model
      * Determine whether nothing more may be done to fill this request.
      *
      * A terminal status says so outright. A partially fulfilled request whose
-     * every remaining line was closed or forwarded says so through closed_at,
-     * because it keeps the `partial` status — what was actually supplied —
-     * while being finished.
+     * every remaining line was closed says so through closed_at, because it
+     * keeps the `partial` status — what was actually supplied — while being
+     * finished.
      */
     public function isClosed(): bool
     {
         return $this->status->isTerminal() || $this->closed_at !== null;
-    }
-
-    /**
-     * Get the patient's name as the request form prints it, if there is one.
-     */
-    public function patientFullName(): ?string
-    {
-        if ($this->patient_surname === null && $this->patient_first_name === null) {
-            return null;
-        }
-
-        $given = trim(implode(' ', array_filter([
-            $this->patient_first_name,
-            $this->patient_middle_name,
-        ])));
-
-        $surname = mb_strtoupper((string) $this->patient_surname);
-
-        return $given === '' ? $surname : "{$surname}, {$given}";
     }
 
     /**

@@ -19,11 +19,13 @@ use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Tests\TestCase;
 
 /**
- * Raising a blood request, and what stops one being raised wrongly.
+ * Raising a replenishment request, and what stops one being raised wrongly.
  *
  * The rules worth naming: the requesting facility is never taken from input,
  * a request cannot be addressed to itself or to a facility that has no way to
- * fulfil it, and submitting reserves nothing — approval does that, later.
+ * fulfil it, submitting reserves nothing — approval does that, later — and a
+ * patient's need is not a restock order: it is recorded as a Patient
+ * Transfusion Request instead (TransfusionRequestTest).
  */
 class SubmitBloodRequestTest extends TestCase
 {
@@ -76,8 +78,9 @@ class SubmitBloodRequestTest extends TestCase
             'target_facility_id' => $this->centre->id,
             'requested_by' => $this->requester->id,
             'status' => BloodRequestStatus::Pending->value,
-            'request_purpose' => RequestPurpose::PatientTransfusion->value,
-            'patient_surname' => 'Dela Cruz',
+            'request_purpose' => RequestPurpose::Replenishment->value,
+            'patient_surname' => null,
+            'transfusion_request_id' => null,
         ]);
 
         $this->assertDatabaseHas('blood_request_items', [
@@ -85,6 +88,36 @@ class SubmitBloodRequestTest extends TestCase
             'quantity' => 5,
             'indication_code' => IndicationCode::R1->value,
         ]);
+    }
+
+    public function test_a_patient_transfusion_is_sent_to_its_own_endpoint(): void
+    {
+        $this->actingAs($this->requester)
+            ->postJson('/api/hospital/blood-requests', $this->payload([
+                'request_purpose' => RequestPurpose::PatientTransfusion->value,
+                'patient_surname' => 'Dela Cruz',
+                'patient_first_name' => 'Juan',
+                'patient_age' => 47,
+                'patient_sex' => 'male',
+            ]))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['request_purpose'])
+            ->assertJsonPath('errors.request_purpose.0', "Record a patient's need as a Patient Transfusion Request.");
+
+        $this->assertDatabaseCount('blood_requests', 0);
+    }
+
+    public function test_patient_details_sent_with_a_restock_are_not_stored(): void
+    {
+        $this->actingAs($this->requester)
+            ->postJson('/api/hospital/blood-requests', $this->payload([
+                'patient_surname' => 'Dela Cruz',
+                'patient_first_name' => 'Juan',
+            ]))
+            ->assertCreated()
+            ->assertJsonPath('request.patient', null);
+
+        $this->assertDatabaseHas('blood_requests', ['patient_surname' => null, 'patient_first_name' => null]);
     }
 
     public function test_it_issues_a_reference_number(): void
@@ -298,11 +331,7 @@ class SubmitBloodRequestTest extends TestCase
             'target_facility_id' => $this->centre->id,
             'blood_type_id' => $this->bloodType->id,
             'urgency_level' => UrgencyLevel::Routine->value,
-            'request_purpose' => RequestPurpose::PatientTransfusion->value,
-            'patient_surname' => 'Dela Cruz',
-            'patient_first_name' => 'Juan',
-            'patient_age' => 47,
-            'patient_sex' => 'male',
+            'request_purpose' => RequestPurpose::Replenishment->value,
             'items' => [
                 [
                     'component_id' => $this->component->id,
