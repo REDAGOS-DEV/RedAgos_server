@@ -17,7 +17,9 @@ use App\Models\User;
 use App\Notifications\DonationRecorded;
 use App\Notifications\DonorDeferred;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Notifications\SendQueuedNotifications;
 use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Facades\Queue;
 use RuntimeException;
 use Tests\TestCase;
 
@@ -195,6 +197,29 @@ class CollectionWorkflowTest extends TestCase
             ->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload())
             ->assertStatus(409)
             ->assertJsonPath('code', 'collection_already_recorded');
+
+        $this->assertSame(1, BloodCollection::where('donation_id', $id)->count());
+    }
+
+    public function test_a_save_retried_with_the_same_barcode_is_answered_as_already_recorded(): void
+    {
+        $id = $this->openDonation();
+        $this->screenDonation($id);
+        $payload = $this->collectionPayload();
+
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/donations/{$id}/collection", $payload)
+            ->assertCreated();
+
+        // The first response never reached the counter, so staff press Save
+        // again with the same sticker. That is this donation's own bag, not a
+        // duplicate, and the recorded state comes back so the drawer can move on.
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/donations/{$id}/collection", $payload)
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'collection_already_recorded')
+            ->assertJsonPath('data.status', 'collected')
+            ->assertJsonPath('data.collection.donation_barcode', $payload['donation_barcode']);
 
         $this->assertSame(1, BloodCollection::where('donation_id', $id)->count());
     }
@@ -613,6 +638,36 @@ class CollectionWorkflowTest extends TestCase
             ->assertCreated();
 
         $this->assertSame(450, Donation::findOrFail($id)->volume_ml);
+    }
+
+    public function test_the_donation_receipt_is_mailed_from_the_queue_rather_than_the_request(): void
+    {
+        Queue::fake();
+
+        $id = $this->openDonation();
+        $this->screenDonation($id);
+
+        // A mail server that hangs must not hold the request open: PHP's time
+        // limit is a fatal error no try/catch answers, and the collection is
+        // already committed behind the "save failed" the counter would see.
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload())
+            ->assertCreated();
+
+        Queue::assertPushed(
+            SendQueuedNotifications::class,
+            fn (SendQueuedNotifications $job): bool => $job->notification instanceof DonationRecorded
+                && $job->channels === ['mail']
+                && $job->connection !== 'sync'
+        );
+
+        // The in-app copy does not wait for a worker.
+        Queue::assertPushed(
+            SendQueuedNotifications::class,
+            fn (SendQueuedNotifications $job): bool => $job->notification instanceof DonationRecorded
+                && $job->channels === ['database']
+                && $job->connection === 'sync'
+        );
     }
 
     public function test_a_donation_from_another_facility_is_not_found(): void

@@ -568,7 +568,16 @@ class CollectionService
             // otherwise answer a double-click with "record the screening
             // outcome first" — advice that is both confusing and wrong.
             if ($this->collectionRepository->collectionExists($locked->id)) {
-                throw $this->refuse(409, 'collection_already_recorded', 'A collection is already recorded for this donation.');
+                // The donation as recorded goes with the refusal. A save
+                // retried after its response was lost lands here, and the
+                // counter needs the saved collection to move on rather than a
+                // form it can no longer submit.
+                throw $this->refuse(
+                    409,
+                    'collection_already_recorded',
+                    'A collection is already recorded for this donation.',
+                    $this->formatDonation($this->reload($locked, $facility), $staff)
+                );
             }
 
             // Both halves matter. The status alone could in principle be reached
@@ -1002,13 +1011,16 @@ class CollectionService
     }
 
     /**
-     * Build the project's refusal envelope.
+     * Build the project's refusal envelope, carrying the record where the caller needs it.
+     *
+     * @param  array<string, mixed>|null  $data
      */
-    private function refuse(int $status, string $code, string $message): HttpResponseException
+    private function refuse(int $status, string $code, string $message, ?array $data = null): HttpResponseException
     {
         return new HttpResponseException(response()->json([
             'message' => $message,
             'code' => $code,
+            ...($data === null ? [] : ['data' => $data]),
         ], $status));
     }
 }

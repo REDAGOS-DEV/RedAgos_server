@@ -4,10 +4,15 @@ namespace App\Notifications;
 
 use App\Models\DonationAppointment;
 use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
 
-class AppointmentScheduled extends Notification
+/**
+ * Queued, so a mail server that hangs never holds up the request that sent it.
+ * See DonationRecorded.
+ */
+class AppointmentScheduled extends Notification implements ShouldQueue
 {
     use Queueable;
 
@@ -30,6 +35,16 @@ class AppointmentScheduled extends Notification
         return $notifiable->hasEmailAddress()
             ? ['mail', 'database']
             : ['database'];
+    }
+
+    /**
+     * Only the mail waits for the queue worker; the in-app copy is written at once.
+     *
+     * @return array<string, string>
+     */
+    public function viaConnections(): array
+    {
+        return ['database' => 'sync'];
     }
 
     /**

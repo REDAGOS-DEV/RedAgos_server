@@ -52,8 +52,11 @@ class RecordCollectionRequest extends FormRequest
                 'regex:/^[A-Z0-9-]+$/',
                 Rule::unique('blood_collections', 'donation_barcode')
                     ->where('facility_id', $this->user()?->facility_id)
-                    // A correction keeps its own barcode.
-                    ->ignore($this->correctingDonationId, 'donation_id'),
+                    // A donation's own barcode is never a collision. A
+                    // correction keeps it, and a save retried after its
+                    // response was lost is answered by the service as
+                    // already recorded, not as somebody else's bag.
+                    ->ignore($this->correctingDonationId ?? $this->route('donation'), 'donation_id'),
             ],
 
             // No maximum draw duration: that is a clinical constant nobody has

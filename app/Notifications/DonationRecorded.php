@@ -4,6 +4,7 @@ namespace App\Notifications;
 
 use App\Models\Donation;
 use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
 use Illuminate\Support\Carbon;
@@ -15,8 +16,13 @@ use Illuminate\Support\Carbon;
  * cleared for issue — that is a separate laboratory decision, and a donor told
  * "your donation is complete" would reasonably read it as a clean bill of
  * health the centre has not yet established.
+ *
+ * Queued, because it is sent at the end of a request that has already
+ * committed. An SMTP server that hangs would otherwise hold that request until
+ * PHP's time limit, a fatal error no try/catch answers, and staff would see
+ * "save failed" for a record that was saved.
  */
-class DonationRecorded extends Notification
+class DonationRecorded extends Notification implements ShouldQueue
 {
     use Queueable;
 
@@ -35,6 +41,16 @@ class DonationRecorded extends Notification
         return $notifiable->hasEmailAddress()
             ? ['mail', 'database']
             : ['database'];
+    }
+
+    /**
+     * Only the mail waits for the queue worker; the in-app copy is written at once.
+     *
+     * @return array<string, string>
+     */
+    public function viaConnections(): array
+    {
+        return ['database' => 'sync'];
     }
 
     /**

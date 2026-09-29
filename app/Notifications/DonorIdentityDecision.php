@@ -4,10 +4,15 @@ namespace App\Notifications;
 
 use App\Enums\IdentityStatus;
 use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
 
-class DonorIdentityDecision extends Notification
+/**
+ * Queued, so a mail server that hangs never holds up the request that sent it.
+ * See DonationRecorded.
+ */
+class DonorIdentityDecision extends Notification implements ShouldQueue
 {
     use Queueable;
 
@@ -25,6 +30,16 @@ class DonorIdentityDecision extends Notification
     public function via(object $notifiable): array
     {
         return ['mail', 'database'];
+    }
+
+    /**
+     * Only the mail waits for the queue worker; the in-app copy is written at once.
+     *
+     * @return array<string, string>
+     */
+    public function viaConnections(): array
+    {
+        return ['database' => 'sync'];
     }
 
     /**

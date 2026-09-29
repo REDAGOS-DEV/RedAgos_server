@@ -4,13 +4,18 @@ namespace App\Notifications;
 
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Auth\MustVerifyEmail;
+use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 
-class VerifyEmailNotification extends Notification
+/**
+ * Queued, so a mail server that hangs never holds up the request that sent it.
+ * See DonationRecorded.
+ */
+class VerifyEmailNotification extends Notification implements ShouldQueue
 {
     use Queueable;
 

@@ -5,10 +5,15 @@ namespace App\Notifications;
 use App\Enums\FacilityStatus;
 use App\Models\Facility;
 use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
 
-class FacilityRegistrationDecision extends Notification
+/**
+ * Queued, so a mail server that hangs never holds up the request that sent it.
+ * See DonationRecorded.
+ */
+class FacilityRegistrationDecision extends Notification implements ShouldQueue
 {
     use Queueable;
 
