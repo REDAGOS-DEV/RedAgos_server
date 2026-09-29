@@ -58,10 +58,10 @@ class LaboratoryRepository
             ->with(self::WITH)
             ->where('facility_id', $facilityId)
             ->when(
-                isset($filters['segment_number']),
+                isset($filters['barcode']),
                 fn (Builder $q): Builder => $q->whereHas(
                     'collection',
-                    fn (Builder $c): Builder => $c->where('segment_number', $filters['segment_number'])
+                    fn (Builder $c): Builder => $c->where('donation_barcode', $filters['barcode'])
                 )
             )
             ->when(

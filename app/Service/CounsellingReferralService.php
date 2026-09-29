@@ -152,7 +152,7 @@ class CounsellingReferralService
             'donation' => $donation === null ? null : [
                 'id' => $donation->id,
                 'donation_date' => $donation->donation_date?->toISOString(),
-                'segment_number' => $donation->collection?->segment_number,
+                'donation_barcode' => $donation->collection?->donation_barcode,
             ],
             'reactive_markers' => $serology === null ? [] : array_map(
                 fn (SerologyMarker $marker): array => ['value' => $marker->value, 'label' => $marker->label()],

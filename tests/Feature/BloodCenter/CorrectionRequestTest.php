@@ -39,7 +39,7 @@ class CorrectionRequestTest extends TestCase
         ]);
 
         BloodCollection::where('donation_id', $this->donation->id)->update([
-            'segment_number' => 'SEG-1001',
+            'donation_barcode' => 'SEG-1001',
             'facility_id' => $this->facility->id,
         ]);
     }
@@ -69,7 +69,7 @@ class CorrectionRequestTest extends TestCase
         return [
             'volume_ml' => 460,
             'blood_bag_type' => 'triple',
-            'segment_number' => $segment,
+            'donation_barcode' => $segment,
             'started_at' => now()->subMinutes(20)->toISOString(),
             'ended_at' => now()->subMinutes(8)->toISOString(),
         ];
@@ -102,11 +102,11 @@ class CorrectionRequestTest extends TestCase
         $id = $this->ask($phlebotomist, 'collection', $this->collectionBox())
             ->assertCreated()
             ->assertJsonPath('data.status', 'pending')
-            ->assertJsonPath('data.segment_number', 'SEG-1001')
+            ->assertJsonPath('data.donation_barcode', 'SEG-1001')
             ->json('data.id');
 
         // Nothing changes until someone decides.
-        $this->assertSame('SEG-1001', BloodCollection::where('donation_id', $this->donation->id)->value('segment_number'));
+        $this->assertSame('SEG-1001', BloodCollection::where('donation_id', $this->donation->id)->value('donation_barcode'));
 
         $this->actingAs($physician)
             ->postJson("/api/blood-center/corrections/{$id}/approve", ['note' => 'Checked against the bag.'])
@@ -115,15 +115,35 @@ class CorrectionRequestTest extends TestCase
 
         $collection = BloodCollection::where('donation_id', $this->donation->id)->sole();
 
-        $this->assertSame('SEG-1010', $collection->segment_number);
+        $this->assertSame('SEG-1010', $collection->donation_barcode);
         $this->assertSame(460, $this->donation->fresh()->volume_ml);
         $this->assertDatabaseHas('audit_logs', ['action' => 'correction.applied']);
     }
 
-    public function test_a_correction_may_keep_its_own_segment_number(): void
+    public function test_a_correction_may_keep_its_own_donation_barcode(): void
     {
         $this->ask($this->staff(StaffRole::Phlebotomist), 'collection', $this->collectionBox('SEG-1001'))
             ->assertCreated();
+    }
+
+    public function test_a_correction_filed_under_the_old_segment_number_key_still_applies(): void
+    {
+        $id = $this->ask($this->staff(StaffRole::Phlebotomist), 'collection', $this->collectionBox())
+            ->assertCreated()
+            ->json('data.id');
+
+        // As a request filed before the rename would have stored it.
+        $correction = CorrectionRequest::findOrFail($id);
+        $changes = $correction->changes;
+        $changes['segment_number'] = $changes['donation_barcode'];
+        unset($changes['donation_barcode']);
+        $correction->forceFill(['changes' => $changes])->save();
+
+        $this->actingAs($this->staff(StaffRole::ScreeningPhysician))
+            ->postJson("/api/blood-center/corrections/{$id}/approve")
+            ->assertOk();
+
+        $this->assertSame('SEG-1010', BloodCollection::where('donation_id', $this->donation->id)->value('donation_barcode'));
     }
 
     public function test_the_corrected_values_must_pass_the_original_rules(): void
@@ -319,7 +339,7 @@ class CorrectionRequestTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.status', 'rejected');
 
-        $this->assertSame('SEG-1001', BloodCollection::where('donation_id', $this->donation->id)->value('segment_number'));
+        $this->assertSame('SEG-1001', BloodCollection::where('donation_id', $this->donation->id)->value('donation_barcode'));
 
         $this->actingAs($physician)
             ->postJson("/api/blood-center/corrections/{$id}/approve")
@@ -364,7 +384,7 @@ class CorrectionRequestTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.0.id', $id)
             ->assertJsonPath('data.0.can_decide', true)
-            ->assertJsonPath('data.0.changed_fields', ['volume_ml', 'blood_bag_type', 'segment_number', 'started_at', 'ended_at']);
+            ->assertJsonPath('data.0.changed_fields', ['volume_ml', 'blood_bag_type', 'donation_barcode', 'started_at', 'ended_at']);
 
         $this->actingAs($this->staff(StaffRole::LabSupervisor))
             ->getJson('/api/blood-center/corrections?scope=review')

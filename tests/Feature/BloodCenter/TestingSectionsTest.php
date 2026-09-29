@@ -399,11 +399,11 @@ class TestingSectionsTest extends TestCase
         $this->assertNotContains($this->donation->id, $queue());
     }
 
-    public function test_a_scanned_segment_finds_its_donation(): void
+    public function test_a_scanned_barcode_finds_its_donation(): void
     {
         $this->donation->collection()->update([
             'facility_id' => $this->facility->id,
-            'segment_number' => 'SEG-7781',
+            'donation_barcode' => 'SEG-7781',
         ]);
 
         $other = Donation::factory()->create([
@@ -414,7 +414,7 @@ class TestingSectionsTest extends TestCase
 
         $ids = collect(
             $this->actingAs($this->testing)
-                ->getJson('/api/blood-center/laboratory/queue?stage=testing&segment_number='.urlencode(' seg-7781 '))
+                ->getJson('/api/blood-center/laboratory/queue?stage=testing&barcode='.urlencode(' seg-7781 '))
                 ->assertOk()
                 ->json('data')
         )->pluck('id');

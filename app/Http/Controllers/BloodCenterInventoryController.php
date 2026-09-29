@@ -67,7 +67,12 @@ class BloodCenterInventoryController extends Controller
     public function intakeQueue(Request $request): JsonResponse
     {
         return response()->json(
-            $this->inventoryService->intakeQueue($request->user(), $request->integer('per_page', 15))
+            $this->inventoryService->intakeQueue(
+                $request->user(),
+                $request->integer('per_page', 15),
+                // A scanned donation barcode; a string, capped like the column.
+                is_string($request->query('barcode')) ? substr($request->query('barcode'), 0, 30) : null
+            )
         );
     }
 
@@ -109,6 +114,16 @@ class BloodCenterInventoryController extends Controller
     {
         return response()->json(
             $this->inventoryService->releaseFromQuarantine($request->user(), $donation)
+        );
+    }
+
+    /**
+     * The final labels for a donation's released bags, to print or reprint.
+     */
+    public function labels(Request $request, int $donation): JsonResponse
+    {
+        return response()->json(
+            $this->inventoryService->labelsFor($request->user(), $donation)
         );
     }
 }

@@ -35,6 +35,8 @@ class BloodUnit extends Model
         'discard_reason',
         'expired_at',
         'discarded_at',
+        'released_at',
+        'released_by',
     ];
 
     protected function casts(): array
@@ -44,6 +46,7 @@ class BloodUnit extends Model
             'expiry_date' => 'immutable_date',
             'expired_at' => 'immutable_datetime',
             'discarded_at' => 'immutable_datetime',
+            'released_at' => 'immutable_datetime',
             'volume_ml' => 'integer',
         ];
     }
@@ -66,6 +69,14 @@ class BloodUnit extends Model
     public function donation(): BelongsTo
     {
         return $this->belongsTo(Donation::class);
+    }
+
+    /**
+     * The Inventory Control Officer who released this unit from quarantine.
+     */
+    public function releaser(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'released_by');
     }
 
     /**

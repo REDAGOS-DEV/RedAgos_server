@@ -71,6 +71,7 @@ class AuthorizationSweepTest extends TestCase
             'daily stock report' => ['get', '/api/blood-center/inventory/stock-report'],
             'daily stock report pdf' => ['get', '/api/blood-center/inventory/stock-report/pdf'],
             'facility logo upload' => ['post', '/api/blood-center/facility/logo'],
+            'final bag labels' => ['get', '/api/blood-center/inventory/donations/1/labels'],
             'facility logo removal' => ['delete', '/api/blood-center/facility/logo'],
         ];
     }

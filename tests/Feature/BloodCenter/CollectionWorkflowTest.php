@@ -86,7 +86,7 @@ class CollectionWorkflowTest extends TestCase
     private int $segments = 0;
 
     /**
-     * A complete "For Phlebotomist Use Only" box, with a fresh segment number each call.
+     * A complete "For Phlebotomist Use Only" box, with a fresh donation barcode each call.
      *
      * @param  array<string, mixed>  $overrides
      * @return array<string, mixed>
@@ -98,7 +98,7 @@ class CollectionWorkflowTest extends TestCase
         return [
             'volume_ml' => 450,
             'blood_bag_type' => 'double',
-            'segment_number' => 'SEG-'.str_pad((string) $this->segments, 4, '0', STR_PAD_LEFT),
+            'donation_barcode' => 'SEG-'.str_pad((string) $this->segments, 4, '0', STR_PAD_LEFT),
             'started_at' => now()->subMinutes(15)->toISOString(),
             'ended_at' => now()->subMinutes(5)->toISOString(),
             ...$overrides,
@@ -660,12 +660,12 @@ class CollectionWorkflowTest extends TestCase
         $this->actingAs($this->staff)
             ->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload([
                 'blood_bag_type' => 'triple',
-                'segment_number' => 'SNB-0042',
+                'donation_barcode' => 'SNB-0042',
             ]))
             ->assertCreated()
             ->assertJsonPath('data.collection.blood_bag_type', 'triple')
             ->assertJsonPath('data.collection.blood_bag_type_label', 'Triple')
-            ->assertJsonPath('data.collection.segment_number', 'SNB-0042')
+            ->assertJsonPath('data.collection.donation_barcode', 'SNB-0042')
             ->assertJsonPath('data.collection.phlebotomist', trim($this->staff->first_name.' '.$this->staff->last_name));
 
         $collection = BloodCollection::where('donation_id', $id)->firstOrFail();
@@ -682,7 +682,7 @@ class CollectionWorkflowTest extends TestCase
         $this->actingAs($this->staff)
             ->postJson("/api/blood-center/donations/{$id}/collection", ['volume_ml' => 450])
             ->assertStatus(422)
-            ->assertJsonValidationErrors(['blood_bag_type', 'segment_number', 'started_at', 'ended_at']);
+            ->assertJsonValidationErrors(['blood_bag_type', 'donation_barcode', 'started_at', 'ended_at']);
 
         $this->assertSame(0, BloodCollection::where('donation_id', $id)->count());
     }
@@ -698,24 +698,24 @@ class CollectionWorkflowTest extends TestCase
             ->assertJsonValidationErrors('blood_bag_type');
     }
 
-    public function test_a_segment_number_cannot_be_used_twice_at_one_facility(): void
+    public function test_a_donation_barcode_cannot_be_used_twice_at_one_facility(): void
     {
         $first = $this->screenedDonationForNewDonor();
         $second = $this->screenedDonationForNewDonor();
 
         $this->actingAs($this->staff)
-            ->postJson("/api/blood-center/donations/{$first}/collection", $this->collectionPayload(['segment_number' => 'SEG-DUP']))
+            ->postJson("/api/blood-center/donations/{$first}/collection", $this->collectionPayload(['donation_barcode' => 'SEG-DUP']))
             ->assertCreated();
 
         $this->actingAs($this->staff)
-            ->postJson("/api/blood-center/donations/{$second}/collection", $this->collectionPayload(['segment_number' => 'SEG-DUP']))
+            ->postJson("/api/blood-center/donations/{$second}/collection", $this->collectionPayload(['donation_barcode' => 'SEG-DUP']))
             ->assertStatus(422)
-            ->assertJsonValidationErrors('segment_number');
+            ->assertJsonValidationErrors('donation_barcode');
 
         $this->assertSame(DonationStatus::Screening, Donation::findOrFail($second)->status);
     }
 
-    public function test_the_same_segment_number_is_allowed_at_another_facility(): void
+    public function test_the_same_donation_barcode_is_allowed_at_another_facility(): void
     {
         $otherFacility = Facility::factory()->approved()->create();
         $otherStaff = User::factory()->bloodCenterStaff($otherFacility, StaffRole::Phlebotomist)->create();
@@ -724,30 +724,44 @@ class CollectionWorkflowTest extends TestCase
         $there = $this->screenedDonationForNewDonor($otherFacility);
 
         $this->actingAs($this->staff)
-            ->postJson("/api/blood-center/donations/{$here}/collection", $this->collectionPayload(['segment_number' => 'SEG-0001']))
+            ->postJson("/api/blood-center/donations/{$here}/collection", $this->collectionPayload(['donation_barcode' => 'SEG-0001']))
             ->assertCreated();
 
         // Numbering schemes are each centre's own.
         $this->actingAs($otherStaff)
-            ->postJson("/api/blood-center/donations/{$there}/collection", $this->collectionPayload(['segment_number' => 'SEG-0001']))
+            ->postJson("/api/blood-center/donations/{$there}/collection", $this->collectionPayload(['donation_barcode' => 'SEG-0001']))
             ->assertCreated();
     }
 
-    public function test_a_scanned_segment_number_is_normalised_so_a_typed_copy_collides(): void
+    public function test_a_scanned_donation_barcode_is_normalised_so_a_typed_copy_collides(): void
     {
         $first = $this->screenedDonationForNewDonor();
         $second = $this->screenedDonationForNewDonor();
 
         // A scanner appends a carriage return; staff type in lower case.
         $this->actingAs($this->staff)
-            ->postJson("/api/blood-center/donations/{$first}/collection", $this->collectionPayload(['segment_number' => "abc 123\r"]))
+            ->postJson("/api/blood-center/donations/{$first}/collection", $this->collectionPayload(['donation_barcode' => "abc 123\r"]))
             ->assertCreated()
-            ->assertJsonPath('data.collection.segment_number', 'ABC123');
+            ->assertJsonPath('data.collection.donation_barcode', 'ABC123');
 
         $this->actingAs($this->staff)
-            ->postJson("/api/blood-center/donations/{$second}/collection", $this->collectionPayload(['segment_number' => 'ABC123']))
+            ->postJson("/api/blood-center/donations/{$second}/collection", $this->collectionPayload(['donation_barcode' => 'ABC123']))
             ->assertStatus(422)
-            ->assertJsonValidationErrors('segment_number');
+            ->assertJsonValidationErrors('donation_barcode');
+    }
+
+    public function test_a_donation_barcode_holds_only_what_a_bag_number_may_contain(): void
+    {
+        $id = $this->screenedDonationForNewDonor();
+
+        // Each bag's number is built from the barcode, and unit ids are
+        // letters, numbers and dashes only — so is the barcode.
+        foreach (['SNB/2026/01', 'SNB.001', str_repeat('A', 31)] as $refused) {
+            $this->actingAs($this->staff)
+                ->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload(['donation_barcode' => $refused]))
+                ->assertStatus(422)
+                ->assertJsonValidationErrors('donation_barcode');
+        }
     }
 
     public function test_a_draw_cannot_end_before_it_started(): void

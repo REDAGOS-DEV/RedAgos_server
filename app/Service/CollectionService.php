@@ -465,7 +465,7 @@ class CollectionService
             // could recover. The request's own unique rule answers the
             // ordinary case; this is two counters scanning the same tube at
             // the same moment.
-            $this->rethrowSegmentTaken($exception);
+            $this->rethrowBarcodeTaken($exception);
 
             throw $exception;
         }
@@ -474,7 +474,7 @@ class CollectionService
             'facility_id' => $facility->id,
             'volume_ml' => $donation->volume_ml,
             'blood_bag_type' => $payload['blood_bag_type'],
-            'segment_number' => $payload['segment_number'],
+            'donation_barcode' => $payload['donation_barcode'],
         ]);
 
         $this->donorNotifier->send(
@@ -496,7 +496,7 @@ class CollectionService
      * Apply an approved correction to the "For Phlebotomist Use Only" box.
      *
      * Only reachable through CorrectionService, and only while the bag is still
-     * in the laboratory: once Issuance has booked units against it the segment
+     * in the laboratory: once Issuance has booked units against it the barcode
      * number is on the shelf, and once the donation is rejected nothing about
      * it changes. The phlebotomist stays whoever drew the bag.
      *
@@ -524,7 +524,7 @@ class CollectionService
                     ?? throw $this->refuse(409, 'nothing_to_correct', 'No collection is recorded for this donation.');
 
                 $collection->blood_bag_type = BloodBagType::from($payload['blood_bag_type']);
-                $collection->segment_number = $payload['segment_number'];
+                $collection->donation_barcode = $payload['donation_barcode'];
                 $collection->started_at = $payload['started_at'];
                 $collection->ended_at = $payload['ended_at'];
                 $collection->collection_datetime = $payload['ended_at'];
@@ -536,14 +536,14 @@ class CollectionService
                 return $locked;
             });
         } catch (QueryException $exception) {
-            $this->rethrowSegmentTaken($exception);
+            $this->rethrowBarcodeTaken($exception);
 
             throw $exception;
         }
 
         $this->auditLogger->record($staff, 'collection.corrected', $donation, [
             'facility_id' => $facility->id,
-            'segment_number' => $payload['segment_number'],
+            'donation_barcode' => $payload['donation_barcode'],
         ]);
 
         return [
@@ -591,7 +591,7 @@ class CollectionService
                 // and the form's "Phlebotomist".
                 'collected_by' => $staff->id,
                 'blood_bag_type' => BloodBagType::from($payload['blood_bag_type']),
-                'segment_number' => $payload['segment_number'],
+                'donation_barcode' => $payload['donation_barcode'],
                 'started_at' => $payload['started_at'],
                 'ended_at' => $payload['ended_at'],
                 // Kept filled for anything that still reads the single
@@ -611,17 +611,17 @@ class CollectionService
     }
 
     /**
-     * Turn a segment-number unique violation into the same error the request gives.
+     * Turn a donation-barcode unique violation into the same error the request gives.
      */
-    private function rethrowSegmentTaken(QueryException $exception): void
+    private function rethrowBarcodeTaken(QueryException $exception): void
     {
         if (! in_array($exception->errorInfo[0] ?? null, ['23000', '23505'], true)
-            || ! str_contains($exception->getMessage(), 'segment')) {
+            || ! str_contains($exception->getMessage(), 'barcode')) {
             return;
         }
 
         throw ValidationException::withMessages([
-            'segment_number' => ['This segment number is already recorded at this facility. Scan the bag again.'],
+            'donation_barcode' => ['This barcode is already recorded at this facility. Scan the sticker again.'],
         ]);
     }
 
@@ -924,7 +924,7 @@ class CollectionService
      * The "For Phlebotomist Use Only" box, or null before anything was drawn.
      *
      * Collections recorded before the box existed carry only who drew the bag
-     * and when; their bag, segment and times are null rather than invented.
+     * and when; their bag, barcode and times are null rather than invented.
      *
      * @return array<string, mixed>|null
      */
@@ -941,7 +941,7 @@ class CollectionService
         return [
             'blood_bag_type' => $collection->blood_bag_type?->value,
             'blood_bag_type_label' => $collection->blood_bag_type?->label(),
-            'segment_number' => $collection->segment_number,
+            'donation_barcode' => $collection->donation_barcode,
             'started_at' => $collection->started_at?->toISOString(),
             'ended_at' => $collection->ended_at?->toISOString(),
             'collected_at' => $collection->collection_datetime?->toISOString(),

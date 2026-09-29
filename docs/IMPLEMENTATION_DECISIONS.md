@@ -96,7 +96,7 @@ Do not build fulfillment on unresolved facility-isolation or inventory foundatio
 
 **DECISION (operational day):** "Today" for expiry comes from `config('blood_center.timezone')` via `App\Support\OperationalDay`, not from PHP's ambient timezone, so the sweep, the validation rules and `days_remaining` cannot disagree.
 
-**CURRENT IMPLEMENTATION CONFLICT:** Reserve/release, stock thresholds, inter-facility transfers, label printing and trend history are out of Module 3's scope. The sweep touches `available` only, so a `reserved` unit can pass its expiry and keep saying `reserved` until the allocation module can release it. The client's inventory page offers an `archive` action that no status backs.
+**CURRENT IMPLEMENTATION CONFLICT:** Reserve/release, stock thresholds, inter-facility transfers, label printing and trend history are out of Module 3's scope (label printing has since been built — see *Two-phase labeling and the donation barcode*). The sweep touches `available` only, so a `reserved` unit can pass its expiry and keep saying `reserved` until the allocation module can release it. The client's inventory page offers an `archive` action that no status backs.
 
 ## Department ownership of the department structure (Phase 1-4)
 
@@ -778,7 +778,8 @@ visible. No value of it, or of haemoglobin, defers anyone — the screening
 officer's outcome is still the verdict.
 
 **DECISION (the phlebotomist box):** `blood_collections` gains
-`blood_bag_type` (single/double/triple), `segment_number`, `started_at` and
+`blood_bag_type` (single/double/triple), `segment_number` (since renamed
+`donation_barcode` — see *Two-phase labeling and the donation barcode*), `started_at` and
 `ended_at`. "Phlebotomist" is the existing `collected_by`: the authenticated
 user, never request input. `collection_datetime` is written as `ended_at` for
 anything still reading it. The bag is **record only** — it does not cap the
@@ -985,7 +986,7 @@ collected volume.
 
 ## Donor identity blinding
 
-**DECISION:** Laboratory and inventory payloads (`LaboratoryService::format`, the intake queue) carry the donor's name, code and uuid only to a viewer holding `donors.view_identity` — the receptionist, physician, chair roles, the Laboratory Supervisor and the Center Admin. Everyone else gets `{blinded: true, blood_type}` and works by segment number and donation id; the intake queue now carries the segment number for that reason (`App\Support\DonorBlinding`).
+**DECISION:** Laboratory and inventory payloads (`LaboratoryService::format`, the intake queue) carry the donor's name, code and uuid only to a viewer holding `donors.view_identity` — the receptionist, physician, chair roles, the Laboratory Supervisor and the Center Admin. Everyone else gets `{blinded: true, blood_type}` and works by donation barcode (formerly segment number) and donation id; the intake queue now carries the barcode for that reason (`App\Support\DonorBlinding`).
 
 Donor directory projections by role: `donors.view_contact` alone (Recruitment) gets a contact list — no blood type, birth date, history or deferrals; `donors.view` gets the registration record; the donation history (deferral reasons, final lab result, never the marker) needs `donors.view_clinical` (the physician). Collection payloads show screening vitals and reasons only to `donors.view_clinical`; everyone else sees the outcome.
 
@@ -1019,7 +1020,7 @@ Other rules: the expiry sweep, allocation, hospital availability and the stock r
 
 An approved correction is applied through the original write, as the requester, inside the approval's transaction — so every guard still applies. A reactive serology result can never be corrected. A cleared result (typing or serology) can be corrected only while none of the donation's bags has left quarantine (`409 units_released`, re-checked at approval): approving revokes the token in force, resets `tested` and the derived `passed` summary, and the corrected result earns a new token only if it qualifies. An approval that a guard refuses applies nothing — no revocation either — and leaves the request pending. The collection box has its own correction write (`CollectionService::correctCollection`), refused once units are booked against the donation. Audit: `correction.requested | approved | rejected | applied` (field names only, never marker values).
 
-**NOT YET BUILT (Phase 3):** fleet and assets for drives, apheresis procedure metrics, processing environment logs and label printing, electronic crossmatch verification, rare-antibody profiles and rare-unit tags, shipping manifests and transit temperatures, a facility audit viewer and barcode verification, anonymous aggregate statistics for PR, recruitment outreach records.
+**NOT YET BUILT (Phase 3):** fleet and assets for drives, apheresis procedure metrics, processing environment logs, electronic crossmatch verification, rare-antibody profiles and rare-unit tags, shipping manifests and transit temperatures, a facility audit viewer and barcode verification, anonymous aggregate statistics for PR, recruitment outreach records.
 
 ## Staff form: five departments, custom roles, privileges
 
@@ -1044,3 +1045,35 @@ An approved correction is applied through the original write, as the requester, 
 - **History:** every change writes one append-only `blood_request_events` row — who, from which facility, status from and to, and every line's requested / reserved / fulfilled / received / forwarded / remaining at that moment. Both portals read it (`GET …/{id}/history`).
 
 **CONSEQUENCE:** There is still no MOA/partner relationship between a hospital and a blood centre in the schema; a request may be addressed to any approved centre. A walk-in's billing is raised against the hospital like any other request (every component is subsidised today).
+
+## Two-phase labeling and the donation barcode
+
+**SOURCE:** The partner blood center's labeling practice: a base label at component processing, then the legal label at release from quarantine. Its bags carry pre-printed **barcode stickers**; it has no "segment number".
+
+**DECIDED BY:** The project owner, on 2026-09-28.
+
+**DECISION (the sticker is the donation's one ID):** `blood_collections.segment_number` is renamed `donation_barcode` (migration `2026_09_30_000001`, which also renames the unique index to `blood_collections_facility_barcode_unique`; `down()` reverses both). `RecordCollectionRequest` normalises it as before (scanner control characters and whitespace stripped, uppercased), then requires `^[A-Z0-9-]+$`, at most 30 characters. That keeps every bag number inside the 50-character `blood_units.id` and the `/inventory/{unit}` route pattern. The Testing and Stock Intake lookups filter by `?barcode=`. A correction request filed before the rename still applies: `CorrectionService::approve` maps a `segment_number` key to `donation_barcode`.
+
+**DECISION (bag numbers, computed on read):** A bag's number is `{barcode}-{CODE}`, with `-2`, `-3` from the second bag of the same component on (`1234567-PRBC`, `1234567-FFP`, `1234567-PRBC-2`). `App\Support\BagNumbers` derives it from the component rows in id order; it is never stored, so a barcode corrected before intake renumbers every bag. Rows with no number:
+- a donation with no barcode (recorded before the rename);
+- a legacy row with `quantity` > 1 and no volume.
+
+`blood_components.code` (migration `2026_09_30_000002`: WB, PRBC, FFP, PC, CRYO, WRBC, CSP; the seeder writes the same) supplies `CODE`. A component with no code falls back to the initials of its name (`BloodComponent::labelCode()`).
+
+**DECISION (booking in):** For a barcoded donation, Stock Intake books each bag under the number of the next unbooked bag of its component (the same FIFO walk that supplies its volume). A typed `unit_id` is refused (422 `units.N.unit_id`). A donation with no barcode keeps the old path: a typed id or `RA{facility}-{donation}-NN`. `blood_units.id` is global but stickers are unique only per facility, so a bag number already used anywhere is refused with 409 `bag_number_taken`. That is the one place two centres could collide.
+
+**DECISION (Phase 1, Processing):** The laboratory payload carries `donation_barcode` and each bag's `bag_number`. Processing may print a base label per numbered bag: bag number, component, volume, barcode and "QUARANTINE — NOT FOR ISSUE". It carries no blood type and no clearance. The card is now "Hand-over to Issuance".
+
+**DECISION (Phase 2, Issuance):** Release from quarantine moves from Blood Inventory to **Stock Intake**; Blood Inventory shows quarantine read-only. A release now stamps each bag's `released_at` and `released_by` (migration `2026_09_30_000003`) and returns the final label data, so the labels print at once. `GET /inventory/donations/{donation}/labels` (`inventory.create`) reprints them. It covers released bags only (available, reserved or issued) and refuses with 409 `not_released` while none is released. Each reprint is audited as `inventory.labels_printed`. Each final label carries:
+- the verified blood type (the profile type, which the typing guard keeps equal to the cleared typing);
+- component, volume, expiry and bag number;
+- one line per clearance token, with its code (`TTI-` or `IH-` plus the token id, zero-padded to six digits), when it was issued and by whom;
+- who released the bag and when.
+
+It never carries the donor's name.
+
+**DECISION (printing):** Labels print from the browser as text, one per 100 mm × 100 mm page (`BagLabelSheet.vue`, `useLabelPrint`). The sheet is the only thing printed, which also fixes the Blood Inventory print that used to print the whole dashboard. No barcode is drawn, because the sticker already is one.
+
+**KNOWN LIMITATIONS:**
+- Bag numbers are global. If two centres use the same sticker series, the second booking is refused. The remedy then is a facility prefix on the number.
+- Labels carry no printed barcode. One can be added later (e.g. JsBarcode) without changing the data.

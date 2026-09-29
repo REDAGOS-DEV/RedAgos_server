@@ -60,7 +60,7 @@ What each role may do is fixed in code (`app/Support/DepartmentPermissions.php`)
 |---|---|---|
 | Medical Receptionist | Register donors, verify ID, check in arrivals, open the visit's donation, schedule drives | Read the health questionnaire, vitals, deferral reasons or lab results |
 | Donor Screening Physician | Read the questionnaire and full donor history (with final lab results, read-only); record the screening; accept or defer | Record lab results |
-| Phlebotomist / Registered Nurse | Record the collection box (bag, segment, times, volume) | Alter the questionnaire or screening; clear a deferred donor |
+| Phlebotomist / Registered Nurse | Record the collection box (bag, donation barcode sticker, times, volume) | Alter the questionnaire or screening; clear a deferred donor |
 | Apheresis Specialist | Everything a phlebotomist records | Same as phlebotomist |
 
 The Donor Screening Physician is this department's **correction approver**.
@@ -69,12 +69,15 @@ The Donor Screening Physician is this department's **correction approver**.
 
 ## 3. Processing
 
-**Primary responsibility:** Separate each bag into components and hand them to Issuance. Works **blind** — by segment number and donation number, never by donor name.
+**Primary responsibility:** Separate each bag into components, attach its **base (Phase 1) label**, and hand the bags to Issuance. Works **blind** — by donation barcode and donation number, never by donor name.
 
 | Role | May | May not |
 |---|---|---|
-| Component Laboratory Medical Technologist | Record the component breakdown; complete or reject the donation | See who the donor is |
-| Processing Laboratory Assistant | Record the component breakdown | Complete or reject; see who the donor is |
+| Component Laboratory Medical Technologist | Record the component breakdown; print base labels; complete or reject the donation | See who the donor is |
+| Processing Laboratory Assistant | Record the component breakdown; print base labels | Complete or reject; see who the donor is |
+
+- Each bag is numbered from the donation's **barcode sticker** plus its component, e.g. `1234567-PRBC`, `1234567-FFP`, `1234567-PRBC-2`.
+- The base label shows the bag number, component, volume and "QUARANTINE — NOT FOR ISSUE". It shows **no blood type and no clearance**.
 
 Processing does **not** wait for test results: completing a donation hands its bags to Issuance, which books them into **quarantine**. The Component Technologist is this department's correction approver.
 
@@ -100,13 +103,23 @@ The Laboratory Supervisor is this department's correction approver.
 
 ## 5. Issuance
 
-**Primary responsibility:** The shelf — booking bags in, releasing them from quarantine, and sending them out.
+**Primary responsibility:** The shelf — booking bags in, releasing them from quarantine with their **final (Phase 2) labels**, and sending them out.
 
 | Role | May | May not |
 |---|---|---|
-| Inventory Control Officer | Book bags in (quarantined); manage stock; **release from quarantine**; decide on and allocate against requests (for a patient) | Release a unit whose donation lacks either clearance, or was rejected |
+| Inventory Control Officer | Book bags in (quarantined) at Stock Intake; manage stock; **release from quarantine and print the final labels**; decide on and allocate against requests (for a patient) | Release a unit whose donation lacks either clearance, or was rejected |
 | Dispatch / Transport Coordinator | Decline requests, return holds, release reserved units for transport | Any clinical or laboratory screen; pick units |
 | IT Data Entry Clerk | Read inventory records | Change anything |
+
+At Stock Intake, a scanned barcode sticker finds the donation, and its bags are booked in under the numbers Processing gave them. Once TTI Testing and Immunohematology have both cleared the donation, the Inventory Control Officer releases the bags. The final labels are printed straight away and affixed before the bags go to the ready-for-issue shelf. Each label shows:
+- the verified blood type, large;
+- the component and volume;
+- the expiry date;
+- the bag number;
+- the clearance codes, with who cleared them and when;
+- who released the bag and when.
+
+Blood Inventory shows quarantined bags read-only, and can reprint the final labels of released bags.
 
 ---
 
@@ -125,13 +138,13 @@ The Laboratory Supervisor is this department's correction approver.
 ```text
 COUNTER      receptionist opens ─► physician screens ─► phlebotomist draws        (collected)
                                                             │
-LABORATORY   Processing separates & completes ──────────────┼──► Issuance books bags in: QUARANTINED
+LABORATORY   Processing separates, base-labels & completes ─┼──► Issuance books bags in: QUARANTINED
   (in parallel)                                             │
              Testing types the unit ─► concordant? ─► typing clearance
              Testing records the panel ─► non-reactive ─► TTI clearance
              (reactive at any point ─► donation rejected, bags locked in quarantine)
                                                             │
-ISSUANCE     both clearances ─► Inventory Control Officer releases ─► AVAILABLE
+ISSUANCE     both clearances ─► Inventory Control Officer releases & final-labels ─► AVAILABLE
              Inventory Control Officer reserves for a request ─► dispatch releases ─► ISSUED
 ```
 

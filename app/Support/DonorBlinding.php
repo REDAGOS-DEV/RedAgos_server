@@ -8,7 +8,7 @@ use App\Models\User;
  * The donor block of a laboratory or inventory payload, blinded where the viewer's role requires it.
  *
  * Processing, TTI Testing, Immunohematology and the inventory roles work the
- * bag, not the person: they match a sample to its record by segment number and
+ * bag, not the person: they match a sample to its record by donation barcode and
  * donation id. Naming the donor on those screens adds nothing to that work and
  * is exactly what "blind processing" rules out, so a viewer without
  * donors.view_identity is told the donor's blood type — which is on the bag —

@@ -16,6 +16,7 @@ use App\Models\User;
 use App\Notifications\DonorContactRequested;
 use App\Repository\ClearanceRepository;
 use App\Repository\LaboratoryRepository;
+use App\Support\BagNumbers;
 use App\Support\DonorBlinding;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Http\Exceptions\HttpResponseException;
@@ -671,7 +672,7 @@ class LaboratoryService
             'volume_ml' => $donation->volume_ml,
             'rejection_reason' => $donation->rejection_reason,
             // Blind to the laboratory roles, who match sample to record by the
-            // segment number below. See DonorBlinding.
+            // donation barcode below. See DonorBlinding.
             'donor' => DonorBlinding::block(
                 $donation->donorProfile?->donor,
                 $donation->donorProfile?->bloodType?->code,
@@ -680,7 +681,7 @@ class LaboratoryService
 
             // The tube's identity, so the bench can match sample to record.
             'collection' => $collection === null ? null : [
-                'segment_number' => $collection->segment_number,
+                'donation_barcode' => $collection->donation_barcode,
                 'blood_bag_type' => $collection->blood_bag_type?->value,
                 'blood_bag_type_label' => $collection->blood_bag_type?->label(),
                 'started_at' => $collection->started_at?->toISOString(),
@@ -723,19 +724,37 @@ class LaboratoryService
             // quarantine only when both have.
             'clearances' => $this->formatClearances($donation),
 
-            'components' => $this->laboratoryRepository
-                ->componentsFor($donation->id)
-                // One entry per bag. `quantity` is 1 for every bag declared with
-                // a volume; a breakdown recorded before volumes were kept has a
-                // null volume and its original count.
-                ->map(fn (DonationComponent $c): array => [
-                    'id' => $c->id,
-                    'component_id' => $c->component_id,
-                    'component' => $c->component?->name,
-                    'volume_ml' => $c->volume_ml,
-                    'quantity' => $c->quantity,
-                ])->all(),
+            // The sticker every bag of this donation carries, and each bag's
+            // number built from it — what the Phase 1 label prints.
+            'donation_barcode' => BagNumbers::barcode($donation),
+
+            'components' => $this->formatComponents($donation),
         ];
+    }
+
+    /**
+     * One entry per bag, with the number Processing prints on its Phase 1 label.
+     *
+     * `quantity` is 1 for every bag declared with a volume; a breakdown
+     * recorded before volumes were kept has a null volume, its original count,
+     * and no bag number.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function formatComponents(Donation $donation): array
+    {
+        $numbers = BagNumbers::forRows($donation);
+
+        return $this->laboratoryRepository
+            ->componentsFor($donation->id)
+            ->map(fn (DonationComponent $c): array => [
+                'id' => $c->id,
+                'component_id' => $c->component_id,
+                'component' => $c->component?->name,
+                'volume_ml' => $c->volume_ml,
+                'quantity' => $c->quantity,
+                'bag_number' => $numbers[$c->id] ?? null,
+            ])->all();
     }
 
     /**

@@ -320,7 +320,7 @@ class DonationToInventoryChainTest extends TestCase
     private int $segments = 0;
 
     /**
-     * A complete "For Phlebotomist Use Only" box, with a fresh segment number each call.
+     * A complete "For Phlebotomist Use Only" box, with a fresh donation barcode each call.
      *
      * @return array<string, mixed>
      */
@@ -427,7 +427,7 @@ class DonationToInventoryChainTest extends TestCase
         return [
             'volume_ml' => 450,
             'blood_bag_type' => 'double',
-            'segment_number' => 'SEG-'.$this->segments,
+            'donation_barcode' => 'SEG-'.$this->segments,
             'started_at' => now()->subMinutes(15)->toISOString(),
             'ended_at' => now()->subMinutes(5)->toISOString(),
         ];

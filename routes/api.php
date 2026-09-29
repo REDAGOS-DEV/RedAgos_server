@@ -233,6 +233,12 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             ->middleware('can:inventory.release_quarantine')
             ->whereNumber('donation');
 
+        // The final (Phase 2) labels of a released donation, for printing or
+        // reprinting. Labelling is Issuance's step, so Issuance's ability.
+        Route::get('/inventory/donations/{donation}/labels', [BloodCenterInventoryController::class, 'labels'])
+            ->middleware('can:inventory.create')
+            ->whereNumber('donation');
+
         Route::patch('/inventory/{unit}', [BloodCenterInventoryController::class, 'update'])
             ->middleware('can:inventory.update')
             ->where('unit', '[A-Za-z0-9\-]+');

@@ -8,6 +8,12 @@ use Illuminate\Validation\Rule;
 
 class RecordCollectionRequest extends FormRequest
 {
+    /**
+     * The donation being corrected, when CorrectionService validates a
+     * corrected box, so the donation's own barcode is not a collision.
+     */
+    public ?int $correctingDonationId = null;
+
     public function authorize(): bool
     {
         return true;
@@ -32,16 +38,21 @@ class RecordCollectionRequest extends FormRequest
             // the bag does not limit the component breakdown.
             'blood_bag_type' => ['required', 'string', Rule::in(BloodBagType::values())],
 
-            // Unique per facility, checked here for a friendly error. The
-            // unique index is what actually holds under a race, and the service
-            // turns its violation into the same error.
-            'segment_number' => [
+            // The pre-printed barcode sticker: the same number is on the form,
+            // every bag and tube, and the CUE slip. Each bag's unit number is
+            // built from it (see BagNumbers), which is why it is held to what
+            // a unit id may contain and short enough to leave room for the
+            // component code. Unique per facility, checked here for a friendly
+            // error; the unique index is what holds under a race, and the
+            // service turns its violation into the same error.
+            'donation_barcode' => [
                 'required',
                 'string',
-                'max:50',
-                Rule::unique('blood_collections', 'segment_number')
+                'max:30',
+                'regex:/^[A-Z0-9-]+$/',
+                Rule::unique('blood_collections', 'donation_barcode')
                     ->where('facility_id', $this->user()?->facility_id)
-                    // A correction keeps its own segment number.
+                    // A correction keeps its own barcode.
                     ->ignore($this->correctingDonationId, 'donation_id'),
             ],
 
@@ -53,25 +64,19 @@ class RecordCollectionRequest extends FormRequest
     }
 
     /**
-     * Normalise the segment number before it is validated.
+     * Normalise the barcode before it is validated.
      *
      * Barcode scanners append a carriage return or tab, and staff type in
      * whatever case. Without this a scanned and a hand-typed copy of the same
-     * tube would be two different numbers, and uniqueness would mean nothing.
+     * sticker would be two different numbers, and uniqueness would mean nothing.
      */
-    /**
-     * The donation being corrected, when CorrectionService validates a
-     * corrected box, so the bag's own segment number is not a collision.
-     */
-    public ?int $correctingDonationId = null;
-
     protected function prepareForValidation(): void
     {
-        $segment = $this->input('segment_number');
+        $barcode = $this->input('donation_barcode');
 
-        if (is_string($segment)) {
+        if (is_string($barcode)) {
             $this->merge([
-                'segment_number' => strtoupper((string) preg_replace('/[\s\p{Cc}]+/u', '', $segment)),
+                'donation_barcode' => strtoupper((string) preg_replace('/[\s\p{Cc}]+/u', '', $barcode)),
             ]);
         }
     }
@@ -83,7 +88,10 @@ class RecordCollectionRequest extends FormRequest
     {
         return [
             'blood_bag_type.in' => 'A blood bag is single, double or triple.',
-            'segment_number.unique' => 'This segment number is already recorded at this facility. Scan the bag again.',
+            'donation_barcode.required' => 'Scan or type the donation barcode.',
+            'donation_barcode.unique' => 'This barcode is already recorded at this facility. Scan the sticker again.',
+            'donation_barcode.regex' => 'A donation barcode may contain only letters, numbers and dashes.',
+            'donation_barcode.max' => 'A donation barcode is at most 30 characters.',
             'started_at.before_or_equal' => 'A collection cannot start in the future.',
             'ended_at.before_or_equal' => 'A collection cannot end in the future.',
             'ended_at.after_or_equal' => 'The time ended cannot be before the time started.',

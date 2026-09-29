@@ -18,7 +18,7 @@ use Tests\TestCase;
 /**
  * Who may see who a donation belongs to, and who may read their clinical record.
  *
- * The laboratory and inventory roles work the bag: a segment number and a
+ * The laboratory and inventory roles work the bag: a donation barcode and a
  * donation id are enough to match a sample to its record, so the donor's name
  * is withheld from them. The roles that meet the donor in person keep it.
  */
@@ -46,8 +46,8 @@ class DonorIdentityBlindingTest extends TestCase
         ]);
 
         // The factory draws the bag for a collected donation; give it a known
-        // segment number to find.
-        BloodCollection::where('donation_id', $this->donation->id)->update(['segment_number' => 'SEG-7781']);
+        // donation barcode to find.
+        BloodCollection::where('donation_id', $this->donation->id)->update(['donation_barcode' => 'SEG-7781']);
     }
 
     private function staff(StaffRole $role): User
@@ -62,7 +62,7 @@ class DonorIdentityBlindingTest extends TestCase
                 ->getJson("/api/blood-center/laboratory/donations/{$this->donation->id}")
                 ->assertOk()
                 ->assertJsonPath('donor.blinded', true)
-                ->assertJsonPath('collection.segment_number', 'SEG-7781');
+                ->assertJsonPath('collection.donation_barcode', 'SEG-7781');
 
             $donor = $response->json('donor');
 
@@ -96,7 +96,7 @@ class DonorIdentityBlindingTest extends TestCase
         }
     }
 
-    public function test_the_intake_queue_names_the_segment_not_the_donor(): void
+    public function test_the_intake_queue_names_the_barcode_not_the_donor(): void
     {
         $this->donation->update(['status' => DonationStatus::Completed]);
 
@@ -109,7 +109,7 @@ class DonorIdentityBlindingTest extends TestCase
             ->getJson('/api/blood-center/inventory/intake-queue')
             ->assertOk()
             ->assertJsonPath('data.0.donation_id', $this->donation->id)
-            ->assertJsonPath('data.0.segment_number', 'SEG-7781')
+            ->assertJsonPath('data.0.donation_barcode', 'SEG-7781')
             ->assertJsonPath('data.0.donor.blinded', true);
 
         $this->assertStringNotContainsString('Magbanua', $response->getContent());

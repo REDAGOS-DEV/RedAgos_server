@@ -176,6 +176,13 @@ class CorrectionService
             $changes = $correction->changes;
             $donationId = $correction->donation_id;
 
+            // A collection correction filed before the segment number became
+            // the donation barcode still carries the old key.
+            if (is_array($changes) && array_key_exists('segment_number', $changes) && ! array_key_exists('donation_barcode', $changes)) {
+                $changes['donation_barcode'] = $changes['segment_number'];
+                unset($changes['segment_number']);
+            }
+
             // Re-judged now, not as it stood when the request was filed: a bag
             // may have left quarantine in between.
             $donation = Donation::query()->whereKey($donationId)->lockForUpdate()->firstOrFail();
@@ -384,7 +391,7 @@ class CorrectionService
             ]),
             CorrectionSubject::Collection => ($collection = BloodCollection::query()->where('donation_id', $donation->id)->first()) === null ? null : [
                 'blood_bag_type' => $collection->blood_bag_type?->value,
-                'segment_number' => $collection->segment_number,
+                'donation_barcode' => $collection->donation_barcode,
                 'started_at' => $collection->started_at?->toISOString(),
                 'ended_at' => $collection->ended_at?->toISOString(),
                 'volume_ml' => $donation->volume_ml,
@@ -486,7 +493,7 @@ class CorrectionService
             'id' => $correction->id,
             'donation_id' => $correction->donation_id,
             // Barcode, not name: the approver may be a blind laboratory role.
-            'segment_number' => $correction->donation?->collection?->segment_number,
+            'donation_barcode' => $correction->donation?->collection?->donation_barcode,
             'subject' => $correction->subject->value,
             'subject_label' => $correction->subject->label(),
             'department' => $correction->subject->department()->value,

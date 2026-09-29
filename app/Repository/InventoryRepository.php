@@ -140,12 +140,20 @@ class InventoryRepository
      *
      * @return LengthAwarePaginator<int, Donation>
      */
-    public function paginateIntakeQueue(int $facilityId, int $perPage): LengthAwarePaginator
+    public function paginateIntakeQueue(int $facilityId, int $perPage, ?string $barcode = null): LengthAwarePaginator
     {
         return Donation::query()
             ->with(['donorProfile.donor', 'donorProfile.bloodType', 'testResult.bloodType', 'components.component', 'collection'])
             ->where('facility_id', $facilityId)
             ->where('status', DonationStatus::Completed->value)
+            // A scanned sticker: the donation whose bags are on the counter.
+            ->when(
+                $barcode !== null,
+                fn (Builder $q): Builder => $q->whereHas(
+                    'collection',
+                    fn (Builder $c): Builder => $c->where('donation_barcode', $barcode)
+                )
+            )
             ->whereRaw(
                 '(select coalesce(sum(quantity), 0) from donation_components where donation_components.donation_id = donations.id)'
                 .' > (select count(*) from blood_units where blood_units.donation_id = donations.id)'
@@ -156,6 +164,17 @@ class InventoryRepository
             ->orderBy('id')
             ->paginate($perPage)
             ->withQueryString();
+    }
+
+    /**
+     * One of this facility's donations, without locking.
+     */
+    public function findDonation(int $donationId, int $facilityId): ?Donation
+    {
+        return Donation::query()
+            ->where('facility_id', $facilityId)
+            ->whereKey($donationId)
+            ->first();
     }
 
     public function lockDonation(int $donationId, int $facilityId): ?Donation

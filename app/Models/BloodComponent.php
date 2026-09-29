@@ -12,6 +12,7 @@ class BloodComponent extends Model
 
     protected $fillable = [
         'name',
+        'code',
         'price',
         'shelf_life_days',
         'storage_temperature',
@@ -34,5 +35,22 @@ class BloodComponent extends Model
     public function hasShelfLife(): bool
     {
         return $this->shelf_life_days !== null;
+    }
+
+    /**
+     * The suffix this component adds to a bag number: PRBC, FFP, …
+     *
+     * The stored code, or — for a component added without one — the initials
+     * of its name, so a bag can always be numbered. Letters and digits only,
+     * because a bag number is a unit id.
+     */
+    public function labelCode(): string
+    {
+        $code = $this->code ?: collect(preg_split('/[\s\-]+/', (string) $this->name))
+            ->filter()
+            ->map(fn (string $word): string => mb_substr($word, 0, 1))
+            ->implode('');
+
+        return strtoupper((string) preg_replace('/[^A-Za-z0-9]/', '', $code)) ?: 'X';
     }
 }

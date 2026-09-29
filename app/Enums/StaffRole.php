@@ -158,7 +158,7 @@ enum StaffRole: string
     {
         return match ($this) {
             self::ScreeningPhysician => 'Reviews health history and the questionnaire, examines the donor, and accepts or defers. Reads final lab results but cannot change them.',
-            self::Phlebotomist => 'Records the collection: bag, segment, times and adverse reactions. Cannot alter the questionnaire or clear a deferred donor.',
+            self::Phlebotomist => 'Records the collection: bag, donation barcode, times and adverse reactions. Cannot alter the questionnaire or clear a deferred donor.',
             self::ApheresisSpecialist => 'Everything a phlebotomist records, plus apheresis procedures.',
             self::MedicalReceptionist => 'Registers donors, verifies ID, checks in arrivals, books appointments and schedules drives. No medical history, deferral reasons or lab results.',
             self::ComponentTechnologist => 'Separates whole blood into components and completes or rejects the donation. Works by barcode, blind to donor identity.',

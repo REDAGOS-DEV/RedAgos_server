@@ -12,6 +12,7 @@ use App\Models\User;
 use App\Repository\BloodComponentRepository;
 use App\Repository\ClearanceRepository;
 use App\Repository\InventoryRepository;
+use App\Support\BagNumbers;
 use App\Support\DonorBlinding;
 use App\Support\OperationalDay;
 use Carbon\CarbonImmutable;
@@ -90,7 +91,7 @@ class InventoryService
      *
      * @return LengthAwarePaginator<int, array<string, mixed>>
      */
-    public function intakeQueue(User $user, int $perPage): LengthAwarePaginator
+    public function intakeQueue(User $user, int $perPage, ?string $barcode = null): LengthAwarePaginator
     {
         $facilityId = $this->requireFacilityId($user);
 
@@ -98,8 +99,11 @@ class InventoryService
         // property of this facility's configuration, not of a donation.
         $settings = $this->bloodComponentRepository->settingsFor($facilityId);
 
+        // A scanned sticker, normalised as the counter stored it.
+        $barcode = $barcode === null ? null : strtoupper((string) preg_replace('/[\s\p{Cc}]+/u', '', $barcode));
+
         return $this->inventoryRepository
-            ->paginateIntakeQueue($facilityId, $perPage)
+            ->paginateIntakeQueue($facilityId, $perPage, $barcode === '' ? null : $barcode)
             ->through(fn (Donation $donation): array => $this->formatIntake($donation, $settings, $user));
     }
 
@@ -113,21 +117,30 @@ class InventoryService
     {
         $ledger = $this->declarationLedger($donation);
         $components = $donation->components->keyBy('component_id');
-        $bags = $this->bagVolumes($donation);
+        $slots = BagNumbers::slots($donation);
 
         $rows = [];
 
         foreach ($ledger as $componentId => $row) {
             $component = $components->get($componentId)?->component;
             $setting = $settings->get($componentId);
+            $bags = $slots[$componentId] ?? [];
+            $outstanding = array_slice($bags, $row['recorded']);
 
             $rows[] = [
                 ...$row,
                 'component' => $component?->name,
                 // Every declared bag's volume, and those still to be shelved.
                 // Null for a bag declared before volumes were kept.
-                'volumes' => $bags[$componentId] ?? [],
-                'outstanding_volumes' => array_slice($bags[$componentId] ?? [], $row['recorded']),
+                'volumes' => array_column($bags, 'volume_ml'),
+                'outstanding_volumes' => array_column($outstanding, 'volume_ml'),
+                // The bags still to be shelved, by the number on their Phase 1
+                // label. Booking one in gives the unit that number. Null for a
+                // donation with no barcode, which keeps the generated RA… ids.
+                'outstanding_bags' => array_map(fn (array $slot): array => [
+                    'bag_number' => $slot['bag_number'],
+                    'volume_ml' => $slot['volume_ml'],
+                ], $outstanding),
                 // The intake screen refuses a component with no shelf life
                 // rather than letting someone type an expiry out of the air,
                 // so it has to know before offering the row. Read from this
@@ -152,7 +165,7 @@ class InventoryService
             ),
 
             // What is printed on the bag, so it can be matched without a name.
-            'segment_number' => $donation->collection?->segment_number,
+            'donation_barcode' => $donation->collection?->donation_barcode,
             'components' => $rows,
             'declared_units' => array_sum(array_column($ledger, 'declared')),
             'recorded_units' => array_sum(array_column($ledger, 'recorded')),
@@ -347,7 +360,7 @@ class InventoryService
     {
         $facilityId = $this->requireFacilityId($user);
 
-        [$donation, $units] = DB::transaction(function () use ($facilityId, $donationId): array {
+        [$donation, $units] = DB::transaction(function () use ($user, $facilityId, $donationId): array {
             $donation = $this->inventoryRepository->lockDonation($donationId, $facilityId)
                 ?? throw $this->refuse(404, 'donation_not_found', 'This donation was not found at your facility.');
 
@@ -395,8 +408,13 @@ class InventoryService
                 );
             }
 
+            $now = now();
+
             foreach ($held as $unit) {
                 $unit->status = BloodUnitStatus::Available;
+                // Printed on the final label: the officer who released it.
+                $unit->released_at = $now;
+                $unit->released_by = $user->id;
                 $unit->save();
             }
 
@@ -412,9 +430,100 @@ class InventoryService
 
         return [
             'message' => $units->count() === 1
-                ? 'Unit released from quarantine.'
-                : $units->count().' units released from quarantine.',
+                ? 'Unit released from quarantine. Print and affix its final label.'
+                : $units->count().' units released from quarantine. Print and affix their final labels.',
             'units' => $units->map(fn (BloodUnit $unit): array => $this->format($unit))->values()->all(),
+            // The final labels, so they print as part of the release.
+            'labels' => $this->labelData($donation, $facilityId),
+        ];
+    }
+
+    /**
+     * The final (Phase 2) labels for a donation's released bags, for printing or reprinting.
+     *
+     * Only bags that have left quarantine: a label saying "cleared" on a bag
+     * that is not is exactly what this step exists to prevent.
+     *
+     * @return array<string, mixed>
+     */
+    public function labelsFor(User $user, int $donationId): array
+    {
+        $facilityId = $this->requireFacilityId($user);
+
+        $donation = $this->inventoryRepository->findDonation($donationId, $facilityId)
+            ?? throw $this->refuse(404, 'donation_not_found', 'This donation was not found at your facility.');
+
+        $labels = $this->labelData($donation, $facilityId);
+
+        if ($labels['units'] === []) {
+            throw $this->refuse(
+                409,
+                'not_released',
+                'No bag from this donation has left quarantine, so it has no final label yet.'
+            );
+        }
+
+        $this->auditLogger->record($user, 'inventory.labels_printed', $donation, [
+            'facility_id' => $facilityId,
+            'units' => count($labels['units']),
+        ]);
+
+        return $labels;
+    }
+
+    /**
+     * What the final label prints, for every released bag of a donation.
+     *
+     * The blood type is the unit's — the donor profile's, which the typing
+     * guard keeps equal to Immunohematology's cleared reading. The clearance
+     * codes are the tokens' own ids, since a token has no code of its own. No
+     * donor name: a label travels with the bag, and the bag is blind.
+     *
+     * @return array{donation_id: int, donation_barcode: string|null, facility: string|null, clearances: array<int, array<string, mixed>>, units: array<int, array<string, mixed>>}
+     */
+    private function labelData(Donation $donation, int $facilityId): array
+    {
+        $donation->loadMissing(['collection', 'facility', 'clearances.issuer']);
+
+        $units = BloodUnit::query()
+            ->with(['bloodType', 'component', 'releaser'])
+            ->where('facility_id', $facilityId)
+            ->where('donation_id', $donation->id)
+            ->whereIn('status', [
+                BloodUnitStatus::Available->value,
+                BloodUnitStatus::Reserved->value,
+                BloodUnitStatus::Issued->value,
+            ])
+            ->orderBy('id')
+            ->get();
+
+        return [
+            'donation_id' => $donation->id,
+            'donation_barcode' => BagNumbers::barcode($donation),
+            'facility' => $donation->facility?->name,
+            'clearances' => $donation->clearances
+                ->sortBy(fn ($token): int => $token->kind === ClearanceKind::Tti ? 0 : 1)
+                ->map(fn ($token): array => [
+                    'kind' => $token->kind->value,
+                    'label' => $token->kind === ClearanceKind::Tti ? 'TTI cleared' : 'ABO/Rh cleared',
+                    'code' => ($token->kind === ClearanceKind::Tti ? 'TTI-' : 'IH-').str_pad((string) $token->id, 6, '0', STR_PAD_LEFT),
+                    'issued_at' => $token->issued_at?->toIso8601String(),
+                    'issued_by' => $token->issuer
+                        ? trim($token->issuer->first_name.' '.$token->issuer->last_name)
+                        : null,
+                ])->values()->all(),
+            'units' => $units->map(fn (BloodUnit $unit): array => [
+                'unit_id' => $unit->id,
+                'blood_type' => $unit->bloodType?->code,
+                'component' => $unit->component?->name,
+                'volume_ml' => $unit->volume_ml,
+                'expiry_date' => $unit->expiry_date?->toDateString(),
+                'storage_location' => $unit->storage_location,
+                'released_at' => $unit->released_at?->toIso8601String(),
+                'released_by' => $unit->releaser
+                    ? trim($unit->releaser->first_name.' '.$unit->releaser->last_name)
+                    : null,
+            ])->values()->all(),
         ];
     }
 
@@ -448,23 +557,53 @@ class InventoryService
         $prefix = $this->generatedIdPrefix($facilityId, $donation->id);
         $sequence = $this->nextSequence($donation->id, $prefix);
 
-        // Each unit takes the volume of the next un-booked bag of its
-        // component. The donation lock held above is what makes "next" safe.
-        $bags = $this->bagVolumes($donation);
+        // Each unit is the next un-booked bag of its component: it takes that
+        // bag's volume and, when the donation has a barcode, that bag's
+        // number (BagNumbers). The donation lock held above is what makes
+        // "next" safe.
+        $slots = BagNumbers::slots($donation);
         $booked = array_map(
             fn (array $row): int => $row['recorded'],
             $this->declarationLedger($donation)
         );
 
-        $units = [];
+        $plan = [];
 
-        foreach ($payload['units'] as $entry) {
+        foreach ($payload['units'] as $index => $entry) {
             $componentId = (int) $entry['component_id'];
-            $volume = $bags[$componentId][$booked[$componentId] ?? 0] ?? null;
+            $slot = $slots[$componentId][$booked[$componentId] ?? 0] ?? null;
             $booked[$componentId] = ($booked[$componentId] ?? 0) + 1;
 
-            $unitId = $entry['unit_id'] ?? null;
+            $bagNumber = $slot['bag_number'] ?? null;
+            $supplied = $entry['unit_id'] ?? null;
 
+            // A barcoded bag is numbered from its sticker, which is already on
+            // the Phase 1 label. A typed number could only disagree with it.
+            if ($bagNumber !== null && $supplied !== null && $supplied !== $bagNumber) {
+                throw ValidationException::withMessages([
+                    "units.{$index}.unit_id" => ['Bags from a barcoded donation are numbered from their sticker.'],
+                ]);
+            }
+
+            $plan[] = [$entry, $slot['volume_ml'] ?? null, $bagNumber ?? $supplied];
+
+            if ($bagNumber !== null) {
+                $bagNumbers[] = $bagNumber;
+            }
+        }
+
+        // Unit ids are global and a sticker series only unique per centre,
+        // so this is where two centres printing the same numbers would meet.
+        // A typed number (legacy donations) is the validator's to refuse.
+        $bagNumbers ??= [];
+
+        foreach ($this->inventoryRepository->existingIdsAmong($bagNumbers) as $taken) {
+            throw $this->refuse(409, 'bag_number_taken', "Bag {$taken} already exists. Check the sticker on the bag.");
+        }
+
+        $units = [];
+
+        foreach ($plan as [$entry, $volume, $unitId]) {
             if ($unitId === null) {
                 $unitId = $prefix.str_pad((string) $sequence, 2, '0', STR_PAD_LEFT);
                 $sequence++;
@@ -788,28 +927,6 @@ class InventoryService
         }
 
         return $ledger;
-    }
-
-    /**
-     * Each component's declared bags in declaration order, as their volumes.
-     *
-     * A row declared before volumes were kept stands for `quantity` bags of
-     * unknown volume, so it expands to that many nulls. Units take these in
-     * order: the n-th unit booked for a component is its n-th bag.
-     *
-     * @return array<int, array<int, int|null>>
-     */
-    private function bagVolumes(Donation $donation): array
-    {
-        $bags = [];
-
-        foreach ($donation->components()->orderBy('id')->get(['component_id', 'quantity', 'volume_ml']) as $row) {
-            for ($i = 0; $i < max(1, (int) $row->quantity); $i++) {
-                $bags[(int) $row->component_id][] = $row->volume_ml === null ? null : (int) $row->volume_ml;
-            }
-        }
-
-        return $bags;
     }
 
     /**

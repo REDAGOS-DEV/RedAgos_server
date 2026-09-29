@@ -12,19 +12,19 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * One row per donation — `blood_collections.donation_id` is unique — so this is
  * the traceability link the Capstone data dictionary asks for between a bag and
  * the person who drew it. It is also the "For Phlebotomist Use Only" box of
- * Section II of the DOH form: the bag, the segment number and the draw times.
+ * Section II of the DOH form: the bag, the donation barcode and the draw times.
  */
 class BloodCollection extends Model
 {
     protected $fillable = [
         'donation_id',
-        // Copied from the donation so the segment number can be unique per
+        // Copied from the donation so the donation barcode can be unique per
         // facility; a unique index cannot reach through `donations`.
         'facility_id',
         'collected_by',
         'collection_datetime',
         'blood_bag_type',
-        'segment_number',
+        'donation_barcode',
         'started_at',
         'ended_at',
     ];
