@@ -274,7 +274,22 @@ class EligibilityService
     {
         $profile = $this->requireDonorProfile($user);
         $screening = $this->eligibilityRepository->latestScreening($profile->donor_id);
-        $token = $this->eligibilityRepository->usableQrToken($profile->donor_id);
+        
+        // Find out whether the donor recently gave blood.
+        $lastDonationAt = $this->eligibilityRepository->lastBloodDrawnAt(
+            $profile->donor_id
+        );
+
+        $nextEligibleDate = $this->evaluator->nextEligibleDate($lastDonationAt);
+
+        // True when the donor still has to wait before another donation cycle.
+        $donationIntervalActive = $nextEligibleDate !== null
+            && $nextEligibleDate->isFuture();
+
+        // Safety layer: never report a QR as active during the waiting period.
+        $token = $donationIntervalActive
+        ? null
+        : $this->eligibilityRepository->usableQrToken($profile->donor_id);
 
         $this->auditLogger->record($user, 'donor.qr_code.viewed', $screening, [
             'has_usable_token' => $token !== null,
@@ -292,6 +307,8 @@ class EligibilityService
             'questionnaire_status' => $this->resolveStatus($screening)->value,
             'qr_valid_until' => $token?->expires_at?->toDateString(),
             'qr_valid_days' => (int) config('donation.qr_validity_days'),
+            'donation_interval_active' => $donationIntervalActive,
+            'next_eligible_date' => $nextEligibleDate?->toDateString(),
             'has_active_token' => $token !== null,
             'email_verified' => $user->hasVerifiedEmail(),
         ];
@@ -306,6 +323,8 @@ class EligibilityService
     {
         $profile = $this->requireDonorProfile($user);
         $this->guardEmailVerified($user);
+
+        $this->guardQrDuringDonationInterval($profile);
 
         $screening = $this->eligibilityRepository->currentValidScreening($profile->donor_id);
 
@@ -322,6 +341,34 @@ class EligibilityService
     }
 
     /**
+     * A donor who recently gave blood must wait until their next eligible date
+     * before receiving another check-in QR code.
+     */
+    private function guardQrDuringDonationInterval(DonorProfile $profile): void
+    {
+        // Finds the date when blood was actually collected, not merely booked.
+        $lastDonationAt = $this->eligibilityRepository->lastBloodDrawnAt(
+            $profile->donor_id
+        );
+
+        // Example: last donation + 56 days = Nov 22, 2026.
+        $nextEligibleDate = $this->evaluator->nextEligibleDate($lastDonationAt);
+
+        // No previous donation, or the wait period has already ended.
+        if ($nextEligibleDate === null || ! $nextEligibleDate->isFuture()) {
+            return;
+        }
+
+        // Stop the request. Laravel immediately returns this JSON response.
+        throw new HttpResponseException(response()->json([
+            'message' => 'You can request a new QR code from '
+                .$nextEligibleDate->format('F j, Y').'.',
+            'code' => 'donation_interval_active',
+            'next_eligible_date' => $nextEligibleDate->toDateString(),
+        ], 422));
+    }
+
+    /**
      * Resolve the donor's eligibility state, ageing out lapsed screenings.
      */
     public function resolveStatus(?EligibilityScreening $screening): QuestionnaireStatus
@@ -333,7 +380,7 @@ class EligibilityService
         // Historical rows from before RedAgos stopped ruling on a donor's own
         // answers may still hold `eligible` or `deferred`. Either way the
         // questionnaire was answered, which is all this reports now.
-        return $screening->valid_until->isFuture()
+        return $screening->isValid()
             ? QuestionnaireStatus::Answered
             : QuestionnaireStatus::Expired;
     }

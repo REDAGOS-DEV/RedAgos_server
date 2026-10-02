@@ -146,6 +146,20 @@ class EligibilityRepository
     }
 
     /**
+     * The completed donation consumed the donor's questionnaire.
+     * Keep it for audit/history, but never allow it to authorize another QR code.
+     */
+    public function invalidateCurrentScreenings(int $donorId): void
+    {
+        EligibilityScreening::where('donor_id', $donorId)
+            ->whereNull('invalidated_at')
+            ->where('valid_until', '>', now())
+            ->update([
+                'invalidated_at' => now(),
+            ]);
+    }
+
+    /**
      * The donor's next booking that still holds its slot, if any.
      *
      * What decides whether the appointment screening window applies. A donor

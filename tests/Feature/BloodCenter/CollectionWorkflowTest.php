@@ -2,6 +2,8 @@
 
 namespace Tests\Feature\BloodCenter;
 
+use App\Models\DonorQrToken;
+use App\Models\EligibilityScreening;
 use App\Enums\AppointmentStatus;
 use App\Enums\Department;
 use App\Enums\DonationStatus;
@@ -73,6 +75,41 @@ class CollectionWorkflowTest extends TestCase
             ->postJson('/api/blood-center/donations', ['donor_uuid' => $this->donor->uuid])
             ->assertCreated()
             ->json('data.id');
+    }
+
+    public function test_recording_a_collection_revokes_the_qr_and_invalidates_the_questionnaire(): void
+    {
+        // The donor has a valid questionnaire and QR before arriving.
+        $screening = EligibilityScreening::factory()->create([
+            'donor_id' => $this->donor->id,
+            'valid_until' => now()->addDays(90),
+            'invalidated_at' => null,
+        ]);
+
+        $token = DonorQrToken::factory()->create([
+            'donor_id' => $this->donor->id,
+            'screening_id' => $screening->id,
+            'issued_at' => now(),
+            'expires_at' => now()->addDays(14),
+            'revoked_at' => null,
+        ]);
+
+        // Move the donor through the real counter workflow.
+        $donationId = $this->openDonation();
+        $this->screenDonation($donationId);
+
+        $this->actingAs($this->staff)
+            ->postJson(
+                "/api/blood-center/donations/{$donationId}/collection",
+                $this->collectionPayload()
+            )
+            ->assertCreated();
+
+        // The old QR must no longer be usable.
+        $this->assertNotNull($token->fresh()->revoked_at);
+
+        // The old questionnaire stays in history but cannot create another QR.
+        $this->assertNotNull($screening->fresh()->invalidated_at);
     }
 
     /**

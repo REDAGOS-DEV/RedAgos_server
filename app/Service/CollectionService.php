@@ -2,6 +2,7 @@
 
 namespace App\Service;
 
+use App\Repository\EligibilityRepository;
 use App\Enums\AppointmentStatus;
 use App\Enums\BloodBagType;
 use App\Enums\DonationStatus;
@@ -56,7 +57,8 @@ class CollectionService
         private readonly EligibilityRuleEvaluator $evaluator,
         private readonly DonorQuestionnaireService $donorQuestionnaireService,
         private readonly DonorDeferralRepository $donorDeferralRepository,
-        private readonly DonorNotifier $donorNotifier
+        private readonly DonorNotifier $donorNotifier,
+        private readonly EligibilityRepository $eligibilityRepository,
     ) {}
 
     /**
@@ -612,8 +614,13 @@ class CollectionService
             $locked->volume_ml = $payload['volume_ml'];
             $locked->save();
 
+            $this->eligibilityRepository->revokeQrTokens($locked->donor_id);
+
+            $this->eligibilityRepository->invalidateCurrentScreenings($locked->donor_id);
+            
             // The visit is over from the counter's point of view.
             $this->closeAppointmentFor($locked, $facility->id);
+
 
             return $locked;
         });
