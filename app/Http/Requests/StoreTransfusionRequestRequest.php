@@ -28,8 +28,9 @@ class StoreTransfusionRequestRequest extends StoreBloodRequestRequest
     public function rules(): array
     {
         return [
-            // The hospital's own shelf is checked by hand — RedAgos does not
-            // hold a hospital's stock — so staff say they did.
+            // The hospital's own shelf is checked by hand — RedAgos holds only
+            // the bags it delivered there, not the whole shelf — so staff say
+            // they did.
             'internal_stock_confirmed' => ['accepted'],
 
             'blood_type_id' => ['required', 'integer', 'exists:blood_types,id'],

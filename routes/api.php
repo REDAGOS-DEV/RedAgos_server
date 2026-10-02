@@ -32,6 +32,7 @@ use App\Http\Controllers\FacilityManagementController;
 use App\Http\Controllers\FacilityNotificationController;
 use App\Http\Controllers\HospitalAvailabilityController;
 use App\Http\Controllers\HospitalBloodRequestController;
+use App\Http\Controllers\HospitalInventoryController;
 use App\Http\Controllers\HospitalReferenceController;
 use App\Http\Controllers\HospitalTransfusionRequestController;
 use App\Http\Controllers\PasswordResetController;
@@ -559,6 +560,34 @@ Route::middleware(['auth:sanctum', 'role:blood_bank', 'facility.operational'])
 
         Route::get('/availability', [HospitalAvailabilityController::class, 'index']);
         Route::get('/facilities', [HospitalAvailabilityController::class, 'facilities']);
+
+        // The blood bank's own stock: bags this hospital confirmed receipt of,
+        // and the patient tags placed on them. Type, component and expiry are
+        // read from the centre's blood_units row and never copied, so a tag can
+        // never reset a date.
+        Route::prefix('inventory')->group(function (): void {
+            Route::get('/', [HospitalInventoryController::class, 'index']);
+
+            // Declared before /{unit}: the bag number is a string and would
+            // otherwise swallow these.
+            Route::get('/summary', [HospitalInventoryController::class, 'summary']);
+            Route::get('/tag-events', [HospitalInventoryController::class, 'tagEvents']);
+
+            Route::get('/{unit}', [HospitalInventoryController::class, 'show'])
+                ->where('unit', '[A-Za-z0-9\-]+');
+            Route::post('/{unit}/tag', [HospitalInventoryController::class, 'tag'])
+                ->where('unit', '[A-Za-z0-9\-]+');
+            Route::post('/{unit}/crossmatch', [HospitalInventoryController::class, 'crossmatch'])
+                ->where('unit', '[A-Za-z0-9\-]+');
+            Route::post('/{unit}/transfuse', [HospitalInventoryController::class, 'transfuse'])
+                ->where('unit', '[A-Za-z0-9\-]+');
+            Route::post('/{unit}/release', [HospitalInventoryController::class, 'release'])
+                ->where('unit', '[A-Za-z0-9\-]+');
+            Route::post('/{unit}/return', [HospitalInventoryController::class, 'confirmReturn'])
+                ->where('unit', '[A-Za-z0-9\-]+');
+            Route::post('/{unit}/discard', [HospitalInventoryController::class, 'discard'])
+                ->where('unit', '[A-Za-z0-9\-]+');
+        });
 
         // A patient's need, split across the centres asked to supply it. Each
         // share is a facility allocation — a blood request below — which the

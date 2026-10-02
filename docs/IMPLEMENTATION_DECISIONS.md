@@ -1060,7 +1060,7 @@ An approved correction is applied through the original write, as the requester, 
 | Facility Allocation Status | the allocation's own status | — | Shown to the hospital as Awaiting review / Approved — units reserved / Partly released / Released / Rejected / Withdrawn. |
 | Overall Request Status | derived, `TransfusionRequestResolver` | — | Pending → Processing (anything approved) → Partial (anything released) → Fulfilled (everything released). Partial with `closed_at` when every line is resolved short. Cancelled is the only explicit state. |
 
-- **Recording (S1):** `POST /hospital/transfusion-requests`. The form requires staff to confirm the hospital's own stock cannot cover the patient (`internal_stock_confirmed`, stored as `internal_stock_checked_at`) — RedAgos holds no hospital inventory. The requirement and its first allocations are written in one transaction: one allocation per centre, with a line per component asked of it.
+- **Recording (S1):** `POST /hospital/transfusion-requests`. The form requires staff to confirm the hospital's own stock cannot cover the patient (`internal_stock_confirmed`, stored as `internal_stock_checked_at`) — RedAgos holds only the stock it delivered and the hospital confirmed receiving (see "Hospital Blood Bank inventory and tagging"); the rest of the hospital's shelf is still checked by hand. The requirement and its first allocations are written in one transaction: one allocation per centre, with a line per component asked of it.
 - **Sourcing (S4):** `POST …/sourcing` (a draft) and `GET …/{id}/sourcing` (what is still unallocated) list the centres holding matching issuable stock, earliest expiry first, then the deepest shelf, and suggest a greedy split. Centres holding none are listed too. It is advice and holds nothing.
 - **Never more, sometimes less (S3):** asking centres for more of a component than is unallocated is refused. The check runs under the requirement's row lock, so two members of staff cannot ask for the same missing unit. Asking for less is allowed; the rest stays unallocated, and the hospital is shown "units still unallocated — search again" (`needs_allocation`). A centre still reviewing an earlier allocation for the patient is not asked again until it answers.
 - **What flows back:** a rejected or withdrawn allocation, and a remainder a centre closes as unavailable, stop counting as awaiting and become unallocated again. Every allocation write calls `TransfusionRequestResolver::settleParentOf()`: approve, reject, return holds, hold expiry, close line, release, receipt and withdraw.
@@ -1106,3 +1106,109 @@ It never carries the donor's name.
 **KNOWN LIMITATIONS:**
 - Bag numbers are global. If two centres use the same sticker series, the second booking is refused. The remedy then is a facility prefix on the number.
 - Labels carry no printed barcode. One can be added later (e.g. JsBarcode) without changing the data.
+
+## Hospital Blood Bank inventory and tagging
+
+**SOURCE:** `docs/hospital-blood-bank-inventory-rules.md`: a Tag is a specific physical bag held for a specific patient. Tag Assigned has 24 hours for crossmatching; Tag Crossmatched has 24 hours for transfusion. When a period runs out, the tag ends as Untagged Assigned or Untagged Crossmatched, and the history is kept.
+
+**DECIDED BY:** The project owner, on 2026-10-02. That covers the four questions the specification left open: where stock comes from, how a tag names its patient, early release, and what happens to a bag after Untagged Crossmatched.
+
+**DECISION (stock comes from receipt only):** A hospital blood bank's own stock is the bags it confirmed receipt of, from now on.
+- `FulfillmentService::confirmReceipt()` calls `HospitalInventoryService::stockReceived()` in the same transaction. That call inserts one `hospital_units` row per received hold, as `available`. It only inserts, so receipt's lock order is unchanged.
+- The response gains `stocked_count`.
+- Bags received before this existed are not backfilled, because many of them will have been used already.
+- Bags from outside RedAgos are not booked in: `blood_units.id` is global and `donation_id` is required.
+
+**DECISION (a custody table, not a status on blood_units):**
+- `hospital_units` holds one row per physical bag in a hospital's custody. It has one row per bag, not one per state, and its status is `available | tag_assigned | tag_crossmatched | pending_return | transfused | expired | discarded`.
+- The bag's own facts (type, component, volume and **expiry**) stay on the centre's `blood_units` row. They are read through `unit_id` and never copied, so a tag cannot reset an expiry date. FEFO orders by `blood_units.expiry_date`.
+- The centre's side of the bag is not touched. It stays `issued` with the centre's `facility_id`, so the centre's summary, its expiry sweep and FEFO allocation behave exactly as before.
+- Why not extend existing structures:
+  - Adding statuses to `BloodUnitStatus` would change the centre's summary payload and its unscoped sweep.
+  - `request_allocations` is the centre-to-hospital custody row. It has no hospital `facility_id`, and putting hospital state on it would couple the two modules.
+- `unit_id` and `request_allocation_id` are both unique. That holds because a dispatched hold is never cancelled and its bag never re-allocated.
+
+**DECISION (one tag row per lifecycle, never deleted):** `unit_tags` holds one row from tagging to its end. The row carries:
+- the patient;
+- an optional `transfusion_request_id`;
+- each stage's moment and actor;
+- both deadlines;
+- `untag_reason` (`crossmatch_deadline_expired | transfusion_deadline_expired | released_by_staff`) and `untag_note`;
+- `returned_at` / `returned_by`.
+
+The model refuses deletion and refuses changes to the patient or the tagging moment. Once the tag has ended, it refuses everything except stamping the return. Re-tagging a bag writes a new row. A partial unique index `unit_tags_active_hospital_unit_unique ON (hospital_unit_id) WHERE status IN ('tag_assigned','tag_crossmatched')` (pgsql and sqlite) backs the row lock. It means a bag can never be held for two patients at once.
+
+**DECISION (patient on the tag, optional PTR):** Staff enter the patient on the tag: surname, first name, age and sex are required; middle name, record number, ward, attending physician and blood type are optional. A patient served from the hospital's own shelf has no Patient Transfusion Request, because the PTR form requires confirming that own stock *cannot* cover them. Naming one of the hospital's PTRs fills in whatever the request leaves out.
+- Another hospital's PTR is 404 `transfusion_request_not_found`.
+- A cancelled PTR is 409 `transfusion_request_closed`.
+
+**DECISION (the 24-hour boundary):**
+- Instants come from `now()->startOfSecond()`, never from `OperationalDay`, which would introduce a timezone skew.
+- `crossmatch_deadline_at = tagged_at + 24h` and `transfusion_deadline_at = crossmatched_at + 24h`.
+- At the deadline counts as past it. A tag placed at 08:00 can be crossmatched until 07:59:59 the next day.
+- From that second, crossmatch and transfuse are refused with 409 `tag_deadline_passed`, whether or not the sweep has run. A refused write never untags inline, because the refusal rolls back. The sweep is the only system writer.
+
+**DECISION (early release, with a reason):** `POST /hospital/inventory/{unit}/release` (reason required) ends an active tag as Untagged Assigned or Untagged Crossmatched, with `released_by_staff`, the note and the staff member. Typical reasons are an incompatible crossmatch, a discharged patient or a cancelled order. A release after the deadline but before the sweep is allowed and recorded the same way.
+
+**DECISION (Pending Return):** A crossmatched bag has left storage. When its tag ends, by deadline or by release, the bag becomes `pending_return`, not `available`. Staff then either confirm it is back in storage (`POST …/return`, which stamps the tag's `returned_at`, and the bag becomes available) or discard it (`POST …/discard`, reason required). A Tag Assigned bag never left storage, so it returns to `available` at once.
+
+**DECISION (two schedules):**
+- `hospital:expire-tags` runs `everyMinute()->withoutOverlapping(10)->onOneServer()`.
+  - It follows D11: candidates are selected unlocked, then bags and tags are locked in id order (the order staff writes take), the status and deadline are re-asserted, and the update and its audit rows commit together.
+  - It writes a run row (`hospital_inventory.tag_sweep`) only when it untags something, since 1,440 empty rows a day would say nothing.
+  - The overlap lock expires after 10 minutes, because the default is a full day.
+- `hospital:expire-units` runs daily at 00:30 Manila, like the centre sweep. It moves `available` hospital bags past their date to `expired`.
+  - It never writes `blood_units`, and `inventory:expire-units` is unchanged.
+  - Its run row (`hospital_inventory.expiry_swept`) is written every run and doubles as the hospital scheduler's heartbeat.
+- `GET /hospital/inventory/summary` reports `overdue_active_tags`. A value that stays above zero means the tag sweep is not running.
+
+**DECISION (audit):**
+- Every transition is audited against the centre's `BloodUnit`, so a bag's whole history, centre and hospital, is one query. The actions are `hospital_inventory.stocked | tagged | crossmatched | transfused | untagged | returned | discarded | expired`.
+- Context carries `facility_id`, `hospital_unit_id`, `tag_id`, `transfusion_request_id`, `previous_status`, `new_status` and the relevant deadline. An untag also carries the reason and note. Scheduler rows add `source` and `run_id`.
+- Patient names stay out of `audit_logs`; the `unit_tags` row is the patient-bearing history.
+
+**API:** All routes are under `/hospital/inventory`, using the hospital group's `role:blood_bank` and `facility.operational` (no abilities):
+- `GET /` (filters `status`, `blood_type_id`, `component_id`, `transfusion_request_id`, `expiring_within_days`, `search`)
+- `GET /summary`, `GET /tag-events`, `GET /{unit}`
+- `POST /{unit}/tag | crossmatch | transfuse | release | return | discard`
+
+`{unit}` is the bag number, resolved within the caller's facility, so another hospital gets a bare 404. The refusal codes are:
+- 404: `unit_not_found`, `transfusion_request_not_found`
+- 409: `unit_not_available`, `invalid_transition`, `tag_deadline_passed`, `bag_expired`, `unit_not_discardable`, `transfusion_request_closed`
+
+Hospital reference data adds `inventory_statuses`, `tag_statuses` (with the "Crossmatch pending" / "Awaiting transfusion" line) and `untag_reasons`.
+
+**DECISION (defaults where the specification is silent, to confirm):**
+1. Tagging does not block on ABO/Rh. The client warns when a linked PTR's blood type differs from the bag's, and crossmatch stays the clinical check.
+2. "Crossmatch" records a completed, compatible crossmatch. An incompatible one is handled by releasing the tag with that reason.
+3. A bag past its date cannot be tagged, crossmatched or transfused (409 `bag_expired`). A tagged bag that passes its date keeps its tag until release or the deadline. There is no automatic `bag_expired` untag.
+4. A pending-return bag confirmed back after its date returns to `available`, and the nightly run expires it.
+5. No notifications are sent when a tag lapses; the countdown on screen is the signal.
+6. Any blood-bank account may perform every action, because blood banks have no departments or abilities.
+7. Transfusion does not feed the PTR's status, billing or reports.
+
+```mermaid
+stateDiagram-v2
+    [*] --> available: receipt confirmed
+    available --> tag_assigned: tag (crossmatch deadline +24h)
+    tag_assigned --> tag_crossmatched: crossmatch before deadline (transfusion deadline +24h)
+    tag_assigned --> available: deadline or release (tag = untagged_assigned)
+    tag_crossmatched --> transfused: transfuse before deadline
+    tag_crossmatched --> pending_return: deadline or release (tag = untagged_crossmatched)
+    pending_return --> available: return confirmed
+    pending_return --> discarded: discard
+    available --> expired: bag past its date (daily)
+    available --> discarded: discard
+    expired --> discarded: discard
+    transfused --> [*]
+    discarded --> [*]
+```
+
+**KNOWN LIMITATIONS:**
+- `hospital_units.unit_id` is unique. A future return-to-centre flow would need it relaxed to a partial "active custody" index, as `request_allocations` was.
+- Hospital stock has no storage location of its own. The centre's `storage_location` describes the centre's shelf and is not shown.
+- Deadlines have second precision, matching `timestamp` columns.
+
+**STILL OUTSTANDING:**
+- The PTR form's `internal_stock_confirmed` could now show matching in-stock counts.
+- The Transfused list is not windowed.

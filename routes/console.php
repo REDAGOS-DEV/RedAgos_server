@@ -38,3 +38,25 @@ Schedule::command('donors:open-screening-window')
     ->timezone(config('blood_center.timezone'))
     ->withoutOverlapping()
     ->onOneServer();
+
+// A hospital blood bank's Tag Assigned and Tag Crossmatched holds each last 24
+// hours. Without this, a lapsed tag keeps a bag promised to a patient nobody is
+// crossmatching or transfusing, and the shelf looks emptier than it is. Writes
+// already refuse a tag at its deadline, so the minute is how quickly the bag
+// visibly frees up — not what makes the deadline hold.
+//
+// The overlap lock expires after 10 minutes rather than the default day: one
+// crashed run must not stop the untagging until tomorrow.
+Schedule::command('hospital:expire-tags')
+    ->everyMinute()
+    ->withoutOverlapping(10)
+    ->onOneServer();
+
+// The hospital's own shelf, expired the way the centre's is and at the same
+// moment. A separate command so inventory:expire-units stays exactly as it was:
+// a received bag still reads `issued` at its centre and is not that sweep's.
+Schedule::command('hospital:expire-units')
+    ->dailyAt('00:30')
+    ->timezone(config('blood_center.timezone'))
+    ->withoutOverlapping()
+    ->onOneServer();

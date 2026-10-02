@@ -100,6 +100,17 @@ class BloodUnit extends Model
     }
 
     /**
+     * The hospital custody this bag entered on receipt, if it has been received.
+     *
+     * Read-only from the centre's point of view: the hospital's tags and
+     * transfusion never write back to this row.
+     */
+    public function hospitalUnit(): HasOne
+    {
+        return $this->hasOne(HospitalUnit::class, 'unit_id');
+    }
+
+    /**
      * Limit the query to one facility's stock.
      *
      * Facility isolation is applied in the repository on every read, but having

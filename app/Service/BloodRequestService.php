@@ -3,10 +3,13 @@
 namespace App\Service;
 
 use App\Enums\BloodRequestStatus;
+use App\Enums\HospitalUnitStatus;
 use App\Enums\LineClosureReason;
 use App\Enums\RequestEventType;
 use App\Enums\RequestPurpose;
 use App\Enums\RequestSource;
+use App\Enums\UnitTagStatus;
+use App\Enums\UntagReason;
 use App\Models\BloodRequest;
 use App\Models\Facility;
 use App\Models\User;
@@ -147,6 +150,8 @@ class BloodRequestService
      *
      * Built by RequestFormReferenceData, which the blood centre's walk-in form
      * reads too, so the two forms can never offer different clinical lists.
+     * The hospital's own-stock vocabulary is added here rather than there,
+     * because the walk-in form has no use for it.
      *
      * @return array<string, mixed>
      */
@@ -154,7 +159,25 @@ class BloodRequestService
     {
         $this->requireFacilityId($user);
 
-        return RequestFormReferenceData::build();
+        return [
+            ...RequestFormReferenceData::build(),
+            'inventory_statuses' => array_map(
+                fn (HospitalUnitStatus $status): array => ['value' => $status->value, 'label' => $status->label()],
+                HospitalUnitStatus::cases()
+            ),
+            'tag_statuses' => array_map(
+                fn (UnitTagStatus $status): array => [
+                    'value' => $status->value,
+                    'label' => $status->label(),
+                    'description' => $status->description(),
+                ],
+                UnitTagStatus::cases()
+            ),
+            'untag_reasons' => array_map(
+                fn (UntagReason $reason): array => ['value' => $reason->value, 'label' => $reason->label()],
+                UntagReason::cases()
+            ),
+        ];
     }
 
     /**

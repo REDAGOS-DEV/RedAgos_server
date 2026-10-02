@@ -4,7 +4,6 @@ namespace App\Service;
 
 use App\Enums\AllocationStatus;
 use App\Enums\RequestEventType;
-use App\Models\BloodRequest;
 use App\Models\RequestAllocation;
 use App\Models\User;
 use App\Repository\BloodRequestRepository;
@@ -37,7 +36,8 @@ class FulfillmentService
         private readonly RequestStatusResolver $resolver,
         private readonly BloodRequestHistory $history,
         private readonly BloodRequestNotifier $notifier,
-        private readonly TransfusionRequestResolver $transfusionResolver
+        private readonly TransfusionRequestResolver $transfusionResolver,
+        private readonly HospitalInventoryService $hospitalInventoryService
     ) {}
 
     /**
@@ -153,6 +153,10 @@ class FulfillmentService
     /**
      * Confirm, as the requesting facility, that dispatched units arrived.
      *
+     * Receipt is also what puts each bag into the hospital blood bank's own
+     * stock (HospitalInventoryService::stockReceived). The centre's side of the
+     * bag stays exactly as dispatch left it.
+     *
      * @param  array<int, int>|null  $allocationIds
      * @return array<string, mixed>
      */
@@ -160,7 +164,7 @@ class FulfillmentService
     {
         $facilityId = $this->requireFacilityId($user);
 
-        $request = DB::transaction(function () use ($user, $requestId, $facilityId, $allocationIds): BloodRequest {
+        [$request, $stocked] = DB::transaction(function () use ($user, $requestId, $facilityId, $allocationIds): array {
             $request = $this->bloodRequestRepository->lockRaisedBy($requestId, $facilityId)
                 ?? throw $this->refuse(404, 'request_not_found', 'Blood request not found.');
 
@@ -184,6 +188,11 @@ class FulfillmentService
                 'received_by' => $user->id,
             ]);
 
+            // The bags are on the hospital's shelf now, so they enter its
+            // custody in the same transaction that says they arrived. Inserts
+            // only: the lock order below is unchanged.
+            $stocked = $this->hospitalInventoryService->stockReceived($user, $facilityId, $awaiting);
+
             // Receipt does not move the status — dispatch already did — but
             // the request is settled anyway so the figures are read fresh.
             $from = $request->status;
@@ -206,7 +215,7 @@ class FulfillmentService
                 $awaiting->pluck('unit_id')->all(),
             );
 
-            return $request;
+            return [$request, $stocked];
         });
 
         $lines = $this->resolver->figures($request);
@@ -217,6 +226,7 @@ class FulfillmentService
             'status_label' => $request->status->label(),
             'received_count' => (int) $lines->sum('received'),
             'fulfilled_quantity' => (int) $lines->sum('fulfilled'),
+            'stocked_count' => $stocked,
         ];
     }
 
