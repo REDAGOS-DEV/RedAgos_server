@@ -79,6 +79,54 @@ class EligibilityQuestionSeeder extends Seeder
      * are already in production -- plus the answers that plainly warrant a
      * second look. null means recorded and rendered plainly, with no highlight.
      */
+    /**
+     * Display grouping for the donor app (App\Enums\QuestionCategory).
+     *
+     * Only regroups what the donor sees; the DOH section, number and order
+     * above are what the record and the staff view use. Every v2 code must
+     * appear here: the seeder fails loudly on a missing one.
+     */
+    private const V2_CATEGORIES = [
+        // Your health today
+        'v2_ay_1' => 'health_today',
+        'v2_ay_2' => 'health_today',
+        'v2_ay_2b' => 'health_today',
+        'v2_d3_1' => 'health_today',
+        'v2_ay_3' => 'health_today',
+        // Women's health
+        'v2_fd_1' => 'womens_health',
+        // Donations and procedures
+        'v2_m3_1' => 'donations_procedures',
+        'v2_m12_1' => 'donations_procedures',
+        'v2_m12_2' => 'donations_procedures',
+        'v2_m12_3' => 'donations_procedures',
+        'v2_ev_4' => 'donations_procedures',
+        // Travel and exposure
+        'v2_ev_1' => 'travel_exposure',
+        'v2_ev_2' => 'travel_exposure',
+        'v2_m12_8' => 'travel_exposure',
+        'v2_m12_9' => 'travel_exposure',
+        'v2_m12_10' => 'travel_exposure',
+        // Sexual history
+        'v2_m12_4' => 'sexual_history',
+        'v2_m12_5' => 'sexual_history',
+        'v2_m12_6' => 'sexual_history',
+        'v2_m12_7' => 'sexual_history',
+        // Infections and risk
+        'v2_ev_3' => 'infections',
+        'v2_ev_5' => 'infections',
+        'v2_ev_6' => 'infections',
+        'v2_ev_7' => 'infections',
+        'v2_ev_8' => 'infections',
+        // Medical history
+        'v2_ev_9' => 'medical_history',
+        'v2_ev_10' => 'medical_history',
+        'v2_ev_11' => 'medical_history',
+        // Before you donate
+        'v2_ev_12' => 'before_you_donate',
+        'v2_ev_13' => 'before_you_donate',
+    ];
+
     private function seedVersionTwo(): void
     {
         $sections = [
@@ -183,6 +231,7 @@ class EligibilityQuestionSeeder extends Seeder
                         'section_key' => $section['key'],
                         'section_title' => $section['title'],
                         'section_number' => $section['number'],
+                        'category' => self::V2_CATEGORIES[$code],
                         'number' => $number,
                         'text' => $text,
                         'disqualify_if_answer' => $disqualifyIfAnswer,

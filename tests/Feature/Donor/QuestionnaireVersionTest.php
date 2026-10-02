@@ -114,6 +114,16 @@ class QuestionnaireVersionTest extends TestCase
         );
     }
 
+    public function test_every_version_two_question_has_a_display_category(): void
+    {
+        // The donor app groups by category only when every question has one,
+        // so a single missing row would silently drop it back to DOH sections.
+        $this->assertSame(
+            0,
+            EligibilityQuestion::where('version', 2)->whereNull('category')->count()
+        );
+    }
+
     // --- The sharp edge: scopeCurrentlyValid --------------------------------
 
     public function test_a_pending_screening_is_found_by_the_current_valid_lookup(): void

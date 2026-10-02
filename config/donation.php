@@ -60,11 +60,16 @@ return [
     | How far ahead a donor may book, and how close to the appointment they may
     | still cancel or reschedule it.
     |
+    | The window is 0 while the blood centre runs on walk-ins: nothing is
+    | planned around a booking yet, so locking it only turns a donor who cannot
+    | come into a silent no-show. A late cancel at least frees the slot and tells
+    | the centre. Raise it once the centre schedules staff around appointments.
+    |
     */
 
     'booking_horizon_days' => env('DONATION_BOOKING_HORIZON_DAYS', 90),
 
-    'cancellation_window_hours' => env('DONATION_CANCELLATION_WINDOW_HOURS', 24),
+    'cancellation_window_hours' => env('DONATION_CANCELLATION_WINDOW_HOURS', 0),
 
     /*
     |--------------------------------------------------------------------------
