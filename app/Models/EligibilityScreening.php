@@ -22,9 +22,15 @@ class EligibilityScreening extends Model
         'computed_result',
         'submitted_result',
         'age_at_screening',
+        'gender_at_screening',
         'weight_kg',
         'declared_last_donation_date',
+        'declared_last_donation_venue',
+        'last_menstrual_period',
         'deferral_reasons',
+        'consented_at',
+        'consent_version',
+        'consent_text_hash',
     ];
 
     protected function casts(): array
@@ -33,12 +39,26 @@ class EligibilityScreening extends Model
             'screened_at' => 'datetime',
             'valid_until' => 'datetime',
             'declared_last_donation_date' => 'date',
+            'last_menstrual_period' => 'date',
+            'consented_at' => 'datetime',
             'result' => EligibilityStatus::class,
             'question_version' => 'integer',
             'age_at_screening' => 'integer',
             'weight_kg' => 'integer',
             'deferral_reasons' => 'array',
         ];
+    }
+
+    /**
+     * Determine whether the donor accepted the informed consent statements.
+     *
+     * Screenings recorded before Section I-C was captured have no consent, and
+     * that gap must always surface as an explicit negative. Rendering a missing
+     * consent as a blank date is the worst failure this record can produce.
+     */
+    public function hasConsent(): bool
+    {
+        return $this->consented_at !== null;
     }
 
     public function donorProfile(): BelongsTo
@@ -58,19 +78,28 @@ class EligibilityScreening extends Model
 
     /**
      * Determine whether this screening still stands as of now.
+     *
+     * "Valid" means answered and unexpired, and deliberately says nothing about
+     * the outcome. RedAgos no longer scores a donor's own answers into a
+     * verdict: the questionnaire is a record of what was asked and answered,
+     * and whether the donor may give blood is decided by the blood centre at
+     * the counter, from their own assessment.
+     *
+     * This used to require result = eligible. That filter had to go along with
+     * the verdict -- every screening is now recorded `pending`, so leaving it
+     * would make every new screening invisible here, which silently breaks the
+     * QR refresh and the re-screen guard without raising anything.
      */
     public function isValid(): bool
     {
-        return $this->result === EligibilityStatus::Eligible
-            && $this->valid_until->isFuture();
+        return $this->valid_until->isFuture();
     }
 
     /**
-     * Limit the query to eligible screenings that have not yet lapsed.
+     * Limit the query to answered screenings that have not yet lapsed.
      */
     public function scopeCurrentlyValid(Builder $query): Builder
     {
-        return $query->where('result', EligibilityStatus::Eligible->value)
-            ->where('valid_until', '>', now());
+        return $query->where('valid_until', '>', now());
     }
 }

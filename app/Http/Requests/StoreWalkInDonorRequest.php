@@ -28,6 +28,14 @@ class StoreWalkInDonorRequest extends FormRequest
         if ($this->filled('email')) {
             $this->merge(['email' => Str::lower(trim((string) $this->input('email')))]);
         }
+
+        if ($this->has('valid_id_number')) {
+            $this->merge([
+                'valid_id_number' => AccountIdentity::normalizeValidIdNumber(
+                    $this->input('valid_id_number')
+                ),
+            ]);
+        }
     }
 
     /**

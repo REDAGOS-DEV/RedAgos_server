@@ -3,16 +3,23 @@
 namespace App\Service;
 
 use App\Enums\BloodUnitStatus;
+use App\Enums\ClearanceKind;
 use App\Enums\DonationStatus;
 use App\Models\BloodUnit;
 use App\Models\Donation;
+use App\Models\FacilityBloodComponent;
 use App\Models\User;
+use App\Repository\BloodComponentRepository;
+use App\Repository\ClearanceRepository;
 use App\Repository\InventoryRepository;
+use App\Support\BagNumbers;
+use App\Support\DonorBlinding;
 use App\Support\OperationalDay;
 use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Exceptions\HttpResponseException;
+use Illuminate\Support\Collection as SupportCollection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -32,21 +39,22 @@ class InventoryService
     private const ID_ATTEMPTS = 3;
 
     /**
-     * The donation status that may become issuable stock.
+     * The donation status whose bags may be booked in.
      *
-     * Kept as the named gate even though DonationStatus::isIssuable() is what
-     * the check calls, so that grepping for the intake rule still lands here.
-     * Confirmed as "tested and cleared for issue" — see the donation-status
-     * entry in docs/IMPLEMENTATION_DECISIONS.md. If that confirmation is ever
-     * overturned, isIssuable() is the single place to change, but the module
-     * would then also need a quarantine state before units could be created
-     * available.
+     * Kept as the named gate even though DonationStatus::acceptsIntake() is
+     * what the check calls, so that grepping for the intake rule still lands
+     * here. `completed` means Processing has finished — not that the blood is
+     * cleared: units are booked in quarantined and leave quarantine only
+     * through releaseFromQuarantine(). See "Quarantine lifecycle" in
+     * docs/IMPLEMENTATION_DECISIONS.md.
      */
-    private const ISSUABLE_DONATION_STATUS = DonationStatus::Completed;
+    private const INTAKE_DONATION_STATUS = DonationStatus::Completed;
 
     public function __construct(
         private readonly InventoryRepository $inventoryRepository,
-        private readonly AuditLogger $auditLogger
+        private readonly BloodComponentRepository $bloodComponentRepository,
+        private readonly AuditLogger $auditLogger,
+        private readonly ClearanceRepository $clearanceRepository
     ) {}
 
     /**
@@ -72,6 +80,99 @@ class InventoryService
      *
      * @return array<string, mixed>
      */
+    /**
+     * Donations cleared for issue that still have units to book in.
+     *
+     * The laboratory hands a donation over by setting it `completed`; this is
+     * the other side of that handover. It exists as its own endpoint because
+     * Issuance holds `donations.view` but not `lab.view`, so the laboratory
+     * queue is closed to them, and because neither that queue nor
+     * GET /blood-center/donations carries the declaration ledger this needs.
+     *
+     * @return LengthAwarePaginator<int, array<string, mixed>>
+     */
+    public function intakeQueue(User $user, int $perPage, ?string $barcode = null): LengthAwarePaginator
+    {
+        $facilityId = $this->requireFacilityId($user);
+
+        // Resolved once for the page rather than per donation: shelf life is a
+        // property of this facility's configuration, not of a donation.
+        $settings = $this->bloodComponentRepository->settingsFor($facilityId);
+
+        // A scanned sticker, normalised as the counter stored it.
+        $barcode = $barcode === null ? null : strtoupper((string) preg_replace('/[\s\p{Cc}]+/u', '', $barcode));
+
+        return $this->inventoryRepository
+            ->paginateIntakeQueue($facilityId, $perPage, $barcode === '' ? null : $barcode)
+            ->through(fn (Donation $donation): array => $this->formatIntake($donation, $settings, $user));
+    }
+
+    /**
+     * One donation as the intake screen needs it.
+     *
+     * @param  SupportCollection<int, FacilityBloodComponent>  $settings
+     * @return array<string, mixed>
+     */
+    private function formatIntake(Donation $donation, SupportCollection $settings, User $viewer): array
+    {
+        $ledger = $this->declarationLedger($donation);
+        $components = $donation->components->keyBy('component_id');
+        $slots = BagNumbers::slots($donation);
+
+        $rows = [];
+
+        foreach ($ledger as $componentId => $row) {
+            $component = $components->get($componentId)?->component;
+            $setting = $settings->get($componentId);
+            $bags = $slots[$componentId] ?? [];
+            $outstanding = array_slice($bags, $row['recorded']);
+
+            $rows[] = [
+                ...$row,
+                'component' => $component?->name,
+                // Every declared bag's volume, and those still to be shelved.
+                // Null for a bag declared before volumes were kept.
+                'volumes' => array_column($bags, 'volume_ml'),
+                'outstanding_volumes' => array_column($outstanding, 'volume_ml'),
+                // The bags still to be shelved, by the number on their Phase 1
+                // label. Booking one in gives the unit that number. Null for a
+                // donation with no barcode, which keeps the generated RA… ids.
+                'outstanding_bags' => array_map(fn (array $slot): array => [
+                    'bag_number' => $slot['bag_number'],
+                    'volume_ml' => $slot['volume_ml'],
+                ], $outstanding),
+                // The intake screen refuses a component with no shelf life
+                // rather than letting someone type an expiry out of the air,
+                // so it has to know before offering the row. Read from this
+                // facility's settings, never the shared catalogue row.
+                'shelf_life_days' => $setting?->shelf_life_days,
+                'shelf_life_configured' => $setting?->hasShelfLife() ?? false,
+            ];
+        }
+
+        return [
+            'donation_id' => $donation->id,
+            'donation_date' => $donation->donation_date?->toISOString(),
+            'volume_ml' => $donation->volume_ml,
+            // The type on the profile, which is what intake stamps onto every
+            // unit, shown so staff can see it matches the bag. The donor's
+            // identity only to a role that meets donors: Issuance books in by
+            // barcode. See DonorBlinding.
+            'donor' => DonorBlinding::block(
+                $donation->donorProfile?->donor,
+                $donation->donorProfile?->bloodType?->code,
+                $viewer
+            ),
+
+            // What is printed on the bag, so it can be matched without a name.
+            'donation_barcode' => $donation->collection?->donation_barcode,
+            'components' => $rows,
+            'declared_units' => array_sum(array_column($ledger, 'declared')),
+            'recorded_units' => array_sum(array_column($ledger, 'recorded')),
+            'outstanding_units' => array_sum(array_column($ledger, 'outstanding')),
+        ];
+    }
+
     public function summary(User $user): array
     {
         $facilityId = $this->requireFacilityId($user);
@@ -110,8 +211,8 @@ class InventoryService
 
                 return [
                     'message' => count($units) === 1
-                        ? 'Blood unit recorded.'
-                        : count($units).' blood units recorded.',
+                        ? 'Blood unit booked into quarantine.'
+                        : count($units).' blood units booked into quarantine.',
                     'units' => array_map(fn (BloodUnit $unit): array => $this->format($unit), $units),
                 ];
             } catch (QueryException $exception) {
@@ -207,7 +308,9 @@ class InventoryService
             $unit = $this->inventoryRepository->lockUnit($unitId, $facilityId)
                 ?? throw $this->refuse(404, 'unit_not_found', 'This blood unit was not found.');
 
-            if (! in_array($unit->status, [BloodUnitStatus::Available, BloodUnitStatus::Expired], true)) {
+            // A quarantined unit may be discarded: for a donation that came
+            // back reactive it is the only way off the shelf.
+            if (! in_array($unit->status, [BloodUnitStatus::Available, BloodUnitStatus::Expired, BloodUnitStatus::Quarantined], true)) {
                 throw $this->refuse(
                     409,
                     'unit_not_discardable',
@@ -240,6 +343,191 @@ class InventoryService
     }
 
     /**
+     * Release a donation's quarantined units to available stock.
+     *
+     * The Inventory Control Officer's act, and possible only on both clearance
+     * tokens: TTI Testing's validated serology and Immunohematology's
+     * concordant typing. The check is here, in the service, rather than in the
+     * gate, so a supervisor — who holds every ability — is bound by it too.
+     *
+     * All or nothing per donation. The tokens belong to the donation, so its
+     * bags are cleared together; a bag past its date must be discarded first
+     * rather than silently left behind.
+     *
+     * @return array<string, mixed>
+     */
+    public function releaseFromQuarantine(User $user, int $donationId): array
+    {
+        $facilityId = $this->requireFacilityId($user);
+
+        [$donation, $units] = DB::transaction(function () use ($user, $facilityId, $donationId): array {
+            $donation = $this->inventoryRepository->lockDonation($donationId, $facilityId)
+                ?? throw $this->refuse(404, 'donation_not_found', 'This donation was not found at your facility.');
+
+            if ($donation->status === DonationStatus::Rejected) {
+                throw $this->refuse(
+                    409,
+                    'donation_rejected',
+                    'This donation was rejected. Its units stay in quarantine and can only be discarded.'
+                );
+            }
+
+            if (! $this->clearanceRepository->has($donation->id, ClearanceKind::Tti)) {
+                throw $this->refuse(
+                    409,
+                    'tti_not_cleared',
+                    'TTI Testing has not cleared this donation. Its units stay in quarantine.'
+                );
+            }
+
+            if (! $this->clearanceRepository->has($donation->id, ClearanceKind::Immunohematology)) {
+                throw $this->refuse(
+                    409,
+                    'immunohematology_not_cleared',
+                    'Immunohematology has not cleared this donation. Its units stay in quarantine.'
+                );
+            }
+
+            $held = $this->inventoryRepository->lockQuarantinedUnits($donation->id, $facilityId);
+
+            if ($held->isEmpty()) {
+                throw $this->refuse(
+                    409,
+                    'nothing_quarantined',
+                    'This donation has no units in quarantine.'
+                );
+            }
+
+            $today = OperationalDay::todayAsDate();
+
+            if ($held->contains(fn (BloodUnit $unit): bool => $unit->expiry_date !== null && $unit->expiry_date->toDateString() < $today)) {
+                throw $this->refuse(
+                    409,
+                    'unit_past_expiry',
+                    'A unit from this donation is past its expiry date. Discard it before releasing the rest.'
+                );
+            }
+
+            $now = now();
+
+            foreach ($held as $unit) {
+                $unit->status = BloodUnitStatus::Available;
+                // Printed on the final label: the officer who released it.
+                $unit->released_at = $now;
+                $unit->released_by = $user->id;
+                $unit->save();
+            }
+
+            return [$donation, $held];
+        });
+
+        foreach ($units as $unit) {
+            $this->auditLogger->record($user, 'inventory.released_from_quarantine', $unit, [
+                'facility_id' => $facilityId,
+                'donation_id' => $donation->id,
+            ]);
+        }
+
+        return [
+            'message' => $units->count() === 1
+                ? 'Unit released from quarantine. Print and affix its final label.'
+                : $units->count().' units released from quarantine. Print and affix their final labels.',
+            'units' => $units->map(fn (BloodUnit $unit): array => $this->format($unit))->values()->all(),
+            // The final labels, so they print as part of the release.
+            'labels' => $this->labelData($donation, $facilityId),
+        ];
+    }
+
+    /**
+     * The final (Phase 2) labels for a donation's released bags, for printing or reprinting.
+     *
+     * Only bags that have left quarantine: a label saying "cleared" on a bag
+     * that is not is exactly what this step exists to prevent.
+     *
+     * @return array<string, mixed>
+     */
+    public function labelsFor(User $user, int $donationId): array
+    {
+        $facilityId = $this->requireFacilityId($user);
+
+        $donation = $this->inventoryRepository->findDonation($donationId, $facilityId)
+            ?? throw $this->refuse(404, 'donation_not_found', 'This donation was not found at your facility.');
+
+        $labels = $this->labelData($donation, $facilityId);
+
+        if ($labels['units'] === []) {
+            throw $this->refuse(
+                409,
+                'not_released',
+                'No bag from this donation has left quarantine, so it has no final label yet.'
+            );
+        }
+
+        $this->auditLogger->record($user, 'inventory.labels_printed', $donation, [
+            'facility_id' => $facilityId,
+            'units' => count($labels['units']),
+        ]);
+
+        return $labels;
+    }
+
+    /**
+     * What the final label prints, for every released bag of a donation.
+     *
+     * The blood type is the unit's — the donor profile's, which the typing
+     * guard keeps equal to Immunohematology's cleared reading. The clearance
+     * codes are the tokens' own ids, since a token has no code of its own. No
+     * donor name: a label travels with the bag, and the bag is blind.
+     *
+     * @return array{donation_id: int, donation_barcode: string|null, facility: string|null, clearances: array<int, array<string, mixed>>, units: array<int, array<string, mixed>>}
+     */
+    private function labelData(Donation $donation, int $facilityId): array
+    {
+        $donation->loadMissing(['collection', 'facility', 'clearances.issuer']);
+
+        $units = BloodUnit::query()
+            ->with(['bloodType', 'component', 'releaser'])
+            ->where('facility_id', $facilityId)
+            ->where('donation_id', $donation->id)
+            ->whereIn('status', [
+                BloodUnitStatus::Available->value,
+                BloodUnitStatus::Reserved->value,
+                BloodUnitStatus::Issued->value,
+            ])
+            ->orderBy('id')
+            ->get();
+
+        return [
+            'donation_id' => $donation->id,
+            'donation_barcode' => BagNumbers::barcode($donation),
+            'facility' => $donation->facility?->name,
+            'clearances' => $donation->clearances
+                ->sortBy(fn ($token): int => $token->kind === ClearanceKind::Tti ? 0 : 1)
+                ->map(fn ($token): array => [
+                    'kind' => $token->kind->value,
+                    'label' => $token->kind === ClearanceKind::Tti ? 'TTI cleared' : 'ABO/Rh cleared',
+                    'code' => ($token->kind === ClearanceKind::Tti ? 'TTI-' : 'IH-').str_pad((string) $token->id, 6, '0', STR_PAD_LEFT),
+                    'issued_at' => $token->issued_at?->toIso8601String(),
+                    'issued_by' => $token->issuer
+                        ? trim($token->issuer->first_name.' '.$token->issuer->last_name)
+                        : null,
+                ])->values()->all(),
+            'units' => $units->map(fn (BloodUnit $unit): array => [
+                'unit_id' => $unit->id,
+                'blood_type' => $unit->bloodType?->code,
+                'component' => $unit->component?->name,
+                'volume_ml' => $unit->volume_ml,
+                'expiry_date' => $unit->expiry_date?->toDateString(),
+                'storage_location' => $unit->storage_location,
+                'released_at' => $unit->released_at?->toIso8601String(),
+                'released_by' => $unit->releaser
+                    ? trim($unit->releaser->first_name.' '.$unit->releaser->last_name)
+                    : null,
+            ])->values()->all(),
+        ];
+    }
+
+    /**
      * Insert the units, under the donation lock.
      *
      * Everything happens after the lock — status check, blood-type read,
@@ -254,11 +542,11 @@ class InventoryService
         $donation = $this->inventoryRepository->lockDonation((int) $payload['donation_id'], $facilityId)
             ?? throw $this->refuse(404, 'donation_not_found', 'This donation was not found at your facility.');
 
-        if (! $donation->status->isIssuable()) {
+        if (! $donation->status->acceptsIntake()) {
             throw $this->refuse(
                 409,
                 'donation_not_completed',
-                'This donation has not been completed, so its blood cannot enter inventory yet.'
+                'Processing has not completed this donation, so its bags cannot be booked in yet.'
             );
         }
 
@@ -269,11 +557,53 @@ class InventoryService
         $prefix = $this->generatedIdPrefix($facilityId, $donation->id);
         $sequence = $this->nextSequence($donation->id, $prefix);
 
+        // Each unit is the next un-booked bag of its component: it takes that
+        // bag's volume and, when the donation has a barcode, that bag's
+        // number (BagNumbers). The donation lock held above is what makes
+        // "next" safe.
+        $slots = BagNumbers::slots($donation);
+        $booked = array_map(
+            fn (array $row): int => $row['recorded'],
+            $this->declarationLedger($donation)
+        );
+
+        $plan = [];
+
+        foreach ($payload['units'] as $index => $entry) {
+            $componentId = (int) $entry['component_id'];
+            $slot = $slots[$componentId][$booked[$componentId] ?? 0] ?? null;
+            $booked[$componentId] = ($booked[$componentId] ?? 0) + 1;
+
+            $bagNumber = $slot['bag_number'] ?? null;
+            $supplied = $entry['unit_id'] ?? null;
+
+            // A barcoded bag is numbered from its sticker, which is already on
+            // the Phase 1 label. A typed number could only disagree with it.
+            if ($bagNumber !== null && $supplied !== null && $supplied !== $bagNumber) {
+                throw ValidationException::withMessages([
+                    "units.{$index}.unit_id" => ['Bags from a barcoded donation are numbered from their sticker.'],
+                ]);
+            }
+
+            $plan[] = [$entry, $slot['volume_ml'] ?? null, $bagNumber ?? $supplied];
+
+            if ($bagNumber !== null) {
+                $bagNumbers[] = $bagNumber;
+            }
+        }
+
+        // Unit ids are global and a sticker series only unique per centre,
+        // so this is where two centres printing the same numbers would meet.
+        // A typed number (legacy donations) is the validator's to refuse.
+        $bagNumbers ??= [];
+
+        foreach ($this->inventoryRepository->existingIdsAmong($bagNumbers) as $taken) {
+            throw $this->refuse(409, 'bag_number_taken', "Bag {$taken} already exists. Check the sticker on the bag.");
+        }
+
         $units = [];
 
-        foreach ($payload['units'] as $entry) {
-            $unitId = $entry['unit_id'] ?? null;
-
+        foreach ($plan as [$entry, $volume, $unitId]) {
             if ($unitId === null) {
                 $unitId = $prefix.str_pad((string) $sequence, 2, '0', STR_PAD_LEFT);
                 $sequence++;
@@ -283,6 +613,8 @@ class InventoryService
                 'id' => $unitId,
                 'facility_id' => $facilityId,
                 'component_id' => $entry['component_id'],
+                // From the bag Processing declared, never from this request.
+                'volume_ml' => $volume,
                 // Derived server-side and never accepted from the client. It is
                 // the one field on a unit that can kill someone if it is wrong,
                 // and the donation already knows it.
@@ -290,7 +622,10 @@ class InventoryService
                 'donation_id' => $donation->id,
                 'storage_location' => $entry['storage_location'] ?? null,
                 'expiry_date' => $entry['expiry_date'],
-                'status' => BloodUnitStatus::Available,
+                // Never available on arrival. Testing may not have finished,
+                // and even when it has, leaving quarantine is its own recorded
+                // act — releaseFromQuarantine().
+                'status' => BloodUnitStatus::Quarantined,
             ]);
         }
 
@@ -359,7 +694,10 @@ class InventoryService
      */
     private function guardEditable(BloodUnit $unit, array $payload): void
     {
-        if ($unit->status === BloodUnitStatus::Available) {
+        // A quarantined unit can have its shelf and date corrected like any
+        // other. Its status is untouched here: update() only ever changes the
+        // status of an expired unit, so no edit can move one out of quarantine.
+        if (in_array($unit->status, [BloodUnitStatus::Available, BloodUnitStatus::Quarantined], true)) {
             return;
         }
 
@@ -413,6 +751,7 @@ class InventoryService
                 'id' => $unit->component_id,
                 'name' => $unit->component?->name,
             ],
+            'volume_ml' => $unit->volume_ml,
             'status' => $unit->status->value,
             'expiry_date' => $unit->expiry_date?->toDateString(),
             'days_remaining' => $unit->expiry_date
@@ -424,6 +763,39 @@ class InventoryService
             'expired_at' => $unit->expired_at?->toIso8601String(),
             'discarded_at' => $unit->discarded_at?->toIso8601String(),
             'discard_reason' => $unit->discard_reason,
+            'quarantine' => $unit->status === BloodUnitStatus::Quarantined ? $this->quarantineState($unit) : null,
+        ];
+    }
+
+    /**
+     * What stands between a quarantined unit and the shelf.
+     *
+     * `locked` is a unit whose donation was rejected — a reactive result — and
+     * which can therefore only be discarded.
+     *
+     * @return array<string, bool>
+     */
+    private function quarantineState(BloodUnit $unit): array
+    {
+        $donation = $unit->relationLoaded('donation')
+            ? $unit->donation
+            : $unit->donation()->with('clearances')->first();
+
+        $kinds = $donation === null
+            ? []
+            : ($donation->relationLoaded('clearances') ? $donation->clearances : $donation->clearances()->get())
+                ->map(fn ($clearance): string => $clearance->kind->value)
+                ->all();
+
+        $tti = in_array(ClearanceKind::Tti->value, $kinds, true);
+        $typing = in_array(ClearanceKind::Immunohematology->value, $kinds, true);
+        $locked = $donation?->status === DonationStatus::Rejected;
+
+        return [
+            'tti' => $tti,
+            'immunohematology' => $typing,
+            'locked' => $locked,
+            'releasable' => ! $locked && $tti && $typing,
         ];
     }
 
@@ -480,9 +852,9 @@ class InventoryService
      */
     private function guardAgainstLaboratoryDeclaration(Donation $donation, array $entries): void
     {
-        $declared = $donation->components()->pluck('quantity', 'component_id');
+        $ledger = $this->declarationLedger($donation);
 
-        if ($declared->isEmpty()) {
+        if ($ledger === []) {
             throw $this->refuse(
                 409,
                 'components_not_declared',
@@ -490,17 +862,12 @@ class InventoryService
             );
         }
 
-        $alreadyRecorded = $donation->bloodUnits()
-            ->selectRaw('component_id, count(*) as total')
-            ->groupBy('component_id')
-            ->pluck('total', 'component_id');
-
         $requested = [];
 
         foreach ($entries as $index => $entry) {
             $componentId = (int) $entry['component_id'];
 
-            if (! $declared->has($componentId)) {
+            if (! isset($ledger[$componentId])) {
                 throw ValidationException::withMessages([
                     "units.{$index}.component_id" => ['The laboratory did not record this component for this donation.'],
                 ]);
@@ -510,19 +877,56 @@ class InventoryService
         }
 
         foreach ($requested as $componentId => $count) {
-            $limit = (int) $declared->get($componentId);
-            $used = (int) ($alreadyRecorded->get($componentId) ?? 0);
+            $row = $ledger[$componentId];
 
-            if ($used + $count > $limit) {
-                $remaining = max(0, $limit - $used);
-
+            if ($count > $row['outstanding']) {
                 throw $this->refuse(
                     409,
                     'exceeds_declared_quantity',
-                    "The laboratory declared {$limit} unit(s) of this component for this donation; {$remaining} may still be recorded."
+                    "The laboratory declared {$row['declared']} unit(s) of this component for this donation; {$row['outstanding']} may still be recorded."
                 );
             }
         }
+    }
+
+    /**
+     * What the laboratory declared for a donation, against what is already in.
+     *
+     * The single source for both the intake queue and the guard above. They
+     * must not each count this themselves: a screen that offered a unit the
+     * guard then refused would send staff back and forth with a 409 and no way
+     * to tell which of the two was wrong.
+     *
+     * @return array<int, array{component_id: int, declared: int, recorded: int, outstanding: int}>
+     */
+    private function declarationLedger(Donation $donation): array
+    {
+        // Summed, not plucked: one row per bag means a component can appear
+        // on several rows, and a plucked map would keep only the last.
+        $declared = $donation->components()
+            ->selectRaw('component_id, SUM(quantity) as declared')
+            ->groupBy('component_id')
+            ->pluck('declared', 'component_id');
+
+        $recorded = $donation->bloodUnits()
+            ->selectRaw('component_id, count(*) as total')
+            ->groupBy('component_id')
+            ->pluck('total', 'component_id');
+
+        $ledger = [];
+
+        foreach ($declared as $componentId => $quantity) {
+            $used = (int) ($recorded->get($componentId) ?? 0);
+
+            $ledger[(int) $componentId] = [
+                'component_id' => (int) $componentId,
+                'declared' => (int) $quantity,
+                'recorded' => $used,
+                'outstanding' => max(0, (int) $quantity - $used),
+            ];
+        }
+
+        return $ledger;
     }
 
     /**

@@ -2,10 +2,13 @@
 
 namespace Tests\Feature\BloodCenter;
 
+use App\Enums\AppointmentStatus;
 use App\Enums\Department;
+use App\Enums\StaffRole;
 use App\Models\DonationAppointment;
 use App\Models\DonorProfile;
 use App\Models\DonorQrToken;
+use App\Models\EligibilityScreening;
 use App\Models\Facility;
 use App\Models\User;
 use App\Notifications\VerifyEmailNotification;
@@ -32,7 +35,7 @@ class CounterCheckInTest extends TestCase
         Notification::fake();
 
         $this->facility = Facility::factory()->approved()->create();
-        $this->staff = User::factory()->bloodCenterStaff($this->facility, Department::Collection)->create();
+        $this->staff = User::factory()->bloodCenterStaff($this->facility, StaffRole::MedicalReceptionist)->create();
     }
 
     /**
@@ -135,6 +138,48 @@ class CounterCheckInTest extends TestCase
             ->assertJsonPath('data.appointment.id', $appointment->id);
     }
 
+    public function test_scanning_the_qr_checks_the_donor_in(): void
+    {
+        [$donor, $raw] = $this->issueQrToken();
+
+        $appointment = DonationAppointment::factory()->create([
+            'donor_id' => $donor->id,
+            'facility_id' => $this->facility->id,
+            'appointment_datetime' => now(),
+            'status' => 'scheduled',
+        ]);
+
+        // The donor is at the counter holding the code, so the scan is the
+        // arrival: the queue shows the visit under way without a second click.
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/collection/verify-qr', ['token' => $raw])
+            ->assertOk()
+            ->assertJsonPath('data.appointment.status', 'confirmed')
+            ->assertJsonPath('data.appointment.status_label', 'In progress');
+
+        $this->assertSame(AppointmentStatus::Confirmed, $appointment->fresh()->status);
+    }
+
+    public function test_scanning_a_donor_already_checked_in_is_not_refused(): void
+    {
+        [$donor, $raw] = $this->issueQrToken();
+
+        $appointment = DonationAppointment::factory()->confirmed()->create([
+            'donor_id' => $donor->id,
+            'facility_id' => $this->facility->id,
+            'appointment_datetime' => now(),
+        ]);
+
+        // A second counter scanning the same donor is ordinary, unlike a second
+        // click on Check in, which is refused.
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/collection/verify-qr', ['token' => $raw])
+            ->assertOk()
+            ->assertJsonPath('data.appointment.status', 'confirmed');
+
+        $this->assertSame(AppointmentStatus::Confirmed, $appointment->fresh()->status);
+    }
+
     public function test_an_appointment_at_another_facility_is_not_surfaced(): void
     {
         [$donor, $raw] = $this->issueQrToken();
@@ -198,7 +243,7 @@ class CounterCheckInTest extends TestCase
             ->postJson("/api/blood-center/appointments/{$foreign->id}/check-in")
             ->assertNotFound();
 
-        $this->assertSame('scheduled', $foreign->fresh()->status);
+        $this->assertSame(AppointmentStatus::Scheduled, $foreign->fresh()->status);
     }
 
     public function test_a_walk_in_is_registered_with_a_valid_id_and_no_email(): void
@@ -218,8 +263,56 @@ class CounterCheckInTest extends TestCase
         // The decision that made users.email nullable: a counter-registered
         // donor is identified by the ID they presented, not by an inbox.
         $this->assertNull($donor->email);
-        $this->assertSame('PH-DL-12345', DonorProfile::where('donor_id', $donor->id)->value('valid_id_number'));
+
+        // Stored normalised, not as it was typed: the column is unique and is
+        // what every lookup compares against, so "PH-DL-12345" and "phdl12345"
+        // have to reach the same donor rather than two.
+        $this->assertSame('PHDL12345', DonorProfile::where('donor_id', $donor->id)->value('valid_id_number'));
         Notification::assertNothingSent();
+    }
+
+    public function test_a_walk_in_is_found_by_the_id_as_it_is_printed_on_the_card(): void
+    {
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/donors', [
+                'first_name' => 'Juan',
+                'last_name' => 'Dela Cruz',
+                'valid_id_number' => 'PH-DL-12345',
+                'birth_date' => now()->subYears(30)->toDateString(),
+            ])
+            ->assertCreated();
+
+        // Normalising the stored value only helps if the search is normalised
+        // too. Staff type the ID exactly as it appears on the card.
+        $this->actingAs($this->staff)
+            ->getJson('/api/blood-center/donors/lookup?type=valid_id_number&value=PH-DL-12345')
+            ->assertOk()
+            ->assertJsonPath('full_name', 'Juan Dela Cruz');
+
+        $this->actingAs($this->staff)
+            ->getJson('/api/blood-center/donors/lookup?type=valid_id_number&value=phdl12345')
+            ->assertOk()
+            ->assertJsonPath('full_name', 'Juan Dela Cruz');
+    }
+
+    public function test_two_spellings_of_one_id_are_refused_at_the_counter(): void
+    {
+        $payload = [
+            'first_name' => 'Juan',
+            'last_name' => 'Dela Cruz',
+            'valid_id_number' => 'PH-DL-12345',
+            'birth_date' => now()->subYears(30)->toDateString(),
+        ];
+
+        $this->actingAs($this->staff)->postJson('/api/blood-center/donors', $payload)->assertCreated();
+
+        // Same card, typed differently by a different member of staff. Without
+        // normalisation this creates a second record and forks the donor's
+        // donation history, which breaks the 56-day interval check.
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/donors', [...$payload, 'valid_id_number' => 'ph dl 12345'])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('valid_id_number');
     }
 
     public function test_a_valid_id_is_required(): void
@@ -285,8 +378,8 @@ class CounterCheckInTest extends TestCase
 
     public function test_only_donors_manage_may_register_a_walk_in(): void
     {
-        // Laboratory holds no donor abilities at all.
-        $lab = User::factory()->bloodCenterStaff($this->facility, Department::Laboratory)->create();
+        // Testing holds no donor abilities at all.
+        $lab = User::factory()->bloodCenterStaff($this->facility, Department::Testing)->create();
 
         $this->actingAs($lab)
             ->postJson('/api/blood-center/donors', [
@@ -296,5 +389,48 @@ class CounterCheckInTest extends TestCase
                 'birth_date' => now()->subYears(30)->toDateString(),
             ])
             ->assertForbidden();
+    }
+
+    /**
+     * The scan says who is at the counter. It does not hand over their history.
+     *
+     * formatDonor() carries the same rule in a comment -- "identity fields only"
+     * -- and this is the response that would quietly break it, because the
+     * questionnaire reference sits right beside the donor in the same payload.
+     */
+    public function test_the_scan_carries_a_questionnaire_reference_and_no_answers(): void
+    {
+        $screening = EligibilityScreening::factory()->create([
+            'question_version' => 2,
+            'consented_at' => now(),
+            'consent_version' => config('donor_consent.current'),
+        ]);
+
+        $donor = $screening->donorProfile->donor;
+        $raw = Str::random(40);
+
+        DonorQrToken::factory()->create([
+            'donor_id' => $donor->id,
+            'screening_id' => $screening->id,
+            'token_hash' => hash('sha256', $raw),
+            'issued_at' => now(),
+            'expires_at' => now()->addDays(14),
+        ]);
+
+        $response = $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/collection/verify-qr', ['token' => $raw])
+            ->assertOk()
+            ->assertJsonPath('data.health_questionnaire.available', true)
+            ->assertJsonPath('data.health_questionnaire.screening_id', $screening->id)
+            ->assertJsonPath('data.health_questionnaire.consent_captured', true);
+
+        $body = $response->getContent();
+
+        // Enough to draw the counter's summary strip, and nothing a nurse would
+        // read as a health record. The document has its own endpoint, its own
+        // ability and its own audit entry.
+        $this->assertStringNotContainsString('answer_label', $body);
+        $this->assertStringNotContainsString('sections', $body);
+        $this->assertStringNotContainsString('flagged', $body);
     }
 }

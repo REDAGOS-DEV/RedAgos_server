@@ -178,23 +178,23 @@ class SupervisorBackfillTest extends TestCase
         $admin = User::factory()->withRole(RoleName::Admin)->create();
 
         $this->actingAs($admin)
-            ->postJson("/api/admin/facility-registrations/{$facility->id}/approve")
+            ->postJson("/api/admin/facilities/{$facility->id}/approve")
             ->assertOk();
 
         $this->assertTrue($applicant->fresh()->is_supervisor);
         $this->assertNull($applicant->fresh()->department, 'Approval grants the management level, not a department.');
     }
 
-    public function test_reinstating_a_facility_does_not_promote_a_second_supervisor(): void
+    public function test_approving_a_facility_that_already_has_a_supervisor_does_not_promote_a_second(): void
     {
-        $facility = Facility::factory()->suspended()->create();
+        $facility = Facility::factory()->pendingApproval()->create();
         $supervisor = User::factory()->bloodCenterSupervisor($facility)->create();
         $colleague = User::factory()->bloodCenterStaff($facility)->create();
 
         $admin = User::factory()->withRole(RoleName::Admin)->create();
 
         $this->actingAs($admin)
-            ->postJson("/api/admin/facility-registrations/{$facility->id}/reinstate")
+            ->postJson("/api/admin/facilities/{$facility->id}/approve")
             ->assertOk();
 
         $this->assertTrue($supervisor->fresh()->is_supervisor);

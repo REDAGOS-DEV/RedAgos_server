@@ -2,6 +2,10 @@
 
 namespace App\Models;
 
+use App\Enums\CivilStatus;
+use App\Enums\IdentityStatus;
+use App\Enums\MailingAddressPreference;
+use App\Enums\ValidIdType;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -21,11 +25,42 @@ class DonorProfile extends Model
         'blood_type_id',
         'gender',
         'birth_date',
+        'civil_status',
+        'occupation',
+        'nationality',
+        'religion',
         'address',
+        'preferred_mailing_address',
+        'office_address',
+        'telephone_no',
+        'contact_person_name',
+        'contact_person_address',
+        'contact_person_number',
         'last_donation_date',
+        'valid_id_type',
         'valid_id_number',
+        'valid_id_image_path',
+        'identity_status',
+        'identity_submitted_at',
+        'identity_submission_version',
+        'identity_reviewed_at',
+        'identity_reviewed_by',
+        'identity_rejection_reason',
         'profile_image_path',
         'notification_preferences',
+    ];
+
+    /**
+     * The stored path to the identity document.
+     *
+     * Hidden so an accidental model serialisation cannot hand a client the
+     * location of a government ID. The document is only ever reachable through
+     * the authenticated, audited route that streams it.
+     *
+     * @var array<int, string>
+     */
+    protected $hidden = [
+        'valid_id_image_path',
     ];
 
     protected function casts(): array
@@ -33,6 +68,13 @@ class DonorProfile extends Model
         return [
             'birth_date' => 'date',
             'last_donation_date' => 'date',
+            'civil_status' => CivilStatus::class,
+            'preferred_mailing_address' => MailingAddressPreference::class,
+            'valid_id_type' => ValidIdType::class,
+            'identity_status' => IdentityStatus::class,
+            'identity_submitted_at' => 'datetime',
+            'identity_reviewed_at' => 'datetime',
+            'identity_submission_version' => 'integer',
             'notification_preferences' => 'array',
         ];
     }
@@ -45,6 +87,14 @@ class DonorProfile extends Model
     public function bloodType(): BelongsTo
     {
         return $this->belongsTo(BloodType::class);
+    }
+
+    /**
+     * The administrator who last decided on this donor's identity document.
+     */
+    public function identityReviewer(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'identity_reviewed_by');
     }
 
     /**

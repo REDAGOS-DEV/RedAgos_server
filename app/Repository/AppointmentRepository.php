@@ -71,6 +71,11 @@ class AppointmentRepository
     {
         return DonationAppointment::query()
             ->where('facility_id', $facilityId)
+            // Walk-ins only. A mobile drive is stored against its host facility
+            // at a nominal 09:00, so without this a drive's registrations would
+            // eat that centre's 09:00 counter slot — and slot_capacity defaults
+            // to 4, so one drive would close the morning to walk-ins.
+            ->whereNull('event_id')
             ->active()
             ->whereBetween('appointment_datetime', [$date->copy()->startOfDay(), $date->copy()->endOfDay()])
             ->pluck('appointment_datetime')
@@ -89,6 +94,9 @@ class AppointmentRepository
         return DonationAppointment::query()
             ->where('facility_id', $facilityId)
             ->where('appointment_datetime', $slot)
+            // Matches bookedCountsByTime(): counter capacity counts walk-ins,
+            // drive capacity is guarded separately by lockedDriveCount().
+            ->whereNull('event_id')
             ->active()
             ->lockForUpdate()
             ->get(['id'])

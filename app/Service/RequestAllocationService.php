@@ -1,0 +1,463 @@
+<?php
+
+namespace App\Service;
+
+use App\Enums\AllocationStatus;
+use App\Enums\BloodRequestStatus;
+use App\Enums\LineClosureReason;
+use App\Enums\RequestEventType;
+use App\Models\BloodRequest;
+use App\Models\BloodRequestItem;
+use App\Models\BloodUnit;
+use App\Models\RequestAllocation;
+use App\Models\User;
+use App\Repository\BloodRequestRepository;
+use App\Repository\InventoryRepository;
+use App\Support\OperationalDay;
+use Illuminate\Http\Exceptions\HttpResponseException;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
+use RuntimeException;
+
+/**
+ * The fulfilling side: reviewing an incoming request and holding stock for it.
+ *
+ * Every write here happens inside one transaction that begins by locking the
+ * request row and ends by reconciling how many unit rows actually moved. That
+ * shape is the whole defence against the failure this module exists to prevent
+ * — the same bag promised to two hospitals.
+ *
+ * Approval and allocation are deliberately one operation. The paper's
+ * storyboard separates them, but approving without reserving leaves a window in
+ * which another request takes the units, and a requester told "approved" who
+ * then receives nothing is worse than one told "we can only cover three".
+ *
+ * The request's status is never written here directly. RequestStatusResolver
+ * derives it from the lines after every change, so a top-up on a partly
+ * fulfilled request can no longer knock it back to `processing`.
+ */
+class RequestAllocationService
+{
+    public function __construct(
+        private readonly BloodRequestRepository $bloodRequestRepository,
+        private readonly InventoryRepository $inventoryRepository,
+        private readonly BillingService $billingService,
+        private readonly AuditLogger $auditLogger,
+        private readonly RequestStatusResolver $resolver,
+        private readonly BloodRequestHistory $history,
+        private readonly BloodRequestNotifier $notifier,
+        private readonly RequestLineCloser $lineCloser,
+        private readonly TransfusionRequestResolver $transfusionResolver
+    ) {}
+
+    /**
+     * Hold stock for a request, up to what it still needs and what is on the shelf.
+     *
+     * A request asks per component, so stock is held per component. Given a
+     * line, only that line is filled; given none, every line is walked in form
+     * order until the request is covered or the shelves run out. $wanted is a
+     * budget across the whole walk rather than a figure per line, so a caller
+     * asking for three units of a two-line request still gets three.
+     *
+     * What a line still needs is its allocatable quantity: asked for, less what
+     * is already held or released, and nothing at all once the line is closed.
+     *
+     * @return array<string, mixed>
+     */
+    public function allocate(User $user, int $requestId, ?int $wanted = null, ?int $requestItemId = null): array
+    {
+        $facilityId = $this->requireFacilityId($user);
+
+        $result = DB::transaction(function () use ($user, $requestId, $facilityId, $wanted, $requestItemId): array {
+            $request = $this->lockRequestForDecision($requestId, $facilityId);
+            $from = $request->status;
+
+            $figures = $this->resolver->freshFigures($request);
+            $lines = $this->linesToFill($request, $requestItemId);
+
+            $outstandingTotal = $lines->sum(
+                fn (BloodRequestItem $line): int => (int) ($figures->get($line->id)['allocatable'] ?? 0)
+            );
+
+            if ($outstandingTotal < 1) {
+                throw $this->refuse(
+                    409,
+                    'request_fully_allocated',
+                    'Every unit this request still needs from this facility is already held.'
+                );
+            }
+
+            // Never more than the request still needs, whatever the caller sent.
+            $budget = min($wanted ?? $outstandingTotal, $outstandingTotal);
+
+            $taken = collect();
+            $allocations = collect();
+
+            foreach ($lines as $line) {
+                if ($budget < 1) {
+                    break;
+                }
+
+                $outstanding = (int) ($figures->get($line->id)['allocatable'] ?? 0);
+
+                if ($outstanding < 1) {
+                    continue;
+                }
+
+                $units = $this->inventoryRepository->lockAvailableUnitsFefo(
+                    $facilityId,
+                    (int) $request->blood_type_id,
+                    (int) $line->component_id,
+                    min($budget, $outstanding),
+                    OperationalDay::todayAsDate()
+                );
+
+                // An empty shelf for one component is not a failure of the
+                // whole allocation: the next line may still be coverable, and
+                // a partial hold is the honest answer.
+                if ($units->isEmpty()) {
+                    continue;
+                }
+
+                $this->reserve($units);
+                $allocations = $allocations->concat($this->recordHolds($request, $line, $units, $user));
+                $taken = $taken->concat($units);
+                $budget -= $units->count();
+            }
+
+            if ($taken->isEmpty()) {
+                throw $this->refuse(
+                    409,
+                    'no_matching_stock',
+                    'No issuable units of that blood type and component are available.'
+                );
+            }
+
+            $request->reviewed_by = $user->id;
+            $request->reviewed_at = now();
+            $request->rejection_reason = null;
+            $request->save();
+
+            $this->resolver->settle($request);
+            $this->transfusionResolver->settleParentOf($request);
+
+            $after = $this->resolver->figures($request);
+            $heldNow = (int) ($after->sum('reserved') + $after->sum('fulfilled'));
+            $shortBy = (int) $after->sum('allocatable');
+
+            $request->load('items.component');
+            $billing = $this->billingService->syncFor($request, $user);
+
+            $this->auditLogger->record($user, 'request.allocated', $request, [
+                'facility_id' => $facilityId,
+                'reference_number' => $request->reference_number,
+                'units' => $taken->pluck('id')->all(),
+                'held_total' => $heldNow,
+                'requested' => $request->quantity,
+            ]);
+
+            foreach ($taken as $unit) {
+                $this->auditLogger->record($user, 'allocation.reserved', $unit, [
+                    'request_id' => $request->id,
+                    'reference_number' => $request->reference_number,
+                ]);
+            }
+
+            $this->history->record(
+                $request,
+                RequestEventType::Allocated,
+                $user,
+                $from,
+                $shortBy > 0 ? "{$shortBy} unit(s) still outstanding at this facility." : null,
+                $taken->pluck('id')->all(),
+            );
+
+            return [
+                'request' => $request,
+                'allocations' => $allocations,
+                'billing' => $billing,
+                'held_total' => $heldNow,
+                'short_by' => $shortBy,
+            ];
+        });
+
+        $this->notifier->requester($result['request'], 'allocated');
+
+        return [
+            'message' => $result['short_by'] > 0
+                ? "Units reserved. {$result['short_by']} unit(s) still outstanding."
+                : 'Request fully allocated.',
+            'request_id' => $result['request']->id,
+            'status' => $result['request']->status->value,
+            'held_total' => $result['held_total'],
+            'short_by' => $result['short_by'],
+            'allocated_units' => $result['allocations']->pluck('unit_id')->all(),
+            'billing' => $this->billingService->format($result['billing']),
+        ];
+    }
+
+    /**
+     * Close the rest of one line that this facility cannot supply.
+     *
+     * The request keeps what it asked for. The remainder is recorded as
+     * unavailable here, with the reason. On a facility allocation those units
+     * flow back to the patient's requirement as unallocated, for the hospital
+     * to ask another facility for.
+     *
+     * @return array<string, mixed>
+     */
+    public function closeLine(User $user, int $requestId, int $itemId, ?string $note): array
+    {
+        $facilityId = $this->requireFacilityId($user);
+
+        $request = DB::transaction(function () use ($user, $requestId, $itemId, $note, $facilityId): BloodRequest {
+            $request = $this->lockRequestForDecision($requestId, $facilityId);
+
+            $this->lineCloser->close($request, $itemId, LineClosureReason::Unavailable, $note, $user);
+            $this->transfusionResolver->settleParentOf($request);
+
+            return $request;
+        });
+
+        return [
+            'message' => 'The remaining quantity was closed as unavailable.',
+            'request_id' => $request->id,
+            'status' => $request->status->value,
+            'status_label' => $request->status->label(),
+            'is_open' => ! $request->isClosed(),
+        ];
+    }
+
+    /**
+     * Resolve the lines this allocation should fill, in the order the form lists them.
+     *
+     * @return Collection<int, BloodRequestItem>
+     */
+    private function linesToFill(BloodRequest $request, ?int $requestItemId): Collection
+    {
+        $lines = $request->items()->orderBy('id')->get();
+
+        if ($requestItemId === null) {
+            return $lines;
+        }
+
+        // Resolved from the request's own lines rather than looked up by id, so
+        // a line belonging to another facility's request cannot be filled from
+        // this one's stock.
+        $line = $lines->firstWhere('id', $requestItemId)
+            ?? throw $this->refuse(404, 'request_item_not_found', 'That component is not on this request.');
+
+        return collect([$line]);
+    }
+
+    /**
+     * Refuse a request, with a reason the requester will see.
+     *
+     * @return array<string, mixed>
+     */
+    public function reject(User $user, int $requestId, string $reason): array
+    {
+        $facilityId = $this->requireFacilityId($user);
+
+        $request = DB::transaction(function () use ($user, $requestId, $facilityId, $reason): BloodRequest {
+            $request = $this->lockRequestForDecision($requestId, $facilityId);
+
+            if ($this->claimedCount($request) > 0) {
+                throw $this->refuse(
+                    409,
+                    'request_has_holds',
+                    'Release the units held for this request before rejecting it.'
+                );
+            }
+
+            $from = $request->status;
+
+            $request->status = BloodRequestStatus::Rejected;
+            $request->rejection_reason = $reason;
+            $request->reviewed_by = $user->id;
+            $request->reviewed_at = now();
+            $request->save();
+
+            $this->auditLogger->record($user, 'request.rejected', $request, [
+                'facility_id' => $facilityId,
+                'reference_number' => $request->reference_number,
+                'reason' => $reason,
+            ]);
+
+            $this->history->record($request, RequestEventType::Rejected, $user, $from, $reason);
+
+            // A refused allocation's units are unallocated again on the
+            // patient's requirement, for the hospital to ask elsewhere.
+            $this->transfusionResolver->settleParentOf($request);
+
+            return $request;
+        });
+
+        $this->notifier->requester($request, 'rejected');
+
+        return [
+            'message' => 'Blood request rejected.',
+            'request_id' => $request->id,
+            'status' => $request->status->value,
+        ];
+    }
+
+    /**
+     * Give up holds and return their units to stock.
+     *
+     * @param  array<int, int>|null  $allocationIds
+     * @return array<string, mixed>
+     */
+    public function releaseHolds(User $user, int $requestId, ?array $allocationIds, string $reason): array
+    {
+        $facilityId = $this->requireFacilityId($user);
+
+        $freed = DB::transaction(function () use ($user, $requestId, $facilityId, $allocationIds, $reason): int {
+            $request = $this->bloodRequestRepository->lockAddressedTo($requestId, $facilityId)
+                ?? throw $this->refuse(404, 'request_not_found', 'Blood request not found.');
+
+            $from = $request->status;
+
+            $holds = $request->allocations()
+                ->where('status', AllocationStatus::Allocated)
+                ->when($allocationIds !== null, fn ($query) => $query->whereIn('id', $allocationIds))
+                ->lockForUpdate()
+                ->get();
+
+            if ($holds->isEmpty()) {
+                throw $this->refuse(409, 'no_holds_to_release', 'This request has no reserved units to release.');
+            }
+
+            $unitIds = $holds->pluck('unit_id')->all();
+            $returned = $this->inventoryRepository->markAvailable($unitIds);
+
+            if ($returned !== count($unitIds)) {
+                throw new RuntimeException(
+                    "release of request {$request->id}: returned {$returned} of ".count($unitIds).' units'
+                );
+            }
+
+            RequestAllocation::query()->whereIn('id', $holds->pluck('id'))->update([
+                'status' => AllocationStatus::Cancelled->value,
+                'cancelled_at' => now(),
+                'cancellation_reason' => $reason,
+            ]);
+
+            // Back to pending when nothing is held any more: the request is
+            // undecided again, and leaving it "processing" would hide it from
+            // the queue that needs to act on it.
+            if ($this->resolver->settle($request) === BloodRequestStatus::Pending) {
+                $request->reviewed_by = null;
+                $request->reviewed_at = null;
+                $request->save();
+            }
+
+            $this->auditLogger->record($user, 'allocation.released_to_stock', $request, [
+                'facility_id' => $facilityId,
+                'units' => $unitIds,
+                'reason' => $reason,
+            ]);
+
+            $this->history->record($request, RequestEventType::HoldsReturned, $user, $from, $reason, $unitIds);
+
+            $this->transfusionResolver->settleParentOf($request);
+
+            return count($unitIds);
+        });
+
+        return [
+            'message' => "{$freed} unit(s) returned to available stock.",
+            'units_returned' => $freed,
+        ];
+    }
+
+    /**
+     * Lock a request and confirm it is one this facility may still decide.
+     */
+    private function lockRequestForDecision(int $requestId, int $facilityId): BloodRequest
+    {
+        $request = $this->bloodRequestRepository->lockAddressedTo($requestId, $facilityId)
+            ?? throw $this->refuse(404, 'request_not_found', 'Blood request not found.');
+
+        if (! $request->status->acceptsAllocation() || $request->closed_at !== null) {
+            throw $this->refuse(
+                409,
+                'request_closed',
+                $request->closed_at !== null
+                    ? 'This request is closed: every remaining quantity was supplied or closed.'
+                    : "This request is {$request->status->label()} and can no longer be acted on."
+            );
+        }
+
+        return $request;
+    }
+
+    /**
+     * Flip locked units to reserved, aborting if any moved out from underneath.
+     *
+     * @param  Collection<int, BloodUnit>  $units
+     */
+    private function reserve(Collection $units): void
+    {
+        $unitIds = $units->pluck('id')->all();
+        $reserved = $this->inventoryRepository->markReserved($unitIds);
+
+        // The lock should make this impossible, which is exactly why it is
+        // checked: if it ever fires, the lock is not doing what this module
+        // believes it does, and the transaction must not commit on that belief.
+        if ($reserved !== count($unitIds)) {
+            throw new RuntimeException(
+                'allocation reserved '.$reserved.' of '.count($unitIds).' locked units'
+            );
+        }
+    }
+
+    /**
+     * Write one hold per unit.
+     *
+     * @param  Collection<int, BloodUnit>  $units
+     * @return Collection<int, RequestAllocation>
+     */
+    private function recordHolds(BloodRequest $request, BloodRequestItem $line, Collection $units, User $user): Collection
+    {
+        return $units->map(fn (BloodUnit $unit): RequestAllocation => RequestAllocation::query()->create([
+            'request_id' => $request->id,
+            'request_item_id' => $line->id,
+            'unit_id' => $unit->id,
+            'allocated_at' => now(),
+            'allocated_by' => $user->id,
+            'status' => AllocationStatus::Allocated,
+        ]));
+    }
+
+    /**
+     * How many units currently lay claim to this request.
+     */
+    private function claimedCount(BloodRequest $request): int
+    {
+        return $request->allocations()->claiming()->count();
+    }
+
+    /**
+     * Resolve the caller's facility, refusing a staff account without one.
+     */
+    private function requireFacilityId(User $user): int
+    {
+        return $user->facility_id ?? throw $this->refuse(
+            404,
+            'facility_missing',
+            'This account is not linked to a facility.'
+        );
+    }
+
+    /**
+     * Build the project's standard refusal envelope.
+     */
+    private function refuse(int $status, string $code, string $message): HttpResponseException
+    {
+        return new HttpResponseException(response()->json([
+            'message' => $message,
+            'code' => $code,
+        ], $status));
+    }
+}

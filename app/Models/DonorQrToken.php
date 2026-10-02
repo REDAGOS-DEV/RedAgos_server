@@ -23,6 +23,7 @@ class DonorQrToken extends Model
         'expires_at',
         'revoked_at',
         'last_used_at',
+        'last_used_facility_id',
     ];
 
     protected $hidden = [
@@ -47,6 +48,18 @@ class DonorQrToken extends Model
     public function screening(): BelongsTo
     {
         return $this->belongsTo(EligibilityScreening::class, 'screening_id');
+    }
+
+    /**
+     * The centre this credential was last presented at.
+     *
+     * Read by the questionnaire gate: a facility may see a donor's health
+     * questionnaire when the donor has presented there, and a scan at that
+     * counter today is one of the ways that becomes true.
+     */
+    public function lastUsedFacility(): BelongsTo
+    {
+        return $this->belongsTo(Facility::class, 'last_used_facility_id');
     }
 
     /**

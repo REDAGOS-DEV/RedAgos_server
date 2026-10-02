@@ -7,6 +7,8 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class BloodUnit extends Model
 {
@@ -24,6 +26,7 @@ class BloodUnit extends Model
         'id',
         'facility_id',
         'component_id',
+        'volume_ml',
         'blood_type_id',
         'donation_id',
         'storage_location',
@@ -32,6 +35,8 @@ class BloodUnit extends Model
         'discard_reason',
         'expired_at',
         'discarded_at',
+        'released_at',
+        'released_by',
     ];
 
     protected function casts(): array
@@ -41,6 +46,8 @@ class BloodUnit extends Model
             'expiry_date' => 'immutable_date',
             'expired_at' => 'immutable_datetime',
             'discarded_at' => 'immutable_datetime',
+            'released_at' => 'immutable_datetime',
+            'volume_ml' => 'integer',
         ];
     }
 
@@ -62,6 +69,45 @@ class BloodUnit extends Model
     public function donation(): BelongsTo
     {
         return $this->belongsTo(Donation::class);
+    }
+
+    /**
+     * The Inventory Control Officer who released this unit from quarantine.
+     */
+    public function releaser(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'released_by');
+    }
+
+    /**
+     * Every hold ever placed on this unit, including ones given up.
+     */
+    public function allocations(): HasMany
+    {
+        return $this->hasMany(RequestAllocation::class, 'unit_id');
+    }
+
+    /**
+     * The hold that currently claims this unit, if any.
+     *
+     * At most one can exist: a partial unique index over unit_id restricted to
+     * the claiming statuses enforces it in the database, so this is a hasOne
+     * rather than "the latest of several".
+     */
+    public function activeAllocation(): HasOne
+    {
+        return $this->hasOne(RequestAllocation::class, 'unit_id')->claiming();
+    }
+
+    /**
+     * The hospital custody this bag entered on receipt, if it has been received.
+     *
+     * Read-only from the centre's point of view: the hospital's tags and
+     * transfusion never write back to this row.
+     */
+    public function hospitalUnit(): HasOne
+    {
+        return $this->hasOne(HospitalUnit::class, 'unit_id');
     }
 
     /**

@@ -5,6 +5,7 @@ namespace Tests\Feature\Donor;
 use App\Enums\RoleName;
 use App\Models\AuditLog;
 use App\Models\DonorQrToken;
+use App\Models\EligibilityQuestion;
 use App\Models\EligibilityScreening;
 use App\Models\User;
 use Database\Seeders\EligibilityQuestionSeeder;
@@ -24,24 +25,32 @@ class QrCodeTest extends TestCase
 
         $this->seed(EligibilityQuestionSeeder::class);
         $this->donor = User::factory()->donor()->create();
-        $this->donor->donorProfile->update(['birth_date' => now()->subYears(30)->toDateString()]);
+        $this->donor->donorProfile->update([
+            'birth_date' => now()->subYears(30)->toDateString(),
+            'gender' => 'male',
+        ]);
     }
 
     /**
      * @return array<string, mixed>
      */
-    private function passingPayload(): array
+    private function passingPayload(string $gender = 'male'): array
     {
-        $passing = [
-            'gh_1' => true, 'gh_2' => false, 'gh_3' => false, 'gh_4' => false,
-            'mh_1' => false, 'mh_2' => false, 'mh_3' => false, 'mh_4' => true,
-        ];
-
         return [
-            'question_version' => 1,
-            'answers' => collect($passing)
-                ->map(fn (bool $answer, string $code): array => ['code' => $code, 'answer' => $answer])
+            'question_version' => (int) config('donation.questionnaire_version'),
+            'answers' => EligibilityQuestion::forVersion(2)
+                ->get()
+                ->filter(fn (EligibilityQuestion $q): bool => $q->appliesToGender($gender))
+                ->map(fn (EligibilityQuestion $q): array => [
+                    'code' => $q->code,
+                    // The answer that trips no review marker.
+                    'answer' => $q->disqualify_if_answer === null ? false : ! $q->disqualify_if_answer,
+                ])
                 ->values()->all(),
+            'consent' => [
+                'version' => config('donor_consent.current'),
+                'accepted' => true,
+            ],
             'vitals' => ['weight' => 65],
         ];
     }
@@ -83,29 +92,53 @@ class QrCodeTest extends TestCase
         $this->assertNull(DB::table('donor_qr_tokens')->where('token_hash', $plainToken)->first());
     }
 
-    public function test_a_deferred_screening_issues_no_token(): void
+    public function test_a_flagged_questionnaire_still_issues_a_token(): void
+    {
+        // The blood centre decides whether this donor may give blood, from the
+        // answers it reads at the counter. Withholding the credential here
+        // would be RedAgos making that call on the donor's own say-so.
+        $payload = $this->passingPayload();
+        $payload['answers'] = collect($payload['answers'])
+            ->map(fn (array $a): array => $a['code'] === 'v2_ev_5'
+                ? ['code' => 'v2_ev_5', 'answer' => true]
+                : $a)
+            ->all();
+
+        $response = $this->actingAs($this->donor)
+            ->postJson('/api/donors/eligibility/screening', $payload)
+            ->assertCreated();
+
+        $this->assertNotEmpty($response->json('qr_token'));
+        $this->assertSame(1, DonorQrToken::count());
+    }
+
+    public function test_a_breached_threshold_issues_no_token_because_nothing_is_recorded(): void
     {
         $payload = $this->passingPayload();
         $payload['vitals']['weight'] = 40;
 
-        $response = $this->actingAs($this->donor)
+        $this->actingAs($this->donor)
             ->postJson('/api/donors/eligibility/screening', $payload)
-            ->assertCreated()
-            ->assertJsonPath('result', 'deferred');
+            ->assertStatus(422)
+            ->assertJsonPath('code', 'threshold_not_met');
 
-        $this->assertNull($response->json('qr_token'));
         $this->assertSame(0, DonorQrToken::count());
     }
 
     public function test_an_unverified_donor_receives_no_token(): void
     {
         $donor = User::factory()->unverified()->donor()->create();
-        $donor->donorProfile->update(['birth_date' => now()->subYears(30)->toDateString()]);
+        // Pinned: DonorProfileFactory randomises gender, and the payload helper
+        // builds the question set for one. A female donor would be handed a
+        // submission with question 5 missing and refused for incompleteness.
+        $donor->donorProfile->update([
+            'birth_date' => now()->subYears(30)->toDateString(),
+            'gender' => 'male',
+        ]);
 
         $response = $this->actingAs($donor)
             ->postJson('/api/donors/eligibility/screening', $this->passingPayload())
-            ->assertCreated()
-            ->assertJsonPath('result', 'eligible');
+            ->assertCreated();
 
         $this->assertNull($response->json('qr_token'));
         $this->assertSame(0, DonorQrToken::count());
@@ -163,14 +196,16 @@ class QrCodeTest extends TestCase
             ->assertJsonPath('code', 'screening_required');
     }
 
-    public function test_refresh_is_refused_when_the_donor_was_deferred(): void
+    public function test_refresh_works_for_a_questionnaire_the_server_flagged(): void
     {
+        // A historical row carrying the old `deferred` result is still an
+        // answered, unexpired questionnaire, and the counter is the place that
+        // reads it and decides.
         EligibilityScreening::factory()->deferred()->create(['donor_id' => $this->donor->id]);
 
         $this->actingAs($this->donor)
             ->postJson('/api/donors/qr-code/refresh')
-            ->assertForbidden()
-            ->assertJsonPath('code', 'screening_required');
+            ->assertOk();
     }
 
     public function test_refresh_is_refused_before_any_screening(): void
@@ -225,21 +260,34 @@ class QrCodeTest extends TestCase
         $this->actingAs($this->donor)
             ->getJson('/api/donors/qr-code')
             ->assertOk()
-            ->assertJsonPath('eligibility_status', 'eligible')
+            ->assertJsonPath('questionnaire_status', 'answered')
             ->assertJsonPath('qr_valid_days', 14)
             ->assertJsonPath('profile.donor_id', 'DONOR-'.str_pad((string) $this->donor->id, 6, '0', STR_PAD_LEFT))
             ->assertJsonStructure(['profile' => ['full_name', 'blood_type', 'screening_date', 'screening_valid_until']]);
     }
 
-    public function test_the_qr_endpoint_reports_deferred_status_without_a_token(): void
+    public function test_the_qr_endpoint_reports_an_expired_questionnaire_without_a_token(): void
     {
-        EligibilityScreening::factory()->deferred()->create(['donor_id' => $this->donor->id]);
+        EligibilityScreening::factory()->expired()->create(['donor_id' => $this->donor->id]);
 
         $this->actingAs($this->donor)
             ->getJson('/api/donors/qr-code')
             ->assertOk()
-            ->assertJsonPath('eligibility_status', 'deferred')
+            ->assertJsonPath('questionnaire_status', 'expired')
             ->assertJsonPath('has_active_token', false);
+    }
+
+    public function test_the_qr_endpoint_never_reports_a_verdict(): void
+    {
+        EligibilityScreening::factory()->deferred()->create(['donor_id' => $this->donor->id]);
+
+        $body = $this->actingAs($this->donor)
+            ->getJson('/api/donors/qr-code')
+            ->assertOk()
+            ->getContent();
+
+        $this->assertStringNotContainsString('deferred', $body);
+        $this->assertStringNotContainsString('eligible', $body);
     }
 
     public function test_issuing_a_token_is_audit_logged(): void

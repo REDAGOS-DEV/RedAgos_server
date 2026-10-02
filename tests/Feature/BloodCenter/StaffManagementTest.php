@@ -5,6 +5,7 @@ namespace Tests\Feature\BloodCenter;
 use App\Enums\AccountStatus;
 use App\Enums\Department;
 use App\Enums\RoleName;
+use App\Enums\StaffRole;
 use App\Models\Facility;
 use App\Models\User;
 use App\Notifications\VerifyEmailNotification;
@@ -44,7 +45,7 @@ class StaffManagementTest extends TestCase
             'email' => 'maria.guerra@example.com',
             'phone' => '09171234567',
             'position' => 'Medical Technologist',
-            'department' => Department::Laboratory->value,
+            'staff_role' => StaffRole::SerologyTechnologist->value,
             'password' => 'Password123',
             'password_confirmation' => 'Password123',
             ...$overrides,
@@ -56,7 +57,8 @@ class StaffManagementTest extends TestCase
         $response = $this->actingAs($this->supervisor)
             ->postJson('/api/blood-center/staff', $this->payload())
             ->assertCreated()
-            ->assertJsonPath('data.department', 'laboratory')
+            ->assertJsonPath('data.staff_role', 'serology_technologist')
+            ->assertJsonPath('data.department', 'testing')
             ->assertJsonPath('data.is_supervisor', false)
             ->assertJsonPath('data.account_status', AccountStatus::PendingVerification->value)
             ->assertJsonPath('data.email_verified', false);
@@ -65,7 +67,103 @@ class StaffManagementTest extends TestCase
 
         $this->assertSame($this->facility->id, $created->facility_id, 'facility_id must come from the actor.');
         $this->assertTrue($created->hasRole(RoleName::BloodCenter));
-        $this->assertSame(Department::Laboratory, $created->department);
+        $this->assertSame(StaffRole::SerologyTechnologist, $created->staff_role);
+        $this->assertSame(Department::Testing, $created->department);
+    }
+
+    public function test_a_role_and_a_department_that_disagree_are_refused(): void
+    {
+        // A predefined role decides its department; naming another one is a
+        // mistake to point out, not a department to file the account under.
+        $this->actingAs($this->supervisor)
+            ->postJson('/api/blood-center/staff', $this->payload([
+                'staff_role' => StaffRole::BillingClerk->value,
+                'department' => Department::Collection->value,
+            ]))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('staff_role');
+    }
+
+    public function test_a_custom_role_is_created_in_the_department_chosen(): void
+    {
+        $response = $this->actingAs($this->supervisor)
+            ->postJson('/api/blood-center/staff', $this->payload([
+                'staff_role' => null,
+                'custom_role' => 'Quality Assurance Officer',
+                'department' => Department::Issuance->value,
+                'position' => 'RMT',
+                'staff_privileges' => ['read', 'update'],
+            ]))
+            ->assertCreated()
+            ->assertJsonPath('data.role_label', 'Quality Assurance Officer')
+            ->assertJsonPath('data.department', 'issuance')
+            ->assertJsonPath('data.staff_privileges', ['read', 'update']);
+
+        $created = User::where('uuid', $response->json('data.uuid'))->sole();
+
+        $this->assertNull($created->staff_role);
+        $this->assertContains('inventory.view', $created->abilities());
+        $this->assertContains('inventory.update', $created->abilities());
+        $this->assertNotContains('inventory.create', $created->abilities());
+        $this->assertNotContains('inventory.discard', $created->abilities());
+    }
+
+    public function test_a_custom_role_needs_a_department(): void
+    {
+        $this->actingAs($this->supervisor)
+            ->postJson('/api/blood-center/staff', $this->payload([
+                'staff_role' => null,
+                'custom_role' => 'Quality Assurance Officer',
+            ]))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('department');
+    }
+
+    public function test_a_typed_role_that_names_a_predefined_one_becomes_it(): void
+    {
+        $this->actingAs($this->supervisor)
+            ->postJson('/api/blood-center/staff', $this->payload([
+                'staff_role' => null,
+                'custom_role' => 'laboratory supervisor',
+                'department' => Department::Testing->value,
+            ]))
+            ->assertCreated()
+            ->assertJsonPath('data.staff_role', 'lab_supervisor')
+            ->assertJsonPath('data.custom_role', null);
+    }
+
+    public function test_privileges_are_checked_and_changes_to_them_are_audited(): void
+    {
+        $this->actingAs($this->supervisor)
+            ->postJson('/api/blood-center/staff', $this->payload(['staff_privileges' => []]))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('staff_privileges');
+
+        $this->actingAs($this->supervisor)
+            ->postJson('/api/blood-center/staff', $this->payload(['staff_privileges' => ['read', 'erase']]))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('staff_privileges.1');
+
+        $staff = User::factory()->bloodCenterStaff($this->facility, StaffRole::InventoryControlOfficer)->create();
+
+        $this->actingAs($this->supervisor)
+            ->patchJson("/api/blood-center/staff/{$staff->uuid}", ['staff_privileges' => ['read']])
+            ->assertOk()
+            ->assertJsonPath('data.staff_privileges', ['read']);
+
+        $this->assertDatabaseHas('audit_logs', ['action' => 'staff.privileges_changed', 'auditable_id' => $staff->id]);
+    }
+
+    public function test_the_role_catalogue_is_served_to_the_supervisor(): void
+    {
+        $this->actingAs($this->supervisor)
+            ->getJson('/api/blood-center/staff/roles')
+            ->assertOk()
+            ->assertJsonPath('data.departments.0.department', 'collection')
+            ->assertJsonPath('data.departments.0.label', 'Donor/Collection')
+            ->assertJsonPath('data.departments.0.roles.0.key', 'screening_physician')
+            ->assertJsonPath('data.privileges.0.key', 'read')
+            ->assertJsonCount(count(Department::cases()), 'data.departments');
     }
 
     public function test_a_created_account_never_takes_a_facility_from_request_input(): void
@@ -95,22 +193,31 @@ class StaffManagementTest extends TestCase
         Notification::assertSentTo($created, VerifyEmailNotification::class);
     }
 
-    public function test_a_non_supervisor_must_be_given_a_department(): void
+    public function test_a_non_supervisor_must_be_given_a_role(): void
     {
         $this->actingAs($this->supervisor)
-            ->postJson('/api/blood-center/staff', $this->payload(['department' => null]))
+            ->postJson('/api/blood-center/staff', $this->payload(['staff_role' => null]))
             ->assertStatus(422)
-            ->assertJsonValidationErrors('department');
+            ->assertJsonValidationErrors('staff_role');
     }
 
-    public function test_a_supervisor_may_be_created_without_a_department(): void
+    public function test_an_unknown_role_is_refused(): void
+    {
+        $this->actingAs($this->supervisor)
+            ->postJson('/api/blood-center/staff', $this->payload(['staff_role' => 'radiologist']))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('staff_role');
+    }
+
+    public function test_a_supervisor_may_be_created_without_a_role(): void
     {
         $this->actingAs($this->supervisor)
             ->postJson('/api/blood-center/staff', $this->payload([
-                'department' => null,
+                'staff_role' => null,
                 'is_supervisor' => true,
             ]))
             ->assertCreated()
+            ->assertJsonPath('data.staff_role', null)
             ->assertJsonPath('data.department', null)
             ->assertJsonPath('data.is_supervisor', true);
     }
@@ -166,57 +273,72 @@ class StaffManagementTest extends TestCase
 
     public function test_the_roster_filters_by_department(): void
     {
-        $laboratory = User::factory()->bloodCenterStaff($this->facility, Department::Laboratory)->create();
-        User::factory()->bloodCenterStaff($this->facility, Department::Billing)->create();
+        $testing = User::factory()->bloodCenterStaff($this->facility, StaffRole::LabSupervisor)->create();
+        User::factory()->bloodCenterStaff($this->facility, StaffRole::BillingClerk)->create();
 
         $rows = $this->actingAs($this->supervisor)
-            ->getJson('/api/blood-center/staff?department=laboratory')
+            ->getJson('/api/blood-center/staff?department=testing')
             ->assertOk()
             ->json('data');
 
         $this->assertCount(1, $rows);
-        $this->assertSame($laboratory->uuid, $rows[0]['uuid']);
+        $this->assertSame($testing->uuid, $rows[0]['uuid']);
     }
 
-    public function test_a_supervisor_reassigns_a_colleagues_department(): void
+    public function test_the_roster_filters_by_role(): void
     {
-        $staff = User::factory()->bloodCenterStaff($this->facility, Department::Billing)->create();
+        $physician = User::factory()->bloodCenterStaff($this->facility, StaffRole::ScreeningPhysician)->create();
+        User::factory()->bloodCenterStaff($this->facility, StaffRole::Phlebotomist)->create();
+
+        $rows = $this->actingAs($this->supervisor)
+            ->getJson('/api/blood-center/staff?staff_role=screening_physician')
+            ->assertOk()
+            ->json('data');
+
+        $this->assertCount(1, $rows);
+        $this->assertSame($physician->uuid, $rows[0]['uuid']);
+    }
+
+    public function test_a_supervisor_reassigns_a_colleagues_role(): void
+    {
+        $staff = User::factory()->bloodCenterStaff($this->facility, StaffRole::BillingClerk)->create();
 
         $this->actingAs($this->supervisor)
             ->patchJson("/api/blood-center/staff/{$staff->uuid}", [
-                'department' => Department::Collection->value,
+                'staff_role' => StaffRole::MedicalReceptionist->value,
             ])
             ->assertOk()
+            ->assertJsonPath('data.staff_role', 'medical_receptionist')
             ->assertJsonPath('data.department', 'collection');
 
         $this->assertSame(Department::Collection, $staff->fresh()->department);
 
         $this->assertDatabaseHas('audit_logs', [
-            'action' => 'staff.department_changed',
+            'action' => 'staff.role_changed',
             'actor_id' => $this->supervisor->id,
             'auditable_id' => $staff->id,
         ]);
     }
 
-    public function test_an_update_cannot_strand_a_non_supervisor_without_a_department(): void
+    public function test_an_update_cannot_strand_a_non_supervisor_without_a_role(): void
     {
         $staff = User::factory()->bloodCenterStaff($this->facility)->create();
 
         $this->actingAs($this->supervisor)
-            ->patchJson("/api/blood-center/staff/{$staff->uuid}", ['department' => null])
+            ->patchJson("/api/blood-center/staff/{$staff->uuid}", ['staff_role' => null])
             ->assertStatus(422)
-            ->assertJsonValidationErrors('department');
+            ->assertJsonValidationErrors('staff_role');
 
-        $this->assertNotNull($staff->fresh()->department);
+        $this->assertNotNull($staff->fresh()->staff_role);
     }
 
-    public function test_clearing_a_department_is_allowed_when_the_same_request_grants_supervisor(): void
+    public function test_clearing_a_role_is_allowed_when_the_same_request_grants_supervisor(): void
     {
         $staff = User::factory()->bloodCenterStaff($this->facility)->create();
 
         $this->actingAs($this->supervisor)
             ->patchJson("/api/blood-center/staff/{$staff->uuid}", [
-                'department' => null,
+                'staff_role' => null,
                 'is_supervisor' => true,
             ])
             ->assertOk()

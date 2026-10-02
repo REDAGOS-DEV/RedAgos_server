@@ -12,9 +12,10 @@ class EnsureBloodCenterOperational
      * Refuse callers whose facility is not cleared to act on real data.
      *
      * Runs after role:blood_center, because holding the role is necessary but
-     * not sufficient. A suspended facility's staff keep their role, so the role
-     * middleware alone would wave them straight through, and an account may
-     * authenticate before verifying its email address.
+     * not sufficient. The staff of a facility left unapproved by the removed
+     * public registration flow can still hold the role, so the role middleware
+     * alone would wave them straight through, and an account may authenticate
+     * before verifying its email address.
      */
     public function handle(Request $request, Closure $next): Response
     {

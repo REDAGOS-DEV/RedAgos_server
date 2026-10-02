@@ -17,6 +17,10 @@ class EmailVerificationTest extends TestCase
 
     /**
      * Build the signed verification query string the SPA forwards to the API.
+     *
+     * `absolute: false` mirrors VerifyEmailNotification: the route validates
+     * with `signed:relative`, because the request never arrives on the host the
+     * link was signed for.
      */
     private function signedQuery(User $user, ?string $hash = null): string
     {
@@ -26,7 +30,8 @@ class EmailVerificationTest extends TestCase
             [
                 'id' => $user->getKey(),
                 'hash' => $hash ?? sha1($user->getEmailForVerification()),
-            ]
+            ],
+            absolute: false
         );
 
         return substr($url, strpos($url, '?'));
@@ -139,6 +144,66 @@ class EmailVerificationTest extends TestCase
         $this->postJson('/api/email/verification-notification')->assertUnauthorized();
     }
 
+    public function test_a_guest_can_request_another_verification_email_by_address(): void
+    {
+        $user = User::factory()->unverified()->create(['email' => 'pending@example.com']);
+        Notification::fake();
+
+        $this->postJson('/api/email/resend-verification', ['email' => '  PENDING@Example.com '])
+            ->assertOk()
+            ->assertJsonPath(
+                'message',
+                'If that address is registered and still unverified, a new verification link is on its way.'
+            );
+
+        Notification::assertSentTo($user, VerifyEmailNotification::class);
+    }
+
+    public function test_a_guest_resend_reveals_nothing_about_an_unknown_or_verified_address(): void
+    {
+        User::factory()->create(['email' => 'verified@example.com']);
+        Notification::fake();
+
+        $unknown = $this->postJson('/api/email/resend-verification', ['email' => 'nobody@example.com'])
+            ->assertOk();
+
+        $verified = $this->postJson('/api/email/resend-verification', ['email' => 'verified@example.com'])
+            ->assertOk();
+
+        $this->assertSame($unknown->json('message'), $verified->json('message'));
+        Notification::assertNothingSent();
+    }
+
+    public function test_a_guest_resend_sends_nothing_for_a_suspended_account(): void
+    {
+        User::factory()->unverified()->suspended()->create(['email' => 'suspended@example.com']);
+        Notification::fake();
+
+        $this->postJson('/api/email/resend-verification', ['email' => 'suspended@example.com'])
+            ->assertOk();
+
+        Notification::assertNothingSent();
+    }
+
+    public function test_a_guest_resend_requires_a_valid_email_address(): void
+    {
+        $this->postJson('/api/email/resend-verification', ['email' => 'not-an-email'])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('email');
+    }
+
+    public function test_a_guest_resend_is_throttled(): void
+    {
+        foreach (range(1, 3) as $attempt) {
+            $this->postJson('/api/email/resend-verification', ['email' => 'pending@example.com'])
+                ->assertOk();
+        }
+
+        $this->postJson('/api/email/resend-verification', ['email' => 'pending@example.com'])
+            ->assertStatus(429)
+            ->assertHeader('Retry-After');
+    }
+
     public function test_the_verification_link_points_at_the_frontend_application(): void
     {
         config(['app.frontend_url' => 'http://localhost:3000']);
@@ -165,6 +230,39 @@ class EmailVerificationTest extends TestCase
         $query = substr($actionUrl, strpos($actionUrl, '?'));
 
         $this->postJson('/api/email/verify'.$query)->assertOk();
+
+        $this->assertTrue($user->fresh()->hasVerifiedEmail());
+    }
+
+    /**
+     * The link must survive arriving on a different host than it was signed for.
+     *
+     * This is the case every other test here missed. They post to the same host
+     * APP_URL names, so an absolute signature matched and the suite stayed
+     * green — while no real request ever does that. The SPA posts to its own
+     * origin and the dev proxy forwards with the Host rewritten to
+     * 127.0.0.1:8000, and through a tunnel TLS terminates upstream so the
+     * request arrives as http. Both changed `$request->url()`, both made the
+     * absolute signature fail, and every donor was told their brand-new link
+     * had expired.
+     */
+    public function test_the_emailed_link_verifies_when_the_api_is_reached_on_another_host(): void
+    {
+        config([
+            'app.url' => 'https://api.redagos.test',
+            'app.frontend_url' => 'https://app.redagos.test',
+        ]);
+
+        $user = User::factory()->unverified()->create();
+
+        $actionUrl = (new VerifyEmailNotification)->toMail($user)->actionUrl;
+        $query = substr($actionUrl, strpos($actionUrl, '?'));
+
+        // What the proxy hands Laravel: the right path, a different scheme and
+        // host entirely. Passed as an absolute URL so the test request really
+        // carries that host — `$request->url()` is what the signature is
+        // checked against, and it is the whole point of this test.
+        $this->postJson('http://127.0.0.1:8000/api/email/verify'.$query)->assertOk();
 
         $this->assertTrue($user->fresh()->hasVerifiedEmail());
     }

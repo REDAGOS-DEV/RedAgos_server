@@ -3,10 +3,12 @@
 namespace Database\Factories;
 
 use App\Enums\BloodUnitStatus;
+use App\Enums\ClearanceKind;
 use App\Models\BloodComponent;
 use App\Models\BloodType;
 use App\Models\BloodUnit;
 use App\Models\Donation;
+use App\Models\DonationClearance;
 use App\Models\Facility;
 use App\Support\OperationalDay;
 use Illuminate\Database\Eloquent\Factories\Factory;
@@ -34,6 +36,42 @@ class BloodUnitFactory extends Factory
             'expiry_date' => OperationalDay::today()->addDays(30)->toDateString(),
             'status' => BloodUnitStatus::Available,
         ];
+    }
+
+    /**
+     * Give a unit that has left quarantine the clearances that let it.
+     *
+     * Available, reserved, issued and expired units have all been released,
+     * which only ever happens on both tokens; a factory row in one of those
+     * states without them would be stock no real path could produce, and the
+     * dispatch gate would rightly refuse it.
+     */
+    public function configure(): static
+    {
+        return $this->afterCreating(function (BloodUnit $unit): void {
+            $released = [BloodUnitStatus::Available, BloodUnitStatus::Reserved, BloodUnitStatus::Issued, BloodUnitStatus::Expired];
+
+            if ($unit->donation_id === null || ! in_array($unit->status, $released, true)) {
+                return;
+            }
+
+            foreach (ClearanceKind::cases() as $kind) {
+                DonationClearance::query()->firstOrCreate(
+                    ['donation_id' => $unit->donation_id, 'kind' => $kind->value],
+                    ['issued_at' => now(), 'source' => 'factory']
+                );
+            }
+        });
+    }
+
+    /**
+     * Indicate that the unit is booked in but not yet cleared by testing.
+     */
+    public function quarantined(): static
+    {
+        return $this->state(fn (array $attributes): array => [
+            'status' => BloodUnitStatus::Quarantined,
+        ]);
     }
 
     /**

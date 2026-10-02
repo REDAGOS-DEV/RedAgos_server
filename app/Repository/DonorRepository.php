@@ -2,10 +2,15 @@
 
 namespace App\Repository;
 
+use App\Enums\AppointmentStatus;
+use App\Enums\DonationStatus;
+use App\Enums\IdentityStatus;
 use App\Models\BloodType;
 use App\Models\DonorProfile;
 use App\Models\Role;
 use App\Models\User;
+use Illuminate\Contracts\Pagination\LengthAwarePaginator;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -94,11 +99,51 @@ class DonorRepository
         return $profile;
     }
 
+    /**
+     * Find a donor by their public identifier, with the identity relations the
+     * review queue reads.
+     */
+    public function findDonorByUuid(string $uuid): ?User
+    {
+        return User::with(['donorProfile.bloodType', 'donorProfile.identityReviewer'])
+            ->where('uuid', $uuid)
+            ->first();
+    }
+
+    /**
+     * Re-read a donor profile under a row lock, for the identity workflow.
+     *
+     * Both the donor's submission and the administrator's decision take this
+     * lock, so the two cannot interleave and approve a document that has since
+     * been replaced.
+     */
+    public function lockDonorProfile(int $donorId): DonorProfile
+    {
+        return DonorProfile::whereKey($donorId)->lockForUpdate()->firstOrFail();
+    }
+
+    /**
+     * Page through donors whose identity document is in a given state.
+     *
+     * @return LengthAwarePaginator<int, User>
+     */
+    public function identitySubmissionsByStatus(IdentityStatus $status, int $perPage): LengthAwarePaginator
+    {
+        return User::query()
+            ->whereHas('donorProfile', fn (Builder $profile) => $profile->where('identity_status', $status->value))
+            ->with(['donorProfile.bloodType', 'donorProfile.identityReviewer'])
+            ->join('donor_profiles', 'donor_profiles.donor_id', '=', 'users.id')
+            ->orderBy('donor_profiles.identity_submitted_at')
+            ->select('users.*')
+            ->paginate($perPage)
+            ->withQueryString();
+    }
+
     public function countCompletedDonations(int $donorId): int
     {
         return DB::table('donations')
             ->where('donor_id', $donorId)
-            ->where('status', 'completed')
+            ->where('status', DonationStatus::Completed->value)
             ->count();
     }
 
@@ -107,7 +152,7 @@ class DonorRepository
         return DB::table('donation_appointments')
             ->join('facilities', 'facilities.id', '=', 'donation_appointments.facility_id')
             ->where('donation_appointments.donor_id', $donorId)
-            ->whereIn('donation_appointments.status', ['scheduled', 'confirmed'])
+            ->whereIn('donation_appointments.status', AppointmentStatus::activeValues())
             ->where('donation_appointments.appointment_datetime', '>=', $now)
             ->orderBy('donation_appointments.appointment_datetime')
             ->select([
@@ -153,7 +198,7 @@ class DonorRepository
     {
         return DB::table('donations')
             ->where('donor_id', $donorId)
-            ->where('status', 'completed')
+            ->where('status', DonationStatus::Completed->value)
             ->whereBetween('donation_date', [$from, $to])
             ->pluck('donation_date')
             ->groupBy(fn (string $date): string => Carbon::parse($date)->format('Y-m'))

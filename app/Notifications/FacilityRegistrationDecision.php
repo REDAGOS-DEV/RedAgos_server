@@ -5,10 +5,15 @@ namespace App\Notifications;
 use App\Enums\FacilityStatus;
 use App\Models\Facility;
 use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
 
-class FacilityRegistrationDecision extends Notification
+/**
+ * Queued, so a mail server that hangs never holds up the request that sent it.
+ * See DonationRecorded.
+ */
+class FacilityRegistrationDecision extends Notification implements ShouldQueue
 {
     use Queueable;
 
@@ -47,15 +52,10 @@ class FacilityRegistrationDecision extends Notification
                 ->greeting('Registration update')
                 ->line('The registration for '.$this->facility->name.' was not approved.')
                 ->line($this->reason ? 'Reason: '.$this->reason : 'No reason was recorded.')
-                ->line('You can correct the details and submit the registration again.')
-                ->action('Review your registration', $frontend.'/auth/blood-center/registration-status'),
-
-            FacilityStatus::Suspended => (new MailMessage)
-                ->subject('Your RedAgos blood center account has been suspended')
-                ->greeting('Account suspended')
-                ->line($this->facility->name.' has been suspended and can no longer act on inventory.')
-                ->line($this->reason ? 'Reason: '.$this->reason : 'No reason was recorded.')
-                ->line('Please contact the administrator if you believe this is a mistake.'),
+                // Facilities are no longer self-registered, so there is nothing
+                // for the applicant to resubmit. Onboarding now runs through
+                // the RedAgos administrator.
+                ->line('Please contact the RedAgos administrator if you believe this is a mistake.'),
 
             FacilityStatus::PendingApproval => (new MailMessage)
                 ->subject('Your RedAgos blood center registration is under review')

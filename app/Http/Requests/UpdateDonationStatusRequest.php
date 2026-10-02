@@ -24,6 +24,10 @@ class UpdateDonationStatusRequest extends FormRequest
     {
         return [
             'status' => ['required', 'string', Rule::in(DonationStatus::values())],
+            // Optional, not required. A rejection recorded without a reason is
+            // still a truthful record; refusing it would push staff towards
+            // typing anything to get past the form.
+            'rejection_reason' => ['sometimes', 'nullable', 'string', 'max:255'],
         ];
     }
 }

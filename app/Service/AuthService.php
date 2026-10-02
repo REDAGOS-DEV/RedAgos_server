@@ -37,13 +37,17 @@ class AuthService
         }
 
         $this->guardAccountStatus($user);
+        $this->guardEmailVerified($user);
         $requestedRole = $this->guardRequestedRole($user, $payload['role'] ?? null);
 
         return [
             'user' => UserResource::make($user->load(['roles', 'donorProfile.bloodType', 'facility']))->resolve(),
             'token' => $this->authRepository->issueToken($user, $this->tokenName($requestedRole)),
             'token_type' => 'Bearer',
-            'must_verify_email' => ! $user->hasVerifiedEmail(),
+            // Always false now that guardEmailVerified() refuses an unverified
+            // address outright. Kept so existing clients reading it keep
+            // working; nothing needs to act on it any more.
+            'must_verify_email' => false,
         ];
     }
 
@@ -152,6 +156,29 @@ class AuthService
     }
 
     /**
+     * Re-send the verification email to an address supplied by a guest.
+     *
+     * Sign-in is refused until the address is verified, so the authenticated
+     * resend endpoint is unreachable for exactly the people who need it most —
+     * someone who registered and never received the mail. This is the way back
+     * in for them.
+     *
+     * It deliberately reports nothing about the address: unknown, already
+     * verified and freshly sent all look identical to the caller, so the
+     * endpoint cannot be used to enumerate registered accounts.
+     */
+    public function resendVerificationEmailToAddress(string $email): void
+    {
+        $user = $this->authRepository->findByEmail(Str::lower(trim($email)));
+
+        if (! $user || $user->hasVerifiedEmail() || ! $user->account_status->canAuthenticate()) {
+            return;
+        }
+
+        $user->sendEmailVerificationNotification();
+    }
+
+    /**
      * Reject sign-in for accounts an administrator has taken out of service.
      */
     private function guardAccountStatus(User $user): void
@@ -165,6 +192,26 @@ class AuthService
         throw new HttpResponseException(response()->json([
             'message' => $status->authenticationBlockedMessage(),
             'code' => $status->authenticationBlockedCode(),
+        ], 403));
+    }
+
+    /**
+     * Refuse sign-in until the email address on the account has been verified.
+     *
+     * Verification is part of registration now, not something deferred until
+     * the first booking attempt, so an unverified account has no business
+     * holding a token at all. The `code` lets the client offer a resend
+     * instead of showing the generic credentials error.
+     */
+    private function guardEmailVerified(User $user): void
+    {
+        if ($user->hasVerifiedEmail()) {
+            return;
+        }
+
+        throw new HttpResponseException(response()->json([
+            'message' => 'Please verify your email address before signing in. Check your inbox for the verification link.',
+            'code' => 'email_not_verified',
         ], 403));
     }
 
@@ -183,14 +230,16 @@ class AuthService
             return $role;
         }
 
-        // An organisation awaiting approval, or one that was rejected, holds no
-        // role yet by design. Refusing outright would leave it unable to read
-        // its own status or resubmit, so authentication succeeds and a generic
-        // token is issued. The role is still genuinely absent, so the role:
-        // middleware keeps refusing every protected route — authentication
-        // succeeds, authorization does not.
+        // A handful of blood centres applied through the public registration
+        // flow that has since been removed, and hold no role until an
+        // administrator resolves their record. There is no status screen and
+        // nothing to resubmit any more, so the refusal says so plainly rather
+        // than issuing a roleless token that can reach nothing.
         if ($this->isUnapprovedOrganisationApplicant($user, $role)) {
-            return null;
+            throw new HttpResponseException(response()->json([
+                'message' => 'This facility account has not been activated yet. Please contact the RedAgos administrator.',
+                'code' => 'facility_not_activated',
+            ], 403));
         }
 
         throw new HttpResponseException(response()->json([
@@ -200,11 +249,11 @@ class AuthService
     }
 
     /**
-     * Determine whether this is an organisation applicant still awaiting a
-     * decision on its facility.
+     * Determine whether this is a legacy organisation applicant whose facility
+     * was never activated.
      *
      * Deliberately narrow: only the two organisation roles qualify, so a donor
-     * signing in through the wrong portal is still refused.
+     * signing in through the wrong portal still gets the generic refusal.
      */
     private function isUnapprovedOrganisationApplicant(User $user, RoleName $role): bool
     {

@@ -2,7 +2,8 @@
 
 namespace Tests\Feature\Auth;
 
-use App\Enums\AccountStatus;
+use AppModelsSER;
+USE App\Enums\AccountStatus;
 use App\Enums\RoleName;
 use App\Models\BloodType;
 use App\Models\User;
@@ -236,6 +237,27 @@ class DonorRegistrationTest extends TestCase
             ->assertJsonValidationErrors('terms_accepted');
     }
 
+    public function test_a_donor_who_does_not_know_their_blood_type_can_register_without_one(): void
+    {
+        Notification::fake();
+
+        $this->postJson('/api/donors/register', $this->payload(['blood_type' => null]))
+            ->assertCreated();
+
+        $donor = User::where('email', 'juan@example.com')->firstOrFail();
+
+        // Null, not a default. The laboratory fills this in from the first
+        // cleared donation; anything stored here now would be a guess.
+        $this->assertNull($donor->donorProfile->blood_type_id);
+    }
+
+    public function test_an_invalid_blood_type_is_still_rejected(): void
+    {
+        $this->postJson('/api/donors/register', $this->payload(['blood_type' => 'Z+']))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('blood_type');
+    }
+
     public function test_an_invalid_gender_is_rejected(): void
     {
         $this->postJson('/api/donors/register', $this->payload(['gender' => 'unknown']))
@@ -252,7 +274,6 @@ class DonorRegistrationTest extends TestCase
                 'last_name',
                 'email',
                 'phone',
-                'blood_type',
                 'gender',
                 'birth_date',
                 'address',
@@ -283,7 +304,7 @@ class DonorRegistrationTest extends TestCase
             ->assertHeader('Retry-After');
     }
 
-    public function test_a_newly_registered_donor_can_log_in_before_verifying(): void
+    public function test_a_newly_registered_donor_cannot_log_in_before_verifying(): void
     {
         Notification::fake();
 
@@ -294,7 +315,42 @@ class DonorRegistrationTest extends TestCase
             'password' => 'Password123',
             'role' => 'donor',
         ])
-            ->assertOk()
-            ->assertJsonPath('must_verify_email', true);
+            ->assertStatus(403)
+            ->assertJsonPath('code', 'email_not_verified');
+    }
+
+    public function test_a_newly_registered_donor_can_log_in_once_the_link_is_followed(): void
+    {
+        Notification::fake();
+
+        $this->postJson('/api/donors/register', $this->payload())->assertCreated();
+
+        $donor = User::where('email', 'juan@example.com')->firstOrFail();
+        $actionUrl = (new VerifyEmailNotification)->toMail($donor)->actionUrl;
+
+        $this->postJson('/api/email/verify'.substr($actionUrl, strpos($actionUrl, '?')))
+            ->assertOk();
+
+        $this->postJson('/api/login', [
+            'email' => 'juan@example.com',
+            'password' => 'Password123',
+            'role' => 'donor',
+        ])->assertOk();
+    }
+
+    public function test_registration_does_not_ask_for_the_questionnaire_personal_data(): void
+    {
+        Notification::fake();
+
+        // Section I-A belongs to the profile, not to signing up. A donor who
+        // registers without it is perfectly valid; the blood centre's
+        // questionnaire prints what is absent as "Not provided".
+        $this->postJson('/api/donors/register', $this->payload())->assertCreated();
+
+        $profile = User::where('email', 'juan@example.com')->firstOrFail()->donorProfile;
+
+        $this->assertNull($profile->civil_status);
+        $this->assertNull($profile->occupation);
+        $this->assertNull($profile->nationality);
     }
 }

@@ -39,6 +39,25 @@ class FacilityFactory extends Factory
     }
 
     /**
+     * File the facility under the hospital blood bank type.
+     *
+     * A blood bank draws on centres rather than collecting from donors, so it
+     * is created closed to bookings — the same shape the creation service
+     * produces for the type.
+     */
+    public function bloodBank(): static
+    {
+        return $this->state(fn (array $attributes): array => [
+            'facility_type_id' => FacilityType::firstOrCreate(['name' => 'blood_bank'])->id,
+            'name' => fake()->unique()->company().' Hospital Blood Bank',
+            'doh_license_number' => 'DOH-BB-'.fake()->unique()->numerify('########'),
+            'is_accepting_donations' => false,
+            'slots_start_at' => null,
+            'slots_end_at' => null,
+        ]);
+    }
+
+    /**
      * Indicate that the facility is closed to donor bookings.
      */
     public function notAcceptingDonations(): static
@@ -91,21 +110,6 @@ class FacilityFactory extends Factory
         return $this->state(fn (array $attributes): array => [
             'status' => FacilityStatus::Rejected,
             'rejection_reason' => 'The DOH licence could not be verified.',
-        ]);
-    }
-
-    /**
-     * A previously approved facility taken out of service.
-     *
-     * Staff keep the blood_center role here, which is exactly why the
-     * operational middleware has to check status as well as role.
-     */
-    public function suspended(): static
-    {
-        return $this->state(fn (array $attributes): array => [
-            'status' => FacilityStatus::Suspended,
-            'approved_at' => now()->subMonth(),
-            'rejection_reason' => 'Under investigation.',
         ]);
     }
 }

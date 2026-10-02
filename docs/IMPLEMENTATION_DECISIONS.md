@@ -64,6 +64,8 @@ Do not build fulfillment on unresolved facility-isolation or inventory foundatio
 
 ## Donation status that may become issuable stock (Module 3 blocker)
 
+> **SUPERSEDED (2026-09-28)** by "Quarantine lifecycle" below: Branch B is now implemented. `completed` no longer means cleared for issue; units are booked in `quarantined` and released on two clearance tokens. The text below is kept as the record of the earlier decision.
+
 **DECISION:** `donations.status = completed` means the donation has finished transfusion-transmissible-infection testing and is **cleared for issue to a patient**. Blood-unit intake gates on `completed` and creates units as `available`. This is "Branch A" of the Module 3 plan.
 
 **DECIDED BY:** The project owner, on 2026-08-25, on the evidence of the schema's own ordering: `donations.status` is declared `registered | screening | collected | tested | completed | rejected` in `2026_07_06_000010_create_donations_table.php`, where `tested` precedes `completed`. Read in sequence, a donation cannot reach `completed` without having passed `tested`.
@@ -94,7 +96,7 @@ Do not build fulfillment on unresolved facility-isolation or inventory foundatio
 
 **DECISION (operational day):** "Today" for expiry comes from `config('blood_center.timezone')` via `App\Support\OperationalDay`, not from PHP's ambient timezone, so the sweep, the validation rules and `days_remaining` cannot disagree.
 
-**CURRENT IMPLEMENTATION CONFLICT:** Reserve/release, stock thresholds, inter-facility transfers, label printing and trend history are out of Module 3's scope. The sweep touches `available` only, so a `reserved` unit can pass its expiry and keep saying `reserved` until the allocation module can release it. The client's inventory page offers an `archive` action that no status backs.
+**CURRENT IMPLEMENTATION CONFLICT:** Reserve/release, stock thresholds, inter-facility transfers, label printing and trend history are out of Module 3's scope (label printing has since been built — see *Two-phase labeling and the donation barcode*). The sweep touches `available` only, so a `reserved` unit can pass its expiry and keep saying `reserved` until the allocation module can release it. The client's inventory page offers an `archive` action that no status backs.
 
 ## Department ownership of the department structure (Phase 1-4)
 
@@ -177,6 +179,11 @@ may record `rejected`.
 
 **DECIDED BY:** The project owner, on 2026-08-27.
 
+**SUPERSEDED IN PART:** Laboratory/Processing was split into Testing and
+Processing on 2026-09-26; see "Blood-centre departments: five, not four". Testing
+now reaches `tested` by recording a result, and Processing owns `completed` and
+the laboratory side of `rejected`.
+
 **WHY:** `docs/BLOOD-CENTER.md` gives Donor/Collection "Record completed blood
 donations" and "Manage donor queues", and gives Laboratory "Receive blood
 collection information for processing", "Record and update blood processing
@@ -230,7 +237,9 @@ the finalised organisational structure, not paper requirements.
 **SCOPE BOUNDARY:** RedAgos does not perform the assay. `donation_test_results`
 records what a qualified professional reported; `recorded_by` names the staff
 member who entered the record, not the professional who produced it. Nothing in
-`LaboratoryService` computes, infers or derives a result.
+`LaboratoryService` computes, infers or derives a result. *(Superseded in part
+by "Section II" below: the overall result is now rolled up from the recorded
+immunohematology and five serology readings. No reading is inferred.)*
 
 **DECISION (blood-type mismatch):** If the type the laboratory reads off the bag
 differs from the donor profile, recording the result is refused with
@@ -263,3 +272,943 @@ could produce a donation it would accept.
 collection-side nor a laboratory-side rejection records why. The notes field on
 `donation_test_results` covers the laboratory case in practice but is not a
 structured reason.
+
+## Blood request form (DOH Blood Request Form, Adult)
+
+**SOURCE:** A copy of the Philippine DOH *Blood Request Form (For ADULT)* was
+supplied as the document a blood request must produce. The paper does not
+contain this form, so everything below is an implementation decision, not a
+Capstone 1 requirement. `CAPSTONE_CONTEXT.md` does record "patient information
+in blood requests" as a REQUIREMENT, and the patient columns close that gap.
+
+**DECISION (request purpose):** `blood_requests.request_purpose` is either
+`patient_transfusion` or `replenishment`, and is a separate axis from
+`urgency_level`. The two must never be merged: a restock can be STAT and a
+named-patient transfusion can be routine, and one column cannot express both.
+A transfusion carries patient identity; a replenishment restocks the
+requester's own shelves and carries none, so the form's patient block prints
+blank and the purpose is stated on the sheet instead.
+
+**DECISION (patient fields captured):** Surname, first name, middle name, age
+and sex only, plus the existing `blood_type_id`, which serves as the patient's
+blood type on a transfusion and the requested unit type on a restock. The
+form's remaining patient-block fields — attending physician, ward, room number,
+hospital number, clinical diagnosis and previous-transfusion history — are
+**not** captured and print as ruled blanks for handwriting. Capturing them was
+considered and deferred; adding them later is additive.
+
+**DECISION (one request, several components):** `blood_requests.component_id`
+and `blood_requests.quantity` moved to `blood_request_items`, one row per
+component, each with its own quantity and indication code. The form is a
+checklist that permits several components on one sheet, and the previous grain
+forced three components to become three requests with three reference numbers.
+The header's `quantity` is now an accessor summing the lines rather than a
+stored column, because a stored copy would be a second source of truth — the
+same rule this file already applies to inventory summaries.
+
+**CONSEQUENCE:** `request_allocations.request_item_id` names which line a held
+unit answers. Without it there is no way to say how much of the platelet line
+is covered, and `BillingService` cannot price a hold whose component it cannot
+name. Allocation now computes outstanding per line and walks the lines in form
+order; billing totals per line at the fulfilling facility's own component
+prices.
+
+**DECISION (indication codes):** The form's 27 codes (WB, R, WP, P, C, F) live
+in the `App\Enums\IndicationCode` enum, not a seeded table. They are fixed
+national reference data, not a per-facility setting. Each code is tied to its
+component by **name**, because `blood_components.name` is unique and is what
+`BloodComponentSeeder` seeds by. `GET /api/hospital/reference-data` projects
+them so the client cannot drift into offering a code the API would reject.
+
+**DECISION (indication is conditionally required):** An indication is required
+only for the six components the form prints codes for. A component outside that
+set has no box to tick, and demanding one would make it unrequestable. The six
+"Others" codes additionally require free text, because the form says they
+trigger a review of the indication, which cannot happen against a blank.
+
+**DECISION (Washed RBC):** Added to `BloodComponentSeeder`. The form carries a
+WP block for it and a component the form names but the table does not hold
+cannot be requested.
+
+**DECISION (ROUTINE / STAT is a label):** `urgency_level` keeps its
+`routine | emergency` values. The form and the request UI display STAT for
+`emergency`. Renaming the enum would have touched the triage scope, the
+emergency banner on both portals, the submission notification and their tests,
+to no behavioural gain.
+
+**DECISION (rendered server-side):** `barryvdh/laravel-dompdf` renders
+`resources/views/pdf/blood-request-form.blade.php`, streamed as an attachment
+from `GET /api/hospital/blood-requests/{id}/form` and
+`GET /api/blood-center/blood-requests/{id}/form`. One `BloodRequestFormService`
+serves both, so the requesting hospital and the fulfilling centre cannot hold
+two copies of a clinical document that disagree. Nothing is written to storage:
+the form is derived from the request and re-renders identically on demand.
+
+**UNRESOLVED:** The handover half of the form — type of crossmatching, number
+of donors provided, screened/unscreened counts, remarks, and the received-by
+and extracted-by signatures with their timestamps — is printed blank and filled
+in on paper. Capturing it would mean a handover step at the blood centre that
+no module currently charters.
+
+## Government subsidy on a blood request statement
+
+**DECISION (subsidy is a decision, not a price of zero):** `BillingStatus` gains
+a `Subsidised` case. A statement is still raised at the fulfilling facility's
+own component price when stock is reserved; billing staff then either record a
+payment or apply the subsidy, which writes the balance to zero and clears the
+request for release. It clears release exactly as `Paid` does.
+
+**WHY NOT reuse `Paid`:** "nothing was owed" and "the money was collected" are
+different facts, and `Billing`'s own docblock already warned that reports
+"should not claim the network collected fees it never charged". With a zero
+total and a `Paid` status those two cases are indistinguishable. A statement
+raised at zero because the component carries no price stays `Paid` — nothing
+was waived, there was simply nothing to charge.
+
+**WHY NOT `Void`:** voiding says the statement should never have existed. A
+subsidised statement was correctly raised and correctly settled.
+
+**DECISION (who decides, and when):** Billing staff, on the statement, behind
+`billing.record_payment` — waiving a charge and taking money for one both
+decide that nothing further is owed, and both release blood. Inventory staff
+approving a request do not make a billing decision.
+
+**CONSEQUENCE:** `BillingService::syncFor()` now skips any statement settled by
+decision, not just voided ones. Allocating further units against a subsidised
+request must not revive a balance somebody waived, nor re-block a release
+already cleared.
+
+**DECISION (money already collected survives a later subsidy):** Payments are
+left in place when a part-paid statement is subsidised. Deleting them would
+destroy the only record the money was received; the refund is settled outside
+this system. The waived amount and anything already collected are both written
+to the audit log, because the statement itself no longer carries them.
+
+**UNRESOLVED:** The hospital has no view of its own statement. There is no
+`/hospital/.../billing` route, and `useBloodRequestBilling.js` calls endpoints
+that do not exist. A requester currently learns what was charged, or that the
+subsidy covered it, only by being told.
+
+## Fulfillment: the three states a unit actually has
+
+**DECISION:** The blood-centre fulfillment screen tracks
+`allocated -> released -> received` and nothing else. The eight-stage pipeline
+the page previously drew — Preparing, Quality Check, Ready for Dispatch,
+Dispatched, Delivered, Completed — exists in no table, was driven by a mocked
+`$fetch`, and with mocks off called `/blood-center/fulfillment*` routes that
+were never served.
+
+**CONSEQUENCE:** Quality control before dispatch is not represented. If it needs
+to be, it is a Laboratory concern with its own states, not a relabelling of
+`allocated`.
+
+**DECISION (receipt stays with the requester):** Confirming arrival is done from
+the hospital's request page. The dispatching centre cannot assert on the
+hospital's behalf that blood arrived, which is why the endpoint has always sat
+on the requester side of the API. *(Receipt no longer moves the request's
+status — fulfilment is counted at dispatch; see "Walk-in requests, partial
+fulfilment and follow-ups" at the end.)*
+
+## Blood Donor's Health Questionnaire (DOH-DCHD-RD-SNBC-DMS-FORM002)
+
+**SOURCE:** A copy of the DOH *Blood Donor's Health Questionnaire* used by
+Sub-National Blood Center – Mindanao, effectivity 3 July 2023, was supplied as
+the form the counter must be able to read on screen. Sections I-A (Personal
+Data), I-B (Donor History, 29 questions) and I-C (Informed Consent) are in
+scope. Section I-D onward — physical examination, serology, phlebotomy — is
+not, and neither are the form's margin boxes (Sleep/Meal/Meds/Allergies,
+DH/DS), which are the screening officer's own working notes. *(Since
+superseded: Section I-D and the margin boxes are recorded — see "Section I-D:
+Physical Examination" — and Section II — see "Section II" at the end.)*
+
+**DECISION (the donor side does not judge):** RedAgos no longer scores a
+donor's own questionnaire answers into a verdict. Every screening is recorded
+`result = pending` — answered, awaiting the blood centre's decision — and a
+complete submission always mints a QR code. The donor is shown no pass, no
+deferral and no reasons. Two things drove this. The form says on its face that
+"A 'YES' answer may not necessarily exclude you from blood donation", and this
+file's own *Clinical configuration boundary* says RedAgos records what
+qualified personnel reported rather than computing clinical outcomes. Applying
+that rule to the donor side is what this change is.
+
+**CONSEQUENCE:** `eligibility_screenings.result` is always `pending` for new
+rows. `EligibilityScreening::scopeCurrentlyValid()` therefore had to stop
+filtering on `result = eligible` and now means only "answered and unexpired" —
+leaving that filter would have made every new screening invisible to
+`currentValidScreening()`, breaking the QR refresh and the re-screen guard
+without raising anything. `QuestionnaireVersionTest` guards it.
+
+**CONSEQUENCE:** `submitted_result` is no longer written and the client no
+longer submits a verdict, so the divergence-detection audit went with it.
+`computed_result` is still written: it is the server's advisory read, shown to
+the counter and never to the donor.
+
+**DECISION (thresholds still refuse):** Age, weight and the 56-day donation
+interval remain hard refusals on submission, because they are arithmetic on
+records the donor cannot forge rather than readings of their answers. They are
+reported as plain statements of the threshold — "Donors must weigh at least 50
+kilograms" — never in the language of a health verdict.
+`EligibilityRuleEvaluator` is split along exactly that seam.
+
+**DECISION (review markers, not deferral triggers):**
+`eligibility_questions.disqualify_if_answer` keeps its name and its meaning for
+version 1, but nothing defers on it any more. A set flag highlights that row in
+the counter's questionnaire drawer so a nurse's eye lands on it. This inverts
+the risk the *Clinical configuration boundary* warns about: a wrong flag now
+costs a second glance rather than turning away a real donor. Version 2's flags
+follow version 1's precedent where one exists, plus the answers that plainly
+warrant a look; a clinical owner can revise them with an UPDATE.
+
+**DECISION (version 1 keeps working):** Bumping
+`config('donation.questionnaire_version')` to 2 revokes nothing. A QR is a
+credential presented by a person standing at a counter, and a bulk revoke would
+strand donors mid-visit while leaving no per-donor audit row. The counter is
+told instead: the payload carries `question_version` and `is_current_version`,
+and the drawer says the donor answered an older form and names what is missing.
+A version 1 screening also predates consent, so it renders an explicit
+"no consent is on file" rather than a blank date — that gap read as a consent
+that was given is the worst failure this record can produce.
+
+**CONSEQUENCE:** the question bank is append-only. Never delete, and never
+deactivate, a version that has screenings against it: the counter resolves a
+historical answer's wording by `[version, code]`. `scopeForVersion()` filters
+`is_active` and is therefore wrong for that read, which is why
+`EligibilityRepository::questionTextMap()` exists without the filter. Version 2
+codes are prefixed `v2_` so a cross-version mix-up is impossible by
+construction — `eligibility_screening_answers` stores a code but not a version.
+
+**DECISION (question 5 is omitted, not answered falsely):** The form's question
+5 is for female donors. Applicability is resolved server-side from the stored
+gender and the question is left out of the payload entirely for male donors,
+rather than answered `false` — "not pregnant" from someone the question was
+never put to is a falsehood in a clinical record. A donor whose gender is
+`other`, `prefer_not_to_say` or unrecorded is offered it and not required to
+answer: dropping a physiological safety question over a privacy choice is the
+wrong way to be discreet. `gender_at_screening` is snapshotted beside
+`age_at_screening` so a later profile edit cannot retroactively change what the
+record says was asked.
+
+**DECISION (Section I-A is derived where records already hold it):** Type of
+donor, number of times donated and date of last donation are computed from
+donation records and reported with `donor_type_source: "derived_from_records"`.
+`EligibilityRuleEvaluator`'s own rule is that these come from the records,
+"never from the numbers typed into the questionnaire", and a donor-declared
+copy beside a derived one is two contradictory answers in one payload. Only the
+venue of a previous donation is stored as declared, because it may have been at
+a non-RedAgos centre; it lives on the screening, not the profile.
+
+**DECISION (I-A is collected in the profile, not at registration):** Signing up
+already asks for a lot, and every I-A field can be filled in later from the
+donor's profile, which is where they are edited anyway. Registration therefore
+does not ask for them. Existing donors cannot be back-filled in any case, so
+the counter renders every gap as "Not provided" rather than as a blank line
+that reads like an unanswered question on the paper form.
+
+**DECISION (the questionnaire is gated on presentation, not relationship):**
+`DonorDirectoryService::present()` withholds a donor's record from a centre they
+have never donated at, on the grounds that detailed records stay with the
+facility that created them. That rule does not apply here and applying it would
+withhold the questionnaire from every first-time donor — the ones whose answers
+most need reading. The questionnaire is not another facility's record; it is the
+donor's own declaration, addressed to whichever centre they hand it to. So the
+gate is presentation: an appointment here today, an open donation here, a QR
+verified at this counter today, or an existing donation relationship. This is
+also stricter than `donors.view` alone, because it closes the hole where any
+Collection member could pull a questionnaire for a donor found by browsing the
+directory.
+
+**CONSEQUENCE:** a new ability, `donors.view_questionnaire`, held by Collection
+alone. Reading thirty declared health answers is a different act from looking a
+donor up, and Laboratory — which holds `donations.view` — cannot reach it. The
+scan response carries only a reference; the document has its own route, its own
+ability and its own audit entry, with no answers in the audit context.
+
+## Appointment screening window
+
+**DECISION (book first, answer the day before):** `AppointmentService::book()`
+no longer requires a valid screening. A donor books freely and the questionnaire
+falls due in a window opening the day before the appointment, so that what the
+blood centre reads describes the donor as they are now rather than as they were
+up to 90 days ago. `appointment_screening_window_days` joins the file's three
+independent time rules as a fourth: `screening_validity_days` is how long an
+answer stands, this is how early it may be given, and a donor with no
+appointment is not subject to it.
+
+**DECISION (the window closes at the end of the appointment day):** Not at the
+booked time. A donor who never answered has no QR, so the remedy is to fill it
+in at the counter — and a window that shut at the booked time would be shut for
+exactly the person who needs it. It also gives donors a rule they can state
+without checking their booking: the day before, or the day of.
+
+**CONSEQUENCE:** both bounds are computed through `AppointmentScreeningWindow`,
+built on `OperationalDay`. `config/app.php` defaults to UTC while deployment
+runs in Manila, and under UTC Manila's 00:00-08:00 still reads as the previous
+date — a window computed from a bare `now()` opens eight hours late for every
+Manila donor and still passes a UTC test suite.
+
+**CONSEQUENCE:** rescheduling out of the window revokes the QR, and so does
+cancelling. A credential minted for one visit must not outlive it. The QR's
+expiry is capped at the end of the appointment day for the same reason.
+
+**CONSEQUENCE:** the reminder is load-bearing, not a courtesy. With the booking
+gate gone, `donors:open-screening-window` is the only thing between a donor
+booking and arriving with nothing to scan. It is registered in
+`routes/console.php` alongside the expiry sweep, for the reason stated there:
+the command existing is not the command running.
+
+**DECISION (a donor may book while their last questionnaire was flagged):** A
+flagged questionnaire is not a bar. It may have been answered months ago, and
+the one that counts is answered the day before. The appointment list says what
+is outstanding rather than implying all is well.
+
+## Section I-D: Physical Examination
+
+**SOURCE:** The block of the DOH questionnaire headed *FOR BLOOD DONOR SCREENING
+OFFICER USE ONLY*, plus the four boxes in the form's top margin. It already had
+a home — `donation_screenings` was created for exactly this and was already
+stage 3 of the counter's donation transaction — so this completes that table
+rather than adding anything beside it.
+
+**DECISION (the four REMARKS boxes):** `donation_screenings.outcome` widens from
+`qualified|deferred` to `accepted`, `temporarily_deferred`,
+`permanently_deferred` and `indefinite_deferral`. Two values could not express
+the difference between a donor who should come back next month and one who must
+never donate again, and the system was telling every deferred donor in writing
+that deferrals are usually temporary. `permitsCollection()` becomes "is
+Accepted", so all three deferrals behave identically inside the donation
+workflow; what separates them is what the donor is told and what the next
+counter sees.
+
+**CONSEQUENCE:** `ScreeningOutcome::label()` is an exhaustive `match` with no
+`default`, so a case added without a label is a fatal error at the first
+screening rather than a raw enum value printed on a clinical record. `isDeferral()`
+and `isBlocking()` exist so no caller enumerates the three deferral cases
+itself — one that did would silently miss a fourth if the form ever grows one.
+Both `RecordScreeningRequest` and `CollectionService::recordScreening()` had a
+hardcoded compare against the single old value; each now asks the outcome its
+shape, which is what stops a permanent deferral being recorded unexplained.
+
+**CONSEQUENCE (the back-fill):** existing rows migrate `qualified → accepted`
+and `deferred → temporarily_deferred`. The second is the only honest reading:
+every deferral on record was entered when temporariness was the only thing the
+system could mean by the word, and `DonorDeferred` told those donors exactly
+that. The `down()` refuses rather than guessing if any row holds a permanent or
+indefinite deferral, because mapping one back onto `deferred` would tell that
+donor to book again.
+
+**CONSEQUENCE (the migration is idempotent):** the migration that created the
+table called `ScreeningOutcome::values()` at migration time, so the accepted set
+was baked from whatever the enum held when it ran. Now that the enum has four
+cases, a fresh `migrate:fresh` builds the four-value column directly and arrives
+at the widening migration with nothing to widen and no legacy rows to rewrite.
+That has to be a no-op rather than an error, or CI and an existing database
+diverge. Written per driver, following
+`2026_09_21_120001_add_subsidised_status_to_billings_table`, whose docblock
+explains why `enum()->change()` is rejected on PostgreSQL.
+
+**DECISION (a blocking deferral gates nothing):** A permanent or indefinite
+deferral is recorded, shown to the next counter, and enforced nowhere. A donor
+carrying one can still book, answer the questionnaire, receive a QR and be
+scanned in. This follows the boundary this file already sets — RedAgos records
+what qualified personnel reported and does not judge — and the decision made for
+Section I-B, where the donor's own answers stopped deciding anything. The
+officer reads the banner and decides. `AppointmentService::book()` keeps its
+explicit no-screening-gate comment, and the tests asserting a deferred donor can
+still book are the guarantee that no block was introduced by accident.
+
+**CONSEQUENCE:** the banner is the entire mitigation, so it has to be impossible
+to miss. It sits in the pinned donor band at the top of the counter page, from
+the moment the donor is verified.
+
+**DECISION (the scan carries a reference, not the reason):** `verify-qr` gains
+`prior_deferral` with the outcome, its label and the date — and no reason text.
+What check-in needs is that a decision exists and when it was made; the reason is
+clinical detail and belongs behind `DonorDirectoryService::history()`, which
+already refuses unless the caller's facility has a relationship with the donor.
+This is the same split already made for the questionnaire, and for the same
+reason: the scan response is about who is standing at the counter.
+
+**CONSEQUENCE:** `donation_screenings` has no `donor_id` — a screening belongs
+to a donation, and the donation is what belongs to a donor — so every
+donor-scoped question about screenings joins through `donations`, whose
+`donor_id` is indexed. The lookup is deliberately not scoped to the calling
+facility: a donor permanently deferred at one centre is permanently deferred, and
+the counter that has never met them is the one that needs telling.
+
+**CONSEQUENCE:** `history()` now carries the screening outcome and reason per
+donation. Before this a deferred visit showed as a bare "Rejected" with the
+reason recorded nowhere a colleague could find it, while the donor held the
+explanation in a notification on a different page.
+
+**DECISION (what the deferred donor is told):** `DonorDeferred` takes the
+outcome. On a permanent or indefinite deferral it drops the line saying deferrals
+are usually temporary and drops the "Book again" action from both the mail and
+the stored card, pointing at the hotline instead. Telling someone who may never
+donate again to book another appointment is the most damaging thing this feature
+could have shipped, and the stored card is read days later with none of the
+counter's context around it, so the button is the part most likely to be acted on
+alone. A deferral recorded before the four outcomes existed passes no outcome and
+keeps its original wording, which is what those donors were actually told.
+
+**DECISION (the eight new fields are the officer's):** `general_appearance`,
+`skin`, `heent` and `heart_and_lungs` are what the officer observed;
+`sleep`, `meal`, `meds` and `allergies` are the margin boxes they ask the donor
+in person and transcribe. All eight are entered at the counter after the scan,
+and nothing on the donor side of the application writes to them.
+
+**DECISION (where the margin boxes are filled in):** Sleep, Meal, Meds and
+Allergies are printed in the top margin of the donor's questionnaire sheet, not
+in the Section I-D box, so that is where the counter fills them — at the top of
+the questionnaire drawer, above the tabs, rather than in the screening form
+further down the page. They are the one editable part of a document that is
+otherwise the donor's own declaration, and they are marked as the officer's so a
+staff member is never in doubt about which author they are looking at. The
+drawer's read-only guarantee narrows accordingly: it now covers Sections I-A to
+I-C, which no counter may edit, and the test asserting it was rewritten to say
+exactly that rather than to claim the whole drawer is read-only.
+
+**CONSEQUENCE:** the four are held by the counter, not by either component, and
+the drawer asks for a change rather than writing into what it was handed. The
+screening form is what sends them, so both have to read the same object or they
+drift. They save with the screening rather than on their own — a set of answers
+with no screening behind them would belong to nothing — and they cannot be
+entered before the donation is open, because there is no visit to record them
+against. Free text and
+nullable throughout, for the two reasons this table already states: no document
+defines a vocabulary for any of them, and a partial record is more honest than a
+mandatory field holding a placeholder. Named after the form's own labels rather
+than interpreted — "Sleep:" is a ruled blank, so `sleep` and not `sleep_hours`,
+because presuming a number is the same kind of invention as presuming a
+vocabulary.
+
+**CONSEQUENCE (`meds` is not the donor's questionnaire answer):** The donor
+already answered "Currently taking medication?" in Section I-B, days earlier, in
+the app. The counter field is never pre-filled from it. Pre-filling would turn
+the officer's own finding into a confirmation of the donor's claim, and the two
+are recorded in separate tables, by separate authors, precisely so they can
+disagree — a disagreement between them is itself a finding. The migration that
+created this table already states the rule: mixing "what the donor claimed" with
+"what a qualified professional found" would put two very different kinds of claim
+in one place.
+
+**DECISION (the officer is `recorded_by`):** At a counter the person examining is
+the person entering, and the column is already the authenticated user — never a
+name from the request, which is what makes it worth anything. Its docblock said
+it meant the typist rather than the examiner; it now means the screening officer,
+and their name comes back on the donation payload for the form's signature line.
+A separate `examined_by` was considered and rejected: it would introduce a name
+the system cannot verify was present.
+
+**DECISION (DH and DS are not captured):** The form's remaining two margin boxes
+stay on paper. Nothing in the form or in this project names what they abbreviate,
+and adding them later is additive.
+
+**CONSEQUENCE (out of scope, noted):** `app/pages/blood-center/donors.vue` renders
+a donor-history shape the server has never returned and its stats, flags and
+update calls throw 501. Extending `history()` touches the endpoint that page
+consumes, but the page was already broken and fixing it is separate work.
+
+---
+
+## Blood-centre departments: five, not four
+
+> **SUPERSEDED (2026-09-28)** by "Staff roles: seven departments, eighteen roles" below. The five stored values are unchanged; two departments were added and access is now keyed by role.
+
+**DECISION:** A blood centre has five operational departments instead of four:
+
+| Value | Label | Was |
+|---|---|---|
+| `collection` | Collection | Donor / Collection (renamed) |
+| `testing` | Testing | part of Laboratory / Processing |
+| `processing` | Processing | part of Laboratory / Processing |
+| `issuance` | Issuance | Inventory / Storage & Blood Request / Release (renamed) |
+| `billing` | Billing / Payment | unchanged |
+
+`App\Enums\Department` is the canonical list. `docs/BLOOD-CENTER.md` carries the
+chart and each department's responsibilities.
+
+**DECIDED BY:** The project owner, on 2026-09-26.
+
+**DECISION (how the laboratory abilities split):** Both departments hold
+`lab.view` and work from the same queue. Testing holds `lab.record_result`
+(screening result and blood type, which moves a donation to `tested`).
+Processing holds the new `lab.record_components` (the component breakdown) and
+`lab.update_status` (clear for issue, or reject). The components route used to
+sit behind `lab.record_result` and now sits behind `lab.record_components`.
+Clearing a donation needs a passed result and a declared breakdown, so neither
+department can clear a unit on its own record alone.
+
+**DECISION (what kept its name):** Only departments were renamed. The
+`/api/blood-center/laboratory/*` and `/inventory/*` routes, the `lab.*`,
+`inventory.*` and `requests.*` abilities, and the client's
+`/blood-center/laboratory` and `/blood-center/storage` pages keep their names.
+They name the work, not the department that does it, and renaming them would
+break links and tests for no change in behaviour.
+
+**CONSEQUENCE (existing staff):** Migration
+`2026_09_26_100001_rename_blood_center_departments` moves `inventory` to
+`issuance` and `laboratory` to `testing`. Testing's abilities are a subset of
+what Laboratory held, so the migration never grants anyone something they did
+not have. A supervisor moves whoever works the processing bench into Processing.
+`users.department` is cast to the enum, so a row still holding `inventory` or
+`laboratory` fails to load. Run the migration before using the new code.
+
+**CONSEQUENCE (owning department):** `DonationStatus::owningDepartment()` now
+returns Testing for `collected` and Processing for `tested`.
+
+---
+
+## Section II: For Technical Management Use Only (phlebotomy and Testing)
+
+**SOURCE:** Section II of the DOH *Blood Donor's Health Questionnaire*
+(FORM002) holds three different stages under one heading: the fingerprick
+Hemoglobin / Blood Type table (screening), the "For Phlebotomist Use Only" box
+(collection), and the Immunohematology and Serology & NAT tables (laboratory
+testing, after collection). In scope: all three. Out of scope: I-E
+(post-donation care), I-F (the CUE slip), unit-level quarantine, lookback on a
+donor's earlier units, and voiding a reactive result.
+
+**DECIDED BY:** The project owner, on 2026-09-26.
+
+**DECISION (fingerprick typing):** Recorded at screening as
+`donation_screenings.fingerprick_blood_type_id`, optional. It is preliminary: it
+never fills the donor profile and never pre-fills the Testing department's
+typing, so a disagreement between the slide and the confirmatory typing stays
+visible. No value of it, or of haemoglobin, defers anyone — the screening
+officer's outcome is still the verdict.
+
+**DECISION (the phlebotomist box):** `blood_collections` gains
+`blood_bag_type` (single/double/triple), `segment_number` (since renamed
+`donation_barcode` — see *Two-phase labeling and the donation barcode*), `started_at` and
+`ended_at`. "Phlebotomist" is the existing `collected_by`: the authenticated
+user, never request input. `collection_datetime` is written as `ended_at` for
+anything still reading it. The bag is **record only** — it does not cap the
+component breakdown. No maximum draw duration is enforced; that is a clinical
+constant nobody owns. All four columns are nullable in the database (legacy
+rows) and required by `RecordCollectionRequest`.
+
+**DECISION (segment uniqueness):** Unique per facility, as
+`unique(facility_id, segment_number)`. `facility_id` is copied onto
+`blood_collections` (backfilled from `donations`) because a unique index cannot
+reach through the donation. The request gives the friendly error; the service
+catches the violation — outside the transaction, since Postgres aborts it — and
+returns the same error. The number is normalised (scanner control characters
+and whitespace stripped, uppercased) on the counter, in the request and in the
+Testing page's lookup, so a scanned and a typed copy collide.
+
+**DECISION (two sections, each with its own author):** Immunohematology
+(`donation_immunohematology`) and serology (`donation_serology`) are separate
+rows, saved separately, each stamped `recorded_by`/`recorded_at` — the form's
+"Screened by". Two medical technologists can split the work, in either order.
+
+**DECISION (ABO + Rh as one blood_type_id):** The form prints two rows; the
+server keeps the combined `blood_types` code every other table already uses.
+The client shows two pickers and resolves them to the one row, and refuses a
+combination the centre has not set up rather than guessing.
+
+**DECISION (the panel):** Exactly five markers — HIV, HBsAg, HCV, Syphilis,
+Malaria — as columns, `reactive | non_reactive`, all required. The printed
+form's NAT and "Others" rows are not recorded. Each reading is final: repeat
+testing happens at the bench, so there is no initial/repeat pair and no
+per-marker inconclusive. `SerologyMarker` is the single definition.
+
+**DECISION (the derived summary):** `donation_test_results` is unchanged and is
+now written only by the Testing service: `passed` once both sections are in
+and every marker is non-reactive (the donation moves to `tested`, handed to
+Processing), or `reactive` when serology is reactive and a typing exists. The
+route that let a result be entered directly (`POST …/results`) and
+`RecordTestResultRequest` are removed: nothing may pass a donation without all
+five readings. This supersedes the SCOPE BOUNDARY line above that "nothing in
+`LaboratoryService` computes, infers or derives a result": it still never
+infers a reading, but it does roll the five up by the form's own rule.
+
+**CONSEQUENCE (legacy results):** A donation that passed under the old screen
+has a summary row and no serology. `guardReadyToComplete` refuses it
+(`serology_not_recorded`) until Testing records the panel, and the Testing
+queue (`stage=testing`) includes it. Legacy `inconclusive` rows still display
+and can still be rejected; `TestResult::Inconclusive` is never written again.
+
+**DECISION (the reactive chain):** Any reactive marker, in the same
+transaction as the reading: the donation is rejected with the fixed reason
+`LaboratoryService::REACTIVE_REJECTION_REASON`, and a `counselling_referrals`
+row is opened. After the commit the donor gets `DonorContactRequested`. The
+server refuses a reactive panel without `confirm_reactive: true`, and the
+sections are locked (`results_locked`) once a donation is rejected or
+completed, so a reactive result cannot be quietly undone.
+
+**DECISION (Testing rejects without lab.update_status):** The automatic
+rejection is the one exception to the department split. It is not a
+discretionary status write but the consequence of a reading only Testing may
+record; leaving it for Processing would leave a reactive bag in a queue looking
+like any other. Processing still rejects by hand, for anything else.
+
+**DECISION (the deferral is derived, not tabled):** A reactive result
+permanently defers the donor, and the referral row *is* that deferral.
+`DonorDeferralRepository::standingDeferralFor()` reads it alongside blocking
+screening outcomes and reports both the same three keys, so the counter cannot
+tell a laboratory deferral from a screening one. The more severe wins, then the
+more recent — a permanent deferral is no longer hidden behind a newer indefinite
+one. Closing a referral does not lift the deferral. A `donor_deferrals` table
+becomes worth it only when a deferral can be lifted or voided.
+
+**DECISION (the valid-ID path shows the deferral too):** `GET /donors/lookup`
+now carries `prior_deferral`, and the counter shows it. Before, a donor found by
+the ID card instead of the QR code skipped the notice.
+
+**DECISION (the privacy boundary):** Which marker was reactive appears in
+exactly two places: the Testing department's own view of a donation, and the
+Counselling Referrals list (`lab.referrals`, Testing only; supervisors by
+`all()`). It is never in a rejection reason, an audit log context, the scan
+payload, the donor history, Processing's view of the donation, or anything the
+donor receives. The referral note is encrypted at rest. Every read of the list
+is audited (`referral.list_viewed`).
+
+**DECISION (referral workflow):** `pending → contacted → referred → closed`,
+forward only, a step may be skipped, `closed` is final and needs a note.
+
+**DECISION (the donor notice):** In-app only, by the project owner's decision.
+"Please contact your blood centre … about your donation at {venue} on {date}",
+the hotline, and no rebooking action. It says nothing of a result, a test, a
+marker, an infection or a deferral: Section I-C tells the donor no official
+result is issued, and that conversation belongs to counselling. `DonorDeferred`
+is not used because it prints the reason.
+
+**DECISION (a separate Testing page):** The client's Testing department works
+at `/blood-center/testing` (queue, the two sections, and the referral list as a
+tab). `/blood-center/laboratory` is now the Processing page, gated on
+`lab.record_components`, and shows Testing's outcome read-only.
+
+**KNOWN GAPS:** A mis-keyed reactive result cannot be undone in the app. Legacy
+reactive donations are not flagged retroactively. A permanently deferred donor
+can still book, as for screening deferrals.
+
+---
+
+## Daily Blood Stock Inventory, facility logos, and component volumes
+
+**SOURCE:** SNBC-Mindanao's hand-kept "Daily Blood Stock Inventory as of
+<date> at 8AM" sheet, signed by a medical technologist.
+
+**DECIDED BY:** The project owner, on 2026-09-26.
+
+**DECISION (what counts as stock):** Units that are `available` **and** not
+past their expiry date, the same rule the hospital availability search uses.
+A unit past its date that the nightly sweep has not reached yet is not
+counted; a unit expiring today is, since it may be issued until the day
+ends. Reserved, issued, expired and discarded units never count.
+
+**DECISION (layout):** The sheet's three tables, as it draws them:
+- Rh-positive Packed RBC by expiry date;
+- an Rh-negative table of PRBC, FFP, Cryo, Platelet Concentrate and
+  Cryosupernate (the sheet has no Rh-negative Cryosupernate column; it is added
+  so that stock cannot be hidden);
+- an Rh-positive table of Platelet Concentrate, FFP, Cryo and Cryosupernate.
+
+Every other catalogue component (Whole Blood, Washed RBC, anything a centre
+adds) goes in a fourth "Other components" table, always shown, zeros
+included. Which component fills which place is
+`config('blood_center.stock_report.roles')`. Rows follow the sheet: A, B, O,
+AB within each Rh, each in its ABO colour band.
+
+**DECISION (dated columns follow the shelf life):** A component gets one
+column per expiry date when its shelf life at this facility is at or under
+that facility's Packed RBC shelf life (`stock_report.reference_component`).
+Red cells and platelets fall under it; frozen plasma products do not, and
+show a total. When Packed RBC itself has no shelf life set, 42 days
+(`dated_fallback_days`) stands in, and the report says so. A component with
+no shelf life configured shows a total, flagged "Shelf life not configured".
+Counts expiring today or tomorrow are boxed.
+
+**DECISION (who prepares it):** Issuance, by `inventory.create` (supervisors
+by `all()`), not the `inventory.view` every laboratory department holds. The
+"BY:" line is the signed-in user's name and recorded position. Each PDF
+download is audited (`inventory.stock_report_downloaded`).
+
+**DECISION (header):** "Republic of the Philippines / Department of Health /
+Davao Center for Health Development", then the facility's own name — from
+`stock_report.header`, fixed to Davao for now because every named institution
+sits under it. The DOH seal is bundled (`resources/images/doh-seal.png`,
+supplied with the deployment) and the right-hand logo is the facility's own
+upload. dompdf needs PHP's GD extension to draw either; without it the PDF
+still renders, with no images, rather than failing.
+
+**DECISION (facility logo):** Uploaded by a supervisor (`center.configure`)
+for their own facility only — the facility comes from the token. PNG or JPEG,
+2 MB at most; WebP is refused because dompdf cannot reliably draw it. Stored
+on the private `local` disk, never the public one; served to browsers by a
+30-minute signed route (`blood-center.facility.logo`), and inlined as a data
+URI in PDFs because remote fetching is off. Replacing it deletes the old file
+after the new path is saved.
+
+**DECISION (catalogue):** "Platelets" is renamed "Platelet Concentrate" in
+place — same row and id, so units, settings and request items are untouched —
+and "Cryosupernate" is added. Migration
+`2026_09_27_000001_add_cryosupernate_and_rename_platelets` does both on a
+live database and does nothing to an empty one (the seeder carries the full
+catalogue). `IndicationCode` P1–P6 and the Blood Request Form PDF, which look
+the component up by name, were changed with it.
+
+**DECISION (Processing records volume, per bag):** The component breakdown is
+one row per bag, with its volume in mL, instead of a count per component. Two
+bags of the same component are two rows, so the unique
+`(donation_id, component_id)` index is gone. Each row carries `quantity` 1;
+the column stays because inventory's ledger of declared bags is its sum, and
+breakdowns recorded before volumes were kept still hold a real count there.
+At intake each unit takes the volume of its component's next un-booked bag,
+in declaration order, and keeps it in `blood_units.volume_ml`. The 1–1000 mL
+bound is a typing guard, not a clinical rule; nothing compares the bags to the
+collected volume.
+
+## Staff roles: seven departments, eighteen roles
+
+> **REVISED (2026-09-27)** by "Staff form: five departments, custom roles, privileges" below: the Recruitment and Immunohematology departments and their six roles were withdrawn.
+
+**DECISION:** Access is keyed by a fixed **staff role** per account (`users.staff_role`, `App\Enums\StaffRole`), not by department. Each role sits in exactly one department, and `users.department` is derived from the role by `User`'s saving hook — it is never assigned on its own. The matrix in `DepartmentPermissions` is keyed by role; `for()` keeps its signature.
+
+| Department (value) | Roles |
+|---|---|
+| Donor Recruitment & Marketing (`recruitment`, new) | recruitment_officer, pr_specialist, drive_logistics_coordinator |
+| Blood Collection & Apheresis (`collection`) | screening_physician, phlebotomist, apheresis_specialist, medical_receptionist |
+| Component Processing & Manufacturing (`processing`) | component_technologist, processing_assistant |
+| TTI Testing (`testing`) | serology_technologist, lab_supervisor |
+| Immunohematology (`immunohematology`, new) | bloodbank_technologist, crossmatch_technician, reference_lab_consultant |
+| Inventory, Distribution & Quarantine (`issuance`) | inventory_control_officer, dispatch_coordinator, it_data_clerk |
+| Billing / Payment (`billing`, kept at the project owner's request) | billing_clerk |
+
+- `is_supervisor` stays the **Center Admin**: it holds every ability, but the clinical hard rules are enforced in services and models, so it is bound by them too.
+- Abilities split: `donations.record` → `donations.register | screen | collect | close`; `lab.record_result` → `lab.record_serology | lab.record_immunohematology`. New: `donors.view_contact`, `donors.view_clinical`, `donors.view_identity`, `inventory.release_quarantine`, `corrections.request`, `corrections.approve`. `requests.process` now gates allocation (the cross-matching technician's act).
+- Counselling referrals are the Laboratory Supervisor's alone: the technologists who record markers are blind to the donor.
+- Incoming blood-request notifications go to roles holding `requests.approve` or `requests.process`, not to a department.
+
+**BACKFILL:** `2026_09_28_000001_add_staff_role_to_users_table` gives each existing staff member their department's least-privileged core role (collection → phlebotomist, testing → serology_technologist, processing → component_technologist, issuance → inventory_control_officer, billing → billing_clerk). No account gains a data ability it lacked. **Caveat:** non-supervisor collection staff can no longer register or screen, and testing staff can no longer type ABO/Rh, until a supervisor reassigns them; the migration logs them by id for review.
+
+**CONSOLE:** `facility:add-user` takes `--role=` (with `--supervisor` for a working supervisor); `--department=` is gone.
+
+## Donor identity blinding
+
+**DECISION:** Laboratory and inventory payloads (`LaboratoryService::format`, the intake queue) carry the donor's name, code and uuid only to a viewer holding `donors.view_identity` — the receptionist, physician, chair roles, the Laboratory Supervisor and the Center Admin. Everyone else gets `{blinded: true, blood_type}` and works by donation barcode (formerly segment number) and donation id; the intake queue now carries the barcode for that reason (`App\Support\DonorBlinding`).
+
+Donor directory projections by role: `donors.view_contact` alone (Recruitment) gets a contact list — no blood type, birth date, history or deferrals; `donors.view` gets the registration record; the donation history (deferral reasons, final lab result, never the marker) needs `donors.view_clinical` (the physician). Collection payloads show screening vitals and reasons only to `donors.view_clinical`; everyone else sees the outcome.
+
+## Quarantine lifecycle
+
+**DECISION (Branch B, implemented):** Processing no longer waits for test results — plasma must be frozen within hours of the draw. `completed` now means *processed*: components declared, bags handed to Issuance. Units are booked in `quarantined` (new `BloodUnitStatus`, migration `2026_09_28_100001`), and leave quarantine only through `POST /inventory/quarantine/{donation}/release` (`inventory.release_quarantine`, the Inventory Control Officer), which requires:
+
+- both **clearance tokens** (`donation_clearances`: kinds `tti` and `immunohematology`, at most one in force per donation and kind; never deleted, and never edited except to be revoked once by an approved correction — the model refuses anything else);
+- a donation that was not rejected (a reactive result locks its bags in quarantine; discard is the only way out);
+- no bag past its date (all or nothing per donation).
+
+Other rules: the expiry sweep, allocation, hospital availability and the stock report ignore quarantined units; `InventoryService::update` never changes a quarantined unit's status; `FulfillmentService::release` refuses any unit whose donation lacks a token. `tested` now means both tokens were issued while the donation was still `collected`; a donation completed first stays `completed`.
+
+**BACKFILL:** `completed` donations get both tokens (their units are already available); `tested` donations get tokens for the sections actually recorded, and any missing one returns the donation to `collected`.
+
+**STILL OUTSTANDING:** Clinical sign-off from the capstone adviser or the partner blood center, as for the earlier decision.
+
+## Immunohematology clearance
+
+**DECISION:** The typing records forward group, reverse group and antibody screen alongside `blood_type_id` (whose ABO must equal the forward group). The immunohematology token is issued the moment a typing is concordant — forward equals reverse and the screen is negative — and the donor profile adopts the blood type at that moment, so a first-time donor's bags can be booked into quarantine before serology is back. A discrepant or antibody-positive typing is saved but held (`clearance_hold`), and changes only through a correction decided by the Reference Laboratory Consultant. A cleared typing is final.
+
+## Serology is cleared on save (no analytical runs)
+
+**DECISION (project owner, 2026-09-27):** Serology follows the DOH form's Section II — a result and who screened it — with no analytical run, run code, kit lot, analyzer or batch validation. Saving a non-reactive panel issues the TTI clearance at once; a reactive one rejects the donation at once. `DonationSerology` refuses to update or delete a reactive row, and there is no route that deletes a result. An analytical-run design with supervisor batch validation and QC failure was built and withdrawn at the owner's request before it reached any data.
+
+**UI:** TTI Testing and Immunohematology share one page (`/blood-center/testing`), each role seeing only its own card; the Immunohematology department and its roles are unchanged on the server.
+
+## Correction requests
+
+**DECISION (requested by the project owner, 2026-09-27):** A saved record — screening, collection box, immunohematology typing, serology panel, component breakdown — is never saved over, by anyone (`409 correction_required`). The staff member whose role writes it files a correction request (`POST /donations/{id}/corrections`) with the corrected values and a reason; the values are validated with the original write's own form request. The department's approver (`Department::correctionApprover()`: Collection → screening physician, Processing → component technologist, TTI Testing → lab supervisor, Immunohematology → reference lab consultant) or the Center Admin approves or rejects it. Nobody decides their own request, and an approver's own request goes to the Center Admin rather than a peer.
+
+An approved correction is applied through the original write, as the requester, inside the approval's transaction — so every guard still applies. A reactive serology result can never be corrected. A cleared result (typing or serology) can be corrected only while none of the donation's bags has left quarantine (`409 units_released`, re-checked at approval): approving revokes the token in force, resets `tested` and the derived `passed` summary, and the corrected result earns a new token only if it qualifies. An approval that a guard refuses applies nothing — no revocation either — and leaves the request pending. The collection box has its own correction write (`CollectionService::correctCollection`), refused once units are booked against the donation. Audit: `correction.requested | approved | rejected | applied` (field names only, never marker values).
+
+**NOT YET BUILT (Phase 3):** fleet and assets for drives, apheresis procedure metrics, processing environment logs, electronic crossmatch verification, rare-antibody profiles and rare-unit tags, shipping manifests and transit temperatures, a facility audit viewer and barcode verification, anonymous aggregate statistics for PR, recruitment outreach records.
+
+## Staff form: five departments, custom roles, privileges
+
+**DECISION (project owner, 2026-09-27):** The Add Staff use case sets access with: first and last name, email, a temporary password (typed or generated, as in the super admin form), **Title** (typed, or RMT / RN), **Department**, **Role** and **Privileges**.
+
+- **Five departments:** Donor/Collection (`collection`), Processing, Testing, Issuance, Billing. The Recruitment roles (recruitment officer, PR specialist, drive logistics) and Immunohematology roles (blood bank specialist, cross-matching technician, reference lab consultant) were dropped at the owner's choice. Testing took over typing — the serology technologist and lab supervisor hold `lab.record_immunohematology`, and the lab supervisor approves typing corrections; allocation stays with the Inventory Control Officer; the medical receptionist took over drives. Migration `2026_09_28_100006` leaves any account holding a dropped role role-less (fail-closed).
+- **Role** is typed or picked. A picked role is a `StaffRole` with its exact matrix entry, and fixes the department. A typed role that names a predefined one becomes it; otherwise it is stored as `users.custom_role`, needs a department, and holds that department's combined ability set less `corrections.approve` (approval belongs to the named approver role).
+- **Privileges** (`users.staff_privileges`: read / write / update / delete) cap the role — `DepartmentPermissions::KIND` sorts every ability into one of the four, and only ticked kinds survive; `reference.view` and `reports.view_own` survive any cap. Null (every account created earlier) means all four. The Center Admin is never capped. Changes are audited as `staff.privileges_changed`.
+- **Title** is `users.position`, a label only.
+
+
+## Walk-in requests, partial fulfilment and follow-ups
+
+**DECISION (project owner, 2026-09-27):** There are still two request purposes — Blood Bank Replenishment and Patient Transfusion. What is new is the *source*: `blood_requests.request_source` is `blood_bank_portal` (every request before this, and every portal submission) or `blood_center_walk_in`.
+
+- **Walk-in (D1):** a watcher who brings a patient's request straight to a blood centre. Issuance phones the hospital blood bank first; while they are on the call nothing is saved, and if the hospital does not confirm, nothing is recorded. Only a confirmed request is created (`POST /blood-center/blood-requests/walk-in`, ability `requests.record`, held by the Inventory Control Officer and Dispatch Coordinator). It is the hospital's request — `facility_id` is the hospital, it takes the next number in the hospital's `RQ-{hospital}` sequence, it appears in the hospital's own list — with `requested_by` null and `recorded_by` the centre staff member. The watcher is stored as the representative who presented it, and the hospital staff member who confirmed it (name, position, number called, time) on `blood_request_walk_ins`. None of that is written to `audit_logs`. Purpose is forced to Patient Transfusion; replenishment stays portal-only.
+- **Registered hospitals only (D2):** the hospital must be an approved `blood_bank` facility.
+- **Duplicates:** before the call, `POST …/walk-in/duplicates` looks for the hospital's active requests for the patient (reference number, or name and blood type within 14 days). A request already at this centre is opened instead; one part-filled elsewhere can be continued as a follow-up; anything else needs a written reason (`duplicate_acknowledgement`), re-checked under the hospital's lock on save. The portal warns the hospital the same way (`POST /hospital/blood-requests/patient-matches`). *(Superseded 2026-09-30: matches are now Patient Transfusion Requests, and "follow-up" is "continue" — see the next section.)*
+- **Fulfilment is counted at dispatch (D3):** `RequestStatusResolver` is the one place a status is derived. Anything released makes a request Partially Fulfilled; every requested unit released makes it Fulfilled. Receipt is still stamped per unit by the hospital and reported as "received x of y", but no longer moves the status. This replaces the rule that a request was only fulfilled on receipt, and fixes a top-up knocking a partial request back to Processing. `php artisan requests:resettle` (with `--dry-run`) brings requests settled under the old rule into line.
+- **Requested versus fulfilled:** a line's `quantity` is never changed. A remainder the centre cannot supply is closed with a reason (`unavailable`); one the hospital no longer needs is closed as `not_needed`. When every line is supplied, closed or forwarded, a short request stays `partial` with `closed_at` set — shown as "Partially Fulfilled (Closed)" — and can no longer be allocated. Closing every line of a request nothing was supplied on is refused: that is a rejection or a cancellation.
+- **Remainder from another facility (D4):** *superseded 2026-09-30 by "Patient Transfusion Requests and facility allocations" below.* A follow-up (`parent_request_id`, per-line `parent_item_id`) asked another centre for what was left; follow-ups, their columns and `POST /hospital/blood-requests/{id}/follow-up` are removed, and existing chains were folded into Patient Transfusion Requests.
+- **History:** every change writes one append-only `blood_request_events` row — who, from which facility, status from and to, and every line's requested / reserved / fulfilled / received / remaining at that moment. Both portals read it (`GET …/{id}/history`).
+
+**CONSEQUENCE:** There is still no MOA/partner relationship between a hospital and a blood centre in the schema; a request may be addressed to any approved centre. A walk-in's billing is raised against the hospital like any other request (every component is subsidised today).
+
+## Patient Transfusion Requests and facility allocations
+
+**DECISION (project owner, 2026-09-30):** A patient's need is the primary record, and it may be split across several blood centres. This replaces follow-ups (D4 above). Blood Bank Replenishment is unchanged: one request to one centre.
+
+| Term (UI) | Code | Reference | What it is |
+|---|---|---|---|
+| Patient Transfusion Request | `TransfusionRequest` / `transfusion_requests` | `PTR-{hospital}-NNNN` | The patient's overall requirement per component. Its quantities are never edited. |
+| Facility Allocation | `BloodRequest` with `transfusion_request_id` set | `RQ-{hospital}-NNNN` | One centre's share. The centre's queue, Approve & Reserve (FEFO), reject, close-line, release, receipt, billing and the DOH form all work on it exactly as on any blood request. |
+| Reserved units | `RequestAllocation` / `request_allocations` | — | The bags a centre holds for its allocation. Unchanged. |
+| Requested / Approved / Remaining Units | derived | — | Per component: asked of centres; reserved + released (approval reserves, S2); `required − approved`. |
+| Unallocated | derived | — | `required − approved − awaiting`, 0 once the hospital closes the line. What can still be asked of another centre. |
+| Facility Allocation Status | the allocation's own status | — | Shown to the hospital as Awaiting review / Approved — units reserved / Partly released / Released / Rejected / Withdrawn. |
+| Overall Request Status | derived, `TransfusionRequestResolver` | — | Pending → Processing (anything approved) → Partial (anything released) → Fulfilled (everything released). Partial with `closed_at` when every line is resolved short. Cancelled is the only explicit state. |
+
+- **Recording (S1):** `POST /hospital/transfusion-requests`. The form requires staff to confirm the hospital's own stock cannot cover the patient (`internal_stock_confirmed`, stored as `internal_stock_checked_at`) — RedAgos holds only the stock it delivered and the hospital confirmed receiving (see "Hospital Blood Bank inventory and tagging"); the rest of the hospital's shelf is still checked by hand. The requirement and its first allocations are written in one transaction: one allocation per centre, with a line per component asked of it.
+- **Sourcing (S4):** `POST …/sourcing` (a draft) and `GET …/{id}/sourcing` (what is still unallocated) list the centres holding matching issuable stock, earliest expiry first, then the deepest shelf, and suggest a greedy split. Centres holding none are listed too. It is advice and holds nothing.
+- **Never more, sometimes less (S3):** asking centres for more of a component than is unallocated is refused. The check runs under the requirement's row lock, so two members of staff cannot ask for the same missing unit. Asking for less is allowed; the rest stays unallocated, and the hospital is shown "units still unallocated — search again" (`needs_allocation`). A centre still reviewing an earlier allocation for the patient is not asked again until it answers.
+- **What flows back:** a rejected or withdrawn allocation, and a remainder a centre closes as unavailable, stop counting as awaiting and become unallocated again. Every allocation write calls `TransfusionRequestResolver::settleParentOf()`: approve, reject, return holds, hold expiry, close line, release, receipt and withdraw.
+- **Hospital actions:** add allocations (`POST …/{id}/allocations`); withdraw an allocation nobody has answered (`POST …/{id}/allocations/{allocation}/withdraw`); close the rest of a component the patient no longer needs (`POST …/{id}/items/{item}/close`), which closes that component on every open allocation and withdraws an allocation left asking for nothing; cancel (`POST …/{id}/cancel`), allowed only while no unit is reserved or released for the patient. A transfusion allocation's line cannot be closed from the allocation page; it is closed on the requirement.
+- **Walk-ins:** a confirmed walk-in creates the requirement (source `blood_center_walk_in`) and one allocation to the recording centre for all of it; the walk-in row stays on that allocation. The duplicate lookup matches requirements:
+  - `here`: this centre already has an open allocation of it, so open that;
+  - `continue`: some units are unallocated, so this centre adds its own allocation to the same requirement (`transfusion_request_id`, `items.*.transfusion_request_item_id`);
+  - `duplicate`: a reason is needed.
+- **Locks:** always the hospital's facility row (for the reference sequences), then allocations in id order, then the requirement. Closing a line or cancelling re-reads the allocation set once it holds the requirement, and refuses with `request_changed` if another centre was asked in between.
+- **History:** requirement-level events (`transfusion_created`, `allocations_added`, `requirement_closed`, `transfusion_cancelled`) have `request_id` null. Every allocation event is also stamped with `transfusion_request_id`, so the requirement's timeline is one query.
+- **Existing data:** migration `2026_09_30_100004` folds every Patient Transfusion request and its follow-up chain into one requirement, then drops `parent_request_id` / `parent_item_id`. The chain's first request supplies the requirement's lines; a follow-up line for a component it never had adds one. A chain every centre refused or that was withdrawn becomes a cancelled requirement. Replenishment follow-ups simply become independent requests. Run `php artisan requests:resettle` afterwards to give each requirement its status. `down()` refuses once any requirement has more than one allocation.
+
+**CONSEQUENCE:** `POST /hospital/blood-requests` accepts replenishment only. `POST /hospital/blood-requests/patient-matches` moved to `POST /hospital/transfusion-requests/patient-matches`. Hospital notifications for a transfusion allocation open the requirement's page.
+
+## Two-phase labeling and the donation barcode
+
+**SOURCE:** The partner blood center's labeling practice: a base label at component processing, then the legal label at release from quarantine. Its bags carry pre-printed **barcode stickers**; it has no "segment number".
+
+**DECIDED BY:** The project owner, on 2026-09-28.
+
+**DECISION (the sticker is the donation's one ID):** `blood_collections.segment_number` is renamed `donation_barcode` (migration `2026_09_30_000001`, which also renames the unique index to `blood_collections_facility_barcode_unique`; `down()` reverses both). `RecordCollectionRequest` normalises it as before (scanner control characters and whitespace stripped, uppercased), then requires `^[A-Z0-9-]+$`, at most 30 characters. That keeps every bag number inside the 50-character `blood_units.id` and the `/inventory/{unit}` route pattern. The Testing and Stock Intake lookups filter by `?barcode=`. A correction request filed before the rename still applies: `CorrectionService::approve` maps a `segment_number` key to `donation_barcode`.
+
+**DECISION (bag numbers, computed on read):** A bag's number is `{barcode}-{CODE}`, with `-2`, `-3` from the second bag of the same component on (`1234567-PRBC`, `1234567-FFP`, `1234567-PRBC-2`). `App\Support\BagNumbers` derives it from the component rows in id order; it is never stored, so a barcode corrected before intake renumbers every bag. Rows with no number:
+- a donation with no barcode (recorded before the rename);
+- a legacy row with `quantity` > 1 and no volume.
+
+`blood_components.code` (migration `2026_09_30_000002`: WB, PRBC, FFP, PC, CRYO, WRBC, CSP; the seeder writes the same) supplies `CODE`. A component with no code falls back to the initials of its name (`BloodComponent::labelCode()`).
+
+**DECISION (booking in):** For a barcoded donation, Stock Intake books each bag under the number of the next unbooked bag of its component (the same FIFO walk that supplies its volume). A typed `unit_id` is refused (422 `units.N.unit_id`). A donation with no barcode keeps the old path: a typed id or `RA{facility}-{donation}-NN`. `blood_units.id` is global but stickers are unique only per facility, so a bag number already used anywhere is refused with 409 `bag_number_taken`. That is the one place two centres could collide.
+
+**DECISION (Phase 1, Processing):** The laboratory payload carries `donation_barcode` and each bag's `bag_number`. Processing may print a base label per numbered bag: bag number, component, volume, barcode and "QUARANTINE — NOT FOR ISSUE". It carries no blood type and no clearance. The card is now "Hand-over to Issuance".
+
+**DECISION (Phase 2, Issuance):** Release from quarantine moves from Blood Inventory to **Stock Intake**; Blood Inventory shows quarantine read-only. A release now stamps each bag's `released_at` and `released_by` (migration `2026_09_30_000003`) and returns the final label data, so the labels print at once. `GET /inventory/donations/{donation}/labels` (`inventory.create`) reprints them. It covers released bags only (available, reserved or issued) and refuses with 409 `not_released` while none is released. Each reprint is audited as `inventory.labels_printed`. Each final label carries:
+- the verified blood type (the profile type, which the typing guard keeps equal to the cleared typing);
+- component, volume, expiry and bag number;
+- one line per clearance token, with its code (`TTI-` or `IH-` plus the token id, zero-padded to six digits), when it was issued and by whom;
+- who released the bag and when.
+
+It never carries the donor's name.
+
+**DECISION (printing):** Labels print from the browser as text, one per 100 mm × 100 mm page (`BagLabelSheet.vue`, `useLabelPrint`). The sheet is the only thing printed, which also fixes the Blood Inventory print that used to print the whole dashboard. No barcode is drawn, because the sticker already is one.
+
+**KNOWN LIMITATIONS:**
+- Bag numbers are global. If two centres use the same sticker series, the second booking is refused. The remedy then is a facility prefix on the number.
+- Labels carry no printed barcode. One can be added later (e.g. JsBarcode) without changing the data.
+
+## Hospital Blood Bank inventory and tagging
+
+**SOURCE:** `docs/hospital-blood-bank-inventory-rules.md`: a Tag is a specific physical bag held for a specific patient. Tag Assigned has 24 hours for crossmatching; Tag Crossmatched has 24 hours for transfusion. When a period runs out, the tag ends as Untagged Assigned or Untagged Crossmatched, and the history is kept.
+
+**DECIDED BY:** The project owner, on 2026-10-02. That covers the four questions the specification left open: where stock comes from, how a tag names its patient, early release, and what happens to a bag after Untagged Crossmatched.
+
+**DECISION (stock comes from receipt only):** A hospital blood bank's own stock is the bags it confirmed receipt of, from now on.
+- `FulfillmentService::confirmReceipt()` calls `HospitalInventoryService::stockReceived()` in the same transaction. That call inserts one `hospital_units` row per received hold, as `available`. It only inserts, so receipt's lock order is unchanged.
+- The response gains `stocked_count`.
+- Bags received before this existed are not backfilled, because many of them will have been used already.
+- Bags from outside RedAgos are not booked in: `blood_units.id` is global and `donation_id` is required.
+
+**DECISION (a custody table, not a status on blood_units):**
+- `hospital_units` holds one row per physical bag in a hospital's custody. It has one row per bag, not one per state, and its status is `available | tag_assigned | tag_crossmatched | pending_return | transfused | expired | discarded`.
+- The bag's own facts (type, component, volume and **expiry**) stay on the centre's `blood_units` row. They are read through `unit_id` and never copied, so a tag cannot reset an expiry date. FEFO orders by `blood_units.expiry_date`.
+- The centre's side of the bag is not touched. It stays `issued` with the centre's `facility_id`, so the centre's summary, its expiry sweep and FEFO allocation behave exactly as before.
+- Why not extend existing structures:
+  - Adding statuses to `BloodUnitStatus` would change the centre's summary payload and its unscoped sweep.
+  - `request_allocations` is the centre-to-hospital custody row. It has no hospital `facility_id`, and putting hospital state on it would couple the two modules.
+- `unit_id` and `request_allocation_id` are both unique. That holds because a dispatched hold is never cancelled and its bag never re-allocated.
+
+**DECISION (one tag row per lifecycle, never deleted):** `unit_tags` holds one row from tagging to its end. The row carries:
+- the patient;
+- an optional `transfusion_request_id`;
+- each stage's moment and actor;
+- both deadlines;
+- `untag_reason` (`crossmatch_deadline_expired | transfusion_deadline_expired | released_by_staff`) and `untag_note`;
+- `returned_at` / `returned_by`.
+
+The model refuses deletion and refuses changes to the patient or the tagging moment. Once the tag has ended, it refuses everything except stamping the return. Re-tagging a bag writes a new row. A partial unique index `unit_tags_active_hospital_unit_unique ON (hospital_unit_id) WHERE status IN ('tag_assigned','tag_crossmatched')` (pgsql and sqlite) backs the row lock. It means a bag can never be held for two patients at once.
+
+**DECISION (patient on the tag, optional PTR):** Staff enter the patient on the tag: surname, first name, age and sex are required; middle name, record number, ward, attending physician and blood type are optional. A patient served from the hospital's own shelf has no Patient Transfusion Request, because the PTR form requires confirming that own stock *cannot* cover them. Naming one of the hospital's PTRs fills in whatever the request leaves out.
+- Another hospital's PTR is 404 `transfusion_request_not_found`.
+- A cancelled PTR is 409 `transfusion_request_closed`.
+
+**DECISION (the 24-hour boundary):**
+- Instants come from `now()->startOfSecond()`, never from `OperationalDay`, which would introduce a timezone skew.
+- `crossmatch_deadline_at = tagged_at + 24h` and `transfusion_deadline_at = crossmatched_at + 24h`.
+- At the deadline counts as past it. A tag placed at 08:00 can be crossmatched until 07:59:59 the next day.
+- From that second, crossmatch and transfuse are refused with 409 `tag_deadline_passed`, whether or not the sweep has run. A refused write never untags inline, because the refusal rolls back. The sweep is the only system writer.
+
+**DECISION (early release, with a reason):** `POST /hospital/inventory/{unit}/release` (reason required) ends an active tag as Untagged Assigned or Untagged Crossmatched, with `released_by_staff`, the note and the staff member. Typical reasons are an incompatible crossmatch, a discharged patient or a cancelled order. A release after the deadline but before the sweep is allowed and recorded the same way.
+
+**DECISION (Pending Return):** A crossmatched bag has left storage. When its tag ends, by deadline or by release, the bag becomes `pending_return`, not `available`. Staff then either confirm it is back in storage (`POST …/return`, which stamps the tag's `returned_at`, and the bag becomes available) or discard it (`POST …/discard`, reason required). A Tag Assigned bag never left storage, so it returns to `available` at once.
+
+**DECISION (two schedules):**
+- `hospital:expire-tags` runs `everyMinute()->withoutOverlapping(10)->onOneServer()`.
+  - It follows D11: candidates are selected unlocked, then bags and tags are locked in id order (the order staff writes take), the status and deadline are re-asserted, and the update and its audit rows commit together.
+  - It writes a run row (`hospital_inventory.tag_sweep`) only when it untags something, since 1,440 empty rows a day would say nothing.
+  - The overlap lock expires after 10 minutes, because the default is a full day.
+- `hospital:expire-units` runs daily at 00:30 Manila, like the centre sweep. It moves `available` hospital bags past their date to `expired`.
+  - It never writes `blood_units`, and `inventory:expire-units` is unchanged.
+  - Its run row (`hospital_inventory.expiry_swept`) is written every run and doubles as the hospital scheduler's heartbeat.
+- `GET /hospital/inventory/summary` reports `overdue_active_tags`. A value that stays above zero means the tag sweep is not running.
+
+**DECISION (audit):**
+- Every transition is audited against the centre's `BloodUnit`, so a bag's whole history, centre and hospital, is one query. The actions are `hospital_inventory.stocked | tagged | crossmatched | transfused | untagged | returned | discarded | expired`.
+- Context carries `facility_id`, `hospital_unit_id`, `tag_id`, `transfusion_request_id`, `previous_status`, `new_status` and the relevant deadline. An untag also carries the reason and note. Scheduler rows add `source` and `run_id`.
+- Patient names stay out of `audit_logs`; the `unit_tags` row is the patient-bearing history.
+
+**API:** All routes are under `/hospital/inventory`, using the hospital group's `role:blood_bank` and `facility.operational` (no abilities):
+- `GET /` (filters `status`, `blood_type_id`, `component_id`, `transfusion_request_id`, `expiring_within_days`, `search`)
+- `GET /summary`, `GET /tag-events`, `GET /{unit}`
+- `POST /{unit}/tag | crossmatch | transfuse | release | return | discard`
+
+`{unit}` is the bag number, resolved within the caller's facility, so another hospital gets a bare 404. The refusal codes are:
+- 404: `unit_not_found`, `transfusion_request_not_found`
+- 409: `unit_not_available`, `invalid_transition`, `tag_deadline_passed`, `bag_expired`, `unit_not_discardable`, `transfusion_request_closed`
+
+Hospital reference data adds `inventory_statuses`, `tag_statuses` (with the "Crossmatch pending" / "Awaiting transfusion" line) and `untag_reasons`.
+
+**DECISION (defaults where the specification is silent, to confirm):**
+1. Tagging does not block on ABO/Rh. The client warns when a linked PTR's blood type differs from the bag's, and crossmatch stays the clinical check.
+2. "Crossmatch" records a completed, compatible crossmatch. An incompatible one is handled by releasing the tag with that reason.
+3. A bag past its date cannot be tagged, crossmatched or transfused (409 `bag_expired`). A tagged bag that passes its date keeps its tag until release or the deadline. There is no automatic `bag_expired` untag.
+4. A pending-return bag confirmed back after its date returns to `available`, and the nightly run expires it.
+5. No notifications are sent when a tag lapses; the countdown on screen is the signal.
+6. Any blood-bank account may perform every action, because blood banks have no departments or abilities.
+7. Transfusion does not feed the PTR's status, billing or reports.
+
+```mermaid
+stateDiagram-v2
+    [*] --> available: receipt confirmed
+    available --> tag_assigned: tag (crossmatch deadline +24h)
+    tag_assigned --> tag_crossmatched: crossmatch before deadline (transfusion deadline +24h)
+    tag_assigned --> available: deadline or release (tag = untagged_assigned)
+    tag_crossmatched --> transfused: transfuse before deadline
+    tag_crossmatched --> pending_return: deadline or release (tag = untagged_crossmatched)
+    pending_return --> available: return confirmed
+    pending_return --> discarded: discard
+    available --> expired: bag past its date (daily)
+    available --> discarded: discard
+    expired --> discarded: discard
+    transfused --> [*]
+    discarded --> [*]
+```
+
+**KNOWN LIMITATIONS:**
+- `hospital_units.unit_id` is unique. A future return-to-centre flow would need it relaxed to a partial "active custody" index, as `request_allocations` was.
+- Hospital stock has no storage location of its own. The centre's `storage_location` describes the centre's shelf and is not shown.
+- Deadlines have second precision, matching `timestamp` columns.
+
+**STILL OUTSTANDING:**
+- The PTR form's `internal_stock_confirmed` could now show matching in-stock counts.
+- The Transfused list is not windowed.

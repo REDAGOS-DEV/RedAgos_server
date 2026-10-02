@@ -49,4 +49,51 @@ return [
         'Platelet Agitator 1',
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Daily Blood Stock Inventory
+    |--------------------------------------------------------------------------
+    |
+    | The report laid out as SNBC-Mindanao's daily sheet: three tables for the
+    | components the sheet names, and an "other components" table for the rest.
+    |
+    | `header` is printed above the facility's own name. It is the Davao Center
+    | for Health Development's for now, because every named institution in the
+    | study sits under it; a per-facility regional office is a later change.
+    |
+    | `roles` names which catalogue component fills each place on the sheet.
+    | A component not named here is an extra.
+    |
+    | `reference_component` sets the dated-column rule: a component gets one
+    | column per expiry date when its configured shelf life is at or under this
+    | component's, at this facility. Red cells and platelets fall under it;
+    | frozen plasma products do not. `dated_fallback_days` stands in when the
+    | reference component itself has no shelf life configured.
+    |
+    */
+
+    'stock_report' => [
+        'header' => [
+            'Republic of the Philippines',
+            'Department of Health',
+            'Davao Center for Health Development',
+        ],
+
+        'roles' => [
+            'prbc' => 'Packed RBC',
+            'platelets' => 'Platelet Concentrate',
+            'ffp' => 'Fresh Frozen Plasma',
+            'cryo' => 'Cryoprecipitate',
+            'csp' => 'Cryosupernate',
+        ],
+
+        'reference_component' => 'Packed RBC',
+
+        'dated_fallback_days' => 42,
+
+        // Bundled with the application, not uploaded: the same seal for every
+        // facility under the Department of Health.
+        'seal_path' => resource_path('images/doh-seal.png'),
+    ],
+
 ];

@@ -2,11 +2,14 @@
 
 namespace App\Repository;
 
+use App\Enums\AppointmentStatus;
 use App\Enums\DonationStatus;
 use App\Models\BloodCollection;
 use App\Models\Donation;
 use App\Models\DonationAppointment;
+use App\Models\DonationScreening;
 use App\Models\DonorQrToken;
+use App\Support\OperationalDay;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
@@ -27,9 +30,9 @@ class CollectionRepository
     public function appointmentsForDay(int $facilityId, string $date, ?string $status = null): Collection
     {
         return DonationAppointment::query()
-            ->with(['donorProfile.donor', 'donorProfile.bloodType'])
+            ->with(['donorProfile.donor', 'donorProfile.bloodType', 'donation'])
             ->where('facility_id', $facilityId)
-            ->whereDate('appointment_datetime', $date)
+            ->whereBetween('appointment_datetime', OperationalDay::boundsFor($date))
             ->when($status !== null, fn (Builder $q): Builder => $q->where('status', $status))
             ->orderBy('appointment_datetime')
             ->orderBy('id')
@@ -61,7 +64,10 @@ class CollectionRepository
     public function findUsableQrToken(string $tokenHash): ?DonorQrToken
     {
         return DonorQrToken::query()
-            ->with(['donorProfile.donor', 'donorProfile.bloodType'])
+            // `screening` here is the donor's own eligibility questionnaire,
+            // not the counter's DonationScreening. Different model, no
+            // recorder — the two are named alike and mean different things.
+            ->with(['donorProfile.donor', 'donorProfile.bloodType', 'screening'])
             ->where('token_hash', $tokenHash)
             ->whereNull('revoked_at')
             ->where('expires_at', '>', now())
@@ -75,9 +81,13 @@ class CollectionRepository
      * should not be locked out of their own appointment. `last_used_at` is an
      * audit fact, not a consumption flag.
      */
-    public function stampQrTokenUse(DonorQrToken $token): void
+    public function stampQrTokenUse(DonorQrToken $token, ?int $facilityId = null): void
     {
         $token->last_used_at = now();
+        // Which centre saw it, not just when. A scan here today is one of the
+        // ways a donor counts as having presented at this facility, which is
+        // what reading their health questionnaire is gated on.
+        $token->last_used_facility_id = $facilityId;
         $token->save();
     }
 
@@ -92,8 +102,8 @@ class CollectionRepository
         return DonationAppointment::query()
             ->where('donor_id', $donorId)
             ->where('facility_id', $facilityId)
-            ->whereDate('appointment_datetime', $date)
-            ->whereIn('status', ['scheduled', 'confirmed'])
+            ->whereBetween('appointment_datetime', OperationalDay::boundsFor($date))
+            ->whereIn('status', AppointmentStatus::activeValues())
             ->orderBy('appointment_datetime')
             ->first();
     }
@@ -126,7 +136,14 @@ class CollectionRepository
     public function findDonation(int $donationId, int $facilityId): ?Donation
     {
         return Donation::query()
-            ->with(['donorProfile.donor', 'donorProfile.bloodType', 'appointment'])
+            ->with([
+                'donorProfile.donor',
+                'donorProfile.bloodType',
+                'appointment',
+                'screening.recorder',
+                'screening.fingerprickBloodType',
+                'collection.collector',
+            ])
             ->where('id', $donationId)
             ->where('facility_id', $facilityId)
             ->first();
@@ -141,7 +158,13 @@ class CollectionRepository
     public function paginateDonations(int $facilityId, array $filters, int $perPage)
     {
         return Donation::query()
-            ->with(['donorProfile.donor', 'donorProfile.bloodType'])
+            ->with([
+                'donorProfile.donor',
+                'donorProfile.bloodType',
+                'screening.recorder',
+                'screening.fingerprickBloodType',
+                'collection.collector',
+            ])
             ->where('facility_id', $facilityId)
             ->when(
                 isset($filters['status']),
@@ -149,7 +172,10 @@ class CollectionRepository
             )
             ->when(
                 isset($filters['date']),
-                fn (Builder $q): Builder => $q->whereDate('donation_date', $filters['date'])
+                fn (Builder $q): Builder => $q->whereBetween(
+                    'donation_date',
+                    OperationalDay::boundsFor($filters['date'])
+                )
             )
             ->when(
                 $filters['open_only'] ?? false,
@@ -182,5 +208,30 @@ class CollectionRepository
     public function collectionExists(int $donationId): bool
     {
         return BloodCollection::query()->where('donation_id', $donationId)->exists();
+    }
+
+    /**
+     * Record or correct the on-site screening outcome for a donation.
+     *
+     * `donation_screenings.donation_id` is unique, so a correction edits the
+     * existing row rather than adding a second — there is never an ambiguity
+     * about which assessment let the donor proceed.
+     *
+     * @param  array<string, mixed>  $attributes
+     */
+    public function upsertScreening(int $donationId, array $attributes): DonationScreening
+    {
+        return DonationScreening::updateOrCreate(
+            ['donation_id' => $donationId],
+            $attributes
+        );
+    }
+
+    /**
+     * Determine whether a screening has already been recorded for a donation.
+     */
+    public function screeningExists(int $donationId): bool
+    {
+        return DonationScreening::query()->where('donation_id', $donationId)->exists();
     }
 }

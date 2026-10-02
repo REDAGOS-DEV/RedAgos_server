@@ -3,11 +3,14 @@
 namespace App\Service;
 
 use App\Enums\AccountStatus;
+use App\Enums\IdentityStatus;
 use App\Enums\RoleName;
+use App\Enums\ScreeningOutcome;
 use App\Models\Donation;
 use App\Models\Facility;
 use App\Models\User;
 use App\Repository\BloodCenterRepository;
+use App\Repository\DonorDeferralRepository;
 use App\Repository\DonorDirectoryRepository;
 use App\Support\AccountIdentity;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
@@ -37,11 +40,19 @@ class DonorDirectoryService
     public function __construct(
         private readonly DonorDirectoryRepository $donorDirectoryRepository,
         private readonly BloodCenterRepository $bloodCenterRepository,
-        private readonly AuditLogger $auditLogger
+        private readonly AuditLogger $auditLogger,
+        private readonly DonorDeferralRepository $donorDeferralRepository
     ) {}
 
     /**
      * Page the donors this facility has dealt with.
+     *
+     * Two shapes, by role. A holder of donors.view (the counter and the
+     * screening physician) gets the registration summary. Anyone reaching the
+     * list on donors.view_contact alone — Recruitment — gets a contact list:
+     * who to call and when they may give again, with no blood type or birth
+     * date, which are part of the donor's record rather than their contact
+     * details.
      *
      * @param  array<string, mixed>  $filters
      * @return LengthAwarePaginator<int, array<string, mixed>>
@@ -49,10 +60,11 @@ class DonorDirectoryService
     public function browse(User $staff, array $filters, int $perPage): LengthAwarePaginator
     {
         $facility = $this->requireFacility($staff);
+        $full = $staff->can('donors.view');
 
         return $this->donorDirectoryRepository
             ->browseForFacility($facility->id, $filters, $perPage)
-            ->through(fn (User $donor): array => $this->summarise($donor));
+            ->through(fn (User $donor): array => $full ? $this->summarise($donor) : $this->contact($donor));
     }
 
     /**
@@ -60,6 +72,11 @@ class DonorDirectoryService
      *
      * The lookup is audited whichever shape it returns: reading a donor this
      * centre has never met is exactly the access that needs a trail.
+     *
+     * Reachable on appointments.verify, so the collection chair can confirm
+     * the person in front of them. A caller without donors.view gets the
+     * identity fields and the deferral notice only — enough to match the ID
+     * card, not the registration record.
      *
      * @return array<string, mixed>
      */
@@ -78,7 +95,20 @@ class DonorDirectoryService
             'scope' => $isOwn ? 'own_facility' : 'cross_facility',
         ]);
 
-        return $this->present($donor, $facility, $isOwn);
+        $shape = $staff->can('donors.view')
+            ? $this->present($donor, $facility, $isOwn)
+            : [...$this->identity($donor), 'scope' => $isOwn ? 'own_facility' : 'cross_facility', 'restricted' => true];
+
+        return [
+            ...$shape,
+
+            // The same notice the QR scan carries, for a donor found by the ID
+            // card in their hand instead. Without it a donor who left their
+            // phone at home walks past the one warning that they must never
+            // be bled. Outcome and date only — never a reason, never which
+            // department recorded it — so it is safe in either shape.
+            'prior_deferral' => $this->donorDeferralRepository->standingDeferralFor($donor->id)?->toArray(),
+        ];
     }
 
     /**
@@ -137,6 +167,45 @@ class DonorDirectoryService
                 'status' => $donation->status?->value,
                 'status_label' => $donation->status?->label(),
                 'volume_ml' => $donation->volume_ml,
+
+                // What the screening officer decided, and why. Without this a
+                // deferred visit reads as a bare "Rejected" with the reason
+                // recorded nowhere a colleague can find it — which is the whole
+                // question a staff member opens this page to answer.
+                //
+                // This is the gated surface the scan response deliberately
+                // withholds the reason from: the endpoint already refuses
+                // unless the caller's facility has a relationship with the
+                // donor.
+                'screening' => $donation->screening === null ? null : [
+                    'outcome' => $donation->screening->outcome?->value,
+                    'outcome_label' => $donation->screening->outcome?->label(),
+                    'is_deferral' => $donation->screening->outcome?->isDeferral() ?? false,
+                    'is_blocking' => $donation->screening->outcome?->isBlocking() ?? false,
+                    'deferral_reason' => $donation->screening->deferral_reason,
+                    'screened_at' => $donation->screening->screened_at?->toISOString(),
+                ],
+
+                // A reactive serology result permanently defers the donor. The
+                // counter sees that it happened and when — never the marker,
+                // which only the Testing department's referral list shows.
+                'laboratory_deferral' => $donation->counsellingReferral === null ? null : [
+                    'outcome' => ScreeningOutcome::PermanentlyDeferred->value,
+                    'outcome_label' => ScreeningOutcome::PermanentlyDeferred->label(),
+                    'is_blocking' => true,
+                    'recorded_at' => $donation->counsellingReferral->created_at?->toISOString(),
+                ],
+
+                // The final laboratory result, read-only: this endpoint sits
+                // behind donors.view_clinical, which the screening physician
+                // holds so they can clear or defer on the donor's history.
+                // Overall result and typing only — never which marker.
+                'laboratory' => $donation->testResult === null ? null : [
+                    'result' => $donation->testResult->result?->value,
+                    'result_label' => $donation->testResult->result?->label(),
+                    'blood_type' => $donation->testResult->bloodType?->code,
+                    'tested_at' => $donation->testResult->tested_at?->toISOString(),
+                ],
             ])->all(),
         ];
     }
@@ -251,6 +320,11 @@ class DonorDirectoryService
             'address' => $profile?->address,
             'gender' => $profile?->gender,
             'valid_id_number' => $profile?->valid_id_number,
+            // Status and type only. The document itself is reachable solely
+            // through the authenticated route, which blood-centre staff are not
+            // authorised for: they match the physical card at the counter.
+            'valid_id_type' => $profile?->valid_id_type?->value,
+            'identity_status' => ($profile?->identity_status ?? IdentityStatus::Unsubmitted)->value,
             'account_status' => $donor->account_status?->value,
             'email_verified' => $donor->hasVerifiedEmail(),
             'donations_at_this_facility' => $this->donorDirectoryRepository
@@ -281,6 +355,33 @@ class DonorDirectoryService
             'birth_date' => $profile?->birth_date?->toDateString(),
             'phone' => $donor->phone,
             'email' => $donor->email,
+        ];
+    }
+
+    /**
+     * Shape a donor for Recruitment's contact list.
+     *
+     * Name, how to reach them, and when they may next give. Nothing drawn from
+     * the donor's clinical record.
+     *
+     * @return array<string, mixed>
+     */
+    private function contact(User $donor): array
+    {
+        $summary = $this->donorDirectoryRepository->donationSummary($donor->id);
+
+        return [
+            'uuid' => $donor->uuid,
+            'donor_code' => 'DONOR-'.str_pad((string) $donor->id, 6, '0', STR_PAD_LEFT),
+            'full_name' => trim($donor->first_name.' '.$donor->last_name),
+            'first_name' => $donor->first_name,
+            'last_name' => $donor->last_name,
+            'phone' => $donor->phone,
+            'email' => $donor->email,
+            'total_donations' => $summary['total_donations'],
+            'last_donation_at' => $summary['last_donation_at'],
+            'next_eligible_date' => $this->nextEligibleDate($summary['last_donation_at']),
+            'contact_only' => true,
         ];
     }
 

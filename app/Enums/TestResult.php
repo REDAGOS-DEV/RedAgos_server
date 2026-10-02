@@ -2,12 +2,23 @@
 
 namespace App\Enums;
 
+/**
+ * The laboratory's overall outcome for a donation.
+ *
+ * Derived, not entered: the Testing department records immunohematology and
+ * the five-marker serology panel, and the service rolls them up — any reactive
+ * marker is `reactive`, all five non-reactive with a typing is `passed`.
+ */
 enum TestResult: string
 {
     case Passed = 'passed';
 
     case Reactive = 'reactive';
 
+    /**
+     * Legacy only. Recorded before serology was itemised; never written now,
+     * because each marker is a final reactive or non-reactive reading.
+     */
     case Inconclusive = 'inconclusive';
 
     /**

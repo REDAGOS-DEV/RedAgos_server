@@ -5,6 +5,7 @@ namespace Database\Factories;
 use App\Enums\AccountStatus;
 use App\Enums\Department;
 use App\Enums\RoleName;
+use App\Enums\StaffRole;
 use App\Models\DonorProfile;
 use App\Models\Facility;
 use App\Models\Role;
@@ -86,9 +87,45 @@ class UserFactory extends Factory
      */
     public function withRole(RoleName $role): static
     {
-        return $this->afterCreating(function (User $user) use ($role): void {
+        $factory = $this;
+
+        /*
+         * An admin made here is the unrestricted one.
+         *
+         * Before admin privileges existed, role:admin was the whole grant and
+         * every admin could do everything, which is the shape every existing
+         * test was written against. Setting the flag keeps that true rather
+         * than leaving each of those tests to 403 on a privilege the test never
+         * mentions. Use scopedAdmin() to build the narrowed kind.
+         */
+        if ($role === RoleName::Admin) {
+            $factory = $factory->state(fn (): array => ['is_super_admin' => true]);
+        }
+
+        return $factory->afterCreating(function (User $user) use ($role): void {
             $user->roles()->syncWithoutDetaching([
                 Role::firstOrCreate(['name' => $role->value])->id,
+            ]);
+        });
+    }
+
+    /**
+     * Create an admin holding exactly the privileges given, and nothing else.
+     *
+     * The counterpart to withRole(Admin): this is the account the `can:` guards
+     * on the admin routes exist for. Passing an empty list produces an admin
+     * awaiting assignment, which fails closed.
+     *
+     * @param  array<int, string>  $privileges
+     */
+    public function scopedAdmin(array $privileges): static
+    {
+        return $this->state(fn (): array => [
+            'is_super_admin' => false,
+            'admin_privileges' => $privileges,
+        ])->afterCreating(function (User $user): void {
+            $user->roles()->syncWithoutDetaching([
+                Role::firstOrCreate(['name' => RoleName::Admin->value])->id,
             ]);
         });
     }
@@ -112,19 +149,19 @@ class UserFactory extends Factory
      * suspended. Calling this with ->count(n) attaches every user to the same
      * facility, which is what a real centre looks like.
      */
-    public function bloodCenterStaff(?Facility $facility = null, ?Department $department = null): static
+    public function bloodCenterStaff(?Facility $facility = null, Department|StaffRole|null $post = null): static
     {
         $facility ??= Facility::factory()->approved()->create();
 
-        // Defaults to Inventory because that is the only department with
-        // implemented endpoints, so a test that just wants "some approved
+        // Defaults to the Inventory Control Officer because it holds the widest
+        // set of endpoints, so a test that just wants "some approved
         // blood-centre staff" gets an account that can actually reach them.
-        $department ??= Department::Inventory;
+        $role = self::roleFor($post) ?? StaffRole::InventoryControlOfficer;
 
         return $this->state(fn (array $attributes): array => [
             'facility_id' => $facility->id,
             'position' => 'Medical Technologist',
-            'department' => $department,
+            'staff_role' => $role,
             'is_supervisor' => false,
         ])->withRole(RoleName::BloodCenter);
     }
@@ -132,20 +169,77 @@ class UserFactory extends Factory
     /**
      * Create a blood-centre supervisor: the management level, holding every ability.
      *
-     * Passing a department produces a working supervisor. Leaving it null
-     * produces a management-only one. Neither narrows what they may do — the
-     * department only records where they sit.
+     * Passing a role (or a department, read as its default role) produces a
+     * working supervisor. Leaving it null produces a management-only one.
+     * Neither narrows what they may do — the role only records where they sit.
      */
-    public function bloodCenterSupervisor(?Facility $facility = null, ?Department $department = null): static
+    public function bloodCenterSupervisor(?Facility $facility = null, Department|StaffRole|null $post = null): static
+    {
+        $facility ??= Facility::factory()->approved()->create();
+        $role = self::roleFor($post);
+
+        return $this->state(fn (array $attributes): array => [
+            'facility_id' => $facility->id,
+            'position' => 'Blood Center Supervisor',
+            'staff_role' => $role,
+            'is_supervisor' => true,
+        ])->withRole(RoleName::BloodCenter);
+    }
+
+    /**
+     * Create blood-centre staff holding a custom, typed role in a department.
+     */
+    public function bloodCenterCustomStaff(?Facility $facility, Department $department, string $role = 'Quality Officer'): static
     {
         $facility ??= Facility::factory()->approved()->create();
 
         return $this->state(fn (array $attributes): array => [
             'facility_id' => $facility->id,
-            'position' => 'Blood Center Supervisor',
+            'position' => 'RMT',
+            'staff_role' => null,
+            'custom_role' => $role,
             'department' => $department,
-            'is_supervisor' => true,
+            'is_supervisor' => false,
         ])->withRole(RoleName::BloodCenter);
+    }
+
+    /**
+     * Cap the account with the given Read / Write / Update / Delete privileges.
+     *
+     * @param  array<int, string>  $privileges
+     */
+    public function withPrivileges(array $privileges): static
+    {
+        return $this->state(fn (array $attributes): array => ['staff_privileges' => $privileges]);
+    }
+
+    /**
+     * Read a department as its default role, so tests written against
+     * departments keep meaning the department's core post.
+     */
+    private static function roleFor(Department|StaffRole|null $post): ?StaffRole
+    {
+        return $post instanceof Department ? StaffRole::defaultFor($post) : $post;
+    }
+
+    /**
+     * Create approved hospital blood-bank staff: the requester side of the workflow.
+     *
+     * No department is set, and that is correct rather than an omission: the
+     * department matrix charters the five departments of a blood centre, and a
+     * blood bank has none of them. Its staff are authorised by role and by
+     * their facility being approved, which is what the /hospital routes check.
+     */
+    public function bloodBankStaff(?Facility $facility = null): static
+    {
+        $facility ??= Facility::factory()->bloodBank()->approved()->create();
+
+        return $this->state(fn (array $attributes): array => [
+            'facility_id' => $facility->id,
+            'position' => 'Medical Technologist',
+            'staff_role' => null,
+            'is_supervisor' => false,
+        ])->withRole(RoleName::BloodBank);
     }
 
     /**

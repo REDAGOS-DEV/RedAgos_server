@@ -3,16 +3,24 @@
 namespace App\Service;
 
 use App\Enums\FacilityStatus;
-use App\Enums\RoleName;
+use App\Enums\FacilityTypeName;
 use App\Models\Facility;
 use App\Models\User;
 use App\Notifications\FacilityRegistrationDecision;
 use App\Repository\BloodCenterRepository;
-use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Notification;
 
+/**
+ * Decisions taken about a facility that already exists.
+ *
+ * approve and reject are legacy: nothing this application creates now enters
+ * pending_approval, because a Super Admin creating a facility activates it in
+ * the same transaction. They stay because the facilities that applied through
+ * the removed public registration flow are preserved rather than deleted, and
+ * somebody has to be able to clear them.
+ */
 class FacilityApprovalService
 {
     public function __construct(
@@ -21,19 +29,7 @@ class FacilityApprovalService
     ) {}
 
     /**
-     * List facility registrations in a given state.
-     *
-     * @return LengthAwarePaginator<int, array<string, mixed>>
-     */
-    public function list(FacilityStatus $status, int $perPage): LengthAwarePaginator
-    {
-        return $this->bloodCenterRepository
-            ->registrationsByStatus($status, $perPage)
-            ->through(fn (Facility $facility): array => $this->format($facility));
-    }
-
-    /**
-     * Approve a registration and grant the blood_center role.
+     * Approve a legacy pending registration and grant its staff their role.
      *
      * @return array<string, mixed>
      */
@@ -76,7 +72,7 @@ class FacilityApprovalService
     }
 
     /**
-     * Reject a registration, recording why so the applicant can correct it.
+     * Reject a legacy pending registration, recording why.
      *
      * @return array<string, mixed>
      */
@@ -114,99 +110,13 @@ class FacilityApprovalService
     }
 
     /**
-     * Suspend an approved facility.
-     *
-     * The blood_center role is deliberately left attached. Suspension is
-     * enforced by the facility.operational middleware reading the status, so
-     * lifting it is a single reversible field change rather than a role rebuild.
-     *
-     * @return array<string, mixed>
-     */
-    public function suspend(User $admin, Facility $facility, string $reason): array
-    {
-        $this->guardNotSelfDecision($admin, $facility);
-
-        $updated = DB::transaction(function () use ($facility, $reason): Facility {
-            $locked = $this->lockOrFail($facility);
-
-            $this->guardStatus(
-                $locked,
-                FacilityStatus::Approved,
-                'facility_not_approved',
-                'Only an approved facility can be suspended.'
-            );
-
-            $locked->status = FacilityStatus::Suspended;
-            $locked->rejection_reason = $reason;
-            $locked->save();
-
-            return $locked;
-        });
-
-        $this->auditLogger->record($admin, 'facility.suspended', $updated, [
-            'facility_id' => $updated->id,
-        ]);
-
-        $this->notifyStaff($updated, FacilityStatus::Suspended, $reason);
-
-        return [
-            'message' => $updated->name.' has been suspended.',
-            'facility' => $this->format($updated),
-        ];
-    }
-
-    /**
-     * Return a suspended facility to service.
-     *
-     * @return array<string, mixed>
-     */
-    public function reinstate(User $admin, Facility $facility): array
-    {
-        $this->guardNotSelfDecision($admin, $facility);
-
-        $updated = DB::transaction(function () use ($facility): Facility {
-            $locked = $this->lockOrFail($facility);
-
-            $this->guardStatus(
-                $locked,
-                FacilityStatus::Suspended,
-                'facility_not_suspended',
-                'Only a suspended facility can be reinstated.'
-            );
-
-            $locked->status = FacilityStatus::Approved;
-            $locked->rejection_reason = null;
-            $locked->save();
-
-            // Roles were never detached, so this is idempotent. It runs anyway
-            // so reinstatement self-heals any account that ended up attached to
-            // the facility without the role.
-            $this->grantRoleToStaff($locked);
-            $this->ensureSupervisor($locked);
-
-            return $locked;
-        });
-
-        $this->auditLogger->record($admin, 'facility.reinstated', $updated, [
-            'facility_id' => $updated->id,
-        ]);
-
-        $this->notifyStaff($updated, FacilityStatus::Approved);
-
-        return [
-            'message' => $updated->name.' has been reinstated.',
-            'facility' => $this->format($updated),
-        ];
-    }
-
-    /**
      * Refuse a decision made by someone who works at the facility in question.
      */
     private function guardNotSelfDecision(User $admin, Facility $facility): void
     {
         // role_user is many-to-many, so one account can hold both admin and
         // blood_center and be attached to a facility. Without this an
-        // administrator could approve, reject, suspend or reinstate their own
+        // administrator could approve or reject a registration for their own
         // organisation.
         if ($admin->facility_id !== null && $admin->facility_id === $facility->id) {
             throw new HttpResponseException(response()->json([
@@ -256,25 +166,53 @@ class FacilityApprovalService
     }
 
     /**
-     * Grant the blood_center role to every account at the facility.
+     * Grant every account at the facility the role its facility type carries.
      *
-     * A centre with several staff is approved once, not once per person.
+     * The role follows the type rather than being assumed, so a blood bank is
+     * not handed blood-centre access by a code path that only ever expected
+     * one kind of organisation. A facility with several staff is approved
+     * once, not once per person.
      */
     private function grantRoleToStaff(Facility $facility): void
     {
+        $role = $this->requireFacilityType($facility)->role();
+
         foreach ($this->bloodCenterRepository->staffForFacility($facility->id) as $staff) {
-            $this->bloodCenterRepository->attachRole($staff, RoleName::BloodCenter->value);
+            $this->bloodCenterRepository->attachRole($staff, $role->value);
         }
+    }
+
+    /**
+     * Resolve the facility type, refusing rather than guessing at an unknown one.
+     *
+     * facility_types is an open table. Granting a default role to a facility
+     * filed under a type the application has never heard of would hand out
+     * access nobody chose, so this fails closed instead.
+     */
+    private function requireFacilityType(Facility $facility): FacilityTypeName
+    {
+        $facility->loadMissing('facilityType');
+
+        $type = FacilityTypeName::tryFrom((string) $facility->facilityType?->name);
+
+        if ($type === null) {
+            throw new HttpResponseException(response()->json([
+                'message' => 'This facility is filed under a type this system cannot grant access for.',
+                'code' => 'facility_type_unsupported',
+            ], 409));
+        }
+
+        return $type;
     }
 
     /**
      * Ensure the newly approved facility has someone who can manage its staff.
      *
-     * Without this the first account through the door holds the blood_center
-     * role but not staff.manage, so an approved centre would have nobody able
+     * Without this the first account through the door holds the facility role
+     * but not staff.manage, so an approved centre would have nobody able
      * to create colleagues or assign them departments. Skipped when a
-     * supervisor already exists, so reinstating a suspended facility does not
-     * promote a second one.
+     * supervisor already exists, so a facility that already has one does not
+     * gain a second.
      */
     private function ensureSupervisor(Facility $facility): void
     {
@@ -284,6 +222,8 @@ class FacilityApprovalService
             return;
         }
 
+        // registration_contact_user_id keeps its historical name and holds the
+        // facility's primary account, so it is who to promote when there is one.
         $supervisor = $staff->firstWhere('id', $facility->registration_contact_user_id)
             ?? $staff->sortBy('id')->first();
 

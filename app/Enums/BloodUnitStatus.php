@@ -15,6 +15,12 @@ enum BloodUnitStatus: string
     case Discarded = 'discarded';
 
     /**
+     * On the shelf but not yet cleared by testing. Booked in this way, and
+     * released to Available only on both clearance tokens.
+     */
+    case Quarantined = 'quarantined';
+
+    /**
      * Get every accepted status value, in the order the column declares them.
      *
      * This is the canonical list. The blood_units migration builds its column
@@ -39,6 +45,7 @@ enum BloodUnitStatus: string
             self::Issued => 'Issued',
             self::Expired => 'Expired',
             self::Discarded => 'Discarded',
+            self::Quarantined => 'Quarantined',
         };
     }
 }

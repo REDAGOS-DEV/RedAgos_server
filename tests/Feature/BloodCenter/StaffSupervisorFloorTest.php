@@ -3,7 +3,7 @@
 namespace Tests\Feature\BloodCenter;
 
 use App\Enums\AccountStatus;
-use App\Enums\Department;
+use App\Enums\StaffRole;
 use App\Models\Facility;
 use App\Models\User;
 use App\Repository\BloodCenterRepository;
@@ -49,7 +49,7 @@ class StaffSupervisorFloorTest extends TestCase
         $this->actingAs($this->supervisor)
             ->patchJson("/api/blood-center/staff/{$this->supervisor->uuid}", [
                 'is_supervisor' => false,
-                'department' => Department::Inventory->value,
+                'staff_role' => StaffRole::InventoryControlOfficer->value,
             ])
             ->assertStatus(409)
             ->assertJsonPath('code', 'last_supervisor');
@@ -62,7 +62,7 @@ class StaffSupervisorFloorTest extends TestCase
         $this->actingAs($this->supervisor)
             ->patchJson("/api/blood-center/staff/{$this->supervisor->uuid}", [
                 'is_supervisor' => false,
-                'department' => Department::Inventory->value,
+                'staff_role' => StaffRole::InventoryControlOfficer->value,
                 'position' => 'Demoted Clerk',
             ])
             ->assertStatus(409);
@@ -115,7 +115,7 @@ class StaffSupervisorFloorTest extends TestCase
         $this->actingAs($this->supervisor)
             ->patchJson("/api/blood-center/staff/{$second->uuid}", [
                 'is_supervisor' => false,
-                'department' => Department::Laboratory->value,
+                'staff_role' => StaffRole::SerologyTechnologist->value,
             ])
             ->assertOk();
 
@@ -134,7 +134,7 @@ class StaffSupervisorFloorTest extends TestCase
         $this->actingAs($this->supervisor)
             ->patchJson("/api/blood-center/staff/{$this->supervisor->uuid}", [
                 'is_supervisor' => false,
-                'department' => Department::Billing->value,
+                'staff_role' => StaffRole::BillingClerk->value,
             ])
             ->assertOk();
 
@@ -196,7 +196,7 @@ class StaffSupervisorFloorTest extends TestCase
         );
 
         $this->actingAs($this->supervisor)
-            ->patchJson("/api/blood-center/staff/{$second->uuid}", ['is_supervisor' => false, 'department' => 'billing'])
+            ->patchJson("/api/blood-center/staff/{$second->uuid}", ['is_supervisor' => false, 'staff_role' => 'billing_clerk'])
             ->assertOk();
     }
 

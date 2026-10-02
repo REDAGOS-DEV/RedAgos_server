@@ -385,7 +385,7 @@ Steps 1–3 unblock everything; 4–6 have a hard dependency on them.
 ```
 composer setup          # install, key:generate, migrate
 php artisan migrate:fresh --seed
-composer dev            # serve :8000 + queue + pail
+composer dev            # serve :8000 + queue worker + vite (no pail: it needs pcntl, which Windows lacks)
 composer test           # PHPUnit
 ```
 

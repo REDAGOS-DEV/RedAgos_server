@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Support\AccountIdentity;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -10,6 +11,23 @@ class LookupDonorRequest extends FormRequest
     public function authorize(): bool
     {
         return true;
+    }
+
+    /**
+     * Normalise an ID search the same way the stored value was normalised.
+     *
+     * valid_id_number is stored stripped of case and separators, so a staff
+     * member typing the ID exactly as it is printed on the card would otherwise
+     * find nobody.
+     */
+    protected function prepareForValidation(): void
+    {
+        if ($this->input('type') === 'valid_id_number' && $this->filled('value')) {
+            $this->merge([
+                'value' => AccountIdentity::normalizeValidIdNumber($this->input('value'))
+                    ?? $this->input('value'),
+            ]);
+        }
     }
 
     /**

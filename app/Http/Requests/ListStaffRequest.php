@@ -4,6 +4,7 @@ namespace App\Http\Requests;
 
 use App\Enums\AccountStatus;
 use App\Enums\Department;
+use App\Enums\StaffRole;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -21,6 +22,7 @@ class ListStaffRequest extends FormRequest
     {
         return [
             'department' => ['sometimes', 'string', Rule::in(Department::values())],
+            'staff_role' => ['sometimes', 'string', Rule::in(StaffRole::values())],
             'account_status' => ['sometimes', 'string', Rule::enum(AccountStatus::class)],
             'supervisors_only' => ['sometimes', 'boolean'],
             'include_deleted' => ['sometimes', 'boolean'],

@@ -229,8 +229,14 @@ php artisan optimize:clear
 
 ## Scheduled Tasks
 
-The blood-unit expiry sweep (`inventory:expire-units`) moves past-expiry units off the shelf. It is
-registered in `routes/console.php` and runs at 00:30 `Asia/Manila`.
+Three scheduled commands are registered in `routes/console.php`. Each runs on its own cadence, and
+none of them can be left out:
+
+| Command | Runs | What it does |
+|---|---|---|
+| `inventory:expire-units` | daily 00:30 `Asia/Manila` | Moves past-expiry centre units off the shelf. |
+| `hospital:expire-tags` | every minute | Ends hospital blood bank tags whose 24-hour crossmatch or transfusion period has run out, and frees the bag. |
+| `hospital:expire-units` | daily 00:30 `Asia/Manila` | Moves past-expiry bags on a hospital blood bank's own shelf to expired. |
 
 **Installing the scheduler is a release requirement, not an optimisation.** If nothing invokes it,
 past-expiry units keep reporting as `available` and the API is confidently wrong about issuable
@@ -261,7 +267,18 @@ php artisan schedule:test   # run a scheduled task on demand
 
 Verify it stayed running: the sweep writes an `inventory.expiry_swept` row to `audit_logs` on
 **every** run, including ones that expire nothing. The absence of yesterday's row is proof the
-scheduler is down, rather than proof it was a quiet day.
+scheduler is down, rather than proof it was a quiet day. The hospital expiry sweep does the same
+with `hospital_inventory.expiry_swept`.
+
+The per-minute tag sweep writes a `hospital_inventory.tag_sweep` run row only when it untags
+something, because a row for every quiet minute would be noise. Its health signal is instead
+`overdue_active_tags` in `GET /api/hospital/inventory/summary`: if that stays above zero for more
+than a minute, the scheduler is not running.
+
+```bash
+php artisan hospital:expire-tags    # end lapsed hospital tags by hand
+php artisan hospital:expire-units   # expire past-date hospital bags by hand
+```
 
 ## Migration Guidelines
 

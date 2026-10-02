@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Donor;
 
+use App\Enums\AppointmentStatus;
 use App\Enums\RoleName;
 use App\Models\Donation;
 use App\Models\DonationAppointment;
@@ -9,7 +10,12 @@ use App\Models\EligibilityScreening;
 use App\Models\Facility;
 use App\Models\MobileEvent;
 use App\Models\User;
+use App\Notifications\AppointmentScheduled;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Notification;
+use Mockery;
+use RuntimeException;
 use Tests\TestCase;
 
 class AppointmentTest extends TestCase
@@ -55,6 +61,97 @@ class AppointmentTest extends TestCase
         $this->assertSame(1, DonationAppointment::count());
     }
 
+    public function test_booking_emails_the_donor_their_appointment_details(): void
+    {
+        config(['app.frontend_url' => 'http://localhost:3000']);
+        Notification::fake();
+
+        $date = now()->addWeek();
+
+        $this->actingAs($this->donor)
+            ->postJson('/api/donors/appointments', $this->payload([
+                'date' => $date->toDateString(),
+                'time_slot' => '09:00',
+            ]))
+            ->assertCreated();
+
+        $appointment = DonationAppointment::sole();
+
+        Notification::assertSentTo(
+            $this->donor,
+            AppointmentScheduled::class,
+            function (AppointmentScheduled $notification) use ($appointment, $date): bool {
+                $mail = $notification->toMail($this->donor);
+                $body = implode(' ', array_merge($mail->introLines, $mail->outroLines));
+
+                return $mail->subject === 'Your RedAgos appointment on '.$date->format('j M Y')
+                    && str_contains($body, $date->format('l, j F Y'))
+                    && str_contains($body, '9:00 AM')
+                    && str_contains($body, $this->center->name)
+                    && str_contains($body, $this->center->address)
+                    && str_contains($body, '#'.$appointment->id)
+                    && $mail->actionUrl === 'http://localhost:3000/donor/appointments';
+            }
+        );
+    }
+
+    public function test_a_mobile_drive_confirmation_names_the_drive_venue(): void
+    {
+        Notification::fake();
+
+        $drive = MobileEvent::factory()->create(['facility_id' => $this->center->id]);
+
+        $this->actingAs($this->donor)
+            ->postJson('/api/donors/appointments', [
+                'type' => 'mobile',
+                'drive_id' => $drive->id,
+                'time_slot' => '09:00',
+            ])
+            ->assertCreated();
+
+        Notification::assertSentTo(
+            $this->donor,
+            AppointmentScheduled::class,
+            function (AppointmentScheduled $notification) use ($drive): bool {
+                $body = implode(' ', $notification->toMail($this->donor)->introLines);
+
+                return str_contains($body, $drive->name)
+                    && str_contains($body, $drive->location);
+            }
+        );
+    }
+
+    public function test_a_booked_appointment_is_listed_in_the_donors_notifications(): void
+    {
+        $this->actingAs($this->donor)
+            ->postJson('/api/donors/appointments', $this->payload())
+            ->assertCreated();
+
+        $this->actingAs($this->donor)
+            ->getJson('/api/donors/notifications')
+            ->assertOk()
+            ->assertJsonCount(1, 'notifications')
+            ->assertJsonPath('notifications.0.category', 'reminder')
+            ->assertJsonPath('notifications.0.title', 'Appointment booked')
+            ->assertJsonPath('notifications.0.action_route', '/donor/appointments');
+    }
+
+    public function test_a_failing_mailer_does_not_fail_the_booking(): void
+    {
+        // The slot is already held by the time the confirmation is sent, so a
+        // mailer outage must not read to the donor as a failed booking.
+        Notification::shouldReceive('send')->andThrow(new RuntimeException('mailer down'));
+        Log::shouldReceive('warning')
+            ->once()
+            ->with('Could not send the appointment confirmation.', Mockery::type('array'));
+
+        $this->actingAs($this->donor)
+            ->postJson('/api/donors/appointments', $this->payload())
+            ->assertCreated();
+
+        $this->assertSame(1, DonationAppointment::count());
+    }
+
     public function test_an_unverified_donor_cannot_book(): void
     {
         $donor = User::factory()->unverified()->donor()->create();
@@ -66,36 +163,55 @@ class AppointmentTest extends TestCase
             ->assertJsonPath('code', 'email_unverified');
     }
 
-    public function test_booking_without_a_screening_is_refused(): void
+    public function test_booking_without_a_questionnaire_is_allowed(): void
     {
+        // The order is now book first, answer the day before. A donor who has
+        // never answered is exactly who this is for: making them answer months
+        // ahead of the visit is what produced a stale questionnaire at the
+        // counter.
         $donor = User::factory()->donor()->create();
 
         $this->actingAs($donor)
             ->postJson('/api/donors/appointments', $this->payload())
-            ->assertForbidden()
-            ->assertJsonPath('code', 'screening_required');
+            ->assertCreated();
     }
 
-    public function test_booking_with_an_expired_screening_is_refused(): void
+    public function test_booking_with_an_expired_questionnaire_is_allowed(): void
     {
         $donor = User::factory()->donor()->create();
         EligibilityScreening::factory()->expired()->create(['donor_id' => $donor->id]);
 
         $this->actingAs($donor)
             ->postJson('/api/donors/appointments', $this->payload())
-            ->assertForbidden()
-            ->assertJsonPath('code', 'screening_expired');
+            ->assertCreated();
     }
 
-    public function test_booking_after_a_deferral_is_refused(): void
+    public function test_booking_after_a_flagged_questionnaire_is_allowed(): void
     {
+        // A flagged questionnaire is not a bar. It may well have been answered
+        // months ago, and the one that counts is answered the day before.
         $donor = User::factory()->donor()->create();
         EligibilityScreening::factory()->deferred()->create(['donor_id' => $donor->id]);
 
         $this->actingAs($donor)
             ->postJson('/api/donors/appointments', $this->payload())
-            ->assertForbidden()
-            ->assertJsonPath('code', 'screening_required');
+            ->assertCreated();
+    }
+
+    public function test_the_donation_interval_still_refuses_a_booking(): void
+    {
+        // Dropping the questionnaire gate must not drop this one: the 56-day
+        // interval protects the donor's body and is derived from records, not
+        // from anything they answered.
+        $donor = User::factory()->donor()->create();
+        Donation::factory()->completedAt(now()->subDays(10)->toDateString())->create([
+            'donor_id' => $donor->id,
+        ]);
+
+        $this->actingAs($donor)
+            ->postJson('/api/donors/appointments', $this->payload())
+            ->assertStatus(422)
+            ->assertJsonPath('code', 'below_min_interval');
     }
 
     public function test_booking_inside_the_donation_interval_is_refused(): void
@@ -252,7 +368,7 @@ class AppointmentTest extends TestCase
             ->assertOk()
             ->assertJsonPath('status', 'cancelled');
 
-        $this->assertSame('cancelled', DonationAppointment::find($response->json('id'))->status);
+        $this->assertSame(AppointmentStatus::Cancelled, DonationAppointment::find($response->json('id'))->status);
         $this->assertSame(1, DonationAppointment::count());
     }
 
@@ -268,7 +384,7 @@ class AppointmentTest extends TestCase
             ->deleteJson('/api/donors/appointments/'.$appointment->id)
             ->assertForbidden();
 
-        $this->assertSame('scheduled', $appointment->fresh()->status);
+        $this->assertSame(AppointmentStatus::Scheduled, $appointment->fresh()->status);
     }
 
     public function test_a_donor_cannot_reschedule_another_donors_appointment(): void
@@ -284,12 +400,48 @@ class AppointmentTest extends TestCase
             ->assertForbidden();
     }
 
-    public function test_cancelling_inside_the_twenty_four_hour_window_is_refused(): void
+    public function test_cancelling_inside_a_configured_window_is_refused(): void
     {
+        // The window defaults to 0 (walk-in centres); the guard still has to
+        // hold for a centre that raises it.
+        config(['donation.cancellation_window_hours' => 24]);
+
         $appointment = DonationAppointment::factory()->create([
             'donor_id' => $this->donor->id,
             'facility_id' => $this->center->id,
             'appointment_datetime' => now()->addHours(6),
+        ]);
+
+        $this->actingAs($this->donor)
+            ->deleteJson('/api/donors/appointments/'.$appointment->id)
+            ->assertStatus(422)
+            ->assertJsonPath('code', 'cancellation_window_passed');
+    }
+
+    public function test_with_no_window_an_appointment_can_be_cancelled_hours_before_it_starts(): void
+    {
+        config(['donation.cancellation_window_hours' => 0]);
+
+        $appointment = DonationAppointment::factory()->create([
+            'donor_id' => $this->donor->id,
+            'facility_id' => $this->center->id,
+            'appointment_datetime' => now()->addHours(2),
+        ]);
+
+        $this->actingAs($this->donor)
+            ->deleteJson('/api/donors/appointments/'.$appointment->id)
+            ->assertOk()
+            ->assertJsonPath('status', 'cancelled');
+    }
+
+    public function test_an_appointment_that_has_started_cannot_be_changed(): void
+    {
+        config(['donation.cancellation_window_hours' => 0]);
+
+        $appointment = DonationAppointment::factory()->create([
+            'donor_id' => $this->donor->id,
+            'facility_id' => $this->center->id,
+            'appointment_datetime' => now()->subMinutes(5),
         ]);
 
         $this->actingAs($this->donor)

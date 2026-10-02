@@ -195,4 +195,72 @@ class NotificationTest extends TestCase
         $this->getJson('/api/donors/notifications')->assertUnauthorized();
         $this->getJson('/api/donors/notifications/unread-count')->assertUnauthorized();
     }
+
+    /**
+     * The screening reminder, as the donor's notifications screen sees it.
+     *
+     * The command's own behaviour is covered in ScreeningWindowTest. What
+     * matters here is that the notification files itself under a category the
+     * screen already filters by, and that a donor with no email address still
+     * gets told -- they are the ones who cannot be reached any other way.
+     */
+    public function test_the_screening_reminder_files_itself_under_the_screening_category(): void
+    {
+        $appointment = \App\Models\DonationAppointment::factory()->create([
+            'donor_id' => $this->donor->id,
+            'appointment_datetime' => now()->addDay()->setTime(9, 0),
+        ]);
+
+        $this->donor->notify(new \App\Notifications\ScreeningWindowOpen($appointment));
+
+        $row = DB::table('notifications')
+            ->where('notifiable_id', $this->donor->id)
+            ->where('type', \App\Notifications\ScreeningWindowOpen::class)
+            ->first();
+
+        $this->assertNotNull($row, 'The reminder wrote no in-app copy.');
+
+        $data = json_decode($row->data, true);
+
+        $this->assertSame('screening', $data['category']);
+        $this->assertSame('/donor/eligibility', $data['action_route']);
+        // Read back by the command to decide whether this donor has already
+        // been told, so a re-run cannot send twice.
+        $this->assertSame($appointment->id, $data['appointment_id']);
+        $this->assertSame('opened', $data['stage']);
+    }
+
+    public function test_the_final_reminder_is_distinguishable_from_the_first(): void
+    {
+        $appointment = \App\Models\DonationAppointment::factory()->create([
+            'donor_id' => $this->donor->id,
+            'appointment_datetime' => now()->setTime(9, 0),
+        ]);
+
+        $this->donor->notify(new \App\Notifications\ScreeningWindowOpen($appointment, true));
+
+        $data = json_decode(
+            DB::table('notifications')->where('notifiable_id', $this->donor->id)->value('data'),
+            true
+        );
+
+        $this->assertSame('final', $data['stage']);
+        $this->assertSame('warning', $data['tone']);
+    }
+
+    public function test_the_reminder_reaches_a_donor_who_has_no_email_address(): void
+    {
+        $this->donor->forceFill(['email' => null, 'email_verified_at' => null])->save();
+
+        $appointment = \App\Models\DonationAppointment::factory()->create([
+            'donor_id' => $this->donor->id,
+            'appointment_datetime' => now()->addDay()->setTime(9, 0),
+        ]);
+
+        $notification = new \App\Notifications\ScreeningWindowOpen($appointment);
+
+        // The mail channel is dropped rather than failing at the mailer, and the
+        // in-app copy is the only one this donor can read.
+        $this->assertSame(['database'], $notification->via($this->donor->fresh()));
+    }
 }

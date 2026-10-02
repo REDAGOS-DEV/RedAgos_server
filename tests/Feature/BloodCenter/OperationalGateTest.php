@@ -38,19 +38,20 @@ class OperationalGateTest extends TestCase
             ->assertJsonPath('code', 'email_unverified');
     }
 
-    public function test_staff_of_a_suspended_facility_are_refused(): void
+    public function test_staff_of_a_rejected_facility_are_refused(): void
     {
-        $facility = Facility::factory()->suspended()->create();
+        $facility = Facility::factory()->rejected()->create();
         $staff = User::factory()->bloodCenterStaff($facility)->create();
 
-        // The role is still attached — suspension does not strip it — so the
-        // role middleware alone would wave this request straight through.
+        // The role is still attached — a decision on the facility does not
+        // strip it — so the role middleware alone would wave this request
+        // straight through.
         $this->assertTrue($staff->hasRole(RoleName::BloodCenter));
 
         $this->actingAs($staff)
             ->getJson(self::OPERATIONAL_ROUTE)
             ->assertForbidden()
-            ->assertJsonPath('code', 'facility_suspended');
+            ->assertJsonPath('code', 'facility_not_approved');
     }
 
     public function test_staff_of_a_pending_facility_are_refused(): void
@@ -86,9 +87,9 @@ class OperationalGateTest extends TestCase
         $this->getJson(self::OPERATIONAL_ROUTE)->assertUnauthorized();
     }
 
-    public function test_profile_stays_reachable_while_the_facility_is_suspended(): void
+    public function test_profile_stays_reachable_while_the_facility_is_unapproved(): void
     {
-        $facility = Facility::factory()->suspended()->create();
+        $facility = Facility::factory()->rejected()->create();
         $staff = User::factory()->bloodCenterStaff($facility)->create();
 
         // Group C sits outside the operational gate on purpose, so a blocked
@@ -96,7 +97,7 @@ class OperationalGateTest extends TestCase
         $this->actingAs($staff)
             ->getJson('/api/blood-center/profile')
             ->assertOk()
-            ->assertJsonPath('facility.status', 'suspended');
+            ->assertJsonPath('facility.status', 'rejected');
     }
 
     public function test_profile_stays_reachable_while_the_email_is_unverified(): void
@@ -109,9 +110,9 @@ class OperationalGateTest extends TestCase
             ->assertJsonPath('account.email_verified', false);
     }
 
-    public function test_password_change_stays_reachable_while_suspended(): void
+    public function test_password_change_stays_reachable_while_unapproved(): void
     {
-        $facility = Facility::factory()->suspended()->create();
+        $facility = Facility::factory()->rejected()->create();
         $staff = User::factory()->bloodCenterStaff($facility)->create();
 
         $this->actingAs($staff)
@@ -123,23 +124,24 @@ class OperationalGateTest extends TestCase
             ->assertOk();
     }
 
-    public function test_a_pending_applicant_can_log_in_and_the_response_carries_the_facility_status(): void
+    public function test_a_legacy_pending_applicant_is_refused_at_sign_in(): void
     {
         $facility = Facility::factory()->pendingApproval()->create();
         User::factory()->bloodCenterApplicant($facility)->create([
             'email' => 'applicant@example.ph',
         ]);
 
-        // The client needs facility.status in the login response itself to route
-        // to the registration-status screen rather than the dashboard.
+        // These accounts are left over from public registration. There is no
+        // status screen or resubmission form to send them to any more, so a
+        // roleless token would only let them reach a portal that refuses every
+        // request. The refusal names the reason instead.
         $this->postJson('/api/login', [
             'email' => 'applicant@example.ph',
             'password' => 'password',
             'role' => 'blood-center',
         ])
-            ->assertOk()
-            ->assertJsonPath('user.facility.status', 'pending_approval')
-            ->assertJsonPath('user.roles', []);
+            ->assertForbidden()
+            ->assertJsonPath('code', 'facility_not_activated');
     }
 
     public function test_a_donor_signing_in_through_the_blood_center_portal_is_still_refused(): void
@@ -162,12 +164,13 @@ class OperationalGateTest extends TestCase
         $facility = Facility::factory()->pendingApproval()->create();
         $applicant = User::factory()->bloodCenterApplicant($facility)->create();
 
-        // Authentication succeeds for an applicant; authorization does not.
+        // A legacy applicant holds no role, so even a token issued before the
+        // change reaches nothing.
         $this->actingAs($applicant)->getJson(self::OPERATIONAL_ROUTE)->assertForbidden();
         $this->actingAs($applicant)->getJson('/api/blood-center/profile')->assertForbidden();
-        $this->actingAs($applicant)->getJson('/api/admin/facility-registrations')->assertForbidden();
+        $this->actingAs($applicant)->getJson('/api/admin/facilities')->assertForbidden();
 
-        // Their own applicant route stays open.
-        $this->actingAs($applicant)->getJson('/api/blood-center/registration-status')->assertOk();
+        // And the applicant routes they used to have are gone entirely.
+        $this->actingAs($applicant)->getJson('/api/blood-center/registration-status')->assertNotFound();
     }
 }

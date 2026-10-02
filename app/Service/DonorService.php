@@ -3,10 +3,13 @@
 namespace App\Service;
 
 use App\Enums\AccountStatus;
+use App\Enums\AppointmentStatus;
 use App\Enums\EligibilityStatus;
+use App\Enums\IdentityStatus;
 use App\Enums\RoleName;
 use App\Models\DonorProfile;
 use App\Models\User;
+use App\Repository\AuthRepository;
 use App\Repository\DonorRepository;
 use App\Repository\EligibilityRepository;
 use App\Support\AccountIdentity;
@@ -15,10 +18,12 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use Throwable;
 
 class DonorService
 {
@@ -26,17 +31,31 @@ class DonorService
 
     private const INITIAL_ACCOUNT_STATUS = AccountStatus::PendingVerification;
 
+    /**
+     * Where identity documents live on the private disk.
+     */
+    private const IDENTITY_DOCUMENT_DIRECTORY = 'identity-documents';
+
     public function __construct(
+        private readonly AuthRepository $authRepository,
         private readonly DonorRepository $donorRepository,
         private readonly EligibilityRepository $eligibilityRepository,
-        private readonly EligibilityRuleEvaluator $eligibilityRuleEvaluator
+        private readonly EligibilityRuleEvaluator $eligibilityRuleEvaluator,
+        private readonly EligibilityService $eligibilityService
     ) {}
 
     /**
+     * Register a donor account and its profile.
+     *
+     * $verified is for the console only. An operator at a terminal is vouching
+     * for the account in person, so it is activated on the spot and no link is
+     * mailed. Self-registration never passes it: an address typed into the
+     * sign-up form is proven by the link and nothing else.
+     *
      * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
      */
-    public function register(array $payload): array
+    public function register(array $payload, bool $verified = false): array
     {
         $normalizedEmail = Str::lower(trim($payload['email']));
         $normalizedPhone = $this->normalizePhilippinePhone($payload['phone']);
@@ -53,13 +72,22 @@ class DonorService
             ]);
         }
 
-        $donor = DB::transaction(function () use ($payload, $normalizedEmail, $normalizedPhone): User {
-            $bloodType = $this->donorRepository->findBloodTypeByCode($payload['blood_type']);
+        $donor = DB::transaction(function () use ($payload, $normalizedEmail, $normalizedPhone, $verified): User {
+            // A donor who does not know their type registers without one. The
+            // profile column is nullable for exactly this, and the laboratory
+            // fills it from the first cleared donation.
+            $bloodTypeId = null;
 
-            if (! $bloodType) {
-                throw ValidationException::withMessages([
-                    'blood_type' => ['Please select a valid blood type.'],
-                ]);
+            if (filled($payload['blood_type'] ?? null)) {
+                $bloodType = $this->donorRepository->findBloodTypeByCode($payload['blood_type']);
+
+                if (! $bloodType) {
+                    throw ValidationException::withMessages([
+                        'blood_type' => ['Please select a valid blood type.'],
+                    ]);
+                }
+
+                $bloodTypeId = $bloodType->id;
             }
 
             $donor = $this->donorRepository->createDonor([
@@ -76,22 +104,40 @@ class DonorService
 
             $this->donorRepository->createDonorProfile([
                 'donor_id' => $donor->id,
-                'blood_type_id' => $bloodType->id,
+                'blood_type_id' => $bloodTypeId,
                 'gender' => $payload['gender'],
                 'birth_date' => $payload['birth_date'],
                 'address' => trim($payload['address']),
+
+                // Optional, and deliberately not a submission: a number with no
+                // document is nothing an administrator can review. It exists so
+                // the counter can find this donor by the ID they present, and
+                // identity_status stays unsubmitted until a photo arrives.
+                'valid_id_type' => $payload['valid_id_type'] ?? null,
+                'valid_id_number' => $payload['valid_id_number'] ?? null,
             ]);
 
             $role = $this->donorRepository->findOrCreateRoleByName(self::DONOR_ROLE);
             $this->donorRepository->attachRole($donor, $role);
 
+            if ($verified) {
+                // The same state the emailed link leaves behind, so a
+                // console-created donor is indistinguishable from one that
+                // verified itself.
+                $this->authRepository->markVerified($donor);
+            }
+
             return $donor;
         });
 
-        $donor->sendEmailVerificationNotification();
+        if (! $verified) {
+            $donor->sendEmailVerificationNotification();
+        }
 
         return [
-            'message' => 'Donor registration submitted successfully. Please check your email to verify your address.',
+            'message' => $verified
+                ? 'Donor registered. The account can sign in now.'
+                : 'Donor registration submitted successfully. Please check your email to verify your address.',
             'data' => [
                 'user' => $this->formatDonor(
                     $this->donorRepository->loadDonorRegistration($donor)
@@ -134,6 +180,10 @@ class DonorService
                 'account_status' => $donor->account_status?->value,
             ],
             'eligibility_status' => $this->eligibilityStatus($donor->id)->value,
+            // What the onboarding checklist and QR badge read. Every screening
+            // is now recorded `pending` -- the centre decides at the counter --
+            // so eligibility_status alone never reports the questionnaire done.
+            'questionnaire_status' => $this->eligibilityService->statusForProfile($profile)->value,
             'blood_type' => $profile->bloodType?->code,
             'total_donations' => $this->donorRepository->countCompletedDonations($donor->id),
             'upcoming_appointment' => $this->formatAppointment($upcomingAppointment),
@@ -170,17 +220,178 @@ class DonorService
             'email_verified' => $donor->hasVerifiedEmail(),
             'phone' => $donor->phone,
             'contact_number' => $donor->phone,
+            'middle_name' => $donor->middle_name,
             'birth_date' => $profile->birth_date?->toDateString(),
             'date_of_birth' => $profile->birth_date?->toDateString(),
             'blood_type' => $profile->bloodType?->code,
             'address' => $profile->address,
+
+            // Section I-A of the DOH questionnaire. Nullable throughout:
+            // donors who registered before these were collected cannot be
+            // back-filled, and the counter prints what is absent as absent.
+            'civil_status' => $profile->civil_status?->value,
+            'occupation' => $profile->occupation,
+            'nationality' => $profile->nationality,
+            'religion' => $profile->religion,
+            'preferred_mailing_address' => $profile->preferred_mailing_address?->value,
+            'office_address' => $profile->office_address,
+            'telephone_no' => $profile->telephone_no,
+            'contact_person_name' => $profile->contact_person_name,
+            'contact_person_address' => $profile->contact_person_address,
+            'contact_person_number' => $profile->contact_person_number,
             'avatar_url' => $profile->profile_image_path,
             'eligibility_status' => $dashboard['eligibility_status'],
+            'questionnaire_status' => $dashboard['questionnaire_status'],
             'total_donations' => $dashboard['total_donations'],
             'last_donation_date' => $this->lastDonationDate($profile)?->toDateString(),
             'next_eligible_date' => $this->eligibilityRuleEvaluator
                 ->nextEligibleDate($this->lastDonationDate($profile))?->toDateString(),
             'notification_preferences' => $profile->notification_preferences ?: $this->defaultNotificationPreferences(),
+            'identity' => $this->formatIdentity($donor, $profile),
+        ];
+    }
+
+    /**
+     * The Section I-A attributes present in a payload, trimmed.
+     *
+     * Only what was sent: a field the client left out keeps its stored value
+     * rather than being nulled, so a partial edit cannot quietly erase the
+     * rest of the donor's I-A.
+     *
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function personalDataAttributes(array $payload): array
+    {
+        $fields = [
+            'civil_status',
+            'occupation',
+            'nationality',
+            'religion',
+            'preferred_mailing_address',
+            'office_address',
+            'telephone_no',
+            'contact_person_name',
+            'contact_person_address',
+            'contact_person_number',
+        ];
+
+        $attributes = [];
+
+        foreach ($fields as $field) {
+            if (array_key_exists($field, $payload)) {
+                $attributes[$field] = $this->trimmedOrNull($payload[$field]);
+            }
+        }
+
+        return $attributes;
+    }
+
+    /**
+     * Trim a value, treating an empty string as absent.
+     */
+    private function trimmedOrNull(mixed $value): ?string
+    {
+        $trimmed = is_string($value) ? trim($value) : $value;
+
+        return $trimmed === '' ? null : $trimmed;
+    }
+
+    /**
+     * Present the donor's own identity submission.
+     *
+     * The number is shown in full because the donor owns it; the image is given
+     * as the path of the authenticated route that streams it, never a signed
+     * URL and never the storage path.
+     *
+     * @return array<string, mixed>
+     */
+    private function formatIdentity(User $donor, DonorProfile $profile): array
+    {
+        $status = $profile->identity_status ?? IdentityStatus::Unsubmitted;
+
+        return [
+            'status' => $status->value,
+            'valid_id_type' => $profile->valid_id_type?->value,
+            'valid_id_type_label' => $profile->valid_id_type?->label(),
+            'valid_id_number' => $profile->valid_id_number,
+            'submitted_at' => $profile->identity_submitted_at?->toIso8601String(),
+            'reviewed_at' => $profile->identity_reviewed_at?->toIso8601String(),
+            'rejection_reason' => $profile->identity_rejection_reason,
+            'submission_version' => (int) $profile->identity_submission_version,
+            'image_url' => $profile->valid_id_image_path
+                ? '/donors/'.$donor->uuid.'/identity-image'
+                : null,
+        ];
+    }
+
+    /**
+     * Store a submitted identity document and queue it for administrator review.
+     *
+     * The file is written before the transaction and removed again if the
+     * transaction fails, so a rolled-back submission never leaves an orphan on
+     * disk; the previous document is deleted only once the new path is
+     * committed, so a failure never strands the row pointing at a file that has
+     * already been removed.
+     *
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    public function submitIdentity(User $user, array $payload, UploadedFile $image): array
+    {
+        $donor = $this->donorRepository->loadDashboardUser($user);
+
+        if (! $donor->donorProfile) {
+            throw ValidationException::withMessages([
+                'donor' => ['The authenticated user does not have a donor profile.'],
+            ]);
+        }
+
+        $newPath = $image->store(self::IDENTITY_DOCUMENT_DIRECTORY, 'local');
+
+        try {
+            $previousPath = DB::transaction(function () use ($donor, $payload, $newPath): ?string {
+                // Locked for the same reason the administrator's decision locks
+                // it: without this a donor can swap the document out from under
+                // a review that is already in progress.
+                $locked = $this->donorRepository->lockDonorProfile($donor->id);
+                $status = $locked->identity_status ?? IdentityStatus::Unsubmitted;
+
+                if (! $status->acceptsSubmission()) {
+                    throw ValidationException::withMessages([
+                        'valid_id_image' => ['Your ID has already been verified and cannot be replaced.'],
+                    ]);
+                }
+
+                $previousPath = $locked->valid_id_image_path;
+
+                $this->donorRepository->updateDonorProfile($locked, [
+                    'valid_id_type' => $payload['valid_id_type'],
+                    'valid_id_number' => $payload['valid_id_number'],
+                    'valid_id_image_path' => $newPath,
+                    'identity_status' => IdentityStatus::Pending,
+                    'identity_submitted_at' => now(),
+                    'identity_submission_version' => $locked->identity_submission_version + 1,
+                    'identity_reviewed_at' => null,
+                    'identity_reviewed_by' => null,
+                    'identity_rejection_reason' => null,
+                ]);
+
+                return $previousPath;
+            });
+        } catch (Throwable $exception) {
+            Storage::disk('local')->delete($newPath);
+
+            throw $exception;
+        }
+
+        if ($previousPath !== null && $previousPath !== $newPath) {
+            Storage::disk('local')->delete($previousPath);
+        }
+
+        return [
+            'message' => 'Your ID has been submitted for review.',
+            'data' => $this->profile($donor->refresh()),
         ];
     }
 
@@ -192,12 +403,22 @@ class DonorService
     {
         $donor = $this->donorRepository->loadDashboardUser($user);
         $profile = $donor->donorProfile;
-        $bloodType = $this->donorRepository->findBloodTypeByCode($payload['blood_type']);
 
-        if (! $profile || ! $bloodType) {
+        if (! $profile) {
             throw ValidationException::withMessages([
                 'donor' => ['Unable to update this donor profile.'],
             ]);
+        }
+
+        $bloodTypeId = null;
+
+        if (filled($payload['blood_type'] ?? null)) {
+            $bloodType = $this->donorRepository->findBloodTypeByCode($payload['blood_type'])
+                ?? throw ValidationException::withMessages([
+                    'blood_type' => ['Please select a valid blood type.'],
+                ]);
+
+            $bloodTypeId = $bloodType->id;
         }
 
         $email = Str::lower(trim($payload['email']));
@@ -208,9 +429,10 @@ class DonorService
         // Revoke the verification and issue a link for the new address.
         $emailChanged = $email !== $donor->email;
 
-        DB::transaction(function () use ($donor, $profile, $bloodType, $payload, $email, $emailChanged): void {
+        DB::transaction(function () use ($donor, $profile, $bloodTypeId, $payload, $email, $emailChanged): void {
             $this->donorRepository->updateUser($donor, [
                 'first_name' => trim($payload['first_name']),
+                'middle_name' => $this->trimmedOrNull($payload['middle_name'] ?? null),
                 'last_name' => trim($payload['last_name']),
                 'email' => $email,
                 'phone' => $this->normalizePhilippinePhone($payload['phone']),
@@ -221,10 +443,10 @@ class DonorService
             }
 
             $this->donorRepository->updateDonorProfile($profile, [
-                'blood_type_id' => $bloodType->id,
+                'blood_type_id' => $bloodTypeId,
                 'birth_date' => $payload['birth_date'],
                 'address' => trim($payload['address']),
-            ]);
+            ] + $this->personalDataAttributes($payload));
         });
 
         // Sent after the commit so a rolled-back update never mails a live link.
@@ -335,6 +557,10 @@ class DonorService
         $donor = $this->donorRepository->loadDashboardUser($user);
         $profile = $donor->donorProfile;
 
+        // Captured before the transaction clears the column, and deleted only
+        // after it commits.
+        $identityImagePath = $profile?->valid_id_image_path;
+
         DB::transaction(function () use ($donor, $profile): void {
             $anonymousSuffix = Str::lower(Str::random(12));
 
@@ -342,7 +568,14 @@ class DonorService
                 $this->eligibilityRepository->revokeQrTokens($profile->donor_id);
                 $this->donorRepository->updateDonorProfile($profile, [
                     'address' => null,
+                    'valid_id_type' => null,
                     'valid_id_number' => null,
+                    'valid_id_image_path' => null,
+                    'identity_status' => IdentityStatus::Unsubmitted,
+                    'identity_submitted_at' => null,
+                    'identity_reviewed_at' => null,
+                    'identity_reviewed_by' => null,
+                    'identity_rejection_reason' => null,
                     'profile_image_path' => null,
                 ]);
                 $profile->delete();
@@ -360,6 +593,20 @@ class DonorService
             $donor->tokens()->delete();
             $donor->delete();
         });
+
+        // After the commit, and never allowed to fail the closure: the account is
+        // already closed, so a storage error here is an orphaned file to clean up
+        // later rather than a reason to tell the donor their request did not work.
+        if ($identityImagePath !== null) {
+            try {
+                Storage::disk('local')->delete($identityImagePath);
+            } catch (Throwable $exception) {
+                Log::warning('Could not delete identity document after account closure.', [
+                    'donor_id' => $donor->id,
+                    'exception' => $exception->getMessage(),
+                ]);
+            }
+        }
 
         return [
             'message' => 'Your account has been closed. Donation records are retained for traceability.',
@@ -390,7 +637,7 @@ class DonorService
      */
     private function lastDonationDate(DonorProfile $profile): ?Carbon
     {
-        return $this->eligibilityRepository->lastCompletedDonationAt($profile->donor_id)
+        return $this->eligibilityRepository->lastBloodDrawnAt($profile->donor_id)
             ?? $profile->last_donation_date;
     }
 
@@ -450,10 +697,15 @@ class DonorService
             return null;
         }
 
+        // A raw query-builder row, so `status` arrives as a string rather than
+        // through the model's enum cast.
+        $status = AppointmentStatus::tryFrom((string) $appointment->status);
+
         return [
             'id' => $appointment->id,
             'appointment_datetime' => $appointment->appointment_datetime,
             'status' => $appointment->status,
+            'status_label' => $status?->label(),
             'appointment_type' => 'booked',
             'facility_name' => $appointment->facility_name,
         ];

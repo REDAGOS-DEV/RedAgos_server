@@ -4,6 +4,8 @@ namespace App\Http\Requests;
 
 use App\Enums\AccountStatus;
 use App\Enums\Department;
+use App\Enums\StaffPrivilege;
+use App\Enums\StaffRole;
 use App\Support\AccountIdentity;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -25,6 +27,21 @@ class UpdateStaffRequest extends FormRequest
             $this->merge([
                 'phone' => AccountIdentity::normalizePhilippinePhone((string) $this->input('phone')),
             ]);
+        }
+
+        // A typed role that names a predefined one is that role, so the
+        // roster never holds a custom "Laboratory Supervisor" beside the real
+        // one with different abilities.
+        if ($this->filled('custom_role') && ! $this->filled('staff_role')) {
+            $typed = StaffRole::fromTyped((string) $this->input('custom_role'));
+
+            if ($typed !== null) {
+                $this->merge(['staff_role' => $typed->value, 'custom_role' => null]);
+            }
+        }
+
+        if ($this->filled('custom_role')) {
+            $this->merge(['custom_role' => trim((string) $this->input('custom_role'))]);
         }
     }
 
@@ -51,10 +68,14 @@ class UpdateStaffRequest extends FormRequest
             ],
 
             // Nullable here rather than conditionally required: a partial
-            // update may clear a department while the same request grants the
+            // update may clear a role while the same request grants the
             // supervisor level. StaffService checks the resulting combination,
             // which is the only place both values are known.
             'department' => ['sometimes', 'nullable', 'string', Rule::in(Department::values())],
+            'staff_role' => ['sometimes', 'nullable', 'string', Rule::in(StaffRole::values())],
+            'custom_role' => ['sometimes', 'nullable', 'string', 'max:100'],
+            'staff_privileges' => ['sometimes', 'array', 'min:1'],
+            'staff_privileges.*' => ['string', 'distinct', Rule::in(StaffPrivilege::values())],
             'is_supervisor' => ['sometimes', 'boolean'],
 
             // pending_verification is deliberately absent: it is set at
@@ -81,7 +102,7 @@ class UpdateStaffRequest extends FormRequest
         return [
             function (Validator $validator): void {
                 if ($validator->errors()->isEmpty() && $this->safe()->all() === []) {
-                    $validator->errors()->add('department', 'Provide at least one field to update.');
+                    $validator->errors()->add('staff_role', 'Provide at least one field to update.');
                 }
             },
         ];

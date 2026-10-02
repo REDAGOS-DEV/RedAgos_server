@@ -4,7 +4,8 @@ namespace App\Http\Controllers;
 
 use App\Http\Requests\DeclareComponentsRequest;
 use App\Http\Requests\ListLaboratoryQueueRequest;
-use App\Http\Requests\RecordTestResultRequest;
+use App\Http\Requests\RecordImmunohematologyRequest;
+use App\Http\Requests\RecordSerologyRequest;
 use App\Http\Requests\UpdateLaboratoryStatusRequest;
 use App\Service\LaboratoryService;
 use Illuminate\Http\JsonResponse;
@@ -17,7 +18,7 @@ class BloodCenterLaboratoryController extends Controller
     ) {}
 
     /**
-     * Page the donations awaiting processing.
+     * Page the donations awaiting testing or processing.
      */
     public function index(ListLaboratoryQueueRequest $request): JsonResponse
     {
@@ -41,12 +42,23 @@ class BloodCenterLaboratoryController extends Controller
     }
 
     /**
-     * Record the screening outcome a qualified professional reported.
+     * Record the ABO/Rh typing a medical technologist reported.
      */
-    public function recordResult(RecordTestResultRequest $request, int $donation): JsonResponse
+    public function recordImmunohematology(RecordImmunohematologyRequest $request, int $donation): JsonResponse
     {
         return response()->json(
-            $this->laboratoryService->recordResult($request->user(), $donation, $request->validated()),
+            $this->laboratoryService->recordImmunohematology($request->user(), $donation, $request->validated()),
+            201
+        );
+    }
+
+    /**
+     * Record the five-marker serology panel a medical technologist reported.
+     */
+    public function recordSerology(RecordSerologyRequest $request, int $donation): JsonResponse
+    {
+        return response()->json(
+            $this->laboratoryService->recordSerology($request->user(), $donation, $request->validated()),
             201
         );
     }
@@ -68,7 +80,12 @@ class BloodCenterLaboratoryController extends Controller
     public function updateStatus(UpdateLaboratoryStatusRequest $request, int $donation): JsonResponse
     {
         return response()->json(
-            $this->laboratoryService->updateStatus($request->user(), $donation, $request->validated('status'))
+            $this->laboratoryService->updateStatus(
+                $request->user(),
+                $donation,
+                $request->validated('status'),
+                $request->validated()
+            )
         );
     }
 }

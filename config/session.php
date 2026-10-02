@@ -16,9 +16,13 @@ return [
     | Supported: "file", "cookie", "database", "memcached",
     |            "redis", "dynamodb", "array"
     |
+    | RedAgos defaults to "cookie": the API authenticates with Sanctum bearer
+    | tokens, never sessions, and the `sessions` table was dropped as unused.
+    | A session here only ever serves the welcome page.
+    |
     */
 
-    'driver' => env('SESSION_DRIVER', 'database'),
+    'driver' => env('SESSION_DRIVER', 'cookie'),
 
     /*
     |--------------------------------------------------------------------------

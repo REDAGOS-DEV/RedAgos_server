@@ -21,6 +21,7 @@ class Donation extends Model
         'donation_date',
         'status',
         'volume_ml',
+        'rejection_reason',
     ];
 
     /**
@@ -55,11 +56,55 @@ class Donation extends Model
     }
 
     /**
-     * The screening outcome the laboratory recorded, if any.
+     * The on-site screening the facility recorded, if any.
+     */
+    public function screening(): HasOne
+    {
+        return $this->hasOne(DonationScreening::class);
+    }
+
+    /**
+     * The record of the bag actually being drawn, if it was.
+     */
+    public function collection(): HasOne
+    {
+        return $this->hasOne(BloodCollection::class);
+    }
+
+    /**
+     * The laboratory's outcome for this donation, if it has been decided.
+     *
+     * Derived by the Testing department from the two sections below once both
+     * are recorded (or serology is reactive). Legacy donations have this row
+     * without either section.
      */
     public function testResult(): HasOne
     {
         return $this->hasOne(DonationTestResult::class);
+    }
+
+    /**
+     * The Testing department's ABO/Rh typing, if recorded.
+     */
+    public function immunohematology(): HasOne
+    {
+        return $this->hasOne(DonationImmunohematology::class);
+    }
+
+    /**
+     * The Testing department's five-marker infection panel, if recorded.
+     */
+    public function serology(): HasOne
+    {
+        return $this->hasOne(DonationSerology::class);
+    }
+
+    /**
+     * The follow-up opened when serology came back reactive, if it did.
+     */
+    public function counsellingReferral(): HasOne
+    {
+        return $this->hasOne(CounsellingReferral::class);
     }
 
     /**
@@ -79,13 +124,21 @@ class Donation extends Model
     }
 
     /**
-     * Limit the query to donations cleared for issue.
+     * The clearance tokens in force for this donation — issued by TTI Testing
+     * and Immunohematology, and not revoked by a correction.
+     */
+    public function clearances(): HasMany
+    {
+        return $this->hasMany(DonationClearance::class)->whereNull('revoked_at');
+    }
+
+    /**
+     * Limit the query to donations Processing has finished with.
      *
-     * `completed` means testing is finished and the blood may reach a patient —
-     * `tested` is the separate, earlier status. The two are not the same, and
-     * this docblock previously said "reached collection" while the query
-     * filtered on `completed`. Blood-unit intake gates on this distinction; see
-     * the donation-status entry in docs/IMPLEMENTATION_DECISIONS.md.
+     * `completed` means the components are declared and the bags may be booked
+     * in — quarantined. Whether a unit may reach a patient is decided per unit,
+     * by the clearance tokens; see "Quarantine lifecycle" in
+     * docs/IMPLEMENTATION_DECISIONS.md.
      */
     public function scopeCompleted(Builder $query): Builder
     {

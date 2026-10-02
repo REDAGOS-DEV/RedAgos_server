@@ -47,9 +47,9 @@ class LoginTest extends TestCase
         ])->assertOk();
     }
 
-    public function test_login_reports_when_the_email_address_is_still_unverified(): void
+    public function test_an_unverified_email_address_is_refused_with_a_distinct_code(): void
     {
-        User::factory()->unverified()->create([
+        $user = User::factory()->unverified()->create([
             'email' => 'unverified@example.com',
             'password' => 'Password123',
         ]);
@@ -57,7 +57,34 @@ class LoginTest extends TestCase
         $this->postJson('/api/login', [
             'email' => 'unverified@example.com',
             'password' => 'Password123',
-        ])->assertOk()->assertJsonPath('must_verify_email', true);
+        ])
+            ->assertStatus(403)
+            ->assertJsonPath('code', 'email_not_verified');
+
+        // No token is issued, so nothing about the account is reachable.
+        $this->assertSame(0, $user->tokens()->count());
+    }
+
+    public function test_the_same_account_can_log_in_once_the_address_is_verified(): void
+    {
+        $user = User::factory()->unverified()->donor()->create([
+            'email' => 'unverified@example.com',
+            'password' => 'Password123',
+        ]);
+
+        $this->postJson('/api/login', [
+            'email' => 'unverified@example.com',
+            'password' => 'Password123',
+            'role' => 'donor',
+        ])->assertStatus(403);
+
+        $user->forceFill(['email_verified_at' => now()])->save();
+
+        $this->postJson('/api/login', [
+            'email' => 'unverified@example.com',
+            'password' => 'Password123',
+            'role' => 'donor',
+        ])->assertOk()->assertJsonPath('must_verify_email', false);
     }
 
     public function test_a_wrong_password_is_rejected_with_a_generic_message(): void
@@ -130,7 +157,7 @@ class LoginTest extends TestCase
             ->assertJsonPath('code', 'account_deactivated');
     }
 
-    public function test_a_pending_verification_account_may_still_log_in(): void
+    public function test_a_pending_verification_account_cannot_log_in(): void
     {
         User::factory()->unverified()->donor()->create([
             'email' => 'pending@example.com',
@@ -141,7 +168,27 @@ class LoginTest extends TestCase
             'email' => 'pending@example.com',
             'password' => 'Password123',
             'role' => 'donor',
-        ])->assertOk()->assertJsonPath('must_verify_email', true);
+        ])
+            ->assertStatus(403)
+            ->assertJsonPath('code', 'email_not_verified');
+    }
+
+    public function test_a_suspended_account_is_refused_before_the_verification_check(): void
+    {
+        // Both guards would refuse this account. The suspension is the one an
+        // administrator imposed, so it is the one worth reporting — telling
+        // them to check their inbox would send them chasing a dead end.
+        User::factory()->unverified()->suspended()->create([
+            'email' => 'suspended@example.com',
+            'password' => 'Password123',
+        ]);
+
+        $this->postJson('/api/login', [
+            'email' => 'suspended@example.com',
+            'password' => 'Password123',
+        ])
+            ->assertStatus(403)
+            ->assertJsonPath('code', 'account_suspended');
     }
 
     public function test_signing_in_through_a_portal_the_account_does_not_belong_to_is_refused(): void

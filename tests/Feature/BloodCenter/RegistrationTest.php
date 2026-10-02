@@ -2,22 +2,31 @@
 
 namespace Tests\Feature\BloodCenter;
 
-use App\Enums\AccountStatus;
-use App\Enums\FacilityStatus;
 use App\Enums\RoleName;
 use App\Models\Facility;
-use App\Models\FacilityType;
 use App\Models\User;
-use App\Notifications\VerifyEmailNotification;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
-use Illuminate\Support\Facades\Notification;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
+/**
+ * Facility self-registration is gone.
+ *
+ * This file used to prove a blood centre could sign itself up. It now proves
+ * the opposite, because the ability to create a facility is the ability to
+ * attach an account to real blood stock, and an approval queue behind a public
+ * endpoint is a gate that only works if somebody is watching it.
+ *
+ * The complement lives in tests/Feature/Admin/FacilityManagementTest.php: the
+ * Super Admin path that replaced this one.
+ */
 class RegistrationTest extends TestCase
 {
     use LazilyRefreshDatabase;
 
     /**
+     * The payload the removed endpoint used to accept.
+     *
      * @param  array<string, mixed>  $overrides
      * @return array<string, mixed>
      */
@@ -38,191 +47,85 @@ class RegistrationTest extends TestCase
         ], $overrides);
     }
 
-    public function test_a_blood_center_can_register(): void
+    public function test_the_public_blood_center_registration_endpoint_is_gone(): void
     {
-        $this->postJson('/api/blood-center/register', $this->payload())
-            ->assertCreated()
-            ->assertJsonPath('data.facility.status', FacilityStatus::PendingApproval->value)
-            ->assertJsonPath('data.user.email', 'maria.santos@drbc.ph')
-            ->assertJsonPath('data.user.account_status', AccountStatus::PendingVerification->value);
-
-        $this->assertDatabaseHas('facilities', [
-            'name' => 'Davao Regional Blood Center',
-            'doh_license_number' => 'DOH-BC-2026-00412',
-            'status' => FacilityStatus::PendingApproval->value,
-        ]);
-    }
-
-    public function test_registration_attaches_no_role(): void
-    {
-        $this->postJson('/api/blood-center/register', $this->payload())->assertCreated();
-
-        $user = User::where('email', 'maria.santos@drbc.ph')->firstOrFail();
-
-        $this->assertFalse($user->hasRole(RoleName::BloodCenter));
-        $this->assertCount(0, $user->roles);
-    }
-
-    public function test_registration_issues_no_token(): void
-    {
-        $this->postJson('/api/blood-center/register', $this->payload())
-            ->assertCreated()
-            ->assertJsonMissingPath('token');
-    }
-
-    public function test_the_applicant_is_recorded_as_the_registration_contact(): void
-    {
-        $this->postJson('/api/blood-center/register', $this->payload())->assertCreated();
-
-        $user = User::where('email', 'maria.santos@drbc.ph')->firstOrFail();
-        $facility = Facility::where('doh_license_number', 'DOH-BC-2026-00412')->firstOrFail();
-
-        $this->assertSame($user->id, $facility->registration_contact_user_id);
-        $this->assertSame($facility->id, $user->facility_id);
-    }
-
-    public function test_the_facility_type_is_resolved_server_side(): void
-    {
-        $bloodBank = FacilityType::firstOrCreate(['name' => 'blood_bank']);
-
-        // A client-supplied facility_type_id must be ignored entirely, so an
-        // applicant cannot file itself under a different organisation type.
-        $this->postJson('/api/blood-center/register', $this->payload([
-            'facility_type_id' => $bloodBank->id,
-        ]))->assertCreated();
-
-        $facility = Facility::where('doh_license_number', 'DOH-BC-2026-00412')->firstOrFail();
-
-        $this->assertSame('blood_center', $facility->facilityType->name);
-    }
-
-    public function test_registration_sends_a_verification_email(): void
-    {
-        Notification::fake();
-
-        $this->postJson('/api/blood-center/register', $this->payload())->assertCreated();
-
-        Notification::assertSentTo(
-            User::where('email', 'maria.santos@drbc.ph')->firstOrFail(),
-            VerifyEmailNotification::class
-        );
-    }
-
-    public function test_the_phone_number_is_normalised_to_e164(): void
-    {
-        $this->postJson('/api/blood-center/register', $this->payload(['phone' => '09171234567']))
-            ->assertCreated();
-
-        $this->assertDatabaseHas('users', ['phone' => '+639171234567']);
-    }
-
-    public function test_a_separator_formatted_phone_number_is_accepted(): void
-    {
-        // Normalisation runs in prepareForValidation, so separators reach the
-        // same stored value rather than being rejected by the regex.
-        $this->postJson('/api/blood-center/register', $this->payload(['phone' => '0917-123-4567']))
-            ->assertCreated();
-
-        $this->assertDatabaseHas('users', ['phone' => '+639171234567']);
-    }
-
-    public function test_the_email_address_is_stored_in_lower_case(): void
-    {
-        $this->postJson('/api/blood-center/register', $this->payload(['email' => 'Maria.Santos@DRBC.ph']))
-            ->assertCreated();
-
-        $this->assertDatabaseHas('users', ['email' => 'maria.santos@drbc.ph']);
-    }
-
-    public function test_a_duplicate_doh_license_is_rejected(): void
-    {
-        Facility::factory()->create(['doh_license_number' => 'DOH-BC-2026-00412']);
-
-        $this->postJson('/api/blood-center/register', $this->payload())
-            ->assertStatus(422)
-            ->assertJsonValidationErrors('doh_license_number');
-    }
-
-    public function test_a_duplicate_center_name_is_rejected(): void
-    {
-        Facility::factory()->create(['name' => 'Davao Regional Blood Center']);
-
-        $this->postJson('/api/blood-center/register', $this->payload())
-            ->assertStatus(422)
-            ->assertJsonValidationErrors('center_name');
-    }
-
-    public function test_a_duplicate_email_is_rejected(): void
-    {
-        User::factory()->create(['email' => 'maria.santos@drbc.ph']);
-
-        $this->postJson('/api/blood-center/register', $this->payload())
-            ->assertStatus(422)
-            ->assertJsonValidationErrors('email');
-    }
-
-    public function test_a_duplicate_phone_number_is_rejected_after_normalisation(): void
-    {
-        // Stored as E.164, submitted in local format. Without normalisation
-        // before validation these would not match and the duplicate would only
-        // surface as a database error.
-        User::factory()->create(['phone' => '+639171234567']);
-
-        $this->postJson('/api/blood-center/register', $this->payload(['phone' => '09171234567']))
-            ->assertStatus(422)
-            ->assertJsonValidationErrors('phone');
-    }
-
-    public function test_a_weak_password_is_rejected(): void
-    {
-        $this->postJson('/api/blood-center/register', $this->payload([
-            'password' => 'password',
-            'password_confirmation' => 'password',
-        ]))->assertStatus(422)->assertJsonValidationErrors('password');
-    }
-
-    public function test_a_non_philippine_phone_number_is_rejected(): void
-    {
-        $this->postJson('/api/blood-center/register', $this->payload(['phone' => '+14155550123']))
-            ->assertStatus(422)
-            ->assertJsonValidationErrors('phone');
-    }
-
-    public function test_every_required_field_is_validated(): void
-    {
-        $this->postJson('/api/blood-center/register', [])
-            ->assertStatus(422)
-            ->assertJsonValidationErrors([
-                'center_name', 'doh_license_number', 'contact_first_name',
-                'contact_last_name', 'position', 'email', 'phone', 'address', 'password',
-            ]);
-    }
-
-    public function test_a_failed_registration_leaves_no_partial_records(): void
-    {
-        User::factory()->create(['email' => 'maria.santos@drbc.ph']);
-
-        $this->postJson('/api/blood-center/register', $this->payload())->assertStatus(422);
+        $this->postJson('/api/blood-center/register', $this->payload())->assertNotFound();
 
         $this->assertDatabaseMissing('facilities', ['doh_license_number' => 'DOH-BC-2026-00412']);
+        $this->assertDatabaseMissing('users', ['email' => 'maria.santos@drbc.ph']);
     }
 
-    public function test_registration_is_throttled_after_five_attempts_per_minute(): void
+    /**
+     * Every path a client might guess at, given the endpoints that used to exist.
+     *
+     * @return array<string, array{string}>
+     */
+    public static function guessableRegistrationPaths(): array
     {
-        for ($attempt = 0; $attempt < 5; $attempt++) {
-            $this->postJson('/api/blood-center/register', $this->payload([
-                'center_name' => 'Center '.$attempt,
-                'doh_license_number' => 'DOH-BC-'.$attempt,
-                'email' => "center{$attempt}@example.ph",
-                'phone' => '0917123456'.$attempt,
-            ]));
-        }
+        return [
+            'blood center' => ['/api/blood-center/register'],
+            'blood center registration' => ['/api/blood-center/registration'],
+            'blood bank' => ['/api/blood-bank/register'],
+            'hospital' => ['/api/hospital/register'],
+            'facilities' => ['/api/facilities/register'],
+            'facility registrations' => ['/api/admin/facility-registrations'],
+        ];
+    }
 
-        $this->postJson('/api/blood-center/register', $this->payload([
-            'center_name' => 'Center Six',
-            'doh_license_number' => 'DOH-BC-6',
-            'email' => 'center6@example.ph',
-            'phone' => '09171234566',
-        ]))->assertStatus(429);
+    #[DataProvider('guessableRegistrationPaths')]
+    public function test_no_public_route_creates_a_facility(string $uri): void
+    {
+        $this->postJson($uri, $this->payload())->assertNotFound();
+
+        $this->assertSame(0, Facility::count());
+    }
+
+    /**
+     * The one endpoint that does create a facility refuses an anonymous caller.
+     */
+    public function test_the_admin_creation_endpoint_refuses_an_unauthenticated_caller(): void
+    {
+        $this->postJson('/api/admin/facilities', [])->assertUnauthorized();
+
+        $this->assertSame(0, Facility::count());
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function nonAdminRoles(): array
+    {
+        return [
+            'donor' => ['donor'],
+            'blood center staff' => ['blood_center'],
+            'no role at all' => ['none'],
+        ];
+    }
+
+    #[DataProvider('nonAdminRoles')]
+    public function test_the_admin_creation_endpoint_refuses_every_non_admin(string $kind): void
+    {
+        $user = match ($kind) {
+            'donor' => User::factory()->donor()->create(),
+            'blood_center' => User::factory()->bloodCenterSupervisor()->create(),
+            default => User::factory()->create(),
+        };
+
+        $this->actingAs($user)->postJson('/api/admin/facilities', [])->assertForbidden();
+        $this->actingAs($user)->getJson('/api/admin/facilities')->assertForbidden();
+    }
+
+    /**
+     * A facility account cannot promote itself into the onboarding role.
+     */
+    public function test_facility_staff_cannot_reach_facility_creation_through_their_own_portal(): void
+    {
+        $supervisor = User::factory()->bloodCenterSupervisor()->create();
+
+        $this->assertTrue($supervisor->hasRole(RoleName::BloodCenter));
+
+        $this->actingAs($supervisor)
+            ->postJson('/api/admin/facilities', $this->payload())
+            ->assertForbidden();
     }
 }

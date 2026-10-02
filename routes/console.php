@@ -22,3 +22,41 @@ Schedule::command('inventory:expire-units')
     ->timezone(config('blood_center.timezone'))
     ->withoutOverlapping()
     ->onOneServer();
+
+// Same reasoning as above, and the same failure mode if it is ever dropped.
+// Booking an appointment no longer requires a health questionnaire — a donor
+// answers it the day before — so this reminder is the only thing standing
+// between a donor booking and arriving at the counter with nothing to scan.
+// Without it they are turned back to a form they could have filled at home.
+//
+// 08:00 so the day-before reminder arrives with an evening still left to act
+// on, and the second one on the morning of the appointment lands before the
+// donor sets off. The command is idempotent per donor, appointment and stage,
+// so a retried or overlapping run cannot mail anyone twice.
+Schedule::command('donors:open-screening-window')
+    ->dailyAt('08:00')
+    ->timezone(config('blood_center.timezone'))
+    ->withoutOverlapping()
+    ->onOneServer();
+
+// A hospital blood bank's Tag Assigned and Tag Crossmatched holds each last 24
+// hours. Without this, a lapsed tag keeps a bag promised to a patient nobody is
+// crossmatching or transfusing, and the shelf looks emptier than it is. Writes
+// already refuse a tag at its deadline, so the minute is how quickly the bag
+// visibly frees up — not what makes the deadline hold.
+//
+// The overlap lock expires after 10 minutes rather than the default day: one
+// crashed run must not stop the untagging until tomorrow.
+Schedule::command('hospital:expire-tags')
+    ->everyMinute()
+    ->withoutOverlapping(10)
+    ->onOneServer();
+
+// The hospital's own shelf, expired the way the centre's is and at the same
+// moment. A separate command so inventory:expire-units stays exactly as it was:
+// a received bag still reads `issued` at its centre and is not that sweep's.
+Schedule::command('hospital:expire-units')
+    ->dailyAt('00:30')
+    ->timezone(config('blood_center.timezone'))
+    ->withoutOverlapping()
+    ->onOneServer();

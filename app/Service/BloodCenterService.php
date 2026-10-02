@@ -2,196 +2,33 @@
 
 namespace App\Service;
 
-use App\Enums\AccountStatus;
+use App\Enums\BloodBagType;
 use App\Enums\BloodUnitStatus;
-use App\Enums\FacilityStatus;
+use App\Enums\SerologyMarker;
 use App\Models\BloodComponent;
 use App\Models\BloodType;
 use App\Models\Facility;
 use App\Models\User;
 use App\Repository\BloodCenterRepository;
-use App\Support\AccountIdentity;
-use Illuminate\Database\QueryException;
+use App\Repository\BloodComponentRepository;
 use Illuminate\Http\Exceptions\HttpResponseException;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
+/**
+ * What a signed-in blood-centre account may do with its own record.
+ *
+ * Registration used to live here too. It does not any more: facilities are
+ * created by a Super Admin through FacilityManagementService, so there is no
+ * self-service path onto this service at all.
+ */
 class BloodCenterService
 {
     public function __construct(
         private readonly BloodCenterRepository $bloodCenterRepository,
-        private readonly AuditLogger $auditLogger
+        private readonly BloodComponentRepository $bloodComponentRepository,
+        private readonly FacilityLogoService $facilityLogoService
     ) {}
-
-    /**
-     * Register a blood centre and the staff account that applied for it.
-     *
-     * No role is attached here. The blood_center role is granted only by
-     * FacilityApprovalService::approve(), which is what stops a stranger
-     * self-provisioning access to real blood stock.
-     *
-     * @param  array<string, mixed>  $payload
-     * @return array<string, mixed>
-     */
-    public function register(array $payload): array
-    {
-        try {
-            $user = DB::transaction(function () use ($payload): User {
-                $facility = $this->bloodCenterRepository->createFacility([
-                    'name' => trim($payload['center_name']),
-                    'doh_license_number' => trim($payload['doh_license_number']),
-                    'contact_person' => trim($payload['contact_first_name'].' '.$payload['contact_last_name']),
-                    'email' => $payload['email'],
-                    'phone' => $payload['phone'],
-                    'address' => trim($payload['address']),
-                    'description' => isset($payload['description']) ? trim((string) $payload['description']) : null,
-                ]);
-
-                $user = $this->bloodCenterRepository->createStaffUser([
-                    'uuid' => (string) Str::uuid(),
-                    'first_name' => trim($payload['contact_first_name']),
-                    'last_name' => trim($payload['contact_last_name']),
-                    // Already lowercased and normalised to E.164 by the request.
-                    'email' => $payload['email'],
-                    'phone' => $payload['phone'],
-                    'username' => AccountIdentity::buildUsername($payload['email']),
-                    'password' => Hash::make($payload['password']),
-                    'account_status' => AccountStatus::PendingVerification,
-                    'position' => trim($payload['position']),
-                ], $facility);
-
-                $this->bloodCenterRepository->setRegistrationContact($facility, $user);
-
-                return $user;
-            });
-        } catch (QueryException $exception) {
-            $this->rethrowUniqueViolation($exception);
-
-            throw $exception;
-        }
-
-        // Sent after the commit so a rolled-back registration never mails a
-        // live verification link.
-        $user->sendEmailVerificationNotification();
-
-        $facility = $user->facility;
-
-        $this->auditLogger->record($user, 'blood_center.registered', $facility, [
-            'facility_id' => $facility?->id,
-        ]);
-
-        return [
-            'message' => 'Registration submitted. We will email you once an administrator has reviewed your DOH licence.',
-            'data' => [
-                'facility' => [
-                    'id' => $facility?->id,
-                    'name' => $facility?->name,
-                    'status' => $facility?->status->value,
-                ],
-                'user' => [
-                    'uuid' => $user->uuid,
-                    'email' => $user->email,
-                    'account_status' => $user->account_status?->value,
-                    'roles' => [],
-                ],
-            ],
-        ];
-    }
-
-    /**
-     * Report where an applicant's registration currently stands.
-     *
-     * @return array<string, mixed>
-     */
-    public function registrationStatus(User $user): array
-    {
-        $facility = $this->requireFacility($user);
-
-        return [
-            'facility' => [
-                'id' => $facility->id,
-                'name' => $facility->name,
-                'status' => $facility->status->value,
-                'rejection_reason' => $facility->rejection_reason,
-                'resubmitted_at' => $facility->resubmitted_at?->toIso8601String(),
-                // Returned so the resubmission form can prefill. Making an
-                // applicant retype their DOH licence from memory invites a typo
-                // that then fails the uniqueness check for the wrong reason.
-                'doh_license_number' => $facility->doh_license_number,
-                'contact_person' => $facility->contact_person,
-                'address' => $facility->address,
-                'description' => $facility->description,
-            ],
-
-            // Mirrors exactly what resubmit() will allow, so the UI never offers
-            // a button the API would refuse.
-            'can_resubmit' => $this->canResubmit($user, $facility),
-        ];
-    }
-
-    /**
-     * Resubmit a rejected registration for another review.
-     *
-     * @param  array<string, mixed>  $payload
-     * @return array<string, mixed>
-     */
-    public function resubmit(User $user, array $payload): array
-    {
-        $facility = $this->requireFacility($user);
-
-        // Authorisation before state: only the registration contact may
-        // resubmit, not every member of staff who ends up attached later.
-        if ($facility->registration_contact_user_id !== $user->id) {
-            throw new HttpResponseException(response()->json([
-                'message' => 'Only the person who submitted this registration can resubmit it.',
-                'code' => 'not_registration_contact',
-            ], 403));
-        }
-
-        if ($facility->status !== FacilityStatus::Rejected) {
-            throw new HttpResponseException(response()->json([
-                'message' => 'This registration is not awaiting resubmission.',
-                'code' => 'facility_not_rejected',
-            ], 409));
-        }
-
-        try {
-            DB::transaction(function () use ($facility, $payload): void {
-                $facility->fill([
-                    'name' => trim($payload['center_name']),
-                    'doh_license_number' => trim($payload['doh_license_number']),
-                    'contact_person' => trim($payload['contact_person']),
-                    'address' => trim($payload['address']),
-                    'description' => isset($payload['description']) ? trim((string) $payload['description']) : null,
-                ]);
-
-                $facility->status = FacilityStatus::PendingApproval;
-                $facility->rejection_reason = null;
-                $facility->resubmitted_at = now();
-                $facility->save();
-            });
-        } catch (QueryException $exception) {
-            $this->rethrowUniqueViolation($exception);
-
-            throw $exception;
-        }
-
-        $this->auditLogger->record($user, 'facility.resubmitted', $facility, [
-            'facility_id' => $facility->id,
-        ]);
-
-        return [
-            'message' => 'Registration resubmitted. An administrator will review it again.',
-            'facility' => [
-                'id' => $facility->id,
-                'name' => $facility->name,
-                'status' => $facility->status->value,
-                'resubmitted_at' => $facility->resubmitted_at?->toIso8601String(),
-            ],
-        ];
-    }
 
     /**
      * Read the caller's own staff profile and facility.
@@ -222,6 +59,7 @@ class BloodCenterService
                 'doh_license_number' => $user->facility->doh_license_number,
                 'status' => $user->facility->status->value,
                 'operating_hours' => $user->facility->operating_hours,
+                'logo_url' => $this->facilityLogoService->urlFor($user->facility),
             ] : null,
             'account' => [
                 'username' => $user->username,
@@ -286,6 +124,7 @@ class BloodCenterService
         // Guaranteed non-null: this only runs behind facility.operational, which
         // refuses a caller without an approved facility.
         $facility = $this->requireFacility($user);
+        $settings = $this->bloodComponentRepository->settingsFor($facility->id);
 
         return [
             'blood_types' => $this->bloodCenterRepository->bloodTypes()
@@ -295,16 +134,24 @@ class BloodCenterService
                     'label' => $type->label,
                 ])->all(),
 
+            // Shelf life and price come from this facility's own settings, not
+            // from the shared blood_components row: four facilities share that
+            // catalogue, so a value read off it would be another centre's.
             'components' => $this->bloodCenterRepository->components()
-                ->map(fn (BloodComponent $component): array => [
-                    'id' => $component->id,
-                    'name' => $component->name,
-                    'shelf_life_days' => $component->shelf_life_days,
-                    'storage_temperature' => $component->storage_temperature,
-                    // Surfaced so the UI can disable stock entry outright rather
-                    // than let someone record a unit with an invented expiry.
-                    'shelf_life_configured' => $component->hasShelfLife(),
-                ])->all(),
+                ->map(function (BloodComponent $component) use ($settings): array {
+                    $setting = $settings->get($component->id);
+
+                    return [
+                        'id' => $component->id,
+                        'name' => $component->name,
+                        'shelf_life_days' => $setting?->shelf_life_days,
+                        'price' => $setting?->price === null ? null : (float) $setting->price,
+                        'storage_temperature' => $component->storage_temperature,
+                        // Surfaced so the UI can disable stock entry outright rather
+                        // than let someone record a unit with an invented expiry.
+                        'shelf_life_configured' => $setting?->hasShelfLife() ?? false,
+                    ];
+                })->all(),
 
             // Projected from the PHP enum, never from a runtime schema lookup,
             // so the payload is identical on MySQL, Postgres and Supabase.
@@ -318,21 +165,18 @@ class BloodCenterService
 
             'storage_locations' => config('blood_center.storage_locations', []),
 
+            // Section II of the DOH form: the phlebotomist's bag picker and
+            // the Testing department's serology panel, both from their enums.
+            'blood_bag_types' => BloodBagType::options(),
+            'serology_markers' => SerologyMarker::options(),
+
             'facility' => [
                 'id' => $facility->id,
                 'facility_name' => $facility->name,
                 'address' => $facility->address,
+                'logo_url' => $this->facilityLogoService->urlFor($facility),
             ],
         ];
-    }
-
-    /**
-     * Determine whether this user may resubmit this facility's registration.
-     */
-    private function canResubmit(User $user, Facility $facility): bool
-    {
-        return $facility->status === FacilityStatus::Rejected
-            && $facility->registration_contact_user_id === $user->id;
     }
 
     /**
@@ -350,36 +194,5 @@ class BloodCenterService
         }
 
         return $user->facility;
-    }
-
-    /**
-     * Translate a unique-index collision into a field-level validation error.
-     *
-     * Only reachable when two submissions race past the FormRequest's unique
-     * rules and collide at the index, so this is the race guard rather than the
-     * everyday path. Matching on the column name is driver-dependent, so an
-     * unrecognised collision still yields a usable 422 rather than a 500.
-     */
-    private function rethrowUniqueViolation(QueryException $exception): void
-    {
-        $sqlState = $exception->errorInfo[0] ?? null;
-
-        // MySQL and sqlite report 23000; PostgreSQL reports 23505.
-        if (! in_array($sqlState, ['23000', '23505'], true)) {
-            return;
-        }
-
-        $message = $exception->getMessage();
-
-        $field = match (true) {
-            str_contains($message, 'doh_license_number') => 'doh_license_number',
-            str_contains($message, 'phone') => 'phone',
-            str_contains($message, 'email') => 'email',
-            default => 'center_name',
-        };
-
-        throw ValidationException::withMessages([
-            $field => ['This registration conflicts with one that was just submitted. Please check the details and try again.'],
-        ]);
     }
 }

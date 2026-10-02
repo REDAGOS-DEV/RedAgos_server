@@ -5,8 +5,10 @@ namespace App\Models;
 use App\Enums\AccountStatus;
 use App\Enums\Department;
 use App\Enums\RoleName;
+use App\Enums\StaffRole;
 use App\Notifications\ResetPasswordNotification;
 use App\Notifications\VerifyEmailNotification;
+use App\Support\AdminPrivileges;
 use App\Support\DepartmentPermissions;
 use Database\Factories\UserFactory;
 use Illuminate\Contracts\Auth\MustVerifyEmail;
@@ -24,6 +26,7 @@ use Laravel\Sanctum\HasApiTokens;
 #[Fillable([
     'uuid',
     'first_name',
+    'middle_name',
     'last_name',
     'email',
     'phone',
@@ -34,6 +37,8 @@ use Laravel\Sanctum\HasApiTokens;
     'terms_accepted_at',
     'employee_id',
     'position',
+    'is_super_admin',
+    'admin_privileges',
 ])]
 
 #[Hidden(['password', 'remember_token'])]
@@ -62,9 +67,40 @@ class User extends Authenticatable implements MustVerifyEmail
             'terms_accepted_at' => 'datetime',
             'account_status' => AccountStatus::class,
             'department' => Department::class,
+            'staff_role' => StaffRole::class,
+            'staff_privileges' => 'array',
             'is_supervisor' => 'boolean',
+            'is_super_admin' => 'boolean',
+            'admin_privileges' => 'array',
             'password' => 'hashed',
         ];
+    }
+
+    /**
+     * Derive the department from the staff role on every save.
+     *
+     * A predefined role decides the department, and any department assigned
+     * alongside it is overwritten on save so the two can never disagree. A
+     * custom role keeps the department it was assigned, since nothing else
+     * could supply one. An account with no role at all has no department.
+     */
+    protected static function booted(): void
+    {
+        static::saving(function (User $user): void {
+            if ($user->staff_role !== null) {
+                $user->department = $user->staff_role->department();
+            } elseif (blank($user->custom_role)) {
+                $user->department = null;
+            }
+        });
+    }
+
+    /**
+     * The role as the staff roster shows it: a predefined role's title, or the custom one typed.
+     */
+    public function roleLabel(): ?string
+    {
+        return $this->staff_role?->label() ?? (filled($this->custom_role) ? $this->custom_role : null);
     }
 
     public function roles(): BelongsToMany
@@ -98,7 +134,7 @@ class User extends Authenticatable implements MustVerifyEmail
     }
 
     /**
-     * Get every ability this account holds through its department or the management level.
+     * Get every ability this account holds through its staff role or the management level.
      *
      * This is what the `can:` route middleware resolves against, and what the
      * client mirrors to decide which navigation to render. The server remains
@@ -108,7 +144,10 @@ class User extends Authenticatable implements MustVerifyEmail
      */
     public function abilities(): array
     {
-        return DepartmentPermissions::for($this);
+        return array_values(array_unique([
+            ...DepartmentPermissions::for($this),
+            ...AdminPrivileges::for($this),
+        ]));
     }
 
     /**

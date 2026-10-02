@@ -3,10 +3,17 @@
 namespace App\Notifications;
 
 use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldBeEncrypted;
+use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
 
-class ResetPasswordNotification extends Notification
+/**
+ * Queued, so a mail server that hangs never holds up the request that sent it
+ * (see DonationRecorded), and encrypted on the queue because the payload holds
+ * the plaintext reset token, which the database otherwise only keeps hashed.
+ */
+class ResetPasswordNotification extends Notification implements ShouldBeEncrypted, ShouldQueue
 {
     use Queueable;
 

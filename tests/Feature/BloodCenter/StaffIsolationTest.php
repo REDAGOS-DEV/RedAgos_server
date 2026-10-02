@@ -3,6 +3,7 @@
 namespace Tests\Feature\BloodCenter;
 
 use App\Enums\Department;
+use App\Enums\StaffRole;
 use App\Models\Facility;
 use App\Models\User;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
@@ -59,7 +60,7 @@ class StaffIsolationTest extends TestCase
     {
         $this->actingAs($this->supervisor)
             ->{$method}("/api/blood-center/staff/{$this->foreignStaff->uuid}{$suffix}", [
-                'department' => Department::Billing->value,
+                'staff_role' => StaffRole::BillingClerk->value,
             ])
             ->assertNotFound()
             ->assertJsonPath('code', 'staff_not_found');
@@ -115,7 +116,7 @@ class StaffIsolationTest extends TestCase
     public function test_department_staff_cannot_reach_the_roster(string $method, string $uri): void
     {
         $colleague = User::factory()
-            ->bloodCenterStaff($this->supervisor->facility, Department::Inventory)
+            ->bloodCenterStaff($this->supervisor->facility, Department::Issuance)
             ->create();
 
         $this->actingAs($colleague)
@@ -143,9 +144,9 @@ class StaffIsolationTest extends TestCase
             ->assertOk();
     }
 
-    public function test_a_supervisor_whose_facility_is_suspended_is_refused(): void
+    public function test_a_supervisor_whose_facility_is_unapproved_is_refused(): void
     {
-        $facility = Facility::factory()->suspended()->create();
+        $facility = Facility::factory()->rejected()->create();
         $supervisor = User::factory()->bloodCenterSupervisor($facility)->create();
 
         // facility.operational runs before the ability, so roster management
@@ -153,6 +154,6 @@ class StaffIsolationTest extends TestCase
         $this->actingAs($supervisor)
             ->getJson('/api/blood-center/staff')
             ->assertForbidden()
-            ->assertJsonPath('code', 'facility_suspended');
+            ->assertJsonPath('code', 'facility_not_approved');
     }
 }
