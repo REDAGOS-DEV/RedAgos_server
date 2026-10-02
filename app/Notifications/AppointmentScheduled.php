@@ -64,7 +64,9 @@ class AppointmentScheduled extends Notification implements ShouldQueue
             ->line('**Reference:** #'.$this->appointment->id)
             ->action('View my appointment', $frontend.'/donor/appointments')
             ->line('Please bring a valid ID and your donor QR code. Eat a full meal and drink plenty of water before you arrive.')
-            ->line("You can reschedule or cancel from your appointments screen up to {$windowHours} hours beforehand.")
+            ->line($windowHours > 0
+                ? "You can reschedule or cancel from your appointments screen up to {$windowHours} hours beforehand."
+                : 'You can reschedule or cancel from your appointments screen any time before your appointment.')
             ->line('Questions? Call us on '.config('donation.support.hotline_label').' ('.config('donation.support.hours').').');
     }
 

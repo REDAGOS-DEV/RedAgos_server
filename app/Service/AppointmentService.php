@@ -423,7 +423,9 @@ class AppointmentService
         }
 
         throw new HttpResponseException(response()->json([
-            'message' => "Appointments can only be changed more than {$windowHours} hours in advance.",
+            'message' => $windowHours > 0
+                ? "Appointments can only be changed more than {$windowHours} hours in advance."
+                : 'This appointment has already started and can no longer be changed.',
             'code' => 'cancellation_window_passed',
         ], 422));
     }

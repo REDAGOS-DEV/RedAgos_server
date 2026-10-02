@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\QuestionCategory;
 use App\Enums\QuestionKind;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -16,6 +17,7 @@ class EligibilityQuestion extends Model
         'section_key',
         'section_title',
         'section_number',
+        'category',
         'code',
         'number',
         'text',
@@ -33,6 +35,7 @@ class EligibilityQuestion extends Model
             'section_number' => 'integer',
             'disqualify_if_answer' => 'boolean',
             'kind' => QuestionKind::class,
+            'category' => QuestionCategory::class,
             'is_active' => 'boolean',
         ];
     }

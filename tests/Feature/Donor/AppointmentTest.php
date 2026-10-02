@@ -400,12 +400,48 @@ class AppointmentTest extends TestCase
             ->assertForbidden();
     }
 
-    public function test_cancelling_inside_the_twenty_four_hour_window_is_refused(): void
+    public function test_cancelling_inside_a_configured_window_is_refused(): void
     {
+        // The window defaults to 0 (walk-in centres); the guard still has to
+        // hold for a centre that raises it.
+        config(['donation.cancellation_window_hours' => 24]);
+
         $appointment = DonationAppointment::factory()->create([
             'donor_id' => $this->donor->id,
             'facility_id' => $this->center->id,
             'appointment_datetime' => now()->addHours(6),
+        ]);
+
+        $this->actingAs($this->donor)
+            ->deleteJson('/api/donors/appointments/'.$appointment->id)
+            ->assertStatus(422)
+            ->assertJsonPath('code', 'cancellation_window_passed');
+    }
+
+    public function test_with_no_window_an_appointment_can_be_cancelled_hours_before_it_starts(): void
+    {
+        config(['donation.cancellation_window_hours' => 0]);
+
+        $appointment = DonationAppointment::factory()->create([
+            'donor_id' => $this->donor->id,
+            'facility_id' => $this->center->id,
+            'appointment_datetime' => now()->addHours(2),
+        ]);
+
+        $this->actingAs($this->donor)
+            ->deleteJson('/api/donors/appointments/'.$appointment->id)
+            ->assertOk()
+            ->assertJsonPath('status', 'cancelled');
+    }
+
+    public function test_an_appointment_that_has_started_cannot_be_changed(): void
+    {
+        config(['donation.cancellation_window_hours' => 0]);
+
+        $appointment = DonationAppointment::factory()->create([
+            'donor_id' => $this->donor->id,
+            'facility_id' => $this->center->id,
+            'appointment_datetime' => now()->subMinutes(5),
         ]);
 
         $this->actingAs($this->donor)

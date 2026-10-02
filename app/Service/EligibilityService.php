@@ -3,6 +3,7 @@
 namespace App\Service;
 
 use App\Enums\EligibilityStatus;
+use App\Enums\QuestionCategory;
 use App\Enums\QuestionnaireStatus;
 use App\Models\DonationAppointment;
 use App\Models\DonorProfile;
@@ -71,11 +72,20 @@ class EligibilityService
                         'number' => $question->number,
                         'text' => $question->text,
                         'kind' => $question->kind?->value ?? 'risk',
+                        // Display grouping only; null for v1, where the client
+                        // keeps the DOH sections.
+                        'category' => $question->category?->value,
                         'required' => $question->isRequiredForGender($gender),
                     ])->values()->all(),
                 ])
                 ->values()
                 ->all(),
+            // In display order. The client groups by these when every
+            // question carries one.
+            'categories' => array_map(
+                fn (QuestionCategory $category): array => ['key' => $category->value, 'title' => $category->title()],
+                QuestionCategory::cases()
+            ),
             'consent' => $this->consentBlock(),
         ];
     }
