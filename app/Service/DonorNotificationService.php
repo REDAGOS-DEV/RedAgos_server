@@ -3,6 +3,7 @@
 namespace App\Service;
 
 use App\Models\User;
+use App\Notifications\AppointmentScheduled;
 use Illuminate\Notifications\DatabaseNotification;
 
 class DonorNotificationService
@@ -22,6 +23,8 @@ class DonorNotificationService
      */
     public function list(User $user, array $filters): array
     {
+        $this->markOverdueAppointmentNotificationsAsRead($user);
+
         $query = $user->notifications()
             ->when(
                 $filters['category'] ?? null,
@@ -57,6 +60,8 @@ class DonorNotificationService
      */
     public function unreadCount(User $user): array
     {
+        $this->markOverdueAppointmentNotificationsAsRead($user);
+
         return ['unread_count' => $user->unreadNotifications()->count()];
     }
 
@@ -91,6 +96,17 @@ class DonorNotificationService
             'message' => 'All notifications marked as read.',
             'unread_count' => 0,
         ];
+    }
+
+    private function markOverdueAppointmentNotificationsAsRead(User $user): void
+    {
+        $now = now();
+
+        $user->unreadNotifications()
+            ->where('type', AppointmentScheduled::class)
+            ->whereNotNull('data->appointment_datetime')
+            ->where('data->appointment_datetime', '<', $now->toIso8601String())
+            ->update(['read_at' => $now]);
     }
 
     /**
