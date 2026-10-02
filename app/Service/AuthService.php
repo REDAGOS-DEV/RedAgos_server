@@ -45,7 +45,7 @@ class AuthService
             'token' => $this->authRepository->issueToken($user, $this->tokenName($requestedRole)),
             'token_type' => 'Bearer',
             // Always false now that guardEmailVerified() refuses an unverified
-            // address outright. Kept so existing clients reading it keep
+            // addreess outright. Kept so existing clients reading it keep
             // working; nothing needs to act on it any more.
             'must_verify_email' => false,
         ];
