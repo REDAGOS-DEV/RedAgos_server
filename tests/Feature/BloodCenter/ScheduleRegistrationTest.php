@@ -45,17 +45,51 @@ class ScheduleRegistrationTest extends TestCase
         $this->assertTrue($event->onOneServer, 'Two servers running the sweep would each write the audit trail for it.');
     }
 
+    public function test_the_hospital_tag_sweep_runs_every_minute(): void
+    {
+        // A 24-hour tag that lapses must free its bag within the minute, not
+        // overnight.
+        $this->assertSame('* * * * *', $this->eventFor('hospital:expire-tags')->expression);
+    }
+
+    public function test_the_hospital_tag_sweep_cannot_overlap_and_recovers_from_a_crashed_run(): void
+    {
+        $event = $this->eventFor('hospital:expire-tags');
+
+        $this->assertTrue($event->withoutOverlapping);
+        $this->assertTrue($event->onOneServer);
+        $this->assertSame(10, $event->expiresAt, 'The default day-long overlap lock would stall untagging for a day after one crash.');
+    }
+
+    public function test_the_hospital_expiry_sweep_runs_with_the_centres_at_half_past_midnight(): void
+    {
+        $event = $this->eventFor('hospital:expire-units');
+
+        $this->assertSame('30 0 * * *', $event->expression);
+        $this->assertSame(config('blood_center.timezone'), $event->timezone);
+        $this->assertTrue($event->withoutOverlapping);
+        $this->assertTrue($event->onOneServer);
+    }
+
     /**
      * The registered sweep, or a failed test saying it is missing.
      */
     private function sweepEvent(): Event
     {
+        return $this->eventFor('inventory:expire-units');
+    }
+
+    /**
+     * The registered event for a command, or a failed test saying it is missing.
+     */
+    private function eventFor(string $command): Event
+    {
         $event = collect(app(Schedule::class)->events())
-            ->first(fn (Event $event): bool => str_contains((string) $event->command, 'inventory:expire-units'));
+            ->first(fn (Event $event): bool => str_contains((string) $event->command, $command));
 
         $this->assertNotNull(
             $event,
-            'inventory:expire-units is not registered in routes/console.php, so nothing will ever run it.'
+            "{$command} is not registered in routes/console.php, so nothing will ever run it."
         );
 
         return $event;
