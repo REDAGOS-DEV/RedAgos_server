@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Donor;
 
+use App\Models\Donation;
 use App\Enums\RoleName;
 use App\Models\AuditLog;
 use App\Models\DonorQrToken;
@@ -53,6 +54,64 @@ class QrCodeTest extends TestCase
             ],
             'vitals' => ['weight' => 65],
         ];
+    }
+
+    public function test_qr_endpoint_reports_the_donation_cooldown_without_an_active_token(): void
+    {
+        $donationDate = now()->subDay();
+
+        Donation::factory()
+            ->completedAt($donationDate->toDateString())
+            ->create(['donor_id' => $this->donor->id]);
+
+        $expectedDate = $donationDate
+            ->copy()
+            ->addDays((int) config('donation.interval_days'))
+            ->toDateString();
+
+        // Even if an old token remains in the database, the endpoint must not
+        // expose it as active while the donor must wait.
+        $screening = EligibilityScreening::factory()->create([
+            'donor_id' => $this->donor->id,
+            'invalidated_at' => now(),
+        ]);
+
+        DonorQrToken::factory()->create([
+            'donor_id' => $this->donor->id,
+            'screening_id' => $screening->id,
+            'expires_at' => now()->addDays(14),
+            'revoked_at' => null,
+        ]);
+
+        $this->actingAs($this->donor)
+            ->getJson('/api/donors/qr-code')
+            ->assertOk()
+            ->assertJsonPath('questionnaire_status', 'expired')
+            ->assertJsonPath('has_active_token', false)
+            ->assertJsonPath('donation_interval_active', true)
+            ->assertJsonPath('next_eligible_date', $expectedDate);
+    }
+
+    public function test_refresh_is_refused_during_the_donation_interval(): void
+    {
+        $donationDate = now()->subDay();
+
+        // A real completed donation creates a blood-collection record through
+        // the factory, so it counts toward the 56-day donor waiting interval.
+        Donation::factory()
+            ->completedAt($donationDate->toDateString())
+            ->create(['donor_id' => $this->donor->id]);
+
+        $expectedDate = $donationDate
+            ->copy()
+            ->addDays((int) config('donation.interval_days'))
+            ->toDateString();
+
+        $this->actingAs($this->donor)
+            ->postJson('/api/donors/qr-code/refresh')
+            ->assertStatus(422)
+            ->assertJsonPath('code', 'donation_interval_active')
+            ->assertJsonPath('next_eligible_date', $expectedDate);
     }
 
     public function test_a_passing_screening_issues_a_qr_token(): void
@@ -286,8 +345,11 @@ class QrCodeTest extends TestCase
             ->assertOk()
             ->getContent();
 
-        $this->assertStringNotContainsString('deferred', $body);
-        $this->assertStringNotContainsString('eligible', $body);
+        $this->assertStringNotContainsString('"result"', $body);
+        $this->assertStringNotContainsString('"computed_result"', $body);
+        $this->assertStringNotContainsString('"submitted_result"', $body);
+        $this->assertStringNotContainsString('"deferral_reasons"', $body);
+        $this->assertStringContainsString('"questionnaire_status":"answered"', $body);
     }
 
     public function test_issuing_a_token_is_audit_logged(): void

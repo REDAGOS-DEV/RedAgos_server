@@ -22,6 +22,8 @@ These are **IMPLEMENTATION DECISIONS confirmed during development**, not Capston
 
 **CAPSTONE CONFLICT:** The paper's inventory storyboard permits recording blood units that are “newly collected or received.” “Received” may require an external-supply or transfer origin, which this decision forbids. Clarify the intended meaning and data model before inventory implementation.
 
+> **SUPERSEDED IN PART (2026-10-05)** by "Receiving: weekly requests and direct distribution" (D-R1) at the end of this file. A hospital blood bank may now book bags it received from outside RedAgos. Such a bag traces to its delivery (`blood_units.direct_distribution_id`) instead of a donation; every bag still traces to exactly one of the two. A blood centre's own stock is still donation-derived only.
+
 ## Blood center registration
 
 **DECISION:** Blood-center registration creates the facility and user, links the user with `users.facility_id`, places both into a pending state, requires administrator approval, and grants active blood-center access only after approval. Email verification is not organizational approval.
@@ -81,6 +83,7 @@ Do not build fulfillment on unresolved facility-isolation or inventory foundatio
 **DECISION (D2):** Expiry is entered by staff per unit, read off the physical bag. `blood_components.shelf_life_days` stays NULL and is not consulted, so the unowned clinical constant does not gate inventory.
 
 **DECISION (D3):** Units are donation-derived only. `blood_units.donation_id` stays NOT NULL; there is no free stock entry.
+*(Superseded in part 2026-10-05 by D-R1: `donation_id` is nullable for a bag a hospital received by direct distribution, which traces to `direct_distribution_id` instead. A centre's intake is unchanged and still has no free stock entry.)*
 
 **DECISION (D5):** Intake serialises on the donation row with `SELECT ... FOR UPDATE`, derives the unit-id sequence under that lock, and still catches a unique violation — retrying a generated id, and returning a 422 field error for a staff-supplied one.
 
@@ -1006,7 +1009,7 @@ Other rules: the expiry sweep, allocation, hospital availability and the stock r
 
 ## Immunohematology clearance
 
-**DECISION:** The typing records forward group, reverse group and antibody screen alongside `blood_type_id` (whose ABO must equal the forward group). The immunohematology token is issued the moment a typing is concordant — forward equals reverse and the screen is negative — and the donor profile adopts the blood type at that moment, so a first-time donor's bags can be booked into quarantine before serology is back. A discrepant or antibody-positive typing is saved but held (`clearance_hold`), and changes only through a correction decided by the Reference Laboratory Consultant. A cleared typing is final.
+**DECISION:** The typing records forward group, reverse group and antibody screen alongside `blood_type_id` (whose ABO must equal the forward group). The immunohematology token is issued the moment a typing is concordant — forward equals reverse and the screen is negative — and the donor profile adopts the blood type at that moment, so a first-time donor's bags can be booked into quarantine before serology is back. A discrepant or antibody-positive typing is saved but held (`clearance_hold`), and changes only through a correction decided by the Laboratory Supervisor (Testing took over typing; the Reference Laboratory Consultant role was withdrawn). A cleared typing is final.
 
 ## Serology is cleared on save (no analytical runs)
 
@@ -1016,9 +1019,27 @@ Other rules: the expiry sweep, allocation, hospital availability and the stock r
 
 ## Correction requests
 
-**DECISION (requested by the project owner, 2026-09-27):** A saved record — screening, collection box, immunohematology typing, serology panel, component breakdown — is never saved over, by anyone (`409 correction_required`). The staff member whose role writes it files a correction request (`POST /donations/{id}/corrections`) with the corrected values and a reason; the values are validated with the original write's own form request. The department's approver (`Department::correctionApprover()`: Collection → screening physician, Processing → component technologist, TTI Testing → lab supervisor, Immunohematology → reference lab consultant) or the Center Admin approves or rejects it. Nobody decides their own request, and an approver's own request goes to the Center Admin rather than a peer.
+**DECISION (requested by the project owner, 2026-09-27):** A saved record — screening, collection box, immunohematology typing, serology panel, component breakdown — is never saved over, by anyone (`409 correction_required`). The staff member whose role writes it files a correction request (`POST /donations/{id}/corrections`) with the corrected values and a reason; the values are validated with the original write's own form request. The department's approver (`Department::correctionApprover()`: Collection → screening physician, Processing → component technologist, Testing → lab supervisor, Issuance → inventory control officer, Billing → billing supervisor; Immunohematology's former consultant was withdrawn with the department) or the Center Admin approves or rejects it. Nobody decides their own request, and an approver's own request goes to the Center Admin rather than a peer.
 
 An approved correction is applied through the original write, as the requester, inside the approval's transaction — so every guard still applies. A reactive serology result can never be corrected. A cleared result (typing or serology) can be corrected only while none of the donation's bags has left quarantine (`409 units_released`, re-checked at approval): approving revokes the token in force, resets `tested` and the derived `passed` summary, and the corrected result earns a new token only if it qualifies. An approval that a guard refuses applies nothing — no revocation either — and leaves the request pending. The collection box has its own correction write (`CollectionService::correctCollection`), refused once units are booked against the donation. Audit: `correction.requested | approved | rejected | applied` (field names only, never marker values).
+
+**EXTENDED (2026-10-08): every department has a head, and Issuance and Billing records are correctable.** Requested by the project owner.
+
+- **Heads.** Issuance's is the Inventory Control Officer. Billing gained a new post, the **Billing Supervisor** (`billing_supervisor`): the Billing Clerk's abilities plus `corrections.approve`. `Department::correctionApprover()` therefore returns a `StaffRole`, never null, and the null fallbacks in `CorrectionService` are gone.
+- **New subjects**, each with its own filing route (`POST /inventory/{unit}/corrections`, `/allocations/{allocation}/corrections`, `/payments/{payment}/corrections`) so a request body cannot aim a subject at the wrong table:
+  - `unit_details` (storage location, expiry date), written by `UpdateBloodUnitRequest` and applied through `InventoryService::update()`;
+  - `dispatch` (`released_at`, `handed_to`), validated by `CorrectDispatchRequest` and applied by `FulfillmentService::correctDispatch()`;
+  - `payment` (amount, method, reference number), validated by `RecordPaymentRequest` and applied by `BillingService::correctPayment()`.
+- **Schema.** `correction_requests.donation_id` became nullable, with one typed nullable foreign key per other target (`blood_unit_id` is text, the others bigint). A morph pair was rejected: one id column would join text and bigint keys wrongly on PostgreSQL while passing on SQLite, the failure `widen_audit_log_auditable_id` records. Exactly one target is set per row, enforced by `CorrectionRequest`'s saving hook everywhere and by a CHECK on PostgreSQL. The rollback refuses while a correction with no donation exists. A multi-step `migrate:rollback` is not atomic: if this one refuses, the newer migrations in the same command have already been undone, and `php artisan migrate` restores them.
+- **Who may file** is `CorrectionSubject::mayBeFiledBy()`, asked first in `CorrectionService::request()`, before any lookup. A department's custom role inherits the department's abilities, so the ability alone would let it file a correction that belongs to a named post; the Issuance and Billing subjects therefore name the roles that may (`filingRoles()`), with the Center Admin always admitted. `inventory.audit` (the IT clerk's) and `corrections.approve` are left out of custom roles (`DepartmentPermissions::NAMED_POST_ONLY`). `UserResource.correction_subjects` and the client's `canFile()` only draw the screen.
+- **The head edits a unit directly; everyone else files.** A storage move is routine operational state, the head is the approver anyway, and the direct path is already audited and held to `guardEditable`. If a unit is edited directly while a correction is pending, approving it is refused (`409 record_changed`): approval compares the fields it would write with what it was filed against, and refuses rather than writing a stale value back.
+- **Canonical values.** The three new subjects store and compare their values through `App\Support\CorrectionValues` (dates, instants in UTC at second precision, two-decimal money, trimmed text with `''` as null), so a value that merely prints differently is not read as a change. The donation subjects are untouched.
+- **Dispatch corrections** change only when the unit left and who took it. Never the allocation's status, the unit, `released_by`, or anything about receipt, which is the hospital's alone. `released_at` must fall between `allocated_at` and `received_at`, judged against the locked row (`CorrectDispatchRequest::$correctingAllocationId`, which the service sets). `handed_to` is now stored on the allocation; migration `…backfill_handed_to_on_released_allocations` fills it from released history events. Matches are exact where one released allocation exists; a tie-break (nearest `released_at`, within five seconds, strictly nearest) applies only where several do, which PostgreSQL and SQLite's claimed-unit index already rule out, so it is defensive for MySQL and pre-index data. Anything uncertain stays null, and the history event remains the record. The name never goes on the audit log.
+- **Locking.** Locks are always taken in one order: dispatch is **request, then allocation** (as `release()` and `confirmReceipt()` take them); payments are **request, then billing, then payment**. `BillingService` states the contract: every writer (`recordPayment`, `applySubsidy`, `syncFor`, `correctPayment`) runs in a transaction on the request lock and works out a statement's status from the locked row, never a model loaded earlier. `lockForMutation()` takes the first two locks. Approval locks the correction row, then the target; filing never locks a correction row.
+- **A payment correction can reopen a balance.** The release gate (`assertClearsRelease`) is judged at dispatch. A correction approved before release leaves the statement short and release refuses (`billing_unsettled`); one approved after leaves the units released and the statement outstanding, with `billing.payment_corrected` recording `status_from`, `status_to` and the request's status. This is the documented exception to "no unit leaves without confirmed payment".
+- **Payments are read separately.** `GET /billings/{request}/payments` is behind `billing.record_payment`; `billing.view`, which the Issuance roles hold only to read whether a release is cleared, never sees a payment or its reference.
+- **Seeder.** `BloodCenterStaffSeeder` gives Sub-National Blood Center one account per post. It is demo data and refuses to run outside `local` and `testing`, even with `--force`.
+- **Audit:** `billing.payment_corrected`, `allocation.dispatch_corrected` and the existing `inventory.updated` / `inventory.reinstated` (actor: the requester). Field names only.
 
 **NOT YET BUILT (Phase 3):** fleet and assets for drives, apheresis procedure metrics, processing environment logs, electronic crossmatch verification, rare-antibody profiles and rare-unit tags, shipping manifests and transit temperatures, a facility audit viewer and barcode verification, anonymous aggregate statistics for PR, recruitment outreach records.
 
@@ -1027,7 +1048,7 @@ An approved correction is applied through the original write, as the requester, 
 **DECISION (project owner, 2026-09-27):** The Add Staff use case sets access with: first and last name, email, a temporary password (typed or generated, as in the super admin form), **Title** (typed, or RMT / RN), **Department**, **Role** and **Privileges**.
 
 - **Five departments:** Donor/Collection (`collection`), Processing, Testing, Issuance, Billing. The Recruitment roles (recruitment officer, PR specialist, drive logistics) and Immunohematology roles (blood bank specialist, cross-matching technician, reference lab consultant) were dropped at the owner's choice. Testing took over typing — the serology technologist and lab supervisor hold `lab.record_immunohematology`, and the lab supervisor approves typing corrections; allocation stays with the Inventory Control Officer; the medical receptionist took over drives. Migration `2026_09_28_100006` leaves any account holding a dropped role role-less (fail-closed).
-- **Role** is typed or picked. A picked role is a `StaffRole` with its exact matrix entry, and fixes the department. A typed role that names a predefined one becomes it; otherwise it is stored as `users.custom_role`, needs a department, and holds that department's combined ability set less `corrections.approve` (approval belongs to the named approver role).
+- **Role** is typed or picked. A picked role is a `StaffRole` with its exact matrix entry, and fixes the department. A typed role that names a predefined one becomes it; otherwise it is stored as `users.custom_role`, needs a department, and holds that department's combined ability set less `corrections.approve` and `inventory.audit` (approval and unit auditing belong to named posts). Billing gained a second role on 2026-10-08, the **Billing Supervisor**; a typed role of that name now resolves to it, so an existing custom role called "Billing Supervisor" stays custom until it is edited.
 - **Privileges** (`users.staff_privileges`: read / write / update / delete) cap the role — `DepartmentPermissions::KIND` sorts every ability into one of the four, and only ticked kinds survive; `reference.view` and `reports.view_own` survive any cap. Null (every account created earlier) means all four. The Center Admin is never capped. Changes are audited as `staff.privileges_changed`.
 - **Title** is `users.position`, a label only.
 
@@ -1117,7 +1138,7 @@ It never carries the donor's name.
 - `FulfillmentService::confirmReceipt()` calls `HospitalInventoryService::stockReceived()` in the same transaction. That call inserts one `hospital_units` row per received hold, as `available`. It only inserts, so receipt's lock order is unchanged.
 - The response gains `stocked_count`.
 - Bags received before this existed are not backfilled, because many of them will have been used already.
-- Bags from outside RedAgos are not booked in: `blood_units.id` is global and `donation_id` is required.
+- Bags from outside RedAgos are not booked in: `blood_units.id` is global and `donation_id` is required. *(Superseded 2026-10-05 by D-R1: they are now booked in by direct distribution, the second way stock reaches a hospital.)*
 
 **DECISION (a custody table, not a status on blood_units):**
 - `hospital_units` holds one row per physical bag in a hospital's custody. It has one row per bag, not one per state, and its status is `available | tag_assigned | tag_crossmatched | pending_return | transfused | expired | discarded`.
@@ -1206,9 +1227,59 @@ stateDiagram-v2
 
 **KNOWN LIMITATIONS:**
 - `hospital_units.unit_id` is unique. A future return-to-centre flow would need it relaxed to a partial "active custody" index, as `request_allocations` was.
+- `hospital_units.request_allocation_id` is nullable since 2026-10-05 (still unique): a bag received by direct distribution had no dispatched hold.
 - Hospital stock has no storage location of its own. The centre's `storage_location` describes the centre's shelf and is not shown.
 - Deadlines have second precision, matching `timestamp` columns.
 
 **STILL OUTSTANDING:**
 - The PTR form's `internal_stock_confirmed` could now show matching in-stock counts.
 - The Transfused list is not windowed.
+
+## Receiving: weekly requests and direct distribution
+
+**SOURCE:** The hospital blood bank's Receiving section handles two inflows. The **weekly request** is the blood bank's scheduled restock from a blood centre, sent on its request days (Monday, Wednesday and Friday, for example); the centre supplies only what it can. **Direct distribution** is blood received for a specific Patient Transfusion Request from outside RedAgos — the Philippine Red Cross, say — whose bags keep the number their sender printed (`PRC-920923323`).
+
+**DECIDED BY:** The project owner, on 2026-10-05, revised the same day.
+
+**DECISION (D-R1, direct distribution is patient-specific and full stock):** This overrides *Blood unit origin*, D3, and "Bags from outside RedAgos are not booked in".
+- A receipt is a `direct_distributions` row for **one bag**: the hospital, the Patient Transfusion Request, the external source, the sender's number (`external_unit_number`), an optional collection date, when and by whom it was received.
+- **RedAgos issues no barcode for it.** The sender's number is what staff scan, type and see. Internally the bag is a `blood_units` row keyed `DD-{id}`, which is never shown; inventory projects `bag_number` (the external number) and `external_unit_number`.
+- **A bag is identified by source plus number.** `unique(external_blood_source_id, external_unit_number)`: two services may print the same number. A second receipt of the same pair is 409 `external_unit_already_received`.
+- **Sources are a pick list** (`external_blood_sources`, Philippine Red Cross seeded). Any blood bank may add one; names are unique ignoring case, codes unique and uppercased. Audit `external_blood_source.created`.
+- A number that is already the id of a RedAgos bag is refused with 409 `redagos_unit`: such a bag is received from the request it was dispatched for, not booked a second time.
+- The Patient Transfusion Request must be this hospital's (404 `transfusion_request_not_found`) and not cancelled (409 `transfusion_request_closed`).
+- **Link only.** The bag is tied to the requirement and listed on it (the inventory `transfusion_request_id` filter includes it), but does not change its requested, approved or remaining figures, which count what centres supply. Staff close what is no longer needed, as before.
+- Expiry is required (the sweep and FEFO need it) and may not be past; collection date may not be future and must precede expiry.
+- The bag is booked under the receiving hospital, already `issued`, with `donation_id` null and `direct_distribution_id` set, so no centre query counts it. A `hospital_units` row puts it in custody as `available` with `request_allocation_id` null; from there it is tagged, crossmatched, transfused, expired and discarded like any bag.
+- **Origin rule:** every blood unit traces to exactly one of a donation or a receipt. `BloodUnit`'s saving hook enforces it on every driver; PostgreSQL also holds `blood_units_origin_check`.
+- Audit: `direct_distribution.received`, and `hospital_inventory.stocked` with `direct_distribution_id`. Each migration's `down()` refuses while an external bag exists.
+
+**DECISION (direct distribution without a Patient Transfusion Request, owner 2026-10-05):** A second way in, typed by hand with no scanner and no PTR: the source, one external identifier, **how many units** arrived under it (1–100), and **who requested it** (`requested_for` — a patient, ward or physician, free text), with blood type, component, volume, collection date and expiry entered once for the batch. The units go into stock as one bag each.
+- The receipt row carries `quantity` and `requested_for`; `transfusion_request_id` is null. A receipt for a PTR is always one bag (422 on `quantity` otherwise), and must name the PTR or `requested_for`.
+- The identifier is still unique per source, across both ways in (409 `external_unit_already_received`).
+- Bags are keyed `DD-{id}`, `DD-{id}-2`, `DD-{id}-3` — the second-bag convention `BagNumbers` uses — and shown as `PRC-920923323 #1 … #N` when there are several, or just the identifier when there is one. RedAgos still prints no barcode of its own.
+- `requested_for` may be a patient's name, so it is kept off `audit_logs`, as patient names are elsewhere; the audit row carries the quantity.
+
+**DECISION (D-R2, the hospital sets its own request days):** `replenishment_schedules` holds one row per (hospital, centre) with `days_of_week` as ISO weekdays (1 = Monday). The hospital keeps it (`PUT`/`DELETE /hospital/replenishment-schedules/{centre}`); a change takes effect at once and is audited (`replenishment_schedule.saved` / `.deleted`) with the days before and after. The centre may be any centre a request may be addressed to; there is still no MOA relationship.
+
+**DECISION (D-R3, a weekly request only on request days, and nothing else restocks):**
+- `POST /hospital/weekly-requests` is refused with 409 `no_request_schedule` without a schedule for that centre, and 409 `not_a_request_day` when today's operational weekday (`OperationalDay`, Asia/Manila) is not one of its days. One per (hospital, centre, request day): 409 `weekly_request_exists`.
+- **There is no other restock.** Blood Bank Replenishment *is* the weekly request. `POST /hospital/blood-requests` is removed, and so is the New Request option for it; an urgent need is a Patient Transfusion Request. This supersedes the interim rule that a STAT restock could be sent on any day.
+- `GET /hospital/weekly-requests/status` is derived, never stored: per schedule, `is_request_day`, `sent_today`, `due_today`, `next_request_day`, the request days of the last 28 days with whether each was sent, and `missed_count`. A day before the schedule existed is not missed.
+
+**DECISION (a weekly request has no indication):** The form is lines of component, blood type and units, with a request date. An indication is a clinician's certification for a patient's transfusion; a weekly request restocks the shelves and has no patient to certify. Its lines are stored with a null indication and the DOH form prints that box blank. This supersedes "indication is conditionally required" for weekly requests only; a Patient Transfusion Request still requires it.
+
+**DECISION (one weekly request, several blood types):** A weekly request is a `weekly_requests` header (`WR-{hospital}-NNNN`) over one ordinary replenishment `BloodRequest` per blood type (`blood_requests.weekly_request_id`), each routine and numbered in the hospital's one RQ sequence. A blood request carries a single blood type, so the lines are grouped by it. Allocation, billing, release, receipt into hospital stock, history and the DOH form work on them unchanged. Both portals' projections carry `weekly_request: {id, reference_number, request_day}`.
+
+**DECISION (requested is not supplied):** A line's `quantity` is what the hospital asked and never changes. What the centre supplied (fulfilled), what the hospital received, and what was closed as not supplied are separate figures. Hospital stock grows only from units confirmed received, never from the quantity requested.
+
+**DECISION (D-R4, the shortfall closes at dispatch):** When a weekly request's blood request is released, every line's unreserved remainder is closed as `unavailable` with the note "Not supplied in this weekly delivery." (`FulfillmentService::WEEKLY_SHORTFALL_NOTE`), in the release transaction, through `RequestLineCloser`, so each closure has its `line_closed` event and audit row. The request ends `fulfilled`, or `partial` with `closed_at`; the response lists `closed_short`. A weekly request is dispatched in **one delivery**: a release naming only some reserved units is 409 `weekly_release_all`. A centre that can supply nothing rejects, as before. Requests outside a weekly request are released as before.
+
+**DECISION (receiving a weekly delivery by scan):** Weekly deliveries are RedAgos bags with barcodes. The weekly request page matches scanned or typed numbers against the dispatched, unreceived holds of its requests and confirms receipt per request through `confirm-receipt` with `allocation_ids`.
+
+**KNOWN LIMITATIONS:**
+- Bag numbers are global for RedAgos bags. An external number that equals one is refused (`redagos_unit`).
+- No reminder is sent on a request day; the status and the Receiving page are the signal.
+- A schedule edited later changes which past days the status counts as missed.
+- An external bag has no storage location and no clearance tokens. RedAgos records what the sender's label says and does not re-test it.
+- The Scan action reads a handheld (keyboard-wedge) scanner, as Stock Intake does; there is no camera scanning.

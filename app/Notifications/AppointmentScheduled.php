@@ -89,6 +89,8 @@ class AppointmentScheduled extends Notification implements ShouldQueue
             'tone' => 'success',
             'action_label' => 'View appointment',
             'action_route' => '/donor/appointments',
+            'appointment_id' => $this->appointment->id,
+            'appointment_datetime' => $this->appointment->appointment_datetime->toIso8601String(),
         ];
     }
 

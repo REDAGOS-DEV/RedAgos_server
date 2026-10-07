@@ -3,6 +3,7 @@
 namespace App\Support;
 
 use Carbon\CarbonImmutable;
+use Carbon\CarbonInterface;
 
 /**
  * The single answer to "what is today" for blood-unit expiry.
@@ -79,6 +80,17 @@ final class OperationalDay
     public static function daysUntil(CarbonImmutable $expiryDate): int
     {
         return self::today()->startOfDay()->diffInDays($expiryDate->startOfDay(), false);
+    }
+
+    /**
+     * The operational date an instant falls on, as Y-m-d.
+     *
+     * A row written at 07:00 Manila on a Wednesday was written on Tuesday in
+     * UTC; anything asking "which day was this" of a timestamp asks here.
+     */
+    public static function dateOf(CarbonInterface $instant): string
+    {
+        return CarbonImmutable::instance($instant)->setTimezone(self::timezone())->toDateString();
     }
 
     /**

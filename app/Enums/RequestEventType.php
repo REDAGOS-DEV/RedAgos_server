@@ -36,6 +36,8 @@ enum RequestEventType: string
 
     case ReceiptConfirmed = 'receipt_confirmed';
 
+    case DispatchCorrected = 'dispatch_corrected';
+
     case LineClosed = 'line_closed';
 
     case Rejected = 'rejected';
@@ -60,6 +62,7 @@ enum RequestEventType: string
             self::HoldExpired => 'Reserved units expired and were returned to stock',
             self::Released => 'Units released',
             self::ReceiptConfirmed => 'Receipt confirmed by the hospital',
+            self::DispatchCorrected => 'Dispatch record corrected',
             self::LineClosed => 'Remaining quantity closed',
             self::Rejected => 'Rejected',
             self::Cancelled => 'Cancelled',

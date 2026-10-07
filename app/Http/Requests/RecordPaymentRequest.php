@@ -10,6 +10,13 @@ use Illuminate\Validation\Rule;
 class RecordPaymentRequest extends FormRequest
 {
     /**
+     * Set by CorrectionService when this request validates a correction to a
+     * payment that already exists, so its own reference number is not a
+     * duplicate of itself. Null on an ordinary payment.
+     */
+    public ?int $correctingPaymentId = null;
+
+    /**
      * Authorization is handled by the route middleware, as elsewhere in this application.
      */
     public function authorize(): bool
@@ -37,9 +44,14 @@ class RecordPaymentRequest extends FormRequest
                 'nullable',
                 'string',
                 'max:100',
-                'unique:payments,reference_number',
+                Rule::unique('payments', 'reference_number')->ignore($this->correctingPaymentId),
             ],
-            'status' => ['sometimes', Rule::in(PaymentStatus::values())],
+
+            // A correction fixes what was recorded; it is not a way to turn a
+            // payment into a failed or refunded one.
+            'status' => $this->correctingPaymentId !== null
+                ? ['prohibited']
+                : ['sometimes', Rule::in(PaymentStatus::values())],
         ];
     }
 

@@ -3,11 +3,16 @@
 namespace App\Service;
 
 use App\Enums\AllocationStatus;
+use App\Enums\CorrectionSubject;
+use App\Enums\LineClosureReason;
 use App\Enums\RequestEventType;
+use App\Models\BloodRequest;
 use App\Models\RequestAllocation;
 use App\Models\User;
 use App\Repository\BloodRequestRepository;
 use App\Repository\InventoryRepository;
+use App\Support\CorrectionValues;
+use Carbon\CarbonImmutable;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
@@ -28,6 +33,11 @@ use RuntimeException;
  */
 class FulfillmentService
 {
+    /**
+     * The note a weekly request's unsupplied remainder is closed with.
+     */
+    public const WEEKLY_SHORTFALL_NOTE = 'Not supplied in this weekly delivery.';
+
     public function __construct(
         private readonly BloodRequestRepository $bloodRequestRepository,
         private readonly InventoryRepository $inventoryRepository,
@@ -37,7 +47,8 @@ class FulfillmentService
         private readonly BloodRequestHistory $history,
         private readonly BloodRequestNotifier $notifier,
         private readonly TransfusionRequestResolver $transfusionResolver,
-        private readonly HospitalInventoryService $hospitalInventoryService
+        private readonly HospitalInventoryService $hospitalInventoryService,
+        private readonly RequestLineCloser $lineCloser
     ) {}
 
     /**
@@ -79,6 +90,20 @@ class FulfillmentService
                 );
             }
 
+            // A weekly request goes out in one delivery, because whatever it
+            // leaves behind is closed as it goes. Holding some bags back would
+            // close their line's remainder while they sat reserved.
+            if ($request->isWeekly() && $request->allocations()
+                ->where('status', AllocationStatus::Allocated)
+                ->whereNotIn('id', $holds->pluck('id'))
+                ->exists()) {
+                throw $this->refuse(
+                    409,
+                    'weekly_release_all',
+                    'A weekly request is dispatched in one delivery. Release every reserved unit, or return the ones you are not sending to stock first.'
+                );
+            }
+
             $unitIds = $holds->pluck('unit_id')->all();
 
             // The last gate before a unit leaves the building. A reserved unit
@@ -103,10 +128,16 @@ class FulfillmentService
                 );
             }
 
+            $handedTo = $handedTo !== null ? trim($handedTo) : null;
+
             RequestAllocation::query()->whereIn('id', $holds->pluck('id'))->update([
                 'status' => AllocationStatus::Released->value,
                 'released_at' => now(),
                 'released_by' => $user->id,
+                // Kept on the allocation as well as on the history, so the
+                // dispatch record can show — and a correction can fix — who
+                // took the units. Never on the audit log.
+                'handed_to' => $handedTo ?: null,
             ]);
 
             $this->auditLogger->record($user, 'request.released', $request, [
@@ -125,8 +156,6 @@ class FulfillmentService
             $this->resolver->settle($request);
             $this->transfusionResolver->settleParentOf($request);
 
-            $handedTo = $handedTo !== null ? trim($handedTo) : null;
-
             $this->history->record(
                 $request,
                 RequestEventType::Released,
@@ -137,7 +166,9 @@ class FulfillmentService
                 meta: $handedTo ? ['handed_to' => $handedTo] : [],
             );
 
-            return ['request' => $request, 'units' => $unitIds];
+            $closedShort = $request->isWeekly() ? $this->closeWeeklyShortfall($request, $user) : [];
+
+            return ['request' => $request, 'units' => $unitIds, 'closed_short' => $closedShort];
         });
 
         $this->notifier->requester($result['request'], 'released');
@@ -147,7 +178,51 @@ class FulfillmentService
             'released_units' => $result['units'],
             'status' => $result['request']->status->value,
             'status_label' => $result['request']->status->label(),
+            'closed_short' => $result['closed_short'],
         ];
+    }
+
+    /**
+     * Close whatever a weekly request's delivery did not supply, as unavailable.
+     *
+     * The centre supplies what it can; the next request day's order replaces
+     * the rest rather than leaving it open beside it. Runs inside release()'s
+     * transaction, on the request it has locked, so the delivery and the
+     * closure are one decision in the history.
+     *
+     * @return array<int, array{request_item_id: int, component: string|null, quantity: int}>
+     */
+    private function closeWeeklyShortfall(BloodRequest $request, User $user): array
+    {
+        if ($request->isClosed()) {
+            return [];
+        }
+
+        $closed = [];
+
+        foreach ($this->resolver->freshFigures($request) as $itemId => $line) {
+            $short = (int) ($line['allocatable'] ?? 0);
+
+            if ($short < 1) {
+                continue;
+            }
+
+            $this->lineCloser->close(
+                $request,
+                (int) $itemId,
+                LineClosureReason::Unavailable,
+                self::WEEKLY_SHORTFALL_NOTE,
+                $user
+            );
+
+            $closed[] = [
+                'request_item_id' => (int) $itemId,
+                'component' => $request->items->firstWhere('id', $itemId)?->component?->name,
+                'quantity' => $short,
+            ];
+        }
+
+        return $closed;
     }
 
     /**
@@ -228,6 +303,86 @@ class FulfillmentService
             'fulfilled_quantity' => (int) $lines->sum('fulfilled'),
             'stocked_count' => $stocked,
         ];
+    }
+
+    /**
+     * Apply an approved correction to one dispatched allocation's record.
+     *
+     * Only when the units left and who took them can change. What the
+     * allocation is — its status, its unit, its line — and who received it are
+     * never touched: receipt is the hospital's alone, and a correction must not
+     * move a bag through the workflow.
+     *
+     * Must be called inside a transaction that already holds the request and
+     * then the allocation, in that order, which is the order release() and
+     * confirmReceipt() take them. CorrectionService does, so nothing here locks.
+     *
+     * The name goes on the request's history, as release() puts it there, and
+     * never on the audit log: only the fields that changed are audited.
+     *
+     * @param  array<string, mixed>  $changes  Already validated and normalised.
+     */
+    public function correctDispatch(User $actor, BloodRequest $lockedRequest, RequestAllocation $lockedAllocation, array $changes): void
+    {
+        if ($lockedAllocation->status !== AllocationStatus::Released) {
+            throw $this->refuse(409, 'not_dispatched', 'Only a unit that has been dispatched has a dispatch record to correct.');
+        }
+
+        // A correction carries the whole corrected payload, so what is saved
+        // and recorded is the fields whose value actually differs, in
+        // canonical form.
+        $types = CorrectionSubject::Dispatch->fieldTypes();
+        $current = CorrectionValues::normalizeAll([
+            'released_at' => $lockedAllocation->released_at,
+            'handed_to' => $lockedAllocation->handed_to,
+        ], $types);
+
+        $fields = [];
+
+        if (array_key_exists('released_at', $changes) && $changes['released_at'] !== null
+            && ! CorrectionValues::same($current['released_at'] ?? null, $changes['released_at'], $types['released_at'])) {
+            $releasedAt = CarbonImmutable::parse((string) $changes['released_at'])->setTimezone(config('app.timezone'));
+
+            // Judged again here, against the row as it stands now: the
+            // hospital may have confirmed receipt since the request was filed.
+            if (($lockedAllocation->allocated_at !== null && $releasedAt->lt($lockedAllocation->allocated_at))
+                || ($lockedAllocation->received_at !== null && $releasedAt->gt($lockedAllocation->received_at))) {
+                throw $this->refuse(409, 'dispatch_time_invalid', 'That release time does not fit between when the unit was reserved and when it was received.');
+            }
+
+            $lockedAllocation->released_at = $releasedAt;
+            $fields[] = 'released_at';
+        }
+
+        if (array_key_exists('handed_to', $changes)
+            && ! CorrectionValues::same($current['handed_to'] ?? null, $changes['handed_to'], $types['handed_to'])) {
+            $lockedAllocation->handed_to = $changes['handed_to'];
+            $fields[] = 'handed_to';
+        }
+
+        if ($fields === []) {
+            return;
+        }
+
+        $lockedAllocation->save();
+
+        $unitId = $lockedAllocation->unit_id;
+
+        $this->history->record(
+            $lockedRequest,
+            RequestEventType::DispatchCorrected,
+            $actor,
+            $lockedRequest->status,
+            "Dispatch record of unit {$unitId} corrected.",
+            [$unitId],
+            meta: ['fields' => $fields],
+        );
+
+        $this->auditLogger->record($actor, 'allocation.dispatch_corrected', $lockedAllocation->unit, [
+            'request_id' => $lockedRequest->id,
+            'reference_number' => $lockedRequest->reference_number,
+            'fields' => $fields,
+        ]);
     }
 
     /**

@@ -35,6 +35,7 @@ class RequestAllocation extends Model
         'status',
         'released_at',
         'released_by',
+        'handed_to',
         'received_at',
         'received_by',
         'cancelled_at',

@@ -63,6 +63,35 @@ class NotificationTest extends TestCase
             ->assertJsonPath('unread_count', 1);
     }
 
+    public function test_an_overdue_appointment_notification_is_marked_as_read(): void
+    {
+        $id = (string) Str::uuid();
+
+        DB::table('notifications')->insert([
+            'id' => $id,
+            'type' => \App\Notifications\AppointmentScheduled::class,
+            'notifiable_type' => User::class,
+            'notifiable_id' => $this->donor->id,
+            'data' => json_encode([
+                'category' => 'reminder',
+                'title' => 'Appointment booked',
+                'appointment_id' => 1,
+                'appointment_datetime' => now()->subMinute()->toIso8601String(),
+            ]),
+            'read_at' => null,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->actingAs($this->donor)
+            ->getJson('/api/donors/notifications/unread-count')
+            ->assertOk()
+            ->assertJsonPath('unread_count', 0);
+
+        $this->assertNotNull(
+            DB::table('notifications')->where('id', $id)->value('read_at')
+        );
+    }
     public function test_a_donor_never_sees_another_donors_notifications(): void
     {
         $other = User::factory()->donor()->create();

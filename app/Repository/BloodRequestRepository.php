@@ -50,7 +50,24 @@ class BloodRequestRepository
         'transfusionRequest:id,reference_number,status,closed_at',
         'transfusionRequest.items:id,transfusion_request_id,component_id,quantity',
         'transfusionRequest.items.component:id,name',
+        // A weekly request goes out in one delivery; both sides are told so.
+        'weeklyRequest:id,reference_number,request_day',
     ];
+
+    /**
+     * The relations a projection needs, nested under a parent's relation name.
+     *
+     * For a parent that projects its own requests — a weekly request lists one
+     * per blood type — so it can eager-load them all in one pass.
+     *
+     * @return array<int, string>
+     */
+    public function projectionRelationsUnder(string $relation, bool $withUnits = false): array
+    {
+        $relations = $withUnits ? [...self::PROJECTION_RELATIONS, 'allocations.unit'] : self::PROJECTION_RELATIONS;
+
+        return [$relation, ...array_map(fn (string $nested): string => "{$relation}.{$nested}", $relations)];
+    }
 
     /**
      * Coverage counts every projection needs, as SQL aggregates.

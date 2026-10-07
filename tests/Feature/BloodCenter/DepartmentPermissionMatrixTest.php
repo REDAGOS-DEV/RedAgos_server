@@ -204,8 +204,8 @@ class DepartmentPermissionMatrixTest extends TestCase
 
         $this->assertEqualsCanonicalizing(DepartmentPermissions::all(), $managementOnly->abilities());
 
-        // The role must not narrow the set: a billing supervisor still holds
-        // inventory.create, which a billing clerk never does.
+        // The role must not narrow the set: a supervisor working as a billing
+        // clerk still holds inventory.create, which a billing clerk never does.
         $this->assertEqualsCanonicalizing(DepartmentPermissions::all(), $working->abilities());
         $this->assertContains('inventory.create', $working->abilities());
     }
@@ -370,12 +370,64 @@ class DepartmentPermissionMatrixTest extends TestCase
         }
     }
 
-    public function test_the_it_clerk_holds_nothing_that_writes(): void
+    public function test_the_it_clerk_audits_and_requests_but_edits_nothing_directly(): void
     {
         $this->assertEqualsCanonicalizing(
-            ['reference.view', 'reports.view_own', 'inventory.view'],
+            ['reference.view', 'reports.view_own', 'inventory.view', 'inventory.audit', 'corrections.request'],
             DepartmentPermissions::forRole(StaffRole::ItDataClerk)
         );
+
+        foreach (['inventory.create', 'inventory.update', 'inventory.discard', 'inventory.release_quarantine'] as $direct) {
+            $this->assertNotContains($direct, DepartmentPermissions::forRole(StaffRole::ItDataClerk));
+        }
+    }
+
+    // --- Department heads ---------------------------------------------------------
+
+    public function test_every_department_has_a_head_who_both_requests_and_approves(): void
+    {
+        foreach (Department::cases() as $department) {
+            $head = $department->correctionApprover();
+
+            $this->assertSame($department, $head->department(), "{$department->value}'s head must sit in {$department->value}.");
+            $this->assertContains('corrections.request', DepartmentPermissions::forRole($head));
+            $this->assertContains('corrections.approve', DepartmentPermissions::forRole($head));
+        }
+    }
+
+    public function test_correction_approval_is_held_by_exactly_the_five_heads(): void
+    {
+        $heads = array_map(fn (Department $department): StaffRole => $department->correctionApprover(), Department::cases());
+
+        $this->assertEqualsCanonicalizing(
+            array_map(fn (StaffRole $role): string => $role->value, $heads),
+            array_map(fn (StaffRole $role): string => $role->value, DepartmentPermissions::rolesHolding('corrections.approve'))
+        );
+        $this->assertCount(5, $heads);
+    }
+
+    public function test_the_billing_supervisor_is_the_billing_clerk_plus_approval(): void
+    {
+        $this->assertEqualsCanonicalizing(
+            [...DepartmentPermissions::forRole(StaffRole::BillingClerk), 'corrections.approve'],
+            DepartmentPermissions::forRole(StaffRole::BillingSupervisor)
+        );
+    }
+
+    public function test_a_custom_role_never_inherits_a_named_posts_abilities(): void
+    {
+        foreach ([Department::Issuance, Department::Billing] as $department) {
+            $abilities = User::factory()->bloodCenterCustomStaff(null, $department, 'Floor Officer')->create()->abilities();
+
+            $this->assertNotContains('corrections.approve', $abilities);
+            $this->assertNotContains('inventory.audit', $abilities);
+        }
+
+        // Still the department's own working set, including filing a request.
+        $billing = User::factory()->bloodCenterCustomStaff(null, Department::Billing, 'Cashier')->create()->abilities();
+
+        $this->assertContains('billing.record_payment', $billing);
+        $this->assertContains('corrections.request', $billing);
     }
 
     public function test_collection_staff_cannot_discard_a_unit(): void

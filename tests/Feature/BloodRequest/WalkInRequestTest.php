@@ -11,11 +11,13 @@ use App\Models\AuditLog;
 use App\Models\BloodRequest;
 use App\Models\BloodRequestWalkIn;
 use App\Models\Facility;
+use App\Models\ReplenishmentSchedule;
 use App\Models\TransfusionRequest;
 use App\Models\User;
 use App\Notifications\BloodRequestDecided;
 use App\Notifications\BloodRequestSubmitted;
 use App\Notifications\WalkInRequestRecorded;
+use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Tests\Feature\BloodRequest\Concerns\BuildsFulfilmentScenarios;
 use Tests\TestCase;
@@ -100,16 +102,16 @@ class WalkInRequestTest extends TestCase
 
     public function test_a_walk_in_takes_the_next_number_in_the_hospitals_own_sequence(): void
     {
+        $this->travelTo(CarbonImmutable::parse('2026-10-05 09:00', 'Asia/Manila'));
+        ReplenishmentSchedule::factory()->between($this->hospital, $this->centre)->on([1])->create();
+
         $this->actingAs($this->requester)
-            ->postJson('/api/hospital/blood-requests', [
+            ->postJson('/api/hospital/weekly-requests', [
                 'target_facility_id' => $this->centre->id,
-                'blood_type_id' => $this->bloodType->id,
-                'urgency_level' => 'routine',
-                'request_purpose' => 'replenishment',
-                'items' => [['component_id' => $this->prbc->id, 'quantity' => 4, 'indication_code' => 'R-1']],
+                'lines' => [['blood_type_id' => $this->bloodType->id, 'component_id' => $this->prbc->id, 'quantity' => 4]],
             ])
             ->assertCreated()
-            ->assertJsonPath('request.reference_number', "RQ-{$this->hospital->id}-0001");
+            ->assertJsonPath('weekly_request.requests.0.reference_number', "RQ-{$this->hospital->id}-0001");
 
         $this->actingAs($this->issuance)
             ->postJson('/api/blood-center/blood-requests/walk-in', $this->walkInPayload())

@@ -13,6 +13,7 @@ use App\Repository\AuthRepository;
 use App\Repository\DonorRepository;
 use App\Repository\EligibilityRepository;
 use App\Support\AccountIdentity;
+use App\Support\DonorAvatar;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
@@ -20,7 +21,6 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Throwable;
@@ -164,7 +164,7 @@ class DonorService
         $upcomingAppointment = $this->donorRepository->findUpcomingAppointment($donor->id, $now);
         $recentDonations = $this->donorRepository->recentDonations($donor->id);
         $monthlyCounts = $this->donorRepository
-            ->monthlyCompletedDonationCounts($donor->id, $now->copy()->subMonths(11)->startOfMonth(), $now->copy()->endOfMonth());
+            ->monthlyCollectedDonationCounts($donor->id, $now->copy()->subMonths(11)->startOfMonth(), $now->copy()->endOfMonth());
 
         return [
             'user' => $this->formatDonor($donor),
@@ -185,7 +185,9 @@ class DonorService
             // so eligibility_status alone never reports the questionnaire done.
             'questionnaire_status' => $this->eligibilityService->statusForProfile($profile)->value,
             'blood_type' => $profile->bloodType?->code,
-            'total_donations' => $this->donorRepository->countCompletedDonations($donor->id),
+            // Every draw, not just what Processing has since completed: the
+            // donor gave blood the moment the collection was recorded.
+            'total_donations' => $this->donorRepository->countCollectedDonations($donor->id),
             'upcoming_appointment' => $this->formatAppointment($upcomingAppointment),
             'recent_donations' => $recentDonations->map(fn (object $donation): array => $this->formatDonation($donation))->values(),
             'monthly_trend' => $this->formatMonthlyTrend($monthlyCounts, $now),
@@ -239,7 +241,7 @@ class DonorService
             'contact_person_name' => $profile->contact_person_name,
             'contact_person_address' => $profile->contact_person_address,
             'contact_person_number' => $profile->contact_person_number,
-            'avatar_url' => $profile->profile_image_path,
+            'avatar_url' => DonorAvatar::urlFor($donor),
             'eligibility_status' => $dashboard['eligibility_status'],
             'questionnaire_status' => $dashboard['questionnaire_status'],
             'total_donations' => $dashboard['total_donations'],
@@ -536,11 +538,7 @@ class DonorService
 
         return [
             'message' => 'Profile photo updated successfully.',
-            'avatar_url' => URL::temporarySignedRoute(
-                'donors.avatar.show',
-                now()->addMinutes(30),
-                ['user' => $donor->uuid]
-            ),
+            'avatar_url' => DonorAvatar::urlFor($donor),
         ];
     }
 

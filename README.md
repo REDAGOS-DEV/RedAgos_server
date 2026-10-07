@@ -127,6 +127,50 @@ Password: password
 
 The current `users` table stores names as `first_name` and `last_name`, plus `username` and `uuid`. Keep the factory, seeder, and model fillable fields aligned with that schema.
 
+## Sample Blood Center Staff (local only)
+
+`test@example.com` above has no role, so it cannot sign in to any portal. To try the blood-center portal as each post, seed one account per role at **Sub-National Blood Center**:
+
+```bash
+php artisan db:seed                                          # creates the facility (FacilitySeeder)
+php artisan db:seed --class=BloodCenterStaffSeeder
+```
+
+Every account is verified and active, signs in to the **Blood Center** portal, and shares one password:
+
+```text
+Password: Password123
+```
+
+The seeder refuses to run outside the `local` and `testing` environments, even with `--force`: it creates verified accounts that share a known password. Re-running it creates nothing new and never resets a password. Run it **before** `DemoInventorySeeder`, which attributes its records to the facility's first staff account and skips a facility with none.
+
+★ marks each department's **head**, who approves that department's correction requests. A head's own request is decided by the Center Admin.
+
+| Department | Role | Name | Email | Lands on |
+|---|---|---|---|---|
+| Management | Center Admin | Teresa Aquino | `supervisor@redagos.test` | `/blood-center/dashboard` |
+| Donor/Collection | ★ Donor Screening Physician | Ramon Villanueva | `screening.physician@redagos.test` | `/blood-center/collection` |
+| Donor/Collection | Phlebotomist / Registered Nurse | Liza Bautista | `phlebotomist@redagos.test` | `/blood-center/collection` |
+| Donor/Collection | Apheresis Specialist | Marvin Castillo | `apheresis.specialist@redagos.test` | `/blood-center/collection` |
+| Donor/Collection | Donor Care / Medical Receptionist | Grace Domingo | `medical.receptionist@redagos.test` | `/blood-center/appointments` |
+| Processing | ★ Component Laboratory Medical Technologist | Arnel Navarro | `component.technologist@redagos.test` | `/blood-center/laboratory` |
+| Processing | Processing Laboratory Assistant | Joy Salazar | `processing.assistant@redagos.test` | `/blood-center/laboratory` |
+| Testing | ★ Laboratory Supervisor | Dennis Ocampo | `lab.supervisor@redagos.test` | `/blood-center/testing` |
+| Testing | Serology / Molecular Medical Technologist | Kristine Lim | `serology.technologist@redagos.test` | `/blood-center/testing` |
+| Issuance | ★ Inventory Control Officer | Rowena Tan | `inventory.control.officer@redagos.test` | `/blood-center/storage` |
+| Issuance | Dispatch / Transport Coordinator | Jerome Flores | `dispatch.coordinator@redagos.test` | `/blood-center/fulfillment` |
+| Issuance | IT Data Entry Clerk | Paolo Rivera | `it.data.clerk@redagos.test` | `/blood-center/inventory` |
+| Billing | ★ Billing Supervisor | Carmela Reyes | `billing.supervisor@redagos.test` | `/blood-center/billing` |
+| Billing | Billing Clerk | Andrea Mendoza | `billing.clerk@redagos.test` | `/blood-center/billing` |
+
+The "Lands on" pages come from the client's `useBloodCenterNav.ts`.
+
+Try the correction flow with these accounts:
+
+- `it.data.clerk@` files a correction to a unit's storage location or expiry date, and `inventory.control.officer@` approves it.
+- `dispatch.coordinator@` files a correction to a dispatch record, and `inventory.control.officer@` approves it.
+- `billing.clerk@` files a correction to a recorded payment, and `billing.supervisor@` approves it.
+
 ## Running the API
 
 Start the Laravel development server:

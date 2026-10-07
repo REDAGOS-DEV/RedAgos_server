@@ -40,6 +40,7 @@ class BloodRequest extends Model
     protected $fillable = [
         'reference_number',
         'transfusion_request_id',
+        'weekly_request_id',
         'facility_id',
         'target_facility_id',
         'requested_by',
@@ -129,6 +130,25 @@ class BloodRequest extends Model
     public function transfusionRequest(): BelongsTo
     {
         return $this->belongsTo(TransfusionRequest::class, 'transfusion_request_id');
+    }
+
+    /**
+     * The weekly request this replenishment is one blood type of, if any.
+     */
+    public function weeklyRequest(): BelongsTo
+    {
+        return $this->belongsTo(WeeklyRequest::class, 'weekly_request_id');
+    }
+
+    /**
+     * Determine whether this request was sent as part of a weekly request.
+     *
+     * A weekly request is dispatched in one delivery, and whatever it did not
+     * supply is closed as unavailable when it goes.
+     */
+    public function isWeekly(): bool
+    {
+        return $this->weekly_request_id !== null;
     }
 
     /**

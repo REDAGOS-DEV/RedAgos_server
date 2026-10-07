@@ -12,6 +12,8 @@ use App\Models\BloodType;
 use App\Models\Donation;
 use App\Models\DonationAppointment;
 use App\Models\DonationScreening;
+use App\Models\DonorQrToken;
+use App\Models\EligibilityScreening;
 use App\Models\Facility;
 use App\Models\User;
 use App\Notifications\DonationRecorded;
@@ -73,6 +75,41 @@ class CollectionWorkflowTest extends TestCase
             ->postJson('/api/blood-center/donations', ['donor_uuid' => $this->donor->uuid])
             ->assertCreated()
             ->json('data.id');
+    }
+
+    public function test_recording_a_collection_revokes_the_qr_and_invalidates_the_questionnaire(): void
+    {
+        // The donor has a valid questionnaire and QR before arriving.
+        $screening = EligibilityScreening::factory()->create([
+            'donor_id' => $this->donor->id,
+            'valid_until' => now()->addDays(90),
+            'invalidated_at' => null,
+        ]);
+
+        $token = DonorQrToken::factory()->create([
+            'donor_id' => $this->donor->id,
+            'screening_id' => $screening->id,
+            'issued_at' => now(),
+            'expires_at' => now()->addDays(14),
+            'revoked_at' => null,
+        ]);
+
+        // Move the donor through the real counter workflow.
+        $donationId = $this->openDonation();
+        $this->screenDonation($donationId);
+
+        $this->actingAs($this->staff)
+            ->postJson(
+                "/api/blood-center/donations/{$donationId}/collection",
+                $this->collectionPayload()
+            )
+            ->assertCreated();
+
+        // The old QR must no longer be usable.
+        $this->assertNotNull($token->fresh()->revoked_at);
+
+        // The old questionnaire stays in history but cannot create another QR.
+        $this->assertNotNull($screening->fresh()->invalidated_at);
     }
 
     /**
@@ -582,6 +619,37 @@ class CollectionWorkflowTest extends TestCase
             ->assertCreated();
 
         Notification::assertSentTo($this->donor, DonationRecorded::class);
+    }
+
+    public function test_a_recorded_collection_counts_on_the_donors_dashboard(): void
+    {
+        $this->actingAs($this->donor)
+            ->getJson('/api/donors/dashboard')
+            ->assertOk()
+            ->assertJsonPath('total_donations', 0);
+
+        $id = $this->openDonation();
+        $this->screenDonation($id);
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload())
+            ->assertCreated();
+
+        // Still `collected`: `completed` belongs to Processing, and the donor's
+        // dashboard must not wait for it.
+        $this->assertSame(DonationStatus::Collected, Donation::findOrFail($id)->status);
+
+        $response = $this->actingAs($this->donor)
+            ->getJson('/api/donors/dashboard')
+            ->assertOk()
+            ->assertJsonPath('total_donations', 1);
+
+        $thisMonth = collect($response->json('monthly_trend'))->firstWhere('key', now()->format('Y-m'));
+        $this->assertSame(1, $thisMonth['count']);
+
+        $this->actingAs($this->donor)
+            ->getJson('/api/donors/profile')
+            ->assertOk()
+            ->assertJsonPath('total_donations', 1);
     }
 
     public function test_a_deferred_donor_is_told_the_reason_that_was_recorded(): void

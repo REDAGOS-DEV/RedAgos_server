@@ -7,6 +7,7 @@ use App\Enums\HospitalUnitStatus;
 use App\Enums\UnitTagStatus;
 use App\Enums\UntagReason;
 use App\Models\BloodUnit;
+use App\Models\DirectDistribution;
 use App\Models\HospitalUnit;
 use App\Models\RequestAllocation;
 use App\Models\TransfusionRequest;
@@ -40,7 +41,9 @@ use LogicException;
  * only system writer means every automatic untag carries its run.
  *
  * Nothing here writes to blood_units. The bag's facts, its expiry date among
- * them, belong to the centre that collected it and are only ever read.
+ * them, belong to the centre that collected it — or, for a bag received by
+ * direct distribution, to the delivery that brought it — and are only ever
+ * read.
  */
 class HospitalInventoryService
 {
@@ -149,6 +152,10 @@ class HospitalInventoryService
                 ...$this->formatTag($tag, $now, withActors: true),
                 'unit' => [
                     'unit_id' => $tag->hospitalUnit?->unit_id,
+                    'bag_number' => $tag->hospitalUnit?->unit_id === null
+                        ? null
+                        : ($tag->hospitalUnit->bloodUnit?->directDistribution?->bagNumberFor($tag->hospitalUnit->unit_id)
+                            ?? $tag->hospitalUnit->unit_id),
                     'status' => $tag->hospitalUnit?->status->value,
                     'blood_type' => $tag->hospitalUnit?->bloodUnit?->bloodType?->code,
                     'component' => $tag->hospitalUnit?->bloodUnit?->component?->name,
@@ -188,6 +195,44 @@ class HospitalInventoryService
                 'facility_id' => $facilityId,
                 'hospital_unit_id' => $unit->id,
                 'request_allocation_id' => $unit->request_allocation_id,
+                'new_status' => HospitalUnitStatus::Available->value,
+            ]);
+        }
+
+        return $units->count();
+    }
+
+    /**
+     * Put the bags of a delivery from outside RedAgos into the receiving hospital's custody.
+     *
+     * Called by DirectDistributionService inside its transaction, once it has
+     * booked the bags' blood_units rows. The bags have no dispatched hold, so
+     * their custody rows carry none; from here on they are hospital stock like
+     * any other. Only inserts, as stockReceived() does.
+     *
+     * @param  Collection<int, BloodUnit>  $bags
+     */
+    public function stockDelivered(User $user, int $facilityId, DirectDistribution $delivery, Collection $bags): int
+    {
+        if ($bags->isEmpty()) {
+            return 0;
+        }
+
+        $units = $this->repository->createUnits(
+            $facilityId,
+            $bags->map(fn (BloodUnit $bag): array => [
+                'unit_id' => $bag->id,
+                'request_allocation_id' => null,
+            ])->values()->all()
+        );
+
+        $byId = $bags->keyBy('id');
+
+        foreach ($units as $unit) {
+            $this->auditLogger->record($user, 'hospital_inventory.stocked', $byId->get($unit->unit_id), [
+                'facility_id' => $facilityId,
+                'hospital_unit_id' => $unit->id,
+                'direct_distribution_id' => $delivery->id,
                 'new_status' => HospitalUnitStatus::Available->value,
             ]);
         }
@@ -647,10 +692,15 @@ class HospitalInventoryService
         $bag = $unit->bloodUnit;
         $expiry = $bag?->expiry_date ? CarbonImmutable::parse($bag->expiry_date) : null;
         $request = $unit->requestAllocation?->request;
+        $delivery = $bag?->directDistribution;
 
         return [
             'id' => $unit->id,
             'unit_id' => $unit->unit_id,
+            // The number staff see: the sender's own for an external bag, which
+            // RedAgos never renumbers, otherwise the bag's RedAgos number.
+            'bag_number' => $delivery?->bagNumberFor($unit->unit_id) ?? $unit->unit_id,
+            'external_unit_number' => $delivery?->external_unit_number,
             'status' => $unit->status->value,
             'status_label' => $unit->status->label(),
             'blood_type' => [
@@ -666,11 +716,23 @@ class HospitalInventoryService
             'days_remaining' => $expiry ? OperationalDay::daysUntil($expiry) : null,
             'bag_expired' => $expiry !== null && $expiry->toDateString() < OperationalDay::todayAsDate(),
             'stocked_at' => $unit->created_at?->toIso8601String(),
+            // Where the bag came from: a RedAgos request it was received for,
+            // or a delivery from outside RedAgos.
             'source' => [
+                'type' => $bag?->direct_distribution_id !== null ? 'direct_distribution' : 'request',
                 'request_id' => $request?->id,
                 'reference_number' => $request?->reference_number,
-                'transfusion_request_id' => $request?->transfusion_request_id,
-                'transfusion_reference' => $request?->transfusionRequest?->reference_number,
+                'transfusion_request_id' => $request?->transfusion_request_id ?? $delivery?->transfusion_request_id,
+                'transfusion_reference' => $request?->transfusionRequest?->reference_number
+                    ?? $delivery?->transfusionRequest?->reference_number,
+                'weekly_request_id' => $request?->weekly_request_id,
+                'direct_distribution' => $delivery === null ? null : [
+                    'id' => $delivery->id,
+                    'source_name' => $delivery->source?->name,
+                    'external_unit_number' => $delivery->external_unit_number,
+                    'quantity' => $delivery->quantity,
+                    'requested_for' => $delivery->requested_for,
+                ],
             ],
             'active_tag' => $unit->activeTag ? $this->formatTag($unit->activeTag, $now) : null,
             // Why a bag is out of storage without a patient: the tag that ended.

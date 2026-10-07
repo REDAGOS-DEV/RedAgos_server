@@ -10,6 +10,7 @@ use App\Enums\RequestPurpose;
 use App\Enums\RequestSource;
 use App\Enums\UnitTagStatus;
 use App\Enums\UntagReason;
+use App\Enums\UrgencyLevel;
 use App\Models\BloodRequest;
 use App\Models\Facility;
 use App\Models\User;
@@ -17,7 +18,6 @@ use App\Repository\AvailabilityRepository;
 use App\Repository\BloodRequestRepository;
 use App\Support\RequestFormReferenceData;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
-use Illuminate\Database\QueryException;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\DB;
@@ -32,16 +32,6 @@ use Illuminate\Validation\ValidationException;
  */
 class BloodRequestService
 {
-    /**
-     * How many times submission will retry a reference-number collision.
-     *
-     * Mirrors InventoryService::ID_ATTEMPTS: the facility row lock serialises
-     * submissions from one blood bank, but the unique index is global, so a
-     * collision remains possible in principle and is retried rather than
-     * surfaced.
-     */
-    private const REFERENCE_ATTEMPTS = 3;
-
     public function __construct(
         private readonly BloodRequestRepository $bloodRequestRepository,
         private readonly AvailabilityRepository $availabilityRepository,
@@ -53,56 +43,6 @@ class BloodRequestService
         private readonly RequestLineCloser $lineCloser,
         private readonly TransfusionRequestResolver $transfusionResolver
     ) {}
-
-    /**
-     * Raise a replenishment request against a chosen facility.
-     *
-     * A restock order goes to one centre. A patient's need is recorded as a
-     * Patient Transfusion Request instead, which may be split across several
-     * (TransfusionRequestService).
-     *
-     * @param  array<string, mixed>  $payload
-     * @return array<string, mixed>
-     */
-    public function submit(User $user, array $payload): array
-    {
-        $facilityId = $this->requireFacilityId($user);
-
-        if (($payload['request_purpose'] ?? null) !== RequestPurpose::Replenishment->value) {
-            throw ValidationException::withMessages([
-                'request_purpose' => ['Record a patient\'s need as a Patient Transfusion Request.'],
-            ]);
-        }
-
-        $target = $this->requireEligibleTarget((int) $payload['target_facility_id'], $facilityId);
-
-        foreach (range(1, self::REFERENCE_ATTEMPTS) as $attempt) {
-            try {
-                $request = DB::transaction(
-                    fn (): BloodRequest => $this->persist($user, $facilityId, $target, $payload)
-                );
-
-                // After the commit, never inside it: a notification failure
-                // must not roll back a request the requester was told landed.
-                $this->notifier->targetFacility($request);
-
-                return [
-                    'message' => 'Blood request submitted.',
-                    'request' => $this->format($request),
-                ];
-            } catch (QueryException $exception) {
-                if (! $this->isUniqueViolation($exception)) {
-                    throw $exception;
-                }
-            }
-        }
-
-        throw $this->refuse(
-            409,
-            'reference_generation_failed',
-            'Could not allocate a request reference. Please try again.'
-        );
-    }
 
     /**
      * List the requests the caller's facility has raised.
@@ -314,15 +254,25 @@ class BloodRequestService
     }
 
     /**
-     * Write the request and its reference number under the facility lock.
+     * Write one replenishment request, its lines, audit row and history.
      *
-     * @param  array<string, mixed>  $payload
+     * The caller must already hold the requesting facility's row lock
+     * (BloodRequestRepository::lockFacility), which is what serialises the
+     * RQ sequence. Shared by a single STAT restock and by each blood type of a
+     * weekly request (WeeklyRequestService), so both write exactly the same
+     * request.
+     *
+     * @param  array<int, array{component_id: int, quantity: int, indication_code?: string|null, indication_other?: string|null}>  $items
      */
-    private function persist(User $user, int $facilityId, Facility $target, array $payload): BloodRequest
-    {
-        $this->bloodRequestRepository->lockFacility($facilityId)
-            ?? throw $this->refuse(404, 'facility_missing', 'This account is not linked to a facility.');
-
+    public function writeReplenishment(
+        User $user,
+        int $facilityId,
+        Facility $target,
+        int $bloodTypeId,
+        UrgencyLevel $urgency,
+        array $items,
+        ?int $weeklyRequestId = null
+    ): BloodRequest {
         $purpose = RequestPurpose::Replenishment;
 
         // No patient columns: a restock order has no patient, and storing a
@@ -330,13 +280,14 @@ class BloodRequestService
         // none.
         $request = BloodRequest::query()->create([
             'reference_number' => $this->bloodRequestRepository->nextReference($facilityId),
+            'weekly_request_id' => $weeklyRequestId,
             'facility_id' => $facilityId,
             'target_facility_id' => $target->id,
             'requested_by' => $user->id,
             'request_purpose' => $purpose,
             'request_source' => RequestSource::BloodBankPortal,
-            'blood_type_id' => $payload['blood_type_id'],
-            'urgency_level' => $payload['urgency_level'],
+            'blood_type_id' => $bloodTypeId,
+            'urgency_level' => $urgency,
             'status' => BloodRequestStatus::Pending,
             'request_date' => now(),
         ]);
@@ -346,11 +297,11 @@ class BloodRequestService
             'quantity' => $item['quantity'],
             'indication_code' => $item['indication_code'] ?? null,
             'indication_other' => $item['indication_other'] ?? null,
-        ], $payload['items']));
+        ], $items));
 
         $request->load(['bloodType', 'items.component', 'requestingFacility', 'targetFacility']);
 
-        $this->auditLogger->record($user, 'request.submitted', $request, [
+        $this->auditLogger->record($user, 'request.submitted', $request, array_filter([
             'facility_id' => $facilityId,
             'target_facility_id' => $target->id,
             'reference_number' => $request->reference_number,
@@ -358,7 +309,8 @@ class BloodRequestService
             'quantity' => $request->quantity,
             'components' => $request->items->pluck('component.name')->all(),
             'urgency_level' => $request->urgency_level->value,
-        ]);
+            'weekly_request_id' => $weeklyRequestId,
+        ], fn ($value): bool => $value !== null));
 
         $this->history->record($request, RequestEventType::Submitted, $user);
 
@@ -367,8 +319,11 @@ class BloodRequestService
 
     /**
      * Resolve the target facility, refusing anything a request may not be sent to.
+     *
+     * Public so that every way a hospital addresses a centre — a STAT restock,
+     * a weekly request, a request schedule — applies the one eligibility rule.
      */
-    private function requireEligibleTarget(int $targetFacilityId, int $requestingFacilityId): Facility
+    public function eligibleTarget(int $targetFacilityId, int $requestingFacilityId): Facility
     {
         if ($targetFacilityId === $requestingFacilityId) {
             throw ValidationException::withMessages([
@@ -407,17 +362,6 @@ class BloodRequestService
             'facility_missing',
             'This account is not linked to a facility.'
         );
-    }
-
-    /**
-     * Whether a query failure is a unique-index collision.
-     *
-     * Matched on SQLSTATE rather than a driver message: PostgreSQL reports
-     * 23505, MySQL and sqlite report 23000.
-     */
-    private function isUniqueViolation(QueryException $exception): bool
-    {
-        return in_array($exception->errorInfo[0] ?? null, ['23000', '23505'], true);
     }
 
     /**

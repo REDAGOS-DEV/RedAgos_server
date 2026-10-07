@@ -5,7 +5,6 @@ namespace Tests\Feature\BloodRequest;
 use App\Enums\BillingStatus;
 use App\Enums\BloodUnitStatus;
 use App\Enums\Department;
-use App\Enums\RequestPurpose;
 use App\Models\BloodComponent;
 use App\Models\BloodRequest;
 use App\Models\BloodType;
@@ -14,8 +13,10 @@ use App\Models\Donation;
 use App\Models\DonorProfile;
 use App\Models\Facility;
 use App\Models\FacilityBloodComponent;
+use App\Models\ReplenishmentSchedule;
 use App\Models\User;
 use App\Notifications\BloodRequestSubmitted;
+use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Tests\TestCase;
 
@@ -60,6 +61,27 @@ class BillingAndNotificationTest extends TestCase
             ['facility_id' => $this->centre->id, 'component_id' => $this->component->id],
             ['price' => $amount]
         );
+    }
+
+    /**
+     * Send the centre a weekly request, the only way a hospital restocks routinely.
+     */
+    private function sendWeeklyRequest(int $quantity): void
+    {
+        $this->travelTo(CarbonImmutable::parse('2026-10-05 09:00', 'Asia/Manila'));
+
+        ReplenishmentSchedule::factory()->between($this->hospital, $this->centre)->on([1])->create();
+
+        $this->actingAs($this->requester)
+            ->postJson('/api/hospital/weekly-requests', [
+                'target_facility_id' => $this->centre->id,
+                'lines' => [[
+                    'blood_type_id' => $this->bloodType->id,
+                    'component_id' => $this->component->id,
+                    'quantity' => $quantity,
+                ]],
+            ])
+            ->assertCreated();
     }
 
     protected function setUp(): void
@@ -228,20 +250,7 @@ class BillingAndNotificationTest extends TestCase
 
     public function test_submitting_notifies_the_target_facilitys_inventory_staff(): void
     {
-        $this->actingAs($this->requester)
-            ->postJson('/api/hospital/blood-requests', [
-                'target_facility_id' => $this->centre->id,
-                'blood_type_id' => $this->bloodType->id,
-                'urgency_level' => 'emergency',
-                'request_purpose' => RequestPurpose::Replenishment->value,
-                'items' => [
-                    [
-                        'component_id' => $this->component->id,
-                        'quantity' => 2,
-                    ],
-                ],
-            ])
-            ->assertCreated();
+        $this->sendWeeklyRequest(2);
 
         $this->assertDatabaseHas('notifications', [
             'notifiable_id' => $this->inventoryStaff->id,
@@ -253,40 +262,14 @@ class BillingAndNotificationTest extends TestCase
     {
         $collection = User::factory()->bloodCenterStaff($this->centre, Department::Collection)->create();
 
-        $this->actingAs($this->requester)
-            ->postJson('/api/hospital/blood-requests', [
-                'target_facility_id' => $this->centre->id,
-                'blood_type_id' => $this->bloodType->id,
-                'urgency_level' => 'routine',
-                'request_purpose' => RequestPurpose::Replenishment->value,
-                'items' => [
-                    [
-                        'component_id' => $this->component->id,
-                        'quantity' => 1,
-                    ],
-                ],
-            ])
-            ->assertCreated();
+        $this->sendWeeklyRequest(1);
 
         $this->assertDatabaseMissing('notifications', ['notifiable_id' => $collection->id]);
     }
 
     public function test_staff_can_read_and_clear_their_notification_inbox(): void
     {
-        $this->actingAs($this->requester)
-            ->postJson('/api/hospital/blood-requests', [
-                'target_facility_id' => $this->centre->id,
-                'blood_type_id' => $this->bloodType->id,
-                'urgency_level' => 'routine',
-                'request_purpose' => RequestPurpose::Replenishment->value,
-                'items' => [
-                    [
-                        'component_id' => $this->component->id,
-                        'quantity' => 1,
-                    ],
-                ],
-            ])
-            ->assertCreated();
+        $this->sendWeeklyRequest(1);
 
         $this->actingAs($this->inventoryStaff)
             ->getJson('/api/blood-center/notifications/unread-count')

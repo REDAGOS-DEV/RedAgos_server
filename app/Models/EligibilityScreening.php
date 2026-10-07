@@ -37,6 +37,7 @@ class EligibilityScreening extends Model
     {
         return [
             'screened_at' => 'datetime',
+            'invalidated_at' => 'datetime',
             'valid_until' => 'datetime',
             'declared_last_donation_date' => 'date',
             'last_menstrual_period' => 'date',
@@ -92,7 +93,8 @@ class EligibilityScreening extends Model
      */
     public function isValid(): bool
     {
-        return $this->valid_until->isFuture();
+        return $this->invalidated_at === null
+        && $this->valid_until->isFuture();
     }
 
     /**
@@ -100,6 +102,6 @@ class EligibilityScreening extends Model
      */
     public function scopeCurrentlyValid(Builder $query): Builder
     {
-        return $query->where('valid_until', '>', now());
+        return $query->whereNull('invalidated_at')->where('valid_until', '>', now());
     }
 }

@@ -690,9 +690,12 @@ class InventoryService
     /**
      * Refuse an edit the unit's state does not allow.
      *
+     * Public so a unit-details correction is judged by the very rule a direct
+     * edit is, both when it is filed and when it is approved.
+     *
      * @param  array<string, mixed>  $payload
      */
-    private function guardEditable(BloodUnit $unit, array $payload): void
+    public function guardEditable(BloodUnit $unit, array $payload): void
     {
         // A quarantined unit can have its shelf and date corrected like any
         // other. Its status is untouched here: update() only ever changes the

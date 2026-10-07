@@ -32,9 +32,12 @@ use App\Http\Controllers\FacilityManagementController;
 use App\Http\Controllers\FacilityNotificationController;
 use App\Http\Controllers\HospitalAvailabilityController;
 use App\Http\Controllers\HospitalBloodRequestController;
+use App\Http\Controllers\HospitalDirectDistributionController;
 use App\Http\Controllers\HospitalInventoryController;
 use App\Http\Controllers\HospitalReferenceController;
+use App\Http\Controllers\HospitalReplenishmentScheduleController;
 use App\Http\Controllers\HospitalTransfusionRequestController;
+use App\Http\Controllers\HospitalWeeklyRequestController;
 use App\Http\Controllers\PasswordResetController;
 use App\Http\Controllers\UserController;
 use App\Http\Resources\UserResource;
@@ -123,8 +126,11 @@ Route::middleware(['auth:sanctum', 'role:donor'])->prefix('donors')->group(funct
     Route::delete('/account', [DonorProfileController::class, 'destroy']);
 });
 
+// `signed:relative` for the same reason as /email/verify above: the <img> loads
+// it through the SPA's own origin, never the host the link was signed on. The
+// signature still covers the donor's uuid and the expiry.
 Route::get('/donors/{user}/avatar', [DonorProfileController::class, 'showAvatar'])
-    ->middleware('signed')
+    ->middleware('signed:relative')
     ->name('donors.avatar.show');
 
 // Signed like the avatar above, so an <img> can load it without a bearer
@@ -339,6 +345,14 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
                 ->middleware('can:billing.view')
                 ->whereNumber('bloodRequest');
 
+            // The payments themselves, with their reference numbers. Not part
+            // of the statement above: billing.view only needs to know whether
+            // a release is cleared, and is held by roles with no business
+            // reading a payment.
+            Route::get('/{bloodRequest}/payments', [BloodCenterBillingController::class, 'payments'])
+                ->middleware('can:billing.record_payment')
+                ->whereNumber('bloodRequest');
+
             Route::post('/{bloodRequest}/payments', [BloodCenterBillingController::class, 'storePayment'])
                 ->middleware('can:billing.record_payment')
                 ->whereNumber('bloodRequest');
@@ -483,6 +497,18 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
 
         Route::post('/donations/{donation}/corrections', [BloodCenterCorrectionController::class, 'store'])
             ->middleware(['can:corrections.request', 'throttle:30,1'])->whereNumber('donation');
+
+        // The same, for the records Issuance and Billing keep. The subject is
+        // fixed by the route, so a body cannot aim one at the wrong table;
+        // CorrectionService decides which roles may file each.
+        Route::post('/inventory/{unit}/corrections', [BloodCenterCorrectionController::class, 'storeForUnit'])
+            ->middleware(['can:corrections.request', 'throttle:30,1'])->where('unit', '[A-Za-z0-9\-]+');
+
+        Route::post('/allocations/{allocation}/corrections', [BloodCenterCorrectionController::class, 'storeForAllocation'])
+            ->middleware(['can:corrections.request', 'throttle:30,1'])->whereNumber('allocation');
+
+        Route::post('/payments/{payment}/corrections', [BloodCenterCorrectionController::class, 'storeForPayment'])
+            ->middleware(['can:corrections.request', 'throttle:30,1'])->whereNumber('payment');
 
         Route::post('/corrections/{correction}/approve', [BloodCenterCorrectionController::class, 'approve'])
             ->middleware('can:corrections.approve')->whereNumber('correction');
@@ -633,10 +659,32 @@ Route::middleware(['auth:sanctum', 'role:blood_bank', 'facility.operational'])
                 ->whereNumber('transfusionRequest');
         });
 
+        // Receiving: the blood bank's request days, the weekly request it
+        // sends a centre on them, and deliveries from outside RedAgos typed in
+        // bag by bag. A weekly request is one replenishment per blood type —
+        // its receipt is confirmed on each, through confirm-receipt below.
+        Route::get('/replenishment-schedules', [HospitalReplenishmentScheduleController::class, 'index']);
+        Route::put('/replenishment-schedules/{targetFacility}', [HospitalReplenishmentScheduleController::class, 'update'])
+            ->whereNumber('targetFacility');
+        Route::delete('/replenishment-schedules/{targetFacility}', [HospitalReplenishmentScheduleController::class, 'destroy'])
+            ->whereNumber('targetFacility');
+
+        Route::prefix('weekly-requests')->group(function (): void {
+            Route::get('/', [HospitalWeeklyRequestController::class, 'index']);
+            Route::post('/', [HospitalWeeklyRequestController::class, 'store']);
+            Route::get('/status', [HospitalWeeklyRequestController::class, 'status']);
+            Route::get('/{weeklyRequest}', [HospitalWeeklyRequestController::class, 'show'])
+                ->whereNumber('weeklyRequest');
+        });
+
+        Route::get('/direct-distributions', [HospitalDirectDistributionController::class, 'index']);
+        Route::post('/direct-distributions', [HospitalDirectDistributionController::class, 'store']);
+        Route::get('/external-blood-sources', [HospitalDirectDistributionController::class, 'sources']);
+        Route::post('/external-blood-sources', [HospitalDirectDistributionController::class, 'storeSource']);
+
         // Replenishment orders, and every facility allocation's own page:
         // receipt, the DOH form and its history live on the allocation.
         Route::get('/blood-requests', [HospitalBloodRequestController::class, 'index']);
-        Route::post('/blood-requests', [HospitalBloodRequestController::class, 'store']);
 
         // Declared before the {bloodRequest} route below, which would otherwise
         // swallow "track" and then fail to match it as an integer.
