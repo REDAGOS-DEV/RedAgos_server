@@ -342,6 +342,14 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
                 ->middleware('can:billing.view')
                 ->whereNumber('bloodRequest');
 
+            // The payments themselves, with their reference numbers. Not part
+            // of the statement above: billing.view only needs to know whether
+            // a release is cleared, and is held by roles with no business
+            // reading a payment.
+            Route::get('/{bloodRequest}/payments', [BloodCenterBillingController::class, 'payments'])
+                ->middleware('can:billing.record_payment')
+                ->whereNumber('bloodRequest');
+
             Route::post('/{bloodRequest}/payments', [BloodCenterBillingController::class, 'storePayment'])
                 ->middleware('can:billing.record_payment')
                 ->whereNumber('bloodRequest');
@@ -486,6 +494,18 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
 
         Route::post('/donations/{donation}/corrections', [BloodCenterCorrectionController::class, 'store'])
             ->middleware(['can:corrections.request', 'throttle:30,1'])->whereNumber('donation');
+
+        // The same, for the records Issuance and Billing keep. The subject is
+        // fixed by the route, so a body cannot aim one at the wrong table;
+        // CorrectionService decides which roles may file each.
+        Route::post('/inventory/{unit}/corrections', [BloodCenterCorrectionController::class, 'storeForUnit'])
+            ->middleware(['can:corrections.request', 'throttle:30,1'])->where('unit', '[A-Za-z0-9\-]+');
+
+        Route::post('/allocations/{allocation}/corrections', [BloodCenterCorrectionController::class, 'storeForAllocation'])
+            ->middleware(['can:corrections.request', 'throttle:30,1'])->whereNumber('allocation');
+
+        Route::post('/payments/{payment}/corrections', [BloodCenterCorrectionController::class, 'storeForPayment'])
+            ->middleware(['can:corrections.request', 'throttle:30,1'])->whereNumber('payment');
 
         Route::post('/corrections/{correction}/approve', [BloodCenterCorrectionController::class, 'approve'])
             ->middleware('can:corrections.approve')->whereNumber('correction');

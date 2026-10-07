@@ -164,7 +164,7 @@ class DonorService
         $upcomingAppointment = $this->donorRepository->findUpcomingAppointment($donor->id, $now);
         $recentDonations = $this->donorRepository->recentDonations($donor->id);
         $monthlyCounts = $this->donorRepository
-            ->monthlyCompletedDonationCounts($donor->id, $now->copy()->subMonths(11)->startOfMonth(), $now->copy()->endOfMonth());
+            ->monthlyCollectedDonationCounts($donor->id, $now->copy()->subMonths(11)->startOfMonth(), $now->copy()->endOfMonth());
 
         return [
             'user' => $this->formatDonor($donor),
@@ -185,7 +185,9 @@ class DonorService
             // so eligibility_status alone never reports the questionnaire done.
             'questionnaire_status' => $this->eligibilityService->statusForProfile($profile)->value,
             'blood_type' => $profile->bloodType?->code,
-            'total_donations' => $this->donorRepository->countCompletedDonations($donor->id),
+            // Every draw, not just what Processing has since completed: the
+            // donor gave blood the moment the collection was recorded.
+            'total_donations' => $this->donorRepository->countCollectedDonations($donor->id),
             'upcoming_appointment' => $this->formatAppointment($upcomingAppointment),
             'recent_donations' => $recentDonations->map(fn (object $donation): array => $this->formatDonation($donation))->values(),
             'monthly_trend' => $this->formatMonthlyTrend($monthlyCounts, $now),

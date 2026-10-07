@@ -39,6 +39,10 @@ enum StaffRole: string
 
     case BillingClerk = 'billing_clerk';
 
+    // Declared after the clerk, not before it: the order of cases is the
+    // organisation-chart order the staff form and the CLI list roles in.
+    case BillingSupervisor = 'billing_supervisor';
+
     /**
      * Get every accepted role value, grouped in organisation-chart order.
      *
@@ -123,7 +127,8 @@ enum StaffRole: string
             self::DispatchCoordinator,
             self::ItDataClerk => Department::Issuance,
 
-            self::BillingClerk => Department::Billing,
+            self::BillingClerk,
+            self::BillingSupervisor => Department::Billing,
         };
     }
 
@@ -145,6 +150,7 @@ enum StaffRole: string
             self::DispatchCoordinator => 'Dispatch / Transport Coordinator',
             self::ItDataClerk => 'IT Data Entry Clerk',
             self::BillingClerk => 'Billing Clerk',
+            self::BillingSupervisor => 'Billing Supervisor',
         };
     }
 
@@ -165,10 +171,11 @@ enum StaffRole: string
             self::ProcessingAssistant => 'Declares bags and volumes and prepares labels. Cannot complete or release a donation.',
             self::SerologyTechnologist => 'Records the TTI panel and the ABO/Rh typing by barcode, blind to donor identity. Cannot undo a reactive result.',
             self::LabSupervisor => 'Records and oversees testing, approves Testing corrections and works counselling referrals. Cannot delete a reactive result.',
-            self::InventoryControlOfficer => 'Books units in, manages stock, allocates to requests, and releases units from quarantine once testing has cleared them.',
-            self::DispatchCoordinator => 'Handles hospital orders and releases units for transport. No clinical or laboratory access.',
-            self::ItDataClerk => 'Audits inventory records against scanned barcodes. Cannot alter medical data, results or patient links.',
-            self::BillingClerk => 'Raises bills against fulfilled requests and records payments.',
+            self::InventoryControlOfficer => 'Books units in, manages stock, allocates to requests, and releases units from quarantine once testing has cleared them. Edits a unit directly and approves Issuance corrections.',
+            self::DispatchCoordinator => 'Handles hospital orders and releases units for transport, and requests a correction to a dispatch record. No clinical or laboratory access.',
+            self::ItDataClerk => 'Audits inventory records against scanned barcodes and requests a correction to a unit\'s storage location or expiry date. Cannot alter medical data, results or patient links.',
+            self::BillingClerk => 'Raises bills against fulfilled requests, records payments, and requests a correction to a recorded payment.',
+            self::BillingSupervisor => 'Everything a billing clerk does, and approves Billing corrections to a recorded payment. Cannot alter inventory or clinical records.',
         };
     }
 }

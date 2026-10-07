@@ -2,8 +2,6 @@
 
 namespace Tests\Feature\BloodCenter;
 
-use App\Models\DonorQrToken;
-use App\Models\EligibilityScreening;
 use App\Enums\AppointmentStatus;
 use App\Enums\Department;
 use App\Enums\DonationStatus;
@@ -14,6 +12,8 @@ use App\Models\BloodType;
 use App\Models\Donation;
 use App\Models\DonationAppointment;
 use App\Models\DonationScreening;
+use App\Models\DonorQrToken;
+use App\Models\EligibilityScreening;
 use App\Models\Facility;
 use App\Models\User;
 use App\Notifications\DonationRecorded;
@@ -619,6 +619,37 @@ class CollectionWorkflowTest extends TestCase
             ->assertCreated();
 
         Notification::assertSentTo($this->donor, DonationRecorded::class);
+    }
+
+    public function test_a_recorded_collection_counts_on_the_donors_dashboard(): void
+    {
+        $this->actingAs($this->donor)
+            ->getJson('/api/donors/dashboard')
+            ->assertOk()
+            ->assertJsonPath('total_donations', 0);
+
+        $id = $this->openDonation();
+        $this->screenDonation($id);
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload())
+            ->assertCreated();
+
+        // Still `collected`: `completed` belongs to Processing, and the donor's
+        // dashboard must not wait for it.
+        $this->assertSame(DonationStatus::Collected, Donation::findOrFail($id)->status);
+
+        $response = $this->actingAs($this->donor)
+            ->getJson('/api/donors/dashboard')
+            ->assertOk()
+            ->assertJsonPath('total_donations', 1);
+
+        $thisMonth = collect($response->json('monthly_trend'))->firstWhere('key', now()->format('Y-m'));
+        $this->assertSame(1, $thisMonth['count']);
+
+        $this->actingAs($this->donor)
+            ->getJson('/api/donors/profile')
+            ->assertOk()
+            ->assertJsonPath('total_donations', 1);
     }
 
     public function test_a_deferred_donor_is_told_the_reason_that_was_recorded(): void

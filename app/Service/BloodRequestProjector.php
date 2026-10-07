@@ -114,6 +114,7 @@ class BloodRequestProjector
                     'storage_location' => $allocation->unit?->storage_location,
                     'allocated_at' => $allocation->allocated_at?->toIso8601String(),
                     'released_at' => $allocation->released_at?->toIso8601String(),
+                    'handed_to' => $allocation->handed_to,
                     'received_at' => $allocation->received_at?->toIso8601String(),
                 ])
                 ->all();

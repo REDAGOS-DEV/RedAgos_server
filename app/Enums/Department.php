@@ -49,17 +49,17 @@ enum Department: string
     /**
      * The role that approves correction requests for this department's records.
      *
-     * The department's senior post. Null where no record of the department is
-     * correctable, and for an approver's own request the Center Admin (a
-     * supervisor) decides instead — see CorrectionService.
+     * Every department's senior post. For an approver's own request the Center
+     * Admin (a supervisor) decides instead — see CorrectionService.
      */
-    public function correctionApprover(): ?StaffRole
+    public function correctionApprover(): StaffRole
     {
         return match ($this) {
             self::Collection => StaffRole::ScreeningPhysician,
             self::Processing => StaffRole::ComponentTechnologist,
             self::Testing => StaffRole::LabSupervisor,
-            self::Issuance, self::Billing => null,
+            self::Issuance => StaffRole::InventoryControlOfficer,
+            self::Billing => StaffRole::BillingSupervisor,
         };
     }
 

@@ -175,6 +175,10 @@ class AuthorizationSweepTest extends TestCase
             'release from quarantine' => ['post', '/api/blood-center/inventory/quarantine/1/release', 'inventory.release_quarantine'],
             'correction list' => ['get', '/api/blood-center/corrections', 'corrections.request'],
             'request correction' => ['post', '/api/blood-center/donations/1/corrections', 'corrections.request'],
+            'request unit correction' => ['post', '/api/blood-center/inventory/RA1-1-01/corrections', 'corrections.request'],
+            'request dispatch correction' => ['post', '/api/blood-center/allocations/1/corrections', 'corrections.request'],
+            'request payment correction' => ['post', '/api/blood-center/payments/1/corrections', 'corrections.request'],
+            'payment list' => ['get', '/api/blood-center/billings/1/payments', 'billing.record_payment'],
             'approve correction' => ['post', '/api/blood-center/corrections/1/approve', 'corrections.approve'],
             'reject correction' => ['post', '/api/blood-center/corrections/1/reject', 'corrections.approve'],
         ];
