@@ -32,9 +32,12 @@ use App\Http\Controllers\FacilityManagementController;
 use App\Http\Controllers\FacilityNotificationController;
 use App\Http\Controllers\HospitalAvailabilityController;
 use App\Http\Controllers\HospitalBloodRequestController;
+use App\Http\Controllers\HospitalDirectDistributionController;
 use App\Http\Controllers\HospitalInventoryController;
 use App\Http\Controllers\HospitalReferenceController;
+use App\Http\Controllers\HospitalReplenishmentScheduleController;
 use App\Http\Controllers\HospitalTransfusionRequestController;
+use App\Http\Controllers\HospitalWeeklyRequestController;
 use App\Http\Controllers\PasswordResetController;
 use App\Http\Controllers\UserController;
 use App\Http\Resources\UserResource;
@@ -633,10 +636,32 @@ Route::middleware(['auth:sanctum', 'role:blood_bank', 'facility.operational'])
                 ->whereNumber('transfusionRequest');
         });
 
+        // Receiving: the blood bank's request days, the weekly request it
+        // sends a centre on them, and deliveries from outside RedAgos typed in
+        // bag by bag. A weekly request is one replenishment per blood type —
+        // its receipt is confirmed on each, through confirm-receipt below.
+        Route::get('/replenishment-schedules', [HospitalReplenishmentScheduleController::class, 'index']);
+        Route::put('/replenishment-schedules/{targetFacility}', [HospitalReplenishmentScheduleController::class, 'update'])
+            ->whereNumber('targetFacility');
+        Route::delete('/replenishment-schedules/{targetFacility}', [HospitalReplenishmentScheduleController::class, 'destroy'])
+            ->whereNumber('targetFacility');
+
+        Route::prefix('weekly-requests')->group(function (): void {
+            Route::get('/', [HospitalWeeklyRequestController::class, 'index']);
+            Route::post('/', [HospitalWeeklyRequestController::class, 'store']);
+            Route::get('/status', [HospitalWeeklyRequestController::class, 'status']);
+            Route::get('/{weeklyRequest}', [HospitalWeeklyRequestController::class, 'show'])
+                ->whereNumber('weeklyRequest');
+        });
+
+        Route::get('/direct-distributions', [HospitalDirectDistributionController::class, 'index']);
+        Route::post('/direct-distributions', [HospitalDirectDistributionController::class, 'store']);
+        Route::get('/external-blood-sources', [HospitalDirectDistributionController::class, 'sources']);
+        Route::post('/external-blood-sources', [HospitalDirectDistributionController::class, 'storeSource']);
+
         // Replenishment orders, and every facility allocation's own page:
         // receipt, the DOH form and its history live on the allocation.
         Route::get('/blood-requests', [HospitalBloodRequestController::class, 'index']);
-        Route::post('/blood-requests', [HospitalBloodRequestController::class, 'store']);
 
         // Declared before the {bloodRequest} route below, which would otherwise
         // swallow "track" and then fail to match it as an integer.

@@ -3,7 +3,9 @@
 namespace App\Service;
 
 use App\Enums\AllocationStatus;
+use App\Enums\LineClosureReason;
 use App\Enums\RequestEventType;
+use App\Models\BloodRequest;
 use App\Models\RequestAllocation;
 use App\Models\User;
 use App\Repository\BloodRequestRepository;
@@ -28,6 +30,11 @@ use RuntimeException;
  */
 class FulfillmentService
 {
+    /**
+     * The note a weekly request's unsupplied remainder is closed with.
+     */
+    public const WEEKLY_SHORTFALL_NOTE = 'Not supplied in this weekly delivery.';
+
     public function __construct(
         private readonly BloodRequestRepository $bloodRequestRepository,
         private readonly InventoryRepository $inventoryRepository,
@@ -37,7 +44,8 @@ class FulfillmentService
         private readonly BloodRequestHistory $history,
         private readonly BloodRequestNotifier $notifier,
         private readonly TransfusionRequestResolver $transfusionResolver,
-        private readonly HospitalInventoryService $hospitalInventoryService
+        private readonly HospitalInventoryService $hospitalInventoryService,
+        private readonly RequestLineCloser $lineCloser
     ) {}
 
     /**
@@ -76,6 +84,20 @@ class FulfillmentService
                     409,
                     'nothing_to_release',
                     'This request has no reserved units waiting to be dispatched.'
+                );
+            }
+
+            // A weekly request goes out in one delivery, because whatever it
+            // leaves behind is closed as it goes. Holding some bags back would
+            // close their line's remainder while they sat reserved.
+            if ($request->isWeekly() && $request->allocations()
+                ->where('status', AllocationStatus::Allocated)
+                ->whereNotIn('id', $holds->pluck('id'))
+                ->exists()) {
+                throw $this->refuse(
+                    409,
+                    'weekly_release_all',
+                    'A weekly request is dispatched in one delivery. Release every reserved unit, or return the ones you are not sending to stock first.'
                 );
             }
 
@@ -137,7 +159,9 @@ class FulfillmentService
                 meta: $handedTo ? ['handed_to' => $handedTo] : [],
             );
 
-            return ['request' => $request, 'units' => $unitIds];
+            $closedShort = $request->isWeekly() ? $this->closeWeeklyShortfall($request, $user) : [];
+
+            return ['request' => $request, 'units' => $unitIds, 'closed_short' => $closedShort];
         });
 
         $this->notifier->requester($result['request'], 'released');
@@ -147,7 +171,51 @@ class FulfillmentService
             'released_units' => $result['units'],
             'status' => $result['request']->status->value,
             'status_label' => $result['request']->status->label(),
+            'closed_short' => $result['closed_short'],
         ];
+    }
+
+    /**
+     * Close whatever a weekly request's delivery did not supply, as unavailable.
+     *
+     * The centre supplies what it can; the next request day's order replaces
+     * the rest rather than leaving it open beside it. Runs inside release()'s
+     * transaction, on the request it has locked, so the delivery and the
+     * closure are one decision in the history.
+     *
+     * @return array<int, array{request_item_id: int, component: string|null, quantity: int}>
+     */
+    private function closeWeeklyShortfall(BloodRequest $request, User $user): array
+    {
+        if ($request->isClosed()) {
+            return [];
+        }
+
+        $closed = [];
+
+        foreach ($this->resolver->freshFigures($request) as $itemId => $line) {
+            $short = (int) ($line['allocatable'] ?? 0);
+
+            if ($short < 1) {
+                continue;
+            }
+
+            $this->lineCloser->close(
+                $request,
+                (int) $itemId,
+                LineClosureReason::Unavailable,
+                self::WEEKLY_SHORTFALL_NOTE,
+                $user
+            );
+
+            $closed[] = [
+                'request_item_id' => (int) $itemId,
+                'component' => $request->items->firstWhere('id', $itemId)?->component?->name,
+                'quantity' => $short,
+            ];
+        }
+
+        return $closed;
     }
 
     /**

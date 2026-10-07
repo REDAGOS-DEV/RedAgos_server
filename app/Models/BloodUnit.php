@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
+use LogicException;
 
 class BloodUnit extends Model
 {
@@ -29,6 +30,7 @@ class BloodUnit extends Model
         'volume_ml',
         'blood_type_id',
         'donation_id',
+        'direct_distribution_id',
         'storage_location',
         'expiry_date',
         'status',
@@ -66,9 +68,53 @@ class BloodUnit extends Model
         return $this->belongsTo(BloodType::class);
     }
 
+    /**
+     * Refuse a bag with no origin, or with two.
+     *
+     * A bag RedAgos collected traces to its donation; a bag a hospital received
+     * from outside RedAgos traces to the delivery that brought it. Exactly one
+     * of the two, always — a bag tracing to neither is untraceable, and one
+     * tracing to both is lying about one of them. PostgreSQL holds the same
+     * rule as a CHECK constraint; this holds it on every driver.
+     */
+    protected static function booted(): void
+    {
+        static::saving(function (BloodUnit $unit): void {
+            // An existing row loaded with a column subset says nothing about
+            // its origin, and an update that leaves both columns alone cannot
+            // change it.
+            if ($unit->exists && ! $unit->isDirty(['donation_id', 'direct_distribution_id'])) {
+                return;
+            }
+
+            if (($unit->donation_id === null) === ($unit->direct_distribution_id === null)) {
+                throw new LogicException('A blood unit must trace to exactly one origin: a donation or a direct distribution.');
+            }
+        });
+    }
+
+    /**
+     * The donation the bag was collected from. Null for a bag received by direct distribution.
+     */
     public function donation(): BelongsTo
     {
         return $this->belongsTo(Donation::class);
+    }
+
+    /**
+     * The delivery from outside RedAgos that brought the bag, if it was not collected here.
+     */
+    public function directDistribution(): BelongsTo
+    {
+        return $this->belongsTo(DirectDistribution::class);
+    }
+
+    /**
+     * Determine whether the bag came from outside RedAgos rather than from a donation.
+     */
+    public function isDirectDistribution(): bool
+    {
+        return $this->direct_distribution_id !== null;
     }
 
     /**

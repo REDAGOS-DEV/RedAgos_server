@@ -28,14 +28,17 @@ class HospitalInventoryRepository
      * @var array<int, string>
      */
     private const LIST_RELATIONS = [
-        'bloodUnit:id,blood_type_id,component_id,volume_ml,expiry_date',
+        'bloodUnit:id,blood_type_id,component_id,volume_ml,expiry_date,direct_distribution_id',
         'bloodUnit.bloodType:id,code',
         'bloodUnit.component:id,name',
+        'bloodUnit.directDistribution:id,transfusion_request_id,requested_for,external_blood_source_id,external_unit_number,quantity',
+        'bloodUnit.directDistribution.source:id,name',
+        'bloodUnit.directDistribution.transfusionRequest:id,reference_number',
         'activeTag.transfusionRequest:id,reference_number',
         'activeTag.patientBloodType:id,code',
         'latestTag',
         'requestAllocation:id,request_id',
-        'requestAllocation.request:id,reference_number,transfusion_request_id',
+        'requestAllocation.request:id,reference_number,transfusion_request_id,weekly_request_id',
         'requestAllocation.request.transfusionRequest:id,reference_number',
     ];
 
@@ -143,7 +146,10 @@ class HospitalInventoryRepository
     /**
      * Put received bags into a hospital's custody as available stock.
      *
-     * @param  array<int, array{unit_id: string, request_allocation_id: int}>  $bags
+     * A bag received by direct distribution has no dispatched hold, so its
+     * request_allocation_id is null.
+     *
+     * @param  array<int, array{unit_id: string, request_allocation_id: int|null}>  $bags
      * @return Collection<int, HospitalUnit>
      */
     public function createUnits(int $facilityId, array $bags): Collection
@@ -265,7 +271,8 @@ class HospitalInventoryRepository
             ->with([
                 ...self::TAG_ACTORS,
                 'hospitalUnit:id,unit_id,status',
-                'hospitalUnit.bloodUnit:id,blood_type_id,component_id',
+                'hospitalUnit.bloodUnit:id,blood_type_id,component_id,direct_distribution_id',
+                'hospitalUnit.bloodUnit.directDistribution:id,external_unit_number,quantity',
                 'hospitalUnit.bloodUnit.bloodType:id,code',
                 'hospitalUnit.bloodUnit.component:id,name',
             ])
@@ -501,7 +508,11 @@ class HospitalInventoryRepository
             ->where('unit_tags.patient_surname', 'like', $like)
             ->orWhere('unit_tags.patient_first_name', 'like', $like)
             ->orWhere('unit_tags.patient_record_number', 'like', $like)
-            ->orWhereHas('hospitalUnit', fn (Builder $unit): Builder => $unit->where('unit_id', 'like', $like)));
+            ->orWhereHas('hospitalUnit', fn (Builder $unit): Builder => $unit->where('unit_id', 'like', $like))
+            ->orWhereHas(
+                'hospitalUnit.bloodUnit.directDistribution',
+                fn (Builder $delivery): Builder => $delivery->where('external_unit_number', 'like', $like)
+            ));
     }
 
     /**
@@ -555,12 +566,21 @@ class HospitalInventoryRepository
                     ->orWhereHas(
                         'tags',
                         fn (Builder $tag): Builder => $tag->where('transfusion_request_id', $filters['transfusion_request_id'])
+                    )
+                    // Bags received from outside RedAgos for this patient.
+                    ->orWhereHas(
+                        'bloodUnit.directDistribution',
+                        fn (Builder $delivery): Builder => $delivery->where('transfusion_request_id', $filters['transfusion_request_id'])
                     ))
             )
             ->when(
                 isset($filters['search']),
                 fn (Builder $query): Builder => $query->where(fn (Builder $search): Builder => $search
                     ->where('hospital_units.unit_id', 'like', '%'.$filters['search'].'%')
+                    ->orWhereHas(
+                        'bloodUnit.directDistribution',
+                        fn (Builder $delivery): Builder => $delivery->where('external_unit_number', 'like', '%'.$filters['search'].'%')
+                    )
                     ->orWhereHas('activeTag', fn (Builder $tag): Builder => $tag->where(fn (Builder $patient): Builder => $patient
                         ->where('patient_surname', 'like', '%'.$filters['search'].'%')
                         ->orWhere('patient_first_name', 'like', '%'.$filters['search'].'%')

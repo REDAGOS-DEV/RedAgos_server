@@ -4,150 +4,103 @@ namespace Tests\Feature\BloodRequest;
 
 use App\Enums\BloodRequestStatus;
 use App\Enums\BloodUnitStatus;
-use App\Enums\IndicationCode;
 use App\Enums\RequestPurpose;
 use App\Enums\UrgencyLevel;
-use App\Models\BloodComponent;
 use App\Models\BloodRequest;
-use App\Models\BloodType;
 use App\Models\BloodUnit;
-use App\Models\Donation;
-use App\Models\DonorProfile;
 use App\Models\Facility;
+use App\Models\ReplenishmentSchedule;
 use App\Models\User;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Tests\Feature\BloodRequest\Concerns\BuildsFulfilmentScenarios;
+use Tests\Feature\Receiving\Concerns\SendsWeeklyRequests;
 use Tests\TestCase;
 
 /**
  * Raising a replenishment request, and what stops one being raised wrongly.
  *
- * The rules worth naming: the requesting facility is never taken from input,
- * a request cannot be addressed to itself or to a facility that has no way to
- * fulfil it, submitting reserves nothing — approval does that, later — and a
- * patient's need is not a restock order: it is recorded as a Patient
- * Transfusion Request instead (TransfusionRequestTest).
+ * A replenishment is only ever sent as the weekly request (WeeklyRequestTest
+ * covers the request days). What is held here is what any request to a centre
+ * must satisfy: the requesting facility is never taken from input, a request
+ * cannot be addressed to itself or to a facility that has no way to fulfil it,
+ * submitting reserves nothing — approval does that, later — and a patient's
+ * need is a Patient Transfusion Request, not a restock (TransfusionRequestTest).
  */
 class SubmitBloodRequestTest extends TestCase
 {
-    use LazilyRefreshDatabase;
-
-    private User $requester;
-
-    private Facility $hospital;
-
-    private Facility $centre;
-
-    private BloodType $bloodType;
-
-    private BloodComponent $component;
-
-    private DonorProfile $donorProfile;
+    use BuildsFulfilmentScenarios, LazilyRefreshDatabase, SendsWeeklyRequests;
 
     protected function setUp(): void
     {
         parent::setUp();
 
-        $this->hospital = Facility::factory()->bloodBank()->approved()->create();
-        $this->requester = User::factory()->bloodBankStaff($this->hospital)->create();
-        $this->centre = Facility::factory()->approved()->create(['name' => 'Davao Blood Center']);
-
-        $this->bloodType = BloodType::firstOrCreate(['code' => 'O+'], ['label' => 'O+']);
-        $this->component = BloodComponent::factory()->create(['name' => 'Packed RBC']);
-
-        $this->donorProfile = DonorProfile::factory()->create([
-            'donor_id' => User::factory()->create()->id,
-            'blood_type_id' => $this->bloodType->id,
-        ]);
+        $this->buildScenario();
+        $this->travelToMonday();
+        $this->scheduleWith($this->centre);
     }
 
-    public function test_it_records_a_pending_request_addressed_to_the_chosen_facility(): void
+    public function test_it_records_a_pending_replenishment_addressed_to_the_chosen_centre(): void
     {
-        $response = $this->actingAs($this->requester)
-            ->postJson('/api/hospital/blood-requests', $this->payload(['quantity' => 5]));
-
-        $response->assertCreated()
-            ->assertJsonPath('request.status', BloodRequestStatus::Pending->value)
-            ->assertJsonPath('request.quantity', 5)
-            ->assertJsonPath('request.target_facility.name', 'Davao Blood Center')
-            ->assertJsonPath('request.requesting_facility.id', $this->hospital->id)
-            ->assertJsonPath('request.outstanding_quantity', 5)
-            ->assertJsonPath('request.allocated_count', 0);
+        $this->sendWeekly([[$this->bloodType, $this->prbc, 5]])
+            ->assertCreated()
+            ->assertJsonPath('weekly_request.requests.0.status', BloodRequestStatus::Pending->value)
+            ->assertJsonPath('weekly_request.requests.0.quantity', 5)
+            ->assertJsonPath('weekly_request.requests.0.target_facility.name', 'Davao Blood Center')
+            ->assertJsonPath('weekly_request.requests.0.requesting_facility.id', $this->hospital->id)
+            ->assertJsonPath('weekly_request.requests.0.outstanding_quantity', 5)
+            ->assertJsonPath('weekly_request.requests.0.allocated_count', 0);
 
         $this->assertDatabaseHas('blood_requests', [
             'facility_id' => $this->hospital->id,
             'target_facility_id' => $this->centre->id,
             'requested_by' => $this->requester->id,
             'status' => BloodRequestStatus::Pending->value,
+            'urgency_level' => UrgencyLevel::Routine->value,
             'request_purpose' => RequestPurpose::Replenishment->value,
             'patient_surname' => null,
             'transfusion_request_id' => null,
         ]);
 
         $this->assertDatabaseHas('blood_request_items', [
-            'component_id' => $this->component->id,
+            'component_id' => $this->prbc->id,
             'quantity' => 5,
-            'indication_code' => IndicationCode::R1->value,
+            'indication_code' => null,
         ]);
     }
 
-    public function test_a_patient_transfusion_is_sent_to_its_own_endpoint(): void
+    public function test_the_standalone_replenishment_endpoint_is_gone(): void
     {
         $this->actingAs($this->requester)
-            ->postJson('/api/hospital/blood-requests', $this->payload([
-                'request_purpose' => RequestPurpose::PatientTransfusion->value,
-                'patient_surname' => 'Dela Cruz',
-                'patient_first_name' => 'Juan',
-                'patient_age' => 47,
-                'patient_sex' => 'male',
-            ]))
-            ->assertStatus(422)
-            ->assertJsonValidationErrors(['request_purpose'])
-            ->assertJsonPath('errors.request_purpose.0', "Record a patient's need as a Patient Transfusion Request.");
+            ->postJson('/api/hospital/blood-requests', [
+                'target_facility_id' => $this->centre->id,
+                'blood_type_id' => $this->bloodType->id,
+                'urgency_level' => 'emergency',
+                'request_purpose' => 'replenishment',
+                'items' => [['component_id' => $this->prbc->id, 'quantity' => 2]],
+            ])
+            ->assertStatus(405);
 
         $this->assertDatabaseCount('blood_requests', 0);
     }
 
-    public function test_patient_details_sent_with_a_restock_are_not_stored(): void
-    {
-        $this->actingAs($this->requester)
-            ->postJson('/api/hospital/blood-requests', $this->payload([
-                'patient_surname' => 'Dela Cruz',
-                'patient_first_name' => 'Juan',
-            ]))
-            ->assertCreated()
-            ->assertJsonPath('request.patient', null);
-
-        $this->assertDatabaseHas('blood_requests', ['patient_surname' => null, 'patient_first_name' => null]);
-    }
-
-    public function test_it_issues_a_reference_number(): void
-    {
-        $response = $this->actingAs($this->requester)
-            ->postJson('/api/hospital/blood-requests', $this->payload());
-
-        $reference = $response->assertCreated()->json('request.reference_number');
-
-        $this->assertSame("RQ-{$this->hospital->id}-0001", $reference);
-    }
-
-    public function test_reference_numbers_increment_per_facility(): void
+    public function test_it_issues_reference_numbers_per_facility(): void
     {
         $otherHospital = Facility::factory()->bloodBank()->approved()->create();
         $otherRequester = User::factory()->bloodBankStaff($otherHospital)->create();
+        ReplenishmentSchedule::factory()->between($otherHospital, $this->centre)->create();
 
-        $first = $this->submit();
-        $second = $this->submit();
-        $third = $this->actingAs($otherRequester)
-            ->postJson('/api/hospital/blood-requests', $this->payload())
-            ->json('request.reference_number');
+        $this->sendWeekly([[$this->bloodType, $this->prbc, 2], [$this->bloodType, $this->ffp, 1]])->assertCreated();
 
-        $this->assertSame("RQ-{$this->hospital->id}-0001", $first);
-        $this->assertSame("RQ-{$this->hospital->id}-0002", $second);
+        $theirs = $this->actingAs($otherRequester)
+            ->postJson('/api/hospital/weekly-requests', $this->weeklyPayload([[$this->bloodType, $this->prbc, 1]]))
+            ->assertCreated()
+            ->json('weekly_request.requests.0.reference_number');
+
         $this->assertSame(
-            "RQ-{$otherHospital->id}-0001",
-            $third,
-            'Each facility numbers its own requests from one.'
+            ["RQ-{$this->hospital->id}-0001"],
+            BloodRequest::query()->where('facility_id', $this->hospital->id)->pluck('reference_number')->all()
         );
+        $this->assertSame("RQ-{$otherHospital->id}-0001", $theirs, 'Each facility numbers its own requests from one.');
     }
 
     public function test_the_sequence_is_not_derived_lexicographically(): void
@@ -159,7 +112,7 @@ class SubmitBloodRequestTest extends TestCase
 
         $this->assertSame(
             "RQ-{$this->hospital->id}-0101",
-            $this->submit(),
+            $this->sendWeekly([[$this->bloodType, $this->prbc, 2]])->assertCreated()->json('weekly_request.requests.0.reference_number'),
             'As a string, 0100 sorts below 0099, so MAX() would reissue a taken number.'
         );
     }
@@ -168,96 +121,36 @@ class SubmitBloodRequestTest extends TestCase
     {
         $someoneElse = Facility::factory()->bloodBank()->approved()->create();
 
-        $this->actingAs($this->requester)
-            ->postJson('/api/hospital/blood-requests', $this->payload([
-                'facility_id' => $someoneElse->id,
-            ]))
+        $this->sendWeekly([[$this->bloodType, $this->prbc, 2]], null, ['facility_id' => $someoneElse->id])
             ->assertCreated()
-            ->assertJsonPath('request.requesting_facility.id', $this->hospital->id);
+            ->assertJsonPath('weekly_request.requests.0.requesting_facility.id', $this->hospital->id);
 
         $this->assertDatabaseMissing('blood_requests', ['facility_id' => $someoneElse->id]);
     }
 
-    public function test_a_facility_cannot_send_a_request_to_itself(): void
-    {
-        $this->actingAs($this->requester)
-            ->postJson('/api/hospital/blood-requests', $this->payload([
-                'target_facility_id' => $this->hospital->id,
-            ]))
-            ->assertStatus(422)
-            ->assertJsonValidationErrors(['target_facility_id']);
-    }
-
-    public function test_a_request_cannot_be_addressed_to_another_blood_bank(): void
+    public function test_a_request_cannot_be_addressed_to_an_ineligible_facility(): void
     {
         $otherBank = Facility::factory()->bloodBank()->approved()->create();
-
-        $this->actingAs($this->requester)
-            ->postJson('/api/hospital/blood-requests', $this->payload([
-                'target_facility_id' => $otherBank->id,
-            ]))
-            ->assertStatus(422)
-            ->assertJsonValidationErrors(['target_facility_id']);
-    }
-
-    public function test_a_request_cannot_be_addressed_to_an_unapproved_facility(): void
-    {
         $pending = Facility::factory()->pendingApproval()->create();
 
-        $this->actingAs($this->requester)
-            ->postJson('/api/hospital/blood-requests', $this->payload([
-                'target_facility_id' => $pending->id,
-            ]))
-            ->assertStatus(422)
-            ->assertJsonValidationErrors(['target_facility_id']);
-    }
-
-    public function test_a_request_cannot_be_addressed_to_a_facility_that_does_not_exist(): void
-    {
-        $this->actingAs($this->requester)
-            ->postJson('/api/hospital/blood-requests', $this->payload([
-                'target_facility_id' => 999999,
-            ]))
-            ->assertStatus(422)
-            ->assertJsonValidationErrors(['target_facility_id']);
-    }
-
-    public function test_an_invalid_quantity_is_refused(): void
-    {
-        foreach ([0, -3, 101] as $quantity) {
-            $this->actingAs($this->requester)
-                ->postJson('/api/hospital/blood-requests', $this->payload(['quantity' => $quantity]))
+        foreach ([$this->hospital, $otherBank, $pending] as $facility) {
+            $this->sendWeekly([[$this->bloodType, $this->prbc, 2]], $facility)
                 ->assertStatus(422)
-                ->assertJsonValidationErrors(['items.0.quantity']);
+                ->assertJsonValidationErrors(['target_facility_id']);
         }
-    }
 
-    public function test_an_unknown_urgency_is_refused(): void
-    {
-        $this->actingAs($this->requester)
-            ->postJson('/api/hospital/blood-requests', $this->payload(['urgency_level' => 'urgent']))
+        $this->sendWeekly([[$this->bloodType, $this->prbc, 2]], null, ['target_facility_id' => 999999])
             ->assertStatus(422)
-            ->assertJsonValidationErrors(['urgency_level']);
-    }
+            ->assertJsonValidationErrors(['target_facility_id']);
 
-    public function test_an_emergency_request_is_recorded_as_one(): void
-    {
-        $this->actingAs($this->requester)
-            ->postJson('/api/hospital/blood-requests', $this->payload([
-                'urgency_level' => UrgencyLevel::Emergency->value,
-            ]))
-            ->assertCreated()
-            ->assertJsonPath('request.urgency_level', 'emergency')
-            ->assertJsonPath('request.urgency_label', 'Emergency');
+        $this->assertDatabaseCount('blood_requests', 0);
     }
 
     public function test_submitting_holds_no_stock(): void
     {
-        $this->stockAt($this->centre, 6);
+        $this->stock($this->centre, $this->prbc, 6);
 
-        $this->actingAs($this->requester)
-            ->postJson('/api/hospital/blood-requests', $this->payload(['quantity' => 4]))
-            ->assertCreated();
+        $this->sendWeekly([[$this->bloodType, $this->prbc, 4]])->assertCreated();
 
         $this->assertDatabaseCount('request_allocations', 0);
         $this->assertSame(
@@ -269,9 +162,7 @@ class SubmitBloodRequestTest extends TestCase
 
     public function test_submission_writes_an_audit_row(): void
     {
-        $this->actingAs($this->requester)
-            ->postJson('/api/hospital/blood-requests', $this->payload())
-            ->assertCreated();
+        $this->sendWeekly([[$this->bloodType, $this->prbc, 2]])->assertCreated();
 
         $this->assertDatabaseHas('audit_logs', [
             'action' => 'request.submitted',
@@ -282,16 +173,15 @@ class SubmitBloodRequestTest extends TestCase
 
     public function test_a_blood_centre_account_cannot_raise_a_request(): void
     {
-        $centreStaff = User::factory()->bloodCenterStaff()->create();
-
-        $this->actingAs($centreStaff)
-            ->postJson('/api/hospital/blood-requests', $this->payload())
+        $this->actingAs(User::factory()->bloodCenterStaff()->create())
+            ->postJson('/api/hospital/weekly-requests', $this->weeklyPayload([[$this->bloodType, $this->prbc, 2]]))
             ->assertForbidden();
     }
 
     public function test_an_unauthenticated_caller_cannot_raise_a_request(): void
     {
-        $this->postJson('/api/hospital/blood-requests', $this->payload())->assertUnauthorized();
+        $this->postJson('/api/hospital/weekly-requests', $this->weeklyPayload([[$this->bloodType, $this->prbc, 2]]))
+            ->assertUnauthorized();
     }
 
     public function test_staff_of_an_unapproved_blood_bank_cannot_raise_a_request(): void
@@ -300,62 +190,8 @@ class SubmitBloodRequestTest extends TestCase
         $staff = User::factory()->bloodBankStaff($pendingBank)->create();
 
         $this->actingAs($staff)
-            ->postJson('/api/hospital/blood-requests', $this->payload())
+            ->postJson('/api/hospital/weekly-requests', $this->weeklyPayload([[$this->bloodType, $this->prbc, 2]]))
             ->assertForbidden()
             ->assertJsonPath('code', 'facility_not_approved');
-    }
-
-    /**
-     * Submit a valid request and return the reference number it was given.
-     */
-    private function submit(): string
-    {
-        return $this->actingAs($this->requester)
-            ->postJson('/api/hospital/blood-requests', $this->payload())
-            ->assertCreated()
-            ->json('request.reference_number');
-    }
-
-    /**
-     * @param  array<string, mixed>  $overrides
-     * @return array<string, mixed>
-     */
-    private function payload(array $overrides = []): array
-    {
-        // quantity is lifted out and applied to the single line, so the many
-        // existing callers passing ['quantity' => n] keep reading naturally.
-        $quantity = $overrides['quantity'] ?? 2;
-        unset($overrides['quantity']);
-
-        return [
-            'target_facility_id' => $this->centre->id,
-            'blood_type_id' => $this->bloodType->id,
-            'urgency_level' => UrgencyLevel::Routine->value,
-            'request_purpose' => RequestPurpose::Replenishment->value,
-            'items' => [
-                [
-                    'component_id' => $this->component->id,
-                    'quantity' => $quantity,
-                    'indication_code' => IndicationCode::R1->value,
-                ],
-            ],
-            ...$overrides,
-        ];
-    }
-
-    private function stockAt(Facility $facility, int $count): void
-    {
-        $donation = Donation::factory()->create([
-            'facility_id' => $facility->id,
-            'donor_id' => $this->donorProfile->donor_id,
-        ]);
-
-        BloodUnit::factory()->count($count)->create([
-            'facility_id' => $facility->id,
-            'blood_type_id' => $this->bloodType->id,
-            'component_id' => $this->component->id,
-            'donation_id' => $donation->id,
-            'status' => BloodUnitStatus::Available,
-        ]);
     }
 }

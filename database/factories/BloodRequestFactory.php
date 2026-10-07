@@ -11,6 +11,7 @@ use App\Models\BloodRequest;
 use App\Models\BloodType;
 use App\Models\Facility;
 use App\Models\User;
+use App\Models\WeeklyRequest;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Support\Str;
 
@@ -160,6 +161,19 @@ class BloodRequestFactory extends Factory
             'patient_middle_name' => null,
             'patient_age' => null,
             'patient_sex' => null,
+        ]);
+    }
+
+    /**
+     * Indicate that the request is one blood type of a hospital's weekly request.
+     */
+    public function weekly(WeeklyRequest $weeklyRequest): static
+    {
+        return $this->replenishment()->state(fn (array $attributes): array => [
+            'weekly_request_id' => $weeklyRequest->id,
+            'facility_id' => $weeklyRequest->facility_id,
+            'target_facility_id' => $weeklyRequest->target_facility_id,
+            'urgency_level' => UrgencyLevel::Routine,
         ]);
     }
 

@@ -11,6 +11,7 @@ use App\Models\RequestAllocation;
 use App\Models\TransfusionRequest;
 use App\Models\TransfusionRequestItem;
 use App\Models\User;
+use App\Models\WeeklyRequest;
 use Illuminate\Support\Collection;
 
 /**
@@ -97,6 +98,7 @@ class BloodRequestProjector
             'reviewed_at' => $request->reviewed_at?->toIso8601String(),
             'fulfilled_at' => $request->fulfilled_at?->toIso8601String(),
             'transfusion_request' => $this->transfusionRequest($request),
+            'weekly_request' => $this->weeklyRequest($request),
             'walk_in' => $this->walkIn($request),
         ];
 
@@ -236,6 +238,31 @@ class BloodRequestProjector
                     'quantity' => (int) $item->quantity,
                 ])->all()
                 : [],
+        ];
+    }
+
+    /**
+     * The weekly request a replenishment was sent as part of, as a stub.
+     *
+     * Both sides read it: the hospital to link back to its weekly order, and
+     * the centre to know this request goes out in one delivery and has its
+     * unsupplied remainder closed when it does.
+     *
+     * @return array{id: int, reference_number: string|null, request_day: string|null}|null
+     */
+    private function weeklyRequest(BloodRequest $request): ?array
+    {
+        if ($request->weekly_request_id === null) {
+            return null;
+        }
+
+        /** @var WeeklyRequest|null $weekly */
+        $weekly = $request->relationLoaded('weeklyRequest') ? $request->weeklyRequest : null;
+
+        return [
+            'id' => (int) $request->weekly_request_id,
+            'reference_number' => $weekly?->reference_number,
+            'request_day' => $weekly?->request_day?->toDateString(),
         ];
     }
 

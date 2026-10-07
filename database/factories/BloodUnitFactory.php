@@ -7,6 +7,7 @@ use App\Enums\ClearanceKind;
 use App\Models\BloodComponent;
 use App\Models\BloodType;
 use App\Models\BloodUnit;
+use App\Models\DirectDistribution;
 use App\Models\Donation;
 use App\Models\DonationClearance;
 use App\Models\Facility;
@@ -137,6 +138,25 @@ class BloodUnitFactory extends Factory
     {
         return $this->state(fn (array $attributes): array => [
             'status' => BloodUnitStatus::Reserved,
+        ]);
+    }
+
+    /**
+     * Indicate a bag a hospital received from outside RedAgos.
+     *
+     * Booked the way DirectDistributionService books one: under the receiving
+     * hospital, already issued so no centre query sees it, and tracing to the
+     * delivery rather than a donation.
+     */
+    public function directDistribution(DirectDistribution $delivery): static
+    {
+        return $this->state(fn (array $attributes): array => [
+            'id' => DirectDistribution::unitKey($delivery->id),
+            'facility_id' => $delivery->facility_id,
+            'donation_id' => null,
+            'direct_distribution_id' => $delivery->id,
+            'storage_location' => null,
+            'status' => BloodUnitStatus::Issued,
         ]);
     }
 

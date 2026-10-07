@@ -13,13 +13,14 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
 /**
  * A bag in a hospital blood bank's custody, from receipt until it is transfused or leaves the shelf.
  *
- * Created when the hospital confirms receipt of a dispatched hold, and only
- * then — RedAgos knows a hospital's stock only as far as it delivered it.
+ * Created when the hospital confirms receipt of a dispatched hold, or records
+ * a delivery from outside RedAgos (direct distribution) — RedAgos knows a
+ * hospital's stock only as far as it was delivered or recorded.
  *
- * The bag's own facts (type, component, volume, expiry) are read from the
- * centre's blood_units row through bloodUnit(), never copied: there is one
- * physical bag, so there is one row that describes it. This row says only
- * where the bag stands at the hospital.
+ * The bag's own facts (type, component, volume, expiry) are read from its
+ * blood_units row through bloodUnit(), never copied: there is one physical
+ * bag, so there is one row that describes it. This row says only where the
+ * bag stands at the hospital.
  */
 class HospitalUnit extends Model
 {
@@ -72,6 +73,8 @@ class HospitalUnit extends Model
 
     /**
      * The dispatched hold whose receipt put the bag in this hospital's custody.
+     *
+     * Null for a bag received by direct distribution, which had no hold.
      */
     public function requestAllocation(): BelongsTo
     {

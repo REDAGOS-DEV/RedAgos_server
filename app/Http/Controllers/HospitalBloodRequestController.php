@@ -6,7 +6,6 @@ use App\Http\Requests\CancelBloodRequestRequest;
 use App\Http\Requests\CloseRequestLineRequest;
 use App\Http\Requests\ConfirmReceiptRequest;
 use App\Http\Requests\ListBloodRequestsRequest;
-use App\Http\Requests\StoreBloodRequestRequest;
 use App\Service\BloodRequestService;
 use App\Service\FulfillmentService;
 use Illuminate\Http\JsonResponse;
@@ -14,7 +13,7 @@ use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 
 /**
- * The requester side: a hospital blood bank's replenishment orders, and each
+ * The requester side: each weekly request's replenishments, and each
  * facility allocation of its Patient Transfusion Requests — where receipt is
  * confirmed and the DOH form printed.
  */
@@ -83,17 +82,6 @@ class HospitalBloodRequestController extends Controller
                 $request->safe()->except('per_page'),
                 $request->integer('per_page', 15)
             )
-        );
-    }
-
-    /**
-     * Raise a request against a chosen facility.
-     */
-    public function store(StoreBloodRequestRequest $request): JsonResponse
-    {
-        return response()->json(
-            $this->bloodRequestService->submit($request->user(), $request->validated()),
-            201
         );
     }
 
