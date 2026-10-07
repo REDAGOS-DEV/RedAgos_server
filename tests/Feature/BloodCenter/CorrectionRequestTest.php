@@ -225,9 +225,15 @@ class CorrectionRequestTest extends TestCase
             ->assertForbidden()
             ->assertJsonPath('code', 'not_your_record');
 
-        // And roles outside the laboratory cannot reach the route at all.
-        $this->ask($this->staff(StaffRole::DispatchCoordinator), 'serology', $this->panel(['hbsag' => 'reactive', 'confirm_reactive' => true]))
+        // A role that holds no correction ability never reaches the route.
+        $this->ask($this->staff(StaffRole::MedicalReceptionist), 'serology', $this->panel(['hbsag' => 'reactive', 'confirm_reactive' => true]))
             ->assertForbidden();
+
+        // The dispatch coordinator now files corrections of its own, so it
+        // reaches the route and is stopped by the service instead.
+        $this->ask($this->staff(StaffRole::DispatchCoordinator), 'serology', $this->panel(['hbsag' => 'reactive', 'confirm_reactive' => true]))
+            ->assertForbidden()
+            ->assertJsonPath('code', 'not_your_record');
     }
 
     public function test_a_reactive_result_can_never_be_corrected(): void

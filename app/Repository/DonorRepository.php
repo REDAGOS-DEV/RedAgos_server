@@ -3,7 +3,6 @@
 namespace App\Repository;
 
 use App\Enums\AppointmentStatus;
-use App\Enums\DonationStatus;
 use App\Enums\IdentityStatus;
 use App\Models\BloodType;
 use App\Models\DonorProfile;
@@ -11,6 +10,7 @@ use App\Models\Role;
 use App\Models\User;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -139,12 +139,18 @@ class DonorRepository
             ->withQueryString();
     }
 
-    public function countCompletedDonations(int $donorId): int
+    /**
+     * Count the donations the donor actually gave blood for.
+     *
+     * Keyed on the `blood_collections` row, not on `status = completed`, for
+     * the reason EligibilityRepository::lastBloodDrawnAt() gives: a draw is
+     * recorded as `collected`, and only Processing moves it to `completed`,
+     * days later or never. Counting `completed` left a donor who gave blood
+     * this morning reading zero donations on their own dashboard.
+     */
+    public function countCollectedDonations(int $donorId): int
     {
-        return DB::table('donations')
-            ->where('donor_id', $donorId)
-            ->where('status', DonationStatus::Completed->value)
-            ->count();
+        return $this->collectedDonations($donorId)->count();
     }
 
     public function findUpcomingAppointment(int $donorId, Carbon $now): ?object
@@ -185,7 +191,7 @@ class DonorRepository
     }
 
     /**
-     * Count completed donations per calendar month, keyed as YYYY-MM.
+     * Count collected donations per calendar month, keyed as YYYY-MM.
      *
      * Grouping happens in PHP rather than SQL because the previous
      * DATE_FORMAT() expression was MySQL-only and broke on any other driver.
@@ -194,14 +200,29 @@ class DonorRepository
      *
      * @return Collection<string, int>
      */
-    public function monthlyCompletedDonationCounts(int $donorId, Carbon $from, Carbon $to): Collection
+    public function monthlyCollectedDonationCounts(int $donorId, Carbon $from, Carbon $to): Collection
     {
-        return DB::table('donations')
-            ->where('donor_id', $donorId)
-            ->where('status', DonationStatus::Completed->value)
-            ->whereBetween('donation_date', [$from, $to])
-            ->pluck('donation_date')
+        return $this->collectedDonations($donorId)
+            ->whereBetween('donations.donation_date', [$from, $to])
+            ->pluck('donations.donation_date')
             ->groupBy(fn (string $date): string => Carbon::parse($date)->format('Y-m'))
             ->map(fn (Collection $dates): int => $dates->count());
+    }
+
+    /**
+     * The donor's donations that have a collection row: a bag was drawn.
+     *
+     * A donation rejected at screening never reaches collection, so it does
+     * not count; one rejected afterwards for a reactive result still does,
+     * because the donor still gave blood.
+     */
+    private function collectedDonations(int $donorId): QueryBuilder
+    {
+        return DB::table('donations')
+            ->where('donations.donor_id', $donorId)
+            ->whereExists(fn (QueryBuilder $collection) => $collection
+                ->select(DB::raw(1))
+                ->from('blood_collections')
+                ->whereColumn('blood_collections.donation_id', 'donations.id'));
     }
 }

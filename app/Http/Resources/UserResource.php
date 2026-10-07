@@ -2,6 +2,7 @@
 
 namespace App\Http\Resources;
 
+use App\Enums\CorrectionSubject;
 use App\Support\AdminPrivileges;
 use App\Support\DepartmentPermissions;
 use Illuminate\Http\Request;
@@ -63,6 +64,16 @@ class UserResource extends JsonResource
             // This is presentation only — every ability is re-checked by the
             // `can:` middleware on the route that uses it.
             'permissions' => $this->abilities(),
+            // The corrections this account may file, which `permissions` alone
+            // cannot say: some are open only to a named post. Presentation only —
+            // CorrectionService::request() asks the same question on every filing.
+            'correction_subjects' => array_values(array_map(
+                fn (CorrectionSubject $subject): string => $subject->value,
+                array_filter(
+                    CorrectionSubject::cases(),
+                    fn (CorrectionSubject $subject): bool => $subject->mayBeFiledBy($this->resource)
+                )
+            )),
             'blood_type' => $this->whenLoaded(
                 'donorProfile',
                 fn () => $this->donorProfile?->bloodType?->code

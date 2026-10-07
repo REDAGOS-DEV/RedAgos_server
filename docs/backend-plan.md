@@ -36,7 +36,7 @@ Already correct and reusable, do not rewrite:
 - `DonorService::normalizePhilippinePhone()` — PH mobile normalisation to `+63…`
 - `RegisterDonorRequest` — PH regex, `Password::min(8)->mixedCase()->numbers()`, blood-type `exists`, `terms_accepted`
 - `RequireRole` middleware
-- `DonorRepository` query helpers (`recentDonations`, `countCompletedDonations`, `monthlyCompletedDonationCounts`)
+- `DonorRepository` query helpers (`recentDonations`, `countCollectedDonations`, `monthlyCollectedDonationCounts`)
 
 ---
 

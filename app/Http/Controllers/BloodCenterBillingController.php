@@ -52,6 +52,16 @@ class BloodCenterBillingController extends Controller
     }
 
     /**
+     * List the payments recorded against one statement, as the caller may act on them.
+     */
+    public function payments(Request $request, int $bloodRequest): JsonResponse
+    {
+        $billing = $this->billingForFacility($bloodRequest, $request->user()->facility_id);
+
+        return response()->json(['payments' => $this->billingService->payments($billing, $request->user())]);
+    }
+
+    /**
      * Record a settlement against a statement.
      */
     public function storePayment(RecordPaymentRequest $request, int $bloodRequest): JsonResponse

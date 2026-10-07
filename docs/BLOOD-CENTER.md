@@ -25,7 +25,7 @@ RedAgos uses **five operational departments** within the Blood Center, supported
 | Temporary password | Typed, or **Generate a password** | Mixed case and a number, at least 8 characters |
 | Title | Typed, or pick **RMT** / **RN** | A label only |
 | Department | Pick one of the five | Where a custom role works |
-| Role | Pick one of the department's roles, or **type a custom one** | A picked role carries exactly the permissions below. A typed role gets everything its department does (except approving corrections) |
+| Role | Pick one of the department's roles, or **type a custom one** | A picked role carries exactly the permissions below. A typed role gets everything its department does, except approving corrections and the abilities that belong to a named post (see *Department heads*) |
 | Privileges | Tick **Read / Write / Update / Delete** | Cap the role: only the actions of a ticked kind remain. They never add anything the role lacks |
 
 - **Read** — view records, queues and stock.
@@ -107,9 +107,13 @@ The Laboratory Supervisor is this department's correction approver.
 
 | Role | May | May not |
 |---|---|---|
-| Inventory Control Officer | Book bags in (quarantined) at Stock Intake; manage stock; **release from quarantine and print the final labels**; decide on and allocate against requests (for a patient) | Release a unit whose donation lacks either clearance, or was rejected |
-| Dispatch / Transport Coordinator | Decline requests, return holds, release reserved units for transport | Any clinical or laboratory screen; pick units |
-| IT Data Entry Clerk | Read inventory records | Change anything |
+| Inventory Control Officer | Book bags in (quarantined) at Stock Intake; manage stock and **edit a unit's storage location and expiry date directly**; **release from quarantine and print the final labels**; decide on and allocate against requests (for a patient); **approve Issuance corrections** | Release a unit whose donation lacks either clearance, or was rejected |
+| Dispatch / Transport Coordinator | Decline requests, return holds, release reserved units for transport; **request a correction to a dispatch record** (when a unit left, who took it) | Any clinical or laboratory screen; pick units |
+| IT Data Entry Clerk | Read inventory records; **request a correction to a unit's storage location or expiry date** | Change anything directly |
+
+The Inventory Control Officer is this department's **correction approver**. They edit a unit directly because a storage move is routine operational state, and they are the approver anyway; everyone else files a correction. If a unit is edited directly while a correction to the same field is waiting, approving it is refused (`record_changed`) rather than writing the old value back.
+
+A correction to a dispatch record changes only **when the unit left** and **who took it**. It never changes the allocation's status, the unit, or who received it: receipt is the hospital's alone.
 
 At Stock Intake, a scanned barcode sticker finds the donation, and its bags are booked in under the numbers Processing gave them. Once TTI Testing and Immunohematology have both cleared the donation, the Inventory Control Officer releases the bags. The final labels are printed straight away and affixed before the bags go to the ready-for-issue shelf. Each label shows:
 - the verified blood type, large;
@@ -129,7 +133,30 @@ Blood Inventory shows quarantined bags read-only, and can reprint the final labe
 
 | Role | May |
 |---|---|
-| Billing Clerk | Raise statements, record payments and subsidies, read the requests being billed |
+| Billing Clerk | Raise statements, record payments and subsidies, read the requests being billed; **request a correction to a recorded payment** (amount, method, reference number) |
+| Billing Supervisor | Everything a Billing Clerk does, and **approve Billing corrections** |
+
+The Billing Supervisor is this department's **correction approver**. A payment correction re-works the statement's status from what it has then collected, unless the statement was settled by decision (voided or subsidised), which a payment never overrides.
+
+**Exception to "no unit leaves without confirmed payment".** That rule is checked at the moment of dispatch and not again. A payment correction approved *after* the units were released can reopen the statement's balance; the units stay released, the statement shows as outstanding, and the audit entry records the request's status at the time. A correction approved *before* release leaves the statement short, and release is refused until it is settled.
+
+The payments themselves — amounts, methods and provider references — are read only behind the ability to record them, never on the statement the release gate reads.
+
+---
+
+## Department heads
+
+Every department has a head, the role that approves its correction requests. A head's own request goes to the Center Admin, never to a colleague.
+
+| Department | Head |
+|---|---|
+| Donor/Collection | Donor Screening Physician |
+| Processing | Component Laboratory Medical Technologist |
+| Testing | Laboratory Supervisor |
+| Issuance | Inventory Control Officer |
+| Billing | Billing Supervisor |
+
+Who may **file** a correction to an Issuance or Billing record is decided by the post, not only by the department's abilities: unit details by the IT Data Entry Clerk, dispatch records by the Dispatch Coordinator or the Inventory Control Officer, payments by the Billing Clerk or Billing Supervisor, and any of them by the Center Admin. A **custom role** in the same department inherits the department's abilities but is refused these corrections, and never inherits approval or the unit-audit ability.
 
 ---
 
@@ -160,7 +187,8 @@ These are enforced in the services and models, not by permissions, so the Center
 4. An edit to a unit never moves it out of quarantine.
 5. Nothing is dispatched whose donation lacks either clearance.
 6. Laboratory and inventory screens never show a donor's name to a role that does not meet donors.
-7. A saved record (screening, collection box, typing, serology panel, component breakdown) is never saved over. Its writer files a **correction request**; the department's approver — or the Center Admin — decides, and nobody decides their own. A cleared result can be corrected only while none of the donation's bags has left quarantine.
+7. A saved record (screening, collection box, typing, serology panel, component breakdown, dispatch record, payment) is never saved over. Its writer files a **correction request**; the department's approver — or the Center Admin — decides, and nobody decides their own. A cleared result can be corrected only while none of the donation's bags has left quarantine. A unit's storage location and expiry date are the exception: the Inventory Control Officer edits them directly, and everyone else files a correction.
+8. A correction never changes where a unit or an allocation stands in the workflow. It cannot move a bag, and it cannot assert receipt.
 
 ---
 

@@ -3,6 +3,7 @@
 namespace Tests\Feature\Donor;
 
 use App\Enums\AccountStatus;
+use App\Enums\DonationStatus;
 use App\Enums\EligibilityStatus;
 use App\Enums\RoleName;
 use App\Models\Donation;
@@ -249,6 +250,30 @@ class ProfileAndAccountTest extends TestCase
 
         $this->assertCount(12, $response->json('monthly_trend'));
         $this->assertSame(1, collect($response->json('monthly_trend'))->sum('count'));
+    }
+
+    public function test_the_dashboard_counts_every_drawn_donation_and_nothing_else(): void
+    {
+        $attributes = ['donor_id' => $this->donor->id, 'donation_date' => now()];
+
+        // Drawn: the factory writes the collection row for each of these.
+        Donation::factory()->create([...$attributes, 'status' => DonationStatus::Collected]);
+        Donation::factory()->create([...$attributes, 'status' => DonationStatus::Tested]);
+        Donation::factory()->create([...$attributes, 'status' => DonationStatus::Completed]);
+        Donation::factory()->rejectedAfterCollection()->create($attributes);
+
+        // Never drawn: still at the counter, or turned away at screening.
+        Donation::factory()->create([...$attributes, 'status' => DonationStatus::Registered]);
+        Donation::factory()->create([...$attributes, 'status' => DonationStatus::Screening]);
+        Donation::factory()->rejected()->create($attributes);
+
+        $response = $this->actingAs($this->donor)
+            ->getJson('/api/donors/dashboard')
+            ->assertOk()
+            ->assertJsonPath('total_donations', 4);
+
+        $thisMonth = collect($response->json('monthly_trend'))->firstWhere('key', now()->format('Y-m'));
+        $this->assertSame(4, $thisMonth['count']);
     }
 
     public function test_support_contact_information_is_available(): void

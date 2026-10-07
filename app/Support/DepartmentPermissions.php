@@ -66,6 +66,22 @@ final class DepartmentPermissions
     ];
 
     /**
+     * What a billing clerk and a billing supervisor both hold.
+     */
+    private const BILLING_DESK = [
+        'billing.view',
+        'billing.create',
+        'billing.record_payment',
+
+        // Read-only: billing is raised against a fulfilled request, so it
+        // must read the request it is billing for.
+        'requests.view',
+
+        // Correct a recorded payment, on the Billing Supervisor's approval.
+        'corrections.request',
+    ];
+
+    /**
      * Abilities granted by each predefined role.
      *
      * Read-only grants that reach across a boundary are deliberate and
@@ -218,6 +234,11 @@ final class DepartmentPermissions
             // Read-only: no unit may be released without confirmed payment,
             // so release needs to read billing status without altering it.
             'billing.view',
+
+            // Issuance's correction approver. Edits a unit directly (above),
+            // so their own dispatch corrections go to the Center Admin.
+            'corrections.request',
+            'corrections.approve',
         ],
 
         // Hospital orders and release to transport. No lab.* and no
@@ -233,21 +254,29 @@ final class DepartmentPermissions
             'requests.record',
 
             'billing.view',
+
+            // Correct a dispatch record, on the Inventory Control Officer's
+            // approval.
+            'corrections.request',
         ],
 
-        // Audits records against scanned barcodes. Read-only everywhere.
+        // Audits records against scanned barcodes. Cannot edit them: a
+        // discrepancy is filed as a correction for the Inventory Control
+        // Officer to decide.
         StaffRole::ItDataClerk->value => [
             'inventory.view',
+            'inventory.audit',
+            'corrections.request',
         ],
 
-        StaffRole::BillingClerk->value => [
-            'billing.view',
-            'billing.create',
-            'billing.record_payment',
+        StaffRole::BillingClerk->value => self::BILLING_DESK,
 
-            // Read-only: billing is raised against a fulfilled request, so it
-            // must read the request it is billing for.
-            'requests.view',
+        // The desk's head: everything a clerk does, and Billing's correction
+        // approver. Records payments too, so their own corrections go to the
+        // Center Admin.
+        StaffRole::BillingSupervisor->value => [
+            ...self::BILLING_DESK,
+            'corrections.approve',
         ],
     ];
 
@@ -286,6 +315,10 @@ final class DepartmentPermissions
         'lab.record_immunohematology' => 'write',
         'lab.record_components' => 'write',
         'inventory.create' => 'write',
+
+        // File a correction to a unit's details. Held by the IT clerk alone,
+        // and left out of custom roles (see forCustomRole()).
+        'inventory.audit' => 'write',
         'requests.process' => 'write',
         'requests.record' => 'write',
         'billing.create' => 'write',
@@ -418,17 +451,30 @@ final class DepartmentPermissions
     }
 
     /**
+     * Abilities that belong to a named post rather than to a department.
+     *
+     * Approving is the named approver role's responsibility
+     * (Department::correctionApprover()), and auditing a unit is the IT
+     * clerk's. A typed role never inherits either.
+     *
+     * @var array<int, string>
+     */
+    private const NAMED_POST_ONLY = [
+        'corrections.approve',
+        'inventory.audit',
+    ];
+
+    /**
      * Get the abilities of a custom role in a department, uncapped.
      *
      * Everything the department's predefined roles hold between them, less
-     * correction approval: approving is the named approver role's
-     * responsibility (Department::correctionApprover()), not the department's.
+     * the abilities that belong to a named post.
      *
      * @return array<int, string>
      */
     public static function forCustomRole(Department $department): array
     {
-        return array_values(array_diff(self::forDepartment($department), ['corrections.approve']));
+        return array_values(array_diff(self::forDepartment($department), self::NAMED_POST_ONLY));
     }
 
     /**
