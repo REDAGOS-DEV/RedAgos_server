@@ -21,7 +21,7 @@ final class DonorAvatar
     private const LIFETIME_MINUTES = 30;
 
     /**
-     * A short-lived signed link to the photo, or null when there is none.
+     * A short-lived signed path to the photo, or null when there is none.
      *
      * Null as well when the path is set but the file is gone, because the
      * route would 404 and the client would draw a broken image in place of
@@ -35,10 +35,15 @@ final class DonorAvatar
             return null;
         }
 
+        // Relative, like the email-verification link: an absolute signature
+        // also covers the host, and Laravel only sees the one the dev proxy
+        // rewrites to (127.0.0.1:8000), which a phone on the LAN cannot reach.
+        // The client resolves the path against its own API base instead.
         return URL::temporarySignedRoute(
             'donors.avatar.show',
             now()->addMinutes(self::LIFETIME_MINUTES),
-            ['user' => $donor->uuid]
+            ['user' => $donor->uuid],
+            absolute: false
         );
     }
 }

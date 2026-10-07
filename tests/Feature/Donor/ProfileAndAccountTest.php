@@ -12,9 +12,11 @@ use App\Models\EligibilityScreening;
 use App\Models\User;
 use App\Notifications\VerifyEmailNotification;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\URL;
 use Tests\TestCase;
 
 class ProfileAndAccountTest extends TestCase
@@ -85,6 +87,118 @@ class ProfileAndAccountTest extends TestCase
             ->assertOk();
 
         $this->get('/api/donors/'.$this->donor->uuid.'/avatar')->assertForbidden();
+    }
+
+    public function test_the_avatar_url_works_on_a_host_other_than_the_one_it_was_signed_on(): void
+    {
+        Storage::fake('local');
+        $this->uploadAvatar();
+
+        // Signed while serving 127.0.0.1:8000 behind the dev proxy, then
+        // loaded by a phone on the LAN through the SPA's own origin.
+        $url = $this->actingAs($this->donor)->getJson('http://127.0.0.1:8000/api/user')->json('data.avatar_url');
+
+        $this->get('http://192.168.1.21:3000'.$url)->assertOk();
+    }
+
+    public function test_a_signed_avatar_url_cannot_be_pointed_at_another_donor(): void
+    {
+        Storage::fake('local');
+        $this->uploadAvatar();
+        $other = User::factory()->donor()->create();
+
+        $url = $this->actingAs($this->donor)->getJson('/api/user')->json('data.avatar_url');
+
+        $this->get(str_replace($this->donor->uuid, $other->uuid, $url))->assertForbidden();
+    }
+
+    public function test_the_current_user_has_a_null_avatar_url_without_a_photo(): void
+    {
+        Storage::fake('local');
+
+        $user = $this->actingAs($this->donor)->getJson('/api/user')->assertOk()->json('data');
+
+        $this->assertArrayHasKey('avatar_url', $user);
+        $this->assertNull($user['avatar_url']);
+    }
+
+    public function test_the_current_user_carries_a_thirty_minute_signed_avatar_url(): void
+    {
+        Storage::fake('local');
+        $this->freezeTime();
+        $path = $this->uploadAvatar();
+
+        $response = $this->actingAs($this->donor)->getJson('/api/user')->assertOk();
+        $url = $response->json('data.avatar_url');
+
+        $this->assertStringStartsWith('/api/donors/'.$this->donor->uuid.'/avatar?', $url);
+        $this->assertTrue(URL::hasValidSignature(Request::create($url), absolute: false));
+
+        parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+        $this->assertSame(now()->addMinutes(30)->getTimestamp(), (int) $query['expires']);
+
+        // The stored location stays on the server; only the signed route leaves.
+        $this->assertStringNotContainsString(basename($path), $response->getContent());
+        $this->assertStringNotContainsString('profile_image_path', $response->getContent());
+    }
+
+    public function test_the_current_user_avatar_url_serves_the_image(): void
+    {
+        Storage::fake('local');
+        $path = $this->uploadAvatar();
+
+        $url = $this->actingAs($this->donor)->getJson('/api/user')->json('data.avatar_url');
+        $response = $this->get($url)->assertOk();
+
+        $this->assertSame(Storage::disk('local')->get($path), $response->streamedContent());
+    }
+
+    public function test_the_current_user_avatar_url_stops_working_after_thirty_minutes(): void
+    {
+        Storage::fake('local');
+        $this->uploadAvatar();
+
+        $url = $this->actingAs($this->donor)->getJson('/api/user')->json('data.avatar_url');
+        $this->travel(31)->minutes();
+
+        $this->get($url)->assertForbidden();
+    }
+
+    public function test_the_current_user_has_a_null_avatar_url_when_the_file_is_gone(): void
+    {
+        Storage::fake('local');
+        Storage::disk('local')->delete($this->uploadAvatar());
+
+        $this->actingAs($this->donor)
+            ->getJson('/api/user')
+            ->assertOk()
+            ->assertJsonStructure(['data' => ['avatar_url']])
+            ->assertJsonPath('data.avatar_url', null);
+    }
+
+    public function test_the_login_response_carries_the_signed_avatar_url(): void
+    {
+        Storage::fake('local');
+        $this->uploadAvatar();
+
+        $url = $this->postJson('/api/login', [
+            'email' => $this->donor->email,
+            'password' => 'Password123',
+            'role' => 'donor',
+        ])->assertOk()->json('user.avatar_url');
+
+        $this->get($url)->assertOk();
+    }
+
+    public function test_the_profile_endpoint_returns_a_signed_avatar_url_rather_than_the_path(): void
+    {
+        Storage::fake('local');
+        $path = $this->uploadAvatar();
+
+        $url = $this->actingAs($this->donor)->getJson('/api/donors/profile')->assertOk()->json('avatar_url');
+
+        $this->assertNotSame($path, $url);
+        $this->get($url)->assertOk();
     }
 
     public function test_uploading_a_non_image_is_rejected(): void
@@ -464,5 +578,17 @@ class ProfileAndAccountTest extends TestCase
 
         $this->assertSame('Nurse', $profile->occupation);
         $this->assertSame('Filipino', $profile->nationality, 'An omitted field was wiped rather than left alone.');
+    }
+
+    /**
+     * Upload a photo through the real endpoint and return where it was stored.
+     */
+    private function uploadAvatar(): string
+    {
+        $this->actingAs($this->donor)
+            ->postJson('/api/donors/avatar', ['avatar' => UploadedFile::fake()->create('me.jpg', 120, 'image/jpeg')])
+            ->assertOk();
+
+        return $this->donor->donorProfile->fresh()->profile_image_path;
     }
 }

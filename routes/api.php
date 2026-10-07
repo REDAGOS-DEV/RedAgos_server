@@ -126,8 +126,11 @@ Route::middleware(['auth:sanctum', 'role:donor'])->prefix('donors')->group(funct
     Route::delete('/account', [DonorProfileController::class, 'destroy']);
 });
 
+// `signed:relative` for the same reason as /email/verify above: the <img> loads
+// it through the SPA's own origin, never the host the link was signed on. The
+// signature still covers the donor's uuid and the expiry.
 Route::get('/donors/{user}/avatar', [DonorProfileController::class, 'showAvatar'])
-    ->middleware('signed')
+    ->middleware('signed:relative')
     ->name('donors.avatar.show');
 
 // Signed like the avatar above, so an <img> can load it without a bearer
