@@ -4,6 +4,7 @@ namespace App\Http\Resources;
 
 use App\Support\AdminPrivileges;
 use App\Support\DepartmentPermissions;
+use App\Support\DonorAvatar;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -66,6 +67,12 @@ class UserResource extends JsonResource
             'blood_type' => $this->whenLoaded(
                 'donorProfile',
                 fn () => $this->donorProfile?->bloodType?->code
+            ),
+            // A signed link, never the stored path: the photo lives on the
+            // private disk and is only reachable through donors.avatar.show.
+            'avatar_url' => $this->whenLoaded(
+                'donorProfile',
+                fn () => DonorAvatar::urlFor($this->resource)
             ),
             'facility' => $this->whenLoaded(
                 'facility',
