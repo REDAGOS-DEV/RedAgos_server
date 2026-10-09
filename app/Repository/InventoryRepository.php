@@ -379,6 +379,32 @@ class InventoryRepository
     }
 
     /**
+     * Issuable stock counted by blood type and component, for threshold monitoring.
+     *
+     * The same rule as stockReportRows(): available AND not past its date, so a
+     * threshold is judged against blood that can legally be issued rather than
+     * against a unit the nightly sweep simply has not reached yet.
+     *
+     * @return array<int, array{blood_type_id: int, component_id: int, units: int}>
+     */
+    public function issuableCountsByTypeAndComponent(int $facilityId, string $operationalDate): array
+    {
+        return BloodUnit::query()
+            ->forFacility($facilityId)
+            ->where('blood_units.status', BloodUnitStatus::Available->value)
+            ->whereDate('blood_units.expiry_date', '>=', $operationalDate)
+            ->groupBy('blood_units.blood_type_id', 'blood_units.component_id')
+            ->selectRaw('blood_units.blood_type_id, blood_units.component_id, COUNT(*) as units')
+            ->get()
+            ->map(fn ($row): array => [
+                'blood_type_id' => (int) $row->blood_type_id,
+                'component_id' => (int) $row->component_id,
+                'units' => (int) $row->units,
+            ])
+            ->all();
+    }
+
+    /**
      * The storage locations this facility has actually recorded against units.
      *
      * @return array<int, string>

@@ -39,6 +39,7 @@ use App\Http\Controllers\HospitalReplenishmentScheduleController;
 use App\Http\Controllers\HospitalTransfusionRequestController;
 use App\Http\Controllers\HospitalWeeklyRequestController;
 use App\Http\Controllers\PasswordResetController;
+use App\Http\Controllers\StockThresholdController;
 use App\Http\Controllers\UserController;
 use App\Http\Resources\UserResource;
 use Illuminate\Http\Request;
@@ -211,6 +212,16 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         // would otherwise swallow 'summary'.
         Route::get('/inventory/summary', [BloodCenterInventoryController::class, 'summary'])
             ->middleware('can:inventory.view');
+
+        // The minimum stock per blood type and component. Everyone who can see
+        // the inventory can see how it stands against its minimums; only the
+        // Inventory Control Officer and the Center Admin set them. Declared
+        // before /inventory/{unit} for the same reason as the summary above.
+        Route::get('/inventory/thresholds', [StockThresholdController::class, 'index'])
+            ->middleware('can:inventory.view');
+
+        Route::put('/inventory/thresholds', [StockThresholdController::class, 'update'])
+            ->middleware('can:inventory.thresholds');
 
         // Also declared before /inventory/{unit}, for the same reason as the
         // line above: the unit parameter is a string, so this path would
@@ -598,6 +609,13 @@ Route::middleware(['auth:sanctum', 'role:blood_bank', 'facility.operational'])
             // otherwise swallow these.
             Route::get('/summary', [HospitalInventoryController::class, 'summary']);
             Route::get('/tag-events', [HospitalInventoryController::class, 'tagEvents']);
+
+            // The hospital's own minimum stock per blood type and component.
+            // A blood bank has no departments or abilities, so any account
+            // may read and set them. Declared before /{unit} like the two
+            // above: the bag number is a string and would swallow it.
+            Route::get('/thresholds', [StockThresholdController::class, 'index']);
+            Route::put('/thresholds', [StockThresholdController::class, 'update']);
 
             Route::get('/{unit}', [HospitalInventoryController::class, 'show'])
                 ->where('unit', '[A-Za-z0-9\-]+');

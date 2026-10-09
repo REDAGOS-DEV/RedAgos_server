@@ -213,6 +213,34 @@ class HospitalInventoryRepository
     }
 
     /**
+     * Issuable bags counted by blood type and component, for threshold monitoring.
+     *
+     * Only bags in `available` custody count: a tagged bag is held for a named
+     * patient and a pending-return bag has left storage. The date predicate is
+     * the centre's own rule, so a bag past its date that the nightly sweep has
+     * not reached yet is not counted as stock.
+     *
+     * @return array<int, array{blood_type_id: int, component_id: int, units: int}>
+     */
+    public function issuableCountsByTypeAndComponent(int $facilityId, string $operationalDate): array
+    {
+        return HospitalUnit::query()
+            ->forFacility($facilityId)
+            ->where('hospital_units.status', HospitalUnitStatus::Available->value)
+            ->join('blood_units', 'blood_units.id', '=', 'hospital_units.unit_id')
+            ->whereDate('blood_units.expiry_date', '>=', $operationalDate)
+            ->groupBy('blood_units.blood_type_id', 'blood_units.component_id')
+            ->selectRaw('blood_units.blood_type_id, blood_units.component_id, COUNT(*) as units')
+            ->get()
+            ->map(fn ($row): array => [
+                'blood_type_id' => (int) $row->blood_type_id,
+                'component_id' => (int) $row->component_id,
+                'units' => (int) $row->units,
+            ])
+            ->all();
+    }
+
+    /**
      * Available bags whose date falls within the next few days, today included.
      */
     public function expiringWithinCount(int $facilityId, string $operationalDate, int $days): int

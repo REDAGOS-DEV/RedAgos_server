@@ -217,6 +217,11 @@ final class DepartmentPermissions
             'inventory.update',
             'inventory.discard',
 
+            // Define the minimum stock per blood type and component. The
+            // officer who manages the shelf sets what it must never fall
+            // below; everyone with inventory.view can see the result.
+            'inventory.thresholds',
+
             // Release from quarantine. The service demands both clearance
             // tokens, so holding this is never enough on its own.
             'inventory.release_quarantine',
@@ -329,6 +334,7 @@ final class DepartmentPermissions
         'lab.update_status' => 'update',
         'lab.referrals' => 'update',
         'inventory.update' => 'update',
+        'inventory.thresholds' => 'update',
         'inventory.release_quarantine' => 'update',
         'requests.approve' => 'update',
         'requests.release' => 'update',
@@ -462,6 +468,7 @@ final class DepartmentPermissions
     private const NAMED_POST_ONLY = [
         'corrections.approve',
         'inventory.audit',
+        'inventory.thresholds',
     ];
 
     /**

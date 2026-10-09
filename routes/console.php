@@ -60,3 +60,17 @@ Schedule::command('hospital:expire-units')
     ->timezone(config('blood_center.timezone'))
     ->withoutOverlapping()
     ->onOneServer();
+
+// A facility's minimum stock means nothing if nobody is told when the shelf
+// drops below it. The banner is always live, but the notification is only sent
+// by this sweep, so ScheduleRegistrationTest fails the build if it is dropped.
+//
+// Every minute, because a shortage is not a thing to learn about tomorrow. The
+// sweep is idempotent per low episode, so a minute costs one cheap read per
+// facility and sends nothing while a cell stays low. The overlap lock expires
+// after 10 minutes, as the tag sweep's does, so one crashed run cannot silence
+// alerts for a day.
+Schedule::command('inventory:check-thresholds')
+    ->everyMinute()
+    ->withoutOverlapping(10)
+    ->onOneServer();

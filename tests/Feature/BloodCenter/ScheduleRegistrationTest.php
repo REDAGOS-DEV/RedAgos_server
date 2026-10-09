@@ -71,6 +71,18 @@ class ScheduleRegistrationTest extends TestCase
         $this->assertTrue($event->onOneServer);
     }
 
+    public function test_the_stock_threshold_check_runs_every_minute_and_recovers_from_a_crashed_run(): void
+    {
+        // A shortage is not a thing to learn about tomorrow, and the default
+        // day-long overlap lock would silence alerts for a day after one crash.
+        $event = $this->eventFor('inventory:check-thresholds');
+
+        $this->assertSame('* * * * *', $event->expression);
+        $this->assertTrue($event->withoutOverlapping);
+        $this->assertTrue($event->onOneServer);
+        $this->assertSame(10, $event->expiresAt);
+    }
+
     /**
      * The registered sweep, or a failed test saying it is missing.
      */

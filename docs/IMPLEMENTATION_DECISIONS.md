@@ -99,7 +99,7 @@ Do not build fulfillment on unresolved facility-isolation or inventory foundatio
 
 **DECISION (operational day):** "Today" for expiry comes from `config('blood_center.timezone')` via `App\Support\OperationalDay`, not from PHP's ambient timezone, so the sweep, the validation rules and `days_remaining` cannot disagree.
 
-**CURRENT IMPLEMENTATION CONFLICT:** Reserve/release, stock thresholds, inter-facility transfers, label printing and trend history are out of Module 3's scope (label printing has since been built — see *Two-phase labeling and the donation barcode*). The sweep touches `available` only, so a `reserved` unit can pass its expiry and keep saying `reserved` until the allocation module can release it. The client's inventory page offers an `archive` action that no status backs.
+**CURRENT IMPLEMENTATION CONFLICT:** Reserve/release, stock thresholds, inter-facility transfers, label printing and trend history are out of Module 3's scope (label printing has since been built — see *Two-phase labeling and the donation barcode*; stock thresholds have since been built — see *Stock thresholds and low-stock alerts*). The sweep touches `available` only, so a `reserved` unit can pass its expiry and keep saying `reserved` until the allocation module can release it. The client's inventory page offers an `archive` action that no status backs.
 
 ## Department ownership of the department structure (Phase 1-4)
 
@@ -1283,3 +1283,39 @@ stateDiagram-v2
 - A schedule edited later changes which past days the status counts as missed.
 - An external bag has no storage location and no clearance tokens. RedAgos records what the sender's label says and does not re-test it.
 - The Scan action reads a handheld (keyboard-wedge) scanner, as Stock Intake does; there is no camera scanning.
+
+## Stock thresholds and low-stock alerts
+
+**SOURCE:** Capstone 1, specific objective 3 ("monitor the thresholds for any blood types and the inventories") and the *Blood Inventory Monitoring and Threshold Management* storyboard: Panel 5 (Define Inventory Threshold), Panel 6 (Low Inventory Monitoring Alert) and Panel 8 (the summary shows threshold status). The paper's database schema has no threshold table; this one is an implementation decision.
+
+**DECIDED BY:** The project owner, on 2026-10-10: it serves both blood centres and hospital blood banks; a threshold is per blood type and component; alerts are a live banner plus in-app notifications.
+
+**DECISION (one table, both portals):** `stock_thresholds` is `(facility_id, blood_type_id, component_id)` unique, with `minimum_units` (1–9999), `alerts_enabled`, `alerted_at` and `updated_by`. It holds the minimum and nothing else: counts are derived from the units on every read, so a threshold row is never a second source of truth for stock. The facility's type only decides whose shelf is counted.
+
+**DECISION (what counts as stock):** The Daily Stock Report's rule, unchanged: `available` **and** `expiry_date >= today` (operational day).
+- Centre: `blood_units` at the facility.
+- Hospital: `hospital_units.status = available`, joined to `blood_units` for type, component and expiry. Tagged, pending-return, transfused, expired and discarded bags are not stock.
+
+**DECISION (four levels, derived):** `unmonitored` (no minimum), `ok` (available ≥ minimum), `low` (0 < available < minimum), `critical` (available is 0 under a minimum). `alerts_enabled` mutes the notification only; the grid and the banner always show the true level.
+
+**DECISION (who may do what):**
+- Centre: read with `inventory.view`; set with the new `inventory.thresholds` ability, held by the Inventory Control Officer and the Center Admin. It is a named-post ability: a custom Issuance role does not inherit it.
+- Hospital: any blood-bank account reads and sets, because blood banks have no departments or abilities.
+- Routes: `GET|PUT /blood-center/inventory/thresholds` and `GET|PUT /hospital/inventory/thresholds`. `PUT` takes `{thresholds: [{blood_type_id, component_id, minimum_units|null, alerts_enabled?}]}`; a null minimum clears the cell, and unchanged cells are skipped. Audited as `stock_threshold.saved` and `stock_threshold.cleared`, with the before and after values.
+
+**DECISION (delivery guarantee):**
+- **Episode.** A *low episode* is per threshold cell. It starts when the sweep first sees an alerts-enabled cell below its minimum. It ends when the cell is no longer breached: stock recovered, the minimum was lowered or removed, or alerts were turned off.
+- **Unit of delivery.** Delivery is grouped **per facility per sweep run**. When one or more cells start an episode in the same run, exactly **one** `LowStockAlert` database notification listing them is written to **each eligible recipient** at that facility. Recipients are resolved at send time: at a centre, accounts holding `inventory.view` (so a billing clerk is not told, and a supervisor is); at a hospital, every account. A cell that stays low is never re-notified, and becomes eligible again only after its episode ends. Staff who join later do not receive past alerts; the live banner covers them.
+- **Atomicity.** The notification rows, the cells' `alerted_at` and the `stock_threshold.alerted` audit row commit in **one transaction**. `LowStockAlert` is database-only and synchronous (no `ShouldQueue`), so the rows are inserted on the same connection inside that transaction. If any send throws, the whole facility's transaction rolls back: nothing is marked alerted and nobody gets a partial alert. The failure is logged, the command exits non-zero, and the next run retries, at most a minute later. A test pins `via() === ['database']` and the absence of `ShouldQueue`; adding mail or queuing would break this guarantee.
+
+**DECISION (editing reconciles the episode):** A save re-reads the counts inside its transaction. A cell that is no longer breached under its new minimum, or whose alerts are off, loses its `alerted_at`; the audit row records `episode_reset`. So lowering a minimum to healthy and raising it again before the next sweep starts a new episode, and notifies. A cell still breached with alerts on keeps its mark, because it is the same episode.
+
+**DECISION (retired components are inert):** Every status, sweep and facilities-to-sweep query only sees thresholds on components that are not soft-deleted. Soft-deleting a component through Eloquent also deletes its threshold rows (audited as `stock_threshold.cleared`, reason `component_retired`, no actor). Restoring a component does not bring them back. The `PUT` refuses a retired component.
+
+**DECISION (the sweep):** `inventory:check-thresholds` runs `everyMinute()->withoutOverlapping(10)->onOneServer()`, like `hospital:expire-tags`. Each facility is swept in its own transaction under `lockForUpdate()` on its threshold rows, in id order; a save takes the same lock, so the two serialise. It skips facilities that may not operate. It writes `stock_threshold.alerted` and `stock_threshold.recovered` rows with a null actor, `source` and `run_id`, and only when it did something. `ScheduleRegistrationTest` fails the build if the registration is removed.
+
+**KNOWN LIMITATIONS:**
+- No email. Alerts are in-app, and arrive up to about a minute after stock changes.
+- The sweep marks an episode announced even when no account is eligible to hear it at that moment.
+- Thresholds are per facility; there is no network-wide or per-storage-location minimum.
+- A hospital's count excludes bags past their date even before the nightly sweep expires them, and a centre's does the same.
