@@ -190,7 +190,7 @@ class FulfillmentService
      * transaction, on the request it has locked, so the delivery and the
      * closure are one decision in the history.
      *
-     * @return array<int, array{request_item_id: int, component: string|null, quantity: int}>
+     * @return array<int, array{request_item_id: int, blood_type: string|null, component: string|null, quantity: int}>
      */
     private function closeWeeklyShortfall(BloodRequest $request, User $user): array
     {
@@ -215,9 +215,12 @@ class FulfillmentService
                 $user
             );
 
+            $item = $request->items->firstWhere('id', $itemId);
+
             $closed[] = [
                 'request_item_id' => (int) $itemId,
-                'component' => $request->items->firstWhere('id', $itemId)?->component?->name,
+                'blood_type' => $item?->bloodType?->code,
+                'component' => $item?->component?->name,
                 'quantity' => $short,
             ];
         }

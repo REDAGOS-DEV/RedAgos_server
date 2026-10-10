@@ -30,11 +30,16 @@ class StatementFigures
      * fulfilling the request (target_facility_id), never the hospital that
      * asked; an unset price is zero. A line with nothing held is left out.
      *
+     * On a weekly request whose lines differ in blood type, each line is named
+     * with its type, so A+ and O+ packed cells are two lines a reader can tell
+     * apart rather than one component listed twice.
+     *
      * @return array<int, array{request_item_id: int, component_id: int, component_name: string, quantity: int, unit_price: int, line_total: int}>
      */
     public function linesFor(BloodRequest $request): array
     {
-        $request->loadMissing('items.component');
+        $request->loadMissing(['items.component', 'items.bloodType']);
+        $mixed = $request->blood_type_id === null;
 
         $held = $request->allocations()->claiming()
             ->groupBy('request_item_id')
@@ -55,7 +60,9 @@ class StatementFigures
             $lines[] = [
                 'request_item_id' => (int) $item->id,
                 'component_id' => (int) $item->component_id,
-                'component_name' => $item->component?->name ?? 'Component',
+                'component_name' => trim(
+                    ($mixed ? ($item->bloodType?->code ?? '').' ' : '').($item->component?->name ?? 'Component')
+                ),
                 'quantity' => $quantity,
                 'unit_price' => $unitPrice,
                 'line_total' => $unitPrice * $quantity,

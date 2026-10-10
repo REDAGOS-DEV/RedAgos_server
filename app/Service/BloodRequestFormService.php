@@ -67,13 +67,16 @@ class BloodRequestFormService
     {
         $request->loadMissing([
             'items.component',
+            'items.bloodType',
             'requestingFacility',
             'targetFacility',
             'bloodType',
             'requester',
         ]);
 
-        $selected = $request->items->keyBy(fn (BloodRequestItem $item): string => (string) $item->component?->name);
+        // Grouped, not keyed: a weekly request can ask for one component in
+        // several blood types, and each of those lines must reach the sheet.
+        $selected = $request->items->groupBy(fn (BloodRequestItem $item): string => (string) $item->component?->name);
 
         return [
             'request' => $request,
@@ -85,8 +88,11 @@ class BloodRequestFormService
             'isStat' => $request->urgency_level->isPrioritised(),
             'bloodGroup' => $this->bloodGroup($request),
             'rhesus' => $this->rhesus($request),
+            // Set when the lines differ in blood type, which the single
+            // Blood Type box cannot hold: each component then names its own.
+            'bloodTypes' => $request->blood_type_id === null ? implode(', ', $request->bloodTypeCodes()) : null,
             'totalUnits' => $request->quantity,
-            'components' => $this->components($selected),
+            'components' => $this->components($selected, $request->blood_type_id === null),
         ];
     }
 
@@ -97,21 +103,34 @@ class BloodRequestFormService
      * checklist: an unticked box is information, and a block silently dropped
      * would let a reader assume the option was never offered.
      *
-     * @param  Collection<string, BloodRequestItem>  $selected
+     * A request whose lines differ in blood type prints each component's
+     * units per type beside its total — "A+ 4, AB+ 8" — since the form's one
+     * Blood Type box cannot say which.
+     *
+     * @param  Collection<string, Collection<int, BloodRequestItem>>  $selected
      * @return array<int, array<string, mixed>>
      */
-    private function components(Collection $selected): array
+    private function components(Collection $selected, bool $mixed): array
     {
         $blocks = [];
 
         foreach (self::COMPONENT_VOLUMES as $name => $volume) {
-            $item = $selected->get($name);
+            $lines = $selected->get($name);
+            // Only a weekly request has several lines of one component, and it
+            // carries no indication, so the first line speaks for the block.
+            $item = $lines?->first();
 
             $blocks[] = [
                 'name' => $name,
                 'volume' => $volume,
                 'selected' => $item !== null,
-                'quantity' => $item?->quantity,
+                'quantity' => $lines?->sum('quantity'),
+                'by_blood_type' => $mixed && $lines !== null
+                    ? $lines
+                        ->sortBy(fn (BloodRequestItem $line): int => BloodGroup::sortKey((string) $line->bloodType?->code))
+                        ->map(fn (BloodRequestItem $line): string => ($line->bloodType?->code ?? '?').' '.$line->quantity)
+                        ->implode(', ')
+                    : null,
                 'codes' => array_map(
                     fn (IndicationCode $code): array => [
                         'label' => $code->label(),

@@ -147,10 +147,10 @@ class IncomingRequestService
         // Stock is counted per line, not per request: a form asking for packed
         // cells and platelets has two different shelves to answer it from, and
         // one figure covering both would say nothing useful about either.
-        $lines = $request->items->sortBy('id')->values()->map(function (BloodRequestItem $item) use ($facilityId, $request, $figures): array {
+        $lines = $request->items->sortBy('id')->values()->map(function (BloodRequestItem $item) use ($facilityId, $figures): array {
             $available = $this->availabilityRepository->availableAt(
                 $facilityId,
-                (int) $request->blood_type_id,
+                (int) $item->blood_type_id,
                 (int) $item->component_id,
                 OperationalDay::todayAsDate()
             );
@@ -164,6 +164,10 @@ class IncomingRequestService
 
             return [
                 'request_item_id' => $item->id,
+                'blood_type' => [
+                    'id' => $item->blood_type_id,
+                    'code' => $item->bloodType?->code,
+                ],
                 'component' => [
                     'id' => $item->component_id,
                     'name' => $item->component?->name,

@@ -34,6 +34,7 @@ class BloodRequestRepository
      */
     private const PROJECTION_RELATIONS = [
         'bloodType',
+        'items.bloodType',
         'items.component',
         'requestingFacility',
         'targetFacility',
@@ -308,12 +309,16 @@ class BloodRequestRepository
                 isset($filters['request_purpose']),
                 fn (Builder $query): Builder => $query->where('request_purpose', $filters['request_purpose'])
             )
+            // The component, and on a weekly request the blood type, live on
+            // the request's lines, so filtering by either asks whether any
+            // line names it.
             ->when(
                 isset($filters['blood_type_id']),
-                fn (Builder $query): Builder => $query->where('blood_type_id', $filters['blood_type_id'])
+                fn (Builder $query): Builder => $query->whereHas(
+                    'items',
+                    fn (Builder $items): Builder => $items->where('blood_type_id', $filters['blood_type_id'])
+                )
             )
-            // The component moved onto the request's lines, so filtering by
-            // one now asks whether any line names it.
             ->when(
                 isset($filters['component_id']),
                 fn (Builder $query): Builder => $query->whereHas(

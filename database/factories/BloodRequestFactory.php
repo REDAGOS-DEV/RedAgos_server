@@ -71,6 +71,7 @@ class BloodRequestFactory extends Factory
             $component = BloodComponent::query()->first() ?? BloodComponent::factory()->create();
 
             $request->items()->create([
+                'blood_type_id' => $request->blood_type_id,
                 'component_id' => $component->id,
                 'quantity' => 2,
                 'indication_code' => IndicationCode::forComponentName($component->name)[0] ?? null,
@@ -114,8 +115,9 @@ class BloodRequestFactory extends Factory
             ->state(fn (array $attributes): array => [
                 'blood_type_id' => $bloodType->id,
             ])
-            ->afterCreating(function (BloodRequest $request) use ($component, $quantity): void {
+            ->afterCreating(function (BloodRequest $request) use ($bloodType, $component, $quantity): void {
                 $request->items()->update([
+                    'blood_type_id' => $bloodType->id,
                     'component_id' => $component->id,
                     'quantity' => $quantity,
                     'indication_code' => (IndicationCode::forComponentName($component->name)[0] ?? null)?->value,
@@ -139,6 +141,7 @@ class BloodRequestFactory extends Factory
 
             foreach ($lines as [$component, $quantity]) {
                 $request->items()->create([
+                    'blood_type_id' => $request->blood_type_id,
                     'component_id' => $component->id,
                     'quantity' => $quantity,
                     'indication_code' => IndicationCode::forComponentName($component->name)[0] ?? null,
@@ -165,7 +168,7 @@ class BloodRequestFactory extends Factory
     }
 
     /**
-     * Indicate that the request is one blood type of a hospital's weekly request.
+     * Indicate that the request was sent as a hospital's weekly request.
      */
     public function weekly(WeeklyRequest $weeklyRequest): static
     {

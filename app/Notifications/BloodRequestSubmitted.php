@@ -41,16 +41,15 @@ class BloodRequestSubmitted extends Notification
     {
         $from = $this->request->requestingFacility?->name ?? 'A hospital blood bank';
         $urgency = $this->request->urgency_level->label();
+        // Every type the lines ask for: a weekly request restocks several in one.
+        $types = implode(', ', $this->request->bloodTypeCodes()) ?: 'blood';
 
         return [
             'category' => 'request',
             'title' => $this->request->urgency_level->isPrioritised()
                 ? 'Emergency blood request received'
                 : 'New blood request received',
-            'desc' => "{$from} has requested {$this->request->quantity} unit(s) of "
-                .($this->request->bloodType?->code ?? 'blood')
-                .' '.($this->request->component?->name ?? '')
-                .". Urgency: {$urgency}.",
+            'desc' => "{$from} has requested {$this->request->quantity} unit(s) of {$types}. Urgency: {$urgency}.",
             'meta' => $this->request->reference_number,
             'tone' => $this->request->urgency_level->isPrioritised() ? 'warning' : 'info',
             'action_label' => 'Review request',

@@ -258,22 +258,22 @@ class BloodRequestService
      *
      * The caller must already hold the requesting facility's row lock
      * (BloodRequestRepository::lockFacility), which is what serialises the
-     * RQ sequence. Shared by a single STAT restock and by each blood type of a
-     * weekly request (WeeklyRequestService), so both write exactly the same
-     * request.
+     * RQ sequence. A weekly request (WeeklyRequestService) is written here as
+     * one request, whatever blood types it restocks: each line names its own,
+     * and the request names one only when every line shares it.
      *
-     * @param  array<int, array{component_id: int, quantity: int, indication_code?: string|null, indication_other?: string|null}>  $items
+     * @param  array<int, array{blood_type_id: int, component_id: int, quantity: int, indication_code?: string|null, indication_other?: string|null}>  $items
      */
     public function writeReplenishment(
         User $user,
         int $facilityId,
         Facility $target,
-        int $bloodTypeId,
         UrgencyLevel $urgency,
         array $items,
         ?int $weeklyRequestId = null
     ): BloodRequest {
         $purpose = RequestPurpose::Replenishment;
+        $bloodTypeIds = array_values(array_unique(array_column($items, 'blood_type_id')));
 
         // No patient columns: a restock order has no patient, and storing a
         // name it should not carry would put patient data on a record that has
@@ -286,20 +286,21 @@ class BloodRequestService
             'requested_by' => $user->id,
             'request_purpose' => $purpose,
             'request_source' => RequestSource::BloodBankPortal,
-            'blood_type_id' => $bloodTypeId,
+            'blood_type_id' => count($bloodTypeIds) === 1 ? $bloodTypeIds[0] : null,
             'urgency_level' => $urgency,
             'status' => BloodRequestStatus::Pending,
             'request_date' => now(),
         ]);
 
         $request->items()->createMany(array_map(fn (array $item): array => [
+            'blood_type_id' => $item['blood_type_id'],
             'component_id' => $item['component_id'],
             'quantity' => $item['quantity'],
             'indication_code' => $item['indication_code'] ?? null,
             'indication_other' => $item['indication_other'] ?? null,
         ], $items));
 
-        $request->load(['bloodType', 'items.component', 'requestingFacility', 'targetFacility']);
+        $request->load(['bloodType', 'items.bloodType', 'items.component', 'requestingFacility', 'targetFacility']);
 
         $this->auditLogger->record($user, 'request.submitted', $request, array_filter([
             'facility_id' => $facilityId,

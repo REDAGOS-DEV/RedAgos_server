@@ -23,13 +23,12 @@ use Illuminate\Support\Facades\DB;
  * A hospital blood bank's weekly request: its scheduled restock from one blood centre.
  *
  * Sent only on one of the hospital's request days for that centre, at most
- * once a day. One weekly request covers several blood types, and a blood
- * request carries one, so it is written as one ordinary replenishment request
- * per blood type under a WR- header. The centre approves, reserves, bills and
- * dispatches each exactly as any replenishment, supplying what it can; when
- * it dispatches, whatever it did not supply is closed as unavailable
- * (FulfillmentService::release), because the next request day's order
- * replaces it.
+ * once a day. It is written as one ordinary replenishment request under a WR-
+ * header, however many blood types it restocks: each line names its own type,
+ * so the centre reviews, reserves, bills and dispatches the whole order once,
+ * supplying what it can; when it dispatches, whatever it did not supply is
+ * closed as unavailable (FulfillmentService::release), because the next
+ * request day's order replaces it.
  *
  * A routine restock can only be sent this way. A STAT restock is still raised
  * on its own, on any day (BloodRequestService::submit).
@@ -84,19 +83,17 @@ class WeeklyRequestService
             );
         }
 
-        $orders = $this->ordersByBloodType($payload);
+        $lines = $this->lines($payload);
 
         foreach (range(1, self::REFERENCE_ATTEMPTS) as $attempt) {
             try {
-                [$weekly, $requests] = DB::transaction(
-                    fn (): array => $this->persist($user, $facilityId, $target, $today->toDateString(), $orders)
+                [$weekly, $request] = DB::transaction(
+                    fn (): array => $this->persist($user, $facilityId, $target, $today->toDateString(), $lines)
                 );
 
                 // After the commit, never inside it: a notification failure
                 // must not roll back an order the hospital was told was sent.
-                foreach ($requests as $request) {
-                    $this->notifier->targetFacility($request);
-                }
+                $this->notifier->targetFacility($request);
 
                 return [
                     'message' => 'Weekly request sent to '.$target->name.'.',
@@ -177,12 +174,12 @@ class WeeklyRequestService
     }
 
     /**
-     * Write the header and one replenishment per blood type under the hospital's lock.
+     * Write the header and its one replenishment request under the hospital's lock.
      *
-     * @param  array<int, array<int, array<string, mixed>>>  $orders
-     * @return array{0: WeeklyRequest, 1: array<int, BloodRequest>}
+     * @param  array<int, array{blood_type_id: int, component_id: int, quantity: int}>  $lines
+     * @return array{0: WeeklyRequest, 1: BloodRequest}
      */
-    private function persist(User $user, int $facilityId, Facility $target, string $requestDay, array $orders): array
+    private function persist(User $user, int $facilityId, Facility $target, string $requestDay, array $lines): array
     {
         $this->bloodRequestRepository->lockFacility($facilityId)
             ?? throw $this->refuse(404, 'facility_missing', 'This account is not linked to a facility.');
@@ -205,56 +202,48 @@ class WeeklyRequestService
             'requested_by' => $user->id,
         ]);
 
-        $requests = [];
-
-        foreach ($orders as $bloodTypeId => $items) {
-            $requests[] = $this->bloodRequestService->writeReplenishment(
-                $user,
-                $facilityId,
-                $target,
-                $bloodTypeId,
-                UrgencyLevel::Routine,
-                $items,
-                $weekly->id
-            );
-        }
+        $request = $this->bloodRequestService->writeReplenishment(
+            $user,
+            $facilityId,
+            $target,
+            UrgencyLevel::Routine,
+            $lines,
+            $weekly->id
+        );
 
         $this->auditLogger->record($user, 'weekly_request.submitted', $weekly, [
             'facility_id' => $facilityId,
             'target_facility_id' => $target->id,
             'reference_number' => $weekly->reference_number,
             'request_day' => $requestDay,
-            'requests' => array_map(fn (BloodRequest $request): string => $request->reference_number, $requests),
-            'quantity' => array_sum(array_map(fn (BloodRequest $request): int => $request->quantity, $requests)),
+            'requests' => [$request->reference_number],
+            'quantity' => $request->quantity,
         ]);
 
-        return [$weekly, $requests];
+        return [$weekly, $request];
     }
 
     /**
-     * Group the submitted lines into one list of components per blood type.
+     * The submitted lines, ordered by blood type and then component.
      *
-     * A blood request carries a single blood type, so each becomes its own
+     * Each line keeps its own blood type, because the whole order is one
      * request. There is no indication: a weekly request restocks the shelves
      * and has no patient to certify one for.
      *
      * @param  array<string, mixed>  $payload
-     * @return array<int, array<int, array<string, mixed>>>
+     * @return array<int, array{blood_type_id: int, component_id: int, quantity: int}>
      */
-    private function ordersByBloodType(array $payload): array
+    private function lines(array $payload): array
     {
-        $orders = [];
+        $lines = array_map(fn (array $line): array => [
+            'blood_type_id' => (int) $line['blood_type_id'],
+            'component_id' => (int) $line['component_id'],
+            'quantity' => (int) $line['quantity'],
+        ], $payload['lines']);
 
-        foreach ($payload['lines'] as $line) {
-            $orders[(int) $line['blood_type_id']][] = [
-                'component_id' => (int) $line['component_id'],
-                'quantity' => (int) $line['quantity'],
-            ];
-        }
+        usort($lines, fn (array $a, array $b): int => [$a['blood_type_id'], $a['component_id']] <=> [$b['blood_type_id'], $b['component_id']]);
 
-        ksort($orders);
-
-        return $orders;
+        return $lines;
     }
 
     /**

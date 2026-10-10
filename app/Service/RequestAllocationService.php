@@ -104,9 +104,11 @@ class RequestAllocationService
                     continue;
                 }
 
+                // The line's own blood type: a weekly request's lines each
+                // restock a different one.
                 $units = $this->inventoryRepository->lockAvailableUnitsFefo(
                     $facilityId,
-                    (int) $request->blood_type_id,
+                    (int) $line->blood_type_id,
                     (int) $line->component_id,
                     min($budget, $outstanding),
                     OperationalDay::todayAsDate()

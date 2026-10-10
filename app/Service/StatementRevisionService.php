@@ -216,7 +216,10 @@ class StatementRevisionService
     /**
      * Whether an issued revision still says exactly what the live statement says.
      *
-     * @param  array<int, array{component_id: int, quantity: int, unit_price: int}>  $lines
+     * Compared line by line, not component by component: a weekly request can
+     * ask for the same component in two blood types, and those are two lines.
+     *
+     * @param  array<int, array{request_item_id: int, component_id: int, quantity: int, unit_price: int}>  $lines
      */
     private function matches(BillingRevision $revision, array $lines, int $total, int $collected, BillingStatus $status): bool
     {
@@ -227,11 +230,11 @@ class StatementRevisionService
         }
 
         $issued = $revision->items
-            ->map(fn ($item): string => $item->component_id.':'.$item->quantity.':'.Money::toCentavos($item->unit_price))
+            ->map(fn ($item): string => $item->request_item_id.':'.$item->component_id.':'.$item->quantity.':'.Money::toCentavos($item->unit_price))
             ->sort()->values()->all();
 
         $live = collect($lines)
-            ->map(fn (array $line): string => $line['component_id'].':'.$line['quantity'].':'.$line['unit_price'])
+            ->map(fn (array $line): string => $line['request_item_id'].':'.$line['component_id'].':'.$line['quantity'].':'.$line['unit_price'])
             ->sort()->values()->all();
 
         return $issued === $live;

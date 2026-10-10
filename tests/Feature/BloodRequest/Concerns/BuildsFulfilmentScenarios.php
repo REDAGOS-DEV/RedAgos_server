@@ -71,9 +71,10 @@ trait BuildsFulfilmentScenarios
     /**
      * Put issuable units of one component on a centre's shelf.
      *
-     * They expire in thirty days unless told otherwise — the factory default.
+     * They expire in thirty days unless told otherwise — the factory default —
+     * and are of the scenario's blood type unless another is given.
      */
-    protected function stock(Facility $facility, BloodComponent $component, int $count, ?int $expiresInDays = null): void
+    protected function stock(Facility $facility, BloodComponent $component, int $count, ?int $expiresInDays = null, ?BloodType $bloodType = null): void
     {
         if ($count < 1) {
             return;
@@ -86,7 +87,7 @@ trait BuildsFulfilmentScenarios
 
         BloodUnit::factory()->count($count)->create([
             'facility_id' => $facility->id,
-            'blood_type_id' => $this->bloodType->id,
+            'blood_type_id' => ($bloodType ?? $this->bloodType)->id,
             'component_id' => $component->id,
             'donation_id' => $donation->id,
             'status' => BloodUnitStatus::Available,

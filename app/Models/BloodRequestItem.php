@@ -19,6 +19,10 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  *
  * On a facility allocation, the line is the part of a patient's requirement
  * line (TransfusionRequestItem) asked of this one centre.
+ *
+ * The line names its blood type. On every request but a weekly one it is the
+ * request's own; a weekly request restocks several types in one order, so its
+ * lines differ, and stock is held for each line from its own type's shelf.
  */
 class BloodRequestItem extends Model
 {
@@ -32,6 +36,7 @@ class BloodRequestItem extends Model
     protected $fillable = [
         'request_id',
         'transfusion_request_item_id',
+        'blood_type_id',
         'component_id',
         'quantity',
         'indication_code',
@@ -70,6 +75,14 @@ class BloodRequestItem extends Model
     public function request(): BelongsTo
     {
         return $this->belongsTo(BloodRequest::class, 'request_id');
+    }
+
+    /**
+     * The blood type this line asks for.
+     */
+    public function bloodType(): BelongsTo
+    {
+        return $this->belongsTo(BloodType::class);
     }
 
     /**

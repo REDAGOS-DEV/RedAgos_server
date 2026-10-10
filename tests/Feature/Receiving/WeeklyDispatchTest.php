@@ -9,6 +9,7 @@ use App\Enums\LineClosureReason;
 use App\Enums\RequestEventType;
 use App\Models\BloodRequest;
 use App\Models\BloodRequestEvent;
+use App\Models\BloodType;
 use App\Models\HospitalUnit;
 use App\Models\WeeklyRequest;
 use App\Service\FulfillmentService;
@@ -90,6 +91,52 @@ class WeeklyDispatchTest extends TestCase
             ->assertJsonPath('weekly_request.totals.not_supplied', 3)
             ->assertJsonPath('weekly_request.totals.awaiting_receipt', 2)
             ->assertJsonPath('weekly_request.requests.0.is_open', false);
+    }
+
+    public function test_each_line_is_filled_from_its_own_blood_types_shelf(): void
+    {
+        $aPositive = BloodType::firstOrCreate(['code' => 'A+'], ['label' => 'A+']);
+        $weekly = $this->sentWeekly([[$this->bloodType, $this->prbc, 2], [$aPositive, $this->prbc, 3]]);
+        $request = $this->requestOf($weekly);
+
+        // Two O+ packed cells and one A+: the A+ line must not be filled with O+.
+        $this->stock($this->centre, $this->prbc, 2);
+        $this->stock($this->centre, $this->prbc, 1, bloodType: $aPositive);
+
+        $this->actingAs($this->issuance)
+            ->getJson("/api/blood-center/blood-requests/{$request->id}")
+            ->assertOk()
+            ->assertJsonPath('inventory.lines.0.blood_type.code', 'O+')
+            ->assertJsonPath('inventory.lines.0.available', 2)
+            ->assertJsonPath('inventory.lines.1.blood_type.code', 'A+')
+            ->assertJsonPath('inventory.lines.1.available', 1);
+
+        $this->actingAs($this->issuance)
+            ->postJson("/api/blood-center/blood-requests/{$request->id}/allocate")
+            ->assertOk()
+            ->assertJsonPath('short_by', 2);
+
+        $held = $request->allocations()->with(['unit', 'requestItem'])->get();
+        $this->assertCount(3, $held);
+
+        foreach ($held as $allocation) {
+            $this->assertSame($allocation->requestItem->blood_type_id, $allocation->unit->blood_type_id);
+        }
+
+        $this->actingAs($this->issuance)
+            ->postJson("/api/blood-center/blood-requests/{$request->id}/release")
+            ->assertOk()
+            ->assertJsonCount(1, 'closed_short')
+            ->assertJsonPath('closed_short.0.blood_type', 'A+')
+            ->assertJsonPath('closed_short.0.quantity', 2);
+
+        $this->actingAs($this->requester)
+            ->getJson("/api/hospital/weekly-requests/{$weekly->id}")
+            ->assertOk()
+            ->assertJsonPath('weekly_request.status', 'partial')
+            ->assertJsonPath('weekly_request.totals.requested', 5)
+            ->assertJsonPath('weekly_request.totals.fulfilled', 3)
+            ->assertJsonPath('weekly_request.totals.not_supplied', 2);
     }
 
     public function test_a_full_delivery_closes_nothing(): void

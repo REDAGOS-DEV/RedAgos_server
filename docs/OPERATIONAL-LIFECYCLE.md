@@ -276,7 +276,7 @@ Only `available` bags that are **not past their date** count as stock. Quarantin
 **14a. Weekly Request (restock the shelf).** Weekly Request page, sent only on a **request day** saved in "Before you start".
 
 - The form is lines of component, blood type and units. It has no patient and no indication.
-- One weekly request creates **one routine replenishment request per blood type**, numbered `RQ-…` and grouped under a `WR-…` reference.
+- One weekly request creates **one routine replenishment request** covering every blood type and component on it, numbered `RQ-…` under a `WR-…` reference. Each line names its own blood type, and the center reviews and dispatches the whole order at once.
 - Refused with `no_request_schedule` (no schedule for that center), `not_a_request_day`, or `weekly_request_exists` (already sent for that day).
 - A line's requested quantity never changes. What the center supplied, what the hospital received and what was closed short are tracked separately.
 

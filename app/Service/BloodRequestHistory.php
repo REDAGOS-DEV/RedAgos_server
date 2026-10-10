@@ -41,6 +41,7 @@ class BloodRequestHistory
         'relatedRequest:id,reference_number,target_facility_id',
         'relatedRequest.targetFacility:id,name',
         'requestItem.component:id,name',
+        'requestItem.bloodType:id,code',
         'request:id,reference_number,target_facility_id',
         'request.targetFacility:id,name',
     ];
@@ -71,8 +72,9 @@ class BloodRequestHistory
         array $meta = [],
     ): BloodRequestEvent {
         $lines = $this->resolver->freshFigures($request);
-        $request->loadMissing('items.component');
+        $request->loadMissing(['items.component', 'items.bloodType']);
         $names = $request->items->pluck('component.name', 'id');
+        $types = $request->items->pluck('bloodType.code', 'id');
 
         return BloodRequestEvent::query()->create([
             'request_id' => $request->id,
@@ -86,6 +88,7 @@ class BloodRequestHistory
             'related_request_id' => $related?->id,
             'lines' => $lines->map(fn (array $line): array => [
                 'request_item_id' => $line['request_item_id'],
+                'blood_type' => $types->get($line['request_item_id']),
                 'component' => $names->get($line['request_item_id']),
                 'requested' => $line['requested'],
                 'reserved' => $line['reserved'],
@@ -197,6 +200,7 @@ class BloodRequestHistory
             ] : null,
             'item' => $event->requestItem ? [
                 'id' => $event->requestItem->id,
+                'blood_type' => $event->requestItem->bloodType?->code,
                 'component' => $event->requestItem->component?->name,
             ] : null,
             'related_request' => $event->relatedRequest ? [

@@ -66,10 +66,13 @@ class BloodRequestProjector
             'requester_name' => $this->personName($request->relationLoaded('requester') ? $request->requester : null),
             'recorder_name' => $this->personName($request->relationLoaded('recorder') ? $request->recorder : null),
             'patient' => $this->patient($request),
+            // Null on a request whose lines differ — a weekly request
+            // restocking several types — where blood_types names them all.
             'blood_type' => [
                 'id' => $request->blood_type_id,
                 'code' => $request->bloodType?->code,
             ],
+            'blood_types' => $request->bloodTypeCodes(),
             'items' => $this->items($request, $figures, $claimed, $withAllocations),
             'quantity' => $quantity,
             'urgency_level' => $request->urgency_level->value,
@@ -158,6 +161,10 @@ class BloodRequestProjector
                 $line = [
                     'id' => $item->id,
                     'transfusion_request_item_id' => $item->transfusion_request_item_id,
+                    'blood_type' => [
+                        'id' => $item->blood_type_id,
+                        'code' => $item->bloodType?->code,
+                    ],
                     'component' => [
                         'id' => $item->component_id,
                         'name' => $item->component?->name,

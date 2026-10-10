@@ -185,7 +185,7 @@ class BillingService
     {
         return Billing::query()
             ->whereHas('request', fn (Builder $query) => $query->addressedTo($facilityId))
-            ->with(['request.requestingFacility', 'request.items.component', 'request.bloodType'])
+            ->with(['request.requestingFacility', 'request.items.component', 'request.items.bloodType', 'request.bloodType'])
             ->when(
                 isset($filters['status']),
                 fn (Builder $query): Builder => $query->where('status', $filters['status'])
@@ -220,6 +220,9 @@ class BillingService
     public function formatWithRequest(Billing $billing): array
     {
         $request = $billing->request;
+        // A weekly request's lines each name their own blood type, so each
+        // component is named with its type.
+        $mixed = $request !== null && $request->blood_type_id === null;
 
         return $this->format($billing) + [
             'request' => $request ? [
@@ -229,12 +232,15 @@ class BillingService
                 'status_label' => $request->status->label(),
                 'request_purpose' => $request->request_purpose->value,
                 'requesting_facility' => $request->requestingFacility?->name,
-                'blood_type' => $request->bloodType?->code,
+                'blood_type' => $request->bloodType?->code ?? (implode(', ', $request->bloodTypeCodes()) ?: null),
                 'quantity' => $request->quantity,
                 'urgency_level' => $request->urgency_level->value,
                 'is_emergency' => $request->urgency_level->isPrioritised(),
                 'components' => $request->items
-                    ->map(fn ($item): string => trim(($item->component?->name ?? 'Component').' x'.$item->quantity))
+                    ->map(fn ($item): string => trim(
+                        ($mixed ? ($item->bloodType?->code ?? '').' ' : '')
+                        .($item->component?->name ?? 'Component').' x'.$item->quantity
+                    ))
                     ->all(),
                 'request_date' => $request->request_date?->toIso8601String(),
             ] : null,
