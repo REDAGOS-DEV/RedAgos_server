@@ -70,6 +70,25 @@ class PaymentReceiptTest extends TestCase
         $this->assertSame('manual', $snapshot['payment']['source']);
     }
 
+    public function test_a_receipt_carries_what_the_payment_was_for_and_shows_it_without_the_reference(): void
+    {
+        $request = $this->allocatedRequest(2);
+
+        $response = $this->payCash($request, 1000, ['payment_method' => 'gcash', 'reference_number' => 'GC-REF-77', 'payer_name' => 'Ana Reyes'])
+            ->assertCreated()
+            ->assertJsonPath('receipt.balance_before', '1000.00')
+            ->assertJsonPath('receipt.payer_name', 'Ana Reyes')
+            ->assertJsonPath('receipt.issuing_facility.name', $this->centre->name)
+            ->assertJsonPath('receipt.request.reference_number', $request->reference_number)
+            ->assertJsonPath('receipt.payment.method_label', 'GCash')
+            ->assertJsonCount(1, 'receipt.lines')
+            ->assertJsonPath('receipt.lines.0.quantity', 2)
+            ->assertJsonPath('receipt.lines.0.line_total', '1000.00');
+
+        $this->assertStringNotContainsString('GC-REF-77', json_encode($response->json('receipt')));
+        $this->assertSame('500.00', PaymentReceipt::query()->sole()->snapshot['lines'][0]['unit_price']);
+    }
+
     public function test_the_payment_that_settles_the_statement_is_not_marked_partial(): void
     {
         $request = $this->allocatedRequest(2);

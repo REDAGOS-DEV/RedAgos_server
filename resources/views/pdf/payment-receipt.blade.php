@@ -6,11 +6,23 @@
     partial payment shows the balance before and after it, so it can never
     read as settling the whole statement.
 
-    Not a BIR official receipt: the receipt says so.
+    Laid out as the owner's billing mock-up (2026-10-11), like the statement.
+    A receipt issued before receipts carried their lines prints without the
+    lines table. Not a BIR official receipt: the receipt says so.
 --}}
 @php
-    $peso = fn (?string $amount): string => '₱'.number_format((float) ($amount ?? 0), 2);
+    $peso = fn (string|int|float|null $amount): string => '₱'.number_format((float) ($amount ?? 0), 2);
     $after = (float) ($snapshot['balance_after'] ?? 0);
+    $facility = $snapshot['issuing_facility'] ?? [];
+    $request = $snapshot['request'] ?? [];
+    $statement = $snapshot['statement'] ?? null;
+    $payment = $snapshot['payment'] ?? [];
+    $lines = $snapshot['lines'] ?? [];
+    $partial = ! empty($snapshot['is_partial']);
+    $issuedAt = \Illuminate\Support\Carbon::parse($snapshot['issued_at'])->timezone(config('blood_center.timezone'));
+    $paidAt = ! empty($payment['paid_at'])
+        ? \Illuminate\Support\Carbon::parse($payment['paid_at'])->timezone(config('blood_center.timezone'))
+        : $issuedAt;
 @endphp
 <!DOCTYPE html>
 <html lang="en">
@@ -18,129 +30,229 @@
     <meta charset="utf-8">
     <title>Payment Acknowledgement Receipt {{ $snapshot['receipt_number'] ?? '' }}</title>
     <style>
-        @page { size: A5; margin: 10mm 11mm; }
-        body { font-family: "DejaVu Sans", sans-serif; font-size: 8.5pt; line-height: 1.35; color: #111; }
+        @page { size: A4; margin: 12mm 12mm 14mm; }
+        body { font-family: "DejaVu Sans", sans-serif; font-size: 8.5pt; line-height: 1.4; color: #17212b; }
         table { border-collapse: collapse; width: 100%; }
-        .head td { vertical-align: middle; }
-        .head .logo { width: 56px; }
-        .head img { max-width: 50px; max-height: 50px; }
-        .facility { font-size: 10pt; font-weight: bold; text-transform: uppercase; }
-        .muted { color: #555; }
-        .title { font-size: 12pt; font-weight: bold; margin: 10px 0 0; }
-        .stamp { display: inline-block; padding: 2px 6px; border: 1px solid #333; font-size: 7.5pt; font-weight: bold; margin-top: 4px; }
-        .void { color: #a40000; border-color: #a40000; }
-        .meta td { padding: 2px 0; vertical-align: top; }
-        .meta .label { width: 40%; color: #555; }
-        .money { margin-top: 10px; }
-        .money td { padding: 3px 0; }
-        .money .paid td { font-weight: bold; font-size: 10.5pt; border-top: 1px solid #333; border-bottom: 1px solid #333; }
+        td, th { vertical-align: top; }
+        .muted { color: #657180; }
+        .mark { width: 34px; height: 34px; background: #b91f2b; color: #fff; border-radius: 9px; text-align: center; font-size: 20pt; font-weight: bold; line-height: 34px; }
+        .brand-name { font-size: 15pt; font-weight: bold; }
+        .doc-title { text-align: right; }
+        .doc-title .name { font-size: 14pt; font-weight: bold; color: #b91f2b; letter-spacing: 0.5px; }
+        .pill { display: inline-block; padding: 2px 8px; border-radius: 9px; font-size: 7.5pt; font-weight: bold; }
+        .pill-paid { background: #e3f7ed; color: #16845b; }
+        .pill-due { background: #fff1f2; color: #b91f2b; }
+        .pill-void { background: #eceff2; color: #a40000; }
+        .rule { border-bottom: 1px solid #e1e6eb; margin: 12px 0 14px; }
+        .boxes td.box { width: 33.33%; background: #f5f7f9; border: 1px solid #e1e6eb; padding: 8px 9px; }
+        .boxes td.gap { width: 8px; background: none; border: none; padding: 0; }
+        .box h3 { margin: 0 0 5px; font-size: 7pt; text-transform: uppercase; letter-spacing: 0.6px; color: #657180; }
+        .box strong { display: block; margin-bottom: 2px; }
+        .box p { margin: 1px 0; color: #657180; font-size: 7.5pt; }
+        .box img { max-width: 34px; max-height: 34px; margin-bottom: 4px; }
+        .section { font-size: 9pt; font-weight: bold; margin: 16px 0 6px; }
+        .lines th { text-align: left; font-size: 7pt; text-transform: uppercase; letter-spacing: 0.5px; color: #657180; background: #f5f7f9; padding: 6px; border-bottom: 1px solid #e1e6eb; }
+        .lines td { padding: 7px 6px; border-bottom: 1px solid #e1e6eb; }
         .num { text-align: right; white-space: nowrap; }
-        .footer { margin-top: 16px; font-size: 7pt; color: #555; border-top: 1px solid #ccc; padding-top: 5px; }
+        .totals { width: 46%; margin: 12px 0 0 54%; }
+        .totals td { padding: 5px 8px; border-bottom: 1px solid #e1e6eb; }
+        .totals .grand td { font-size: 10.5pt; font-weight: bold; background: #f5f7f9; border-bottom: none; }
+        .totals .balance td { font-weight: bold; color: #b91f2b; background: #fff1f2; border-bottom: none; }
+        .totals .settled td { font-weight: bold; color: #16845b; background: #e3f7ed; border-bottom: none; }
+        .panel { margin-top: 14px; }
+        .panel td.pbox { border: 1px solid #e1e6eb; padding: 9px 10px; }
+        .panel td.gap { width: 8px; border: none; padding: 0; }
+        .panel h3 { margin: 0 0 6px; font-size: 8pt; }
+        .kv td { padding: 2px 0; font-size: 7.5pt; }
+        .kv td.k { color: #657180; }
+        .kv td.v { text-align: right; font-weight: bold; }
+        .callout { background: #eefaf4; }
+        .callout.partial { background: #fff8eb; }
+        .callout strong { color: #16845b; font-size: 10pt; }
+        .callout.partial strong { color: #9b6200; }
+        .callout p { margin: 5px 0 0; color: #657180; font-size: 7.5pt; }
+        .notes { margin-top: 14px; padding: 8px 10px; background: #f5f7f9; border: 1px dashed #c9d1d9; color: #657180; font-size: 7.5pt; }
+        .notes p { margin: 3px 0 0; }
+        .sign td { padding-top: 26px; font-size: 7.5pt; color: #657180; }
+        .footer { margin-top: 18px; background: #b91f2b; color: #fff; padding: 7px 10px; font-size: 7pt; }
+        .footer td { color: #fff; }
     </style>
 </head>
 <body>
-    <table class="head">
+    <table>
         <tr>
-            <td class="logo">
+            <td style="width: 44px;"><div class="mark">+</div></td>
+            <td>
+                <div class="brand-name">RedAgos</div>
+                <div class="muted">Blood Bank Management &amp; Inventory System</div>
+                <div class="muted">{{ $facility['name'] ?? '' }}</div>
+            </td>
+            <td class="doc-title">
+                <div class="name">PAYMENT ACKNOWLEDGEMENT RECEIPT</div>
+                <div class="muted">Receipt No. {{ $snapshot['receipt_number'] ?? '' }}</div>
+                <div class="muted">Date issued: {{ $issuedAt->format('j M Y, g:i A') }}</div>
+                <div style="margin-top: 4px;">
+                    @if ($receipt->isVoided())
+                        <span class="pill pill-void">VOID — {{ $receipt->void_reason }}</span>
+                    @elseif ($partial)
+                        <span class="pill pill-due">PARTIAL PAYMENT</span>
+                    @else
+                        <span class="pill pill-paid">PAYMENT RECEIVED</span>
+                    @endif
+                </div>
+            </td>
+        </tr>
+    </table>
+
+    <div class="rule"></div>
+
+    <table class="boxes">
+        <tr>
+            <td class="box">
+                <h3>Issued by</h3>
                 @if ($logo)
                     <img src="{{ $logo }}" alt="">
                 @endif
-            </td>
-            <td>
-                <div class="facility">{{ $snapshot['issuing_facility']['name'] ?? '' }}</div>
-                @if (! empty($snapshot['issuing_facility']['address']))
-                    <div class="muted">{{ $snapshot['issuing_facility']['address'] }}</div>
+                <strong>{{ $facility['name'] ?? '' }}</strong>
+                @if (! empty($facility['address']))
+                    <p>{{ $facility['address'] }}</p>
                 @endif
+                @if (! empty($facility['doh_license_number']))
+                    <p>DOH licence: {{ $facility['doh_license_number'] }}</p>
+                @endif
+                @if (! empty($facility['phone']) || ! empty($facility['email']))
+                    <p>{{ implode(' · ', array_filter([$facility['phone'] ?? null, $facility['email'] ?? null])) }}</p>
+                @endif
+            </td>
+            <td class="gap"></td>
+            <td class="box">
+                <h3>Received from</h3>
+                <strong>{{ $snapshot['payer_name'] ?? '—' }}</strong>
+                @if (! empty($request['patient_name']))
+                    <p>For patient: {{ $request['patient_name'] }}</p>
+                @endif
+                @if (! empty($request['requesting_facility']))
+                    <p>c/o {{ $request['requesting_facility'] }}</p>
+                @endif
+            </td>
+            <td class="gap"></td>
+            <td class="box">
+                <h3>Transaction details</h3>
+                <p>Blood request: <strong style="display: inline;">{{ $request['reference_number'] ?? '' }}</strong></p>
+                @if ($statement)
+                    <p>Statement: {{ $statement['document_number'] }} (revision {{ $statement['revision_number'] }})</p>
+                @endif
+                @if (! empty($snapshot['replaces_receipt_number']))
+                    <p>Replaces receipt: {{ $snapshot['replaces_receipt_number'] }}</p>
+                @endif
+                <p>Currency: PHP (₱)</p>
             </td>
         </tr>
     </table>
 
-    <div class="title">PAYMENT ACKNOWLEDGEMENT RECEIPT</div>
-    <div class="muted">{{ $snapshot['receipt_number'] ?? '' }}</div>
-    @if (! empty($snapshot['is_partial']))
-        <span class="stamp">PARTIAL PAYMENT</span>
-    @endif
-    @if ($receipt->isVoided())
-        <span class="stamp void">VOID — {{ $receipt->void_reason }}</span>
+    @if (count($lines) > 0)
+        <div class="section">Blood components</div>
+        <table class="lines">
+            <thead>
+                <tr>
+                    <th style="width: 6%;">#</th>
+                    <th>Component</th>
+                    <th class="num" style="width: 10%;">Qty</th>
+                    <th class="num" style="width: 18%;">Unit price</th>
+                    <th class="num" style="width: 18%;">Total</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach ($lines as $line)
+                    <tr>
+                        <td>{{ $loop->iteration }}</td>
+                        <td><strong>{{ $line['component_name'] }}</strong></td>
+                        <td class="num">{{ $line['quantity'] }}</td>
+                        <td class="num">{{ $peso($line['unit_price']) }}</td>
+                        <td class="num">{{ $peso($line['line_total']) }}</td>
+                    </tr>
+                @endforeach
+            </tbody>
+        </table>
     @endif
 
-    <table class="meta" style="margin-top: 8px;">
-        <tr>
-            <td class="label">Issued</td>
-            <td>{{ \Illuminate\Support\Carbon::parse($snapshot['issued_at'])->timezone(config('blood_center.timezone'))->format('j F Y, g:i A') }}</td>
-        </tr>
-        @if (! empty($snapshot['payer_name']))
+    <table class="totals">
+        @if ($statement)
             <tr>
-                <td class="label">Received from</td>
-                <td>{{ $snapshot['payer_name'] }}</td>
+                <td>Statement total</td>
+                <td class="num">{{ $peso($statement['total_amount']) }}</td>
             </tr>
         @endif
-        <tr>
-            <td class="label">Blood request</td>
-            <td>{{ $snapshot['request']['reference_number'] ?? '' }}</td>
-        </tr>
-        @if (! empty($snapshot['request']['patient_name']))
-            <tr>
-                <td class="label">Patient</td>
-                <td>{{ $snapshot['request']['patient_name'] }}</td>
-            </tr>
-        @endif
-        <tr>
-            <td class="label">Requesting facility</td>
-            <td>{{ $snapshot['request']['requesting_facility'] ?? '' }}</td>
-        </tr>
-        @if (! empty($snapshot['statement']))
-            <tr>
-                <td class="label">Statement</td>
-                <td>{{ $snapshot['statement']['document_number'] }} (revision {{ $snapshot['statement']['revision_number'] }})</td>
-            </tr>
-        @endif
-        <tr>
-            <td class="label">Method</td>
-            <td>
-                {{ $snapshot['payment']['method_label'] ?? '' }}
-                @if (! empty($snapshot['payment']['reference_number']))
-                    &middot; Ref {{ $snapshot['payment']['reference_number'] }}
-                @endif
-            </td>
-        </tr>
-        @if (! empty($snapshot['replaces_receipt_number']))
-            <tr>
-                <td class="label">Replaces receipt</td>
-                <td>{{ $snapshot['replaces_receipt_number'] }}</td>
-            </tr>
-        @endif
-    </table>
-
-    <table class="money">
         <tr>
             <td>Balance before this payment</td>
             <td class="num">{{ $peso($snapshot['balance_before'] ?? null) }}</td>
         </tr>
-        <tr class="paid">
+        <tr class="grand">
             <td>Amount received</td>
             <td class="num">{{ $peso($snapshot['amount_paid'] ?? null) }}</td>
         </tr>
-        <tr>
-            @if ($after < 0)
+        @if ($after < 0)
+            <tr class="balance">
                 <td>Received in excess of the balance</td>
-                <td class="num">{{ $peso((string) abs($after)) }}</td>
-            @else
-                <td>Balance remaining</td>
-                <td class="num">{{ $peso($snapshot['balance_after'] ?? null) }}</td>
-            @endif
-        </tr>
+                <td class="num">{{ $peso(abs($after)) }}</td>
+            </tr>
+        @elseif ($after > 0)
+            <tr class="balance">
+                <td>Remaining balance</td>
+                <td class="num">{{ $peso($after) }}</td>
+            </tr>
+        @else
+            <tr class="settled">
+                <td>Remaining balance</td>
+                <td class="num">{{ $peso(0) }}</td>
+            </tr>
+        @endif
     </table>
 
-    <table class="meta" style="margin-top: 10px;">
+    <table class="panel">
         <tr>
-            <td class="label">Received by</td>
-            <td>{{ $snapshot['received_by'] ?? 'Confirmed by the payment provider' }}</td>
+            <td class="pbox" style="width: 58%;">
+                <h3>Payment received</h3>
+                <table class="kv">
+                    <tr><td class="k">Payment method</td><td class="v">{{ $payment['method_label'] ?? '' }}</td></tr>
+                    <tr><td class="k">Amount received</td><td class="v">{{ $peso($snapshot['amount_paid'] ?? null) }}</td></tr>
+                    <tr><td class="k">Payment reference</td><td class="v">{{ $payment['reference_number'] ?? '—' }}</td></tr>
+                    <tr><td class="k">Payment date</td><td class="v">{{ $paidAt->format('j M Y, g:i A') }}</td></tr>
+                    <tr><td class="k">Received by</td><td class="v">{{ $snapshot['received_by'] ?? 'Confirmed by the payment provider' }}</td></tr>
+                </table>
+            </td>
+            <td class="gap"></td>
+            <td class="pbox callout {{ $partial ? 'partial' : '' }}">
+                <h3>{{ $partial ? 'Part payment recorded' : 'Payment recorded' }}</h3>
+                <strong>{{ $peso($snapshot['amount_paid'] ?? null) }} received</strong>
+                <p>
+                    @if ($partial)
+                        This acknowledges the amount above only. {{ $peso($after) }} is still due.
+                    @else
+                        The statement is settled by this payment.
+                    @endif
+                </p>
+            </td>
         </tr>
     </table>
 
-    <div class="footer">
-        This acknowledges payment received. It is not a BIR official receipt.
+    <div class="notes">
+        <strong>Notes</strong>
+        <p>This acknowledges payment received. It is not a BIR official receipt.</p>
+        <table class="sign">
+            <tr>
+                <td>Received by: {{ $snapshot['received_by'] ?? '______________________' }}</td>
+                <td>Authorized by: ______________________</td>
+            </tr>
+        </table>
     </div>
+
+    <table class="footer">
+        <tr>
+            <td>RedAgos &middot; Payment Acknowledgement Receipt</td>
+            <td style="text-align: center;">Keep this receipt for reference</td>
+            <td style="text-align: right;">{{ $snapshot['receipt_number'] ?? '' }}</td>
+        </tr>
+    </table>
 </body>
 </html>

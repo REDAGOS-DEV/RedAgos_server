@@ -73,6 +73,9 @@ class PaymentReceiptService
                 'issuing_facility' => [
                     'name' => $request->targetFacility?->name,
                     'address' => $request->targetFacility?->address,
+                    'doh_license_number' => $request->targetFacility?->doh_license_number,
+                    'phone' => $request->targetFacility?->phone,
+                    'email' => $request->targetFacility?->email,
                 ],
                 'payer_name' => $payerName,
                 'received_by' => $issuer ? trim($issuer->first_name.' '.$issuer->last_name) : null,
@@ -87,6 +90,14 @@ class PaymentReceiptService
                     'total_amount' => $revision->total_amount,
                     'amount_due' => $revision->amount_due,
                 ] : null,
+                // What the payment was for, copied from the statement it was made
+                // against, so the receipt lists it without reading anything else.
+                'lines' => $revision ? $revision->items->map(fn ($item): array => [
+                    'component_name' => $item->component_name,
+                    'quantity' => $item->quantity,
+                    'unit_price' => $item->unit_price,
+                    'line_total' => $item->line_total,
+                ])->values()->all() : [],
                 'balance_before' => Money::toDecimal($balanceBefore),
                 'amount_paid' => Money::toDecimal($paid),
                 'balance_after' => Money::toDecimal($balanceAfter),
@@ -160,6 +171,22 @@ class PaymentReceiptService
             'voided' => $receipt->isVoided(),
             'void_reason' => $receipt->void_reason,
             'replaces_receipt_number' => $snapshot['replaces_receipt_number'] ?? null,
+            // The rest of the snapshot, for showing the receipt on screen as it prints.
+            'balance_before' => $snapshot['balance_before'] ?? null,
+            'payer_name' => $snapshot['payer_name'] ?? null,
+            'received_by' => $snapshot['received_by'] ?? null,
+            'issuing_facility' => $snapshot['issuing_facility'] ?? null,
+            'request' => $snapshot['request'] ?? null,
+            'statement' => $snapshot['statement'] ?? null,
+            // Without its reference number: the hospital reads this too, and
+            // references go only to whoever may record payments (with the payment).
+            'payment' => [
+                'method_label' => $snapshot['payment']['method_label'] ?? null,
+                'source' => $snapshot['payment']['source'] ?? null,
+                'paid_at' => $snapshot['payment']['paid_at'] ?? null,
+            ],
+            // Empty on a receipt issued before receipts carried their lines.
+            'lines' => $snapshot['lines'] ?? [],
         ];
     }
 
@@ -207,7 +234,7 @@ class PaymentReceiptService
             'snapshot' => $receipt->snapshot,
             'logo' => $images ? $this->facilityLogoService->dataUriFor($receipt->issuingFacility) : null,
         ])
-            ->setPaper('a5')
+            ->setPaper('a4')
             ->setOptions([
                 'isRemoteEnabled' => false,
                 'isHtml5ParserEnabled' => true,

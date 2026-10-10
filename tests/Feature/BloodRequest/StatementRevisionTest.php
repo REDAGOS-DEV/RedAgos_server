@@ -72,6 +72,31 @@ class StatementRevisionTest extends TestCase
             ->assertJsonPath('revision.lines.0.unit_price', '500.00');
     }
 
+    public function test_a_statement_names_its_issuer_who_it_bills_and_who_issued_it(): void
+    {
+        $this->centre->forceFill(['doh_license_number' => 'DOH-BC-0042', 'phone' => '082-123-4567'])->save();
+        $request = $this->allocatedRequest(1);
+
+        $this->issue($request)
+            ->assertCreated()
+            ->assertJsonPath('revision.issuer.name', $this->centre->name)
+            ->assertJsonPath('revision.issuer.doh_license_number', 'DOH-BC-0042')
+            ->assertJsonPath('revision.issuer.phone', '082-123-4567')
+            ->assertJsonPath('revision.bill_to.patient_name', $request->patientFullName())
+            ->assertJsonPath('revision.bill_to.facility', $this->hospital->name)
+            ->assertJsonPath('revision.request_reference', $request->reference_number)
+            ->assertJsonPath('revision.issued_by', trim($this->billingClerk->first_name.' '.$this->billingClerk->last_name));
+
+        // A weekly order is the hospital's to settle, so it names no patient.
+        $weekly = $this->allocatedRequest(1, replenishment: true);
+
+        $this->issue($weekly)
+            ->assertCreated()
+            ->assertJsonPath('revision.statement_only', true)
+            ->assertJsonPath('revision.bill_to.patient_name', null)
+            ->assertJsonPath('revision.bill_to.facility', $this->hospital->name);
+    }
+
     public function test_issuing_again_with_nothing_changed_reuses_the_statement_and_its_number(): void
     {
         $request = $this->allocatedRequest(1);

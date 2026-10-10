@@ -6,6 +6,7 @@ use App\Enums\BillingStatus;
 use App\Models\Billing;
 use App\Models\BillingRevision;
 use App\Models\BloodRequest;
+use App\Models\Facility;
 use App\Models\User;
 use App\Repository\DocumentSequenceRepository;
 use App\Support\DocumentNumbering;
@@ -104,7 +105,10 @@ class StatementRevisionService
      */
     public function listFor(Billing $billing): array
     {
-        return $billing->revisions()->with('items')->get()
+        $billing->loadMissing('request');
+
+        return $billing->revisions()->with(['items', 'issuingFacility', 'payerFacility', 'creator'])->get()
+            ->each(fn (BillingRevision $revision) => $revision->setRelation('billing', $billing))
             ->map(fn (BillingRevision $revision): array => $this->format($revision))
             ->all();
     }
@@ -116,6 +120,9 @@ class StatementRevisionService
      */
     public function format(BillingRevision $revision): array
     {
+        $revision->loadMissing(['items', 'issuingFacility', 'payerFacility', 'billing.request', 'creator']);
+        $request = $revision->billing?->request;
+
         return [
             'id' => $revision->id,
             'document_number' => $revision->document_number,
@@ -129,6 +136,15 @@ class StatementRevisionService
             'collected_at_issue' => $revision->collected_at_issue,
             'amount_due' => $revision->amount_due,
             'issued_at' => $revision->created_at?->toIso8601String(),
+            'issued_by' => $revision->creator ? trim($revision->creator->first_name.' '.$revision->creator->last_name) : null,
+            'issuer' => $this->facilityCard($revision->issuingFacility),
+            // A Patient Transfusion statement is the patient's to settle; a
+            // weekly order is the requesting hospital's (owner, 2026-10-10).
+            'bill_to' => [
+                'patient_name' => $revision->statement_only ? null : $request?->patientFullName(),
+                'facility' => $revision->payerFacility?->name,
+            ],
+            'request_reference' => $request?->reference_number,
             'lines' => $revision->items->map(fn ($item): array => [
                 'component_name' => $item->component_name,
                 'quantity' => $item->quantity,
@@ -170,7 +186,7 @@ class StatementRevisionService
      */
     public function pdf(BillingRevision $revision, User $viewer): Response
     {
-        $revision->loadMissing(['items', 'issuingFacility', 'payerFacility', 'billing.request']);
+        $revision->loadMissing(['items', 'issuingFacility', 'payerFacility', 'billing.request', 'creator']);
         $request = $revision->billing?->request;
 
         $this->auditLogger->record($viewer, 'billing.statement_downloaded', $revision->billing, [
@@ -197,6 +213,22 @@ class StatementRevisionService
                 'defaultFont' => 'DejaVu Sans',
             ])
             ->download("{$revision->document_number}.pdf");
+    }
+
+    /**
+     * The issuing centre as a statement heads it.
+     *
+     * @return array{name: string|null, address: string|null, doh_license_number: string|null, phone: string|null, email: string|null}
+     */
+    private function facilityCard(?Facility $facility): array
+    {
+        return [
+            'name' => $facility?->name,
+            'address' => $facility?->address,
+            'doh_license_number' => $facility?->doh_license_number,
+            'phone' => $facility?->phone,
+            'email' => $facility?->email,
+        ];
     }
 
     /**
