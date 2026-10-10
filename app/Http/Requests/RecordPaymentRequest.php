@@ -3,7 +3,6 @@
 namespace App\Http\Requests;
 
 use App\Enums\PaymentMethod;
-use App\Enums\PaymentStatus;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -32,12 +31,21 @@ class RecordPaymentRequest extends FormRequest
      * — recording an electronic payment without one would leave billing staff
      * asserting a transfer nobody can check.
      *
+     * At most two decimal places: an amount is pesos and centavos, and
+     * BillingService counts in whole centavos.
+     *
+     * The status is never chosen. A payment recorded by hand is money already
+     * received, so it is always completed; an attempt that may still fail
+     * belongs to a payment provider, not to this form. Decided by the project
+     * owner on 2026-10-10. A correction is held to the same rule: it fixes
+     * what was recorded, not whether the money arrived.
+     *
      * @return array<string, array<int, mixed>>
      */
     public function rules(): array
     {
         return [
-            'amount_paid' => ['required', 'numeric', 'min:0.01', 'max:9999999.99'],
+            'amount_paid' => ['required', 'numeric', 'decimal:0,2', 'min:0.01', 'max:9999999.99'],
             'payment_method' => ['required', Rule::in(PaymentMethod::values())],
             'reference_number' => [
                 Rule::requiredIf(fn (): bool => $this->input('payment_method') === PaymentMethod::Gcash->value),
@@ -46,12 +54,11 @@ class RecordPaymentRequest extends FormRequest
                 'max:100',
                 Rule::unique('payments', 'reference_number')->ignore($this->correctingPaymentId),
             ],
+            'status' => ['prohibited'],
 
-            // A correction fixes what was recorded; it is not a way to turn a
-            // payment into a failed or refunded one.
-            'status' => $this->correctingPaymentId !== null
-                ? ['prohibited']
-                : ['sometimes', Rule::in(PaymentStatus::values())],
+            // Who handed the money over — usually the patient's watcher. Printed
+            // on the receipt as "Received from", and nowhere else.
+            'payer_name' => ['sometimes', 'nullable', 'string', 'max:120'],
         ];
     }
 
@@ -63,9 +70,11 @@ class RecordPaymentRequest extends FormRequest
     public function messages(): array
     {
         return [
+            'amount_paid.decimal' => 'Record the amount in pesos and centavos, with at most two decimal places.',
             'amount_paid.min' => 'Record the amount actually received.',
             'reference_number.required' => 'A GCash payment needs its reference number.',
             'reference_number.unique' => 'That payment reference has already been recorded.',
+            'status.prohibited' => 'A recorded payment is money received; its status cannot be chosen.',
         ];
     }
 }

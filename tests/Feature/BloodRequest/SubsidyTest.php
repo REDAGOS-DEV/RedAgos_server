@@ -181,6 +181,28 @@ class SubsidyTest extends TestCase
         $this->assertDatabaseCount('payments', 1);
     }
 
+    public function test_a_payment_cannot_overturn_the_subsidy(): void
+    {
+        $request = $this->reservedRequest();
+
+        $this->actingAs($this->billingStaff)
+            ->postJson("/api/blood-center/billings/{$request->id}/subsidy")
+            ->assertOk();
+
+        // Recording money here used to re-settle the statement as Paid, which
+        // erased the decision that the government met the cost.
+        $this->actingAs($this->billingStaff)
+            ->postJson("/api/blood-center/billings/{$request->id}/payments", [
+                'amount_paid' => 500,
+                'payment_method' => 'cash',
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'billing_settled_by_decision');
+
+        $this->assertSame(BillingStatus::Subsidised, $request->billing()->firstOrFail()->status);
+        $this->assertDatabaseCount('payments', 0);
+    }
+
     public function test_inventory_staff_cannot_apply_the_subsidy(): void
     {
         $request = $this->reservedRequest();

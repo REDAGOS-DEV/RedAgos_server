@@ -39,7 +39,7 @@ final class CorrectionValues
         return match ($type) {
             self::DATETIME => self::moment($value)->utc()->format('Y-m-d\TH:i:s\Z'),
             self::DATE => self::moment($value)->toDateString(),
-            self::MONEY => number_format((float) $value, 2, '.', ''),
+            self::MONEY => Money::toDecimal(Money::toCentavos($value)),
             self::STRING => self::text($value),
             default => $value,
         };

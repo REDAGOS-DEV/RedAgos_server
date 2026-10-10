@@ -74,3 +74,22 @@ Schedule::command('inventory:check-thresholds')
     ->everyMinute()
     ->withoutOverlapping(10)
     ->onOneServer();
+
+// The second net under GCash webhooks. The queued job processes every
+// delivery; this finds what a lost webhook or a slow provider left behind —
+// checkouts due a re-check, ones awaiting verification, ones still payable
+// after being superseded — and re-fetches them from Xendit. Every minute,
+// because a watcher is waiting at the counter. Overlap lock of 10 minutes for
+// the same reason as the tag sweep: one crashed run must not stall it all day.
+Schedule::command('payments:reconcile')
+    ->everyMinute()
+    ->withoutOverlapping(10)
+    ->onOneServer();
+
+// Webhook delivery records past the retention the owner sets. Does nothing
+// until XENDIT_EVENT_RETENTION_DAYS is configured.
+Schedule::command('payments:purge-events')
+    ->dailyAt('01:15')
+    ->timezone(config('blood_center.timezone'))
+    ->withoutOverlapping()
+    ->onOneServer();

@@ -3,6 +3,7 @@
 namespace Database\Factories;
 
 use App\Enums\PaymentMethod;
+use App\Enums\PaymentSource;
 use App\Enums\PaymentStatus;
 use App\Models\Billing;
 use App\Models\Payment;
@@ -27,6 +28,7 @@ class PaymentFactory extends Factory
             'payment_method' => PaymentMethod::Cash,
             'reference_number' => null,
             'status' => PaymentStatus::Completed,
+            'source' => PaymentSource::Manual,
             'payment_date' => now(),
         ];
     }

@@ -4,15 +4,21 @@ namespace App\Service;
 
 use App\Enums\BillingStatus;
 use App\Enums\CorrectionSubject;
+use App\Enums\PaymentAttemptStatus;
+use App\Enums\PaymentMethod;
+use App\Enums\PaymentSource;
 use App\Enums\PaymentStatus;
+use App\Enums\RequestPurpose;
 use App\Models\Billing;
 use App\Models\BloodRequest;
 use App\Models\CorrectionRequest;
 use App\Models\Payment;
+use App\Models\PaymentAttempt;
 use App\Models\User;
-use App\Repository\BloodComponentRepository;
 use App\Repository\BloodRequestRepository;
 use App\Support\CorrectionValues;
+use App\Support\DocumentNumbering;
+use App\Support\Money;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\QueryException;
@@ -32,23 +38,36 @@ use Illuminate\Validation\ValidationException;
  * than deferred until money appears. It is held per facility so that one centre
  * pricing its components cannot start blocking releases at the other three.
  *
+ * Who owes. Only the patient or watcher of a Patient Transfusion owes money in
+ * RedAgos (project owner, 2026-10-10). A weekly (replenishment) order is
+ * raised as StatementOnly: the hospital receives the statement, nothing is
+ * collected against it here, and it does not hold units back.
+ *
  * Locking. Every change to a statement or to one of its payments runs inside
  * one transaction, and the blood request is the point they serialise on:
- * locks are always taken request, then billing, then payment. That is the
- * order release() already holds the request before it reads the statement, so
- * a payment, a subsidy, a reallocation, a correction and a release on one
- * request take turns instead of overwriting each other. A statement's status
- * is always worked out from the billing row and payments as they stand under
- * the lock, never from a model loaded before it — a stale one would put back a
- * status another writer had just changed. lockForMutation() takes the first
- * two locks; the writers that need a payment lock it after.
+ * locks are always taken request, then billing, then attempt or payment, then
+ * a document-number counter last. That is the order release() already holds
+ * the request before it reads the statement, so a payment, a subsidy, a
+ * reallocation, a correction, a checkout, a gateway confirmation and a release
+ * on one request take turns instead of overwriting each other. A statement's
+ * status is always worked out from the billing row and payments as they stand
+ * under the lock, never from a model loaded before it — a stale one would put
+ * back a status another writer had just changed. lockForMutation() takes the
+ * first two locks.
+ *
+ * Money. Every total, sum and comparison here is in whole centavos (see
+ * App\Support\Money), never a float. Amounts go back to decimals only to be
+ * stored, and to floats only where an existing response or audit field has
+ * always been a JSON number.
  */
 class BillingService
 {
     public function __construct(
         private readonly AuditLogger $auditLogger,
-        private readonly BloodComponentRepository $bloodComponentRepository,
-        private readonly BloodRequestRepository $bloodRequestRepository
+        private readonly BloodRequestRepository $bloodRequestRepository,
+        private readonly StatementFigures $figures,
+        private readonly StatementRevisionService $statements,
+        private readonly PaymentReceiptService $receipts
     ) {}
 
     /**
@@ -81,10 +100,15 @@ class BillingService
      * request that grows from two held units to five needs its one statement
      * to grow with it rather than a second statement it cannot have.
      *
-     * The held count is read from the allocations rather than passed in. Once a
-     * request can ask for several components at different prices, a bare number
-     * of units no longer determines what is owed — five units of platelets and
-     * five of packed cells are two different totals.
+     * The held units are read from the allocations rather than passed in. Once
+     * a request can ask for several components at different prices, a bare
+     * number of units no longer determines what is owed — five units of
+     * platelets and five of packed cells are two different totals.
+     *
+     * A total that changes while a gateway checkout is open supersedes that
+     * checkout: the payer would otherwise be paying a figure the statement no
+     * longer shows. One already awaiting verification is left alone, because
+     * money may already be on its way.
      *
      * Must be called inside a transaction that already holds the request lock,
      * as the allocating one does. The statement is then locked here, which
@@ -92,8 +116,8 @@ class BillingService
      */
     public function syncFor(BloodRequest $request, User $actor): Billing
     {
-        $claimedUnits = $this->claimedPerComponent($request);
-        $total = $this->totalFor($request, $claimedUnits);
+        $lines = $this->figures->linesFor($request);
+        $total = $this->figures->totalOf($lines);
 
         $billing = $request->billing()->lockForUpdate()->first();
 
@@ -102,15 +126,18 @@ class BillingService
                 'request_id' => $request->id,
                 'billed_by' => $actor->id,
                 'billing_date' => now(),
-                'total_amount' => $total,
-                'status' => $this->settlementFor($total, 0.0),
+                'total_amount' => Money::toDecimal($total),
+                'status' => $this->collectsPayment($request)
+                    ? $this->settlementFor($total, 0)
+                    : BillingStatus::StatementOnly,
             ]);
 
             $this->auditLogger->record($actor, 'billing.raised', $billing, [
                 'request_id' => $request->id,
-                'total_amount' => $total,
-                'units' => array_sum($claimedUnits),
-                'subsidised' => $total === 0.0,
+                'total_amount' => Money::toFloat($total),
+                'units' => $this->figures->unitsOf($lines),
+                'subsidised' => $total === 0,
+                'statement_only' => $billing->status === BillingStatus::StatementOnly,
             ]);
 
             return $billing;
@@ -125,78 +152,23 @@ class BillingService
             return $billing;
         }
 
-        $collected = $this->collectedFor($billing);
+        $changed = Money::toCentavos($billing->total_amount) !== $total;
 
-        $billing->total_amount = $total;
-        $billing->status = $this->settlementFor($total, $collected);
-        $billing->save();
+        $billing->total_amount = Money::toDecimal($total);
+        $collected = $this->applyCollected($billing);
+
+        if ($changed) {
+            $this->supersedeOpenCheckouts($billing, 'statement_changed');
+        }
 
         $this->auditLogger->record($actor, 'billing.updated', $billing, [
             'request_id' => $request->id,
-            'total_amount' => $total,
-            'collected' => $collected,
-            'units' => array_sum($claimedUnits),
+            'total_amount' => Money::toFloat($total),
+            'collected' => Money::toFloat($collected),
+            'units' => $this->figures->unitsOf($lines),
         ]);
 
         return $billing;
-    }
-
-    /**
-     * Count the units currently claimed against each of a request's components.
-     *
-     * Keyed by component id rather than line id: two lines cannot name the same
-     * component, and the price is a property of the component.
-     *
-     * @return array<int, int>
-     */
-    private function claimedPerComponent(BloodRequest $request): array
-    {
-        $lineComponents = $request->items->pluck('component_id', 'id');
-
-        return $request->allocations()->claiming()
-            ->groupBy('request_item_id')
-            ->selectRaw('request_item_id, COUNT(*) as held')
-            ->pluck('held', 'request_item_id')
-            ->reduce(function (array $carry, $held, $itemId) use ($lineComponents): array {
-                $componentId = $lineComponents[$itemId] ?? null;
-
-                if ($componentId !== null) {
-                    $carry[$componentId] = ($carry[$componentId] ?? 0) + (int) $held;
-                }
-
-                return $carry;
-            }, []);
-    }
-
-    /**
-     * Price a request's held units at the fulfilling facility's own rates.
-     *
-     * Priced by the facility fulfilling the request, not by the shared
-     * blood_components row. target_facility_id, never facility_id: the former
-     * is who was asked and supplies the blood, the latter is the hospital that
-     * asked. An unset price is zero, which leaves the payment-before-release
-     * gate off — so one centre setting a price can no longer start blocking
-     * releases at another.
-     *
-     * @param  array<int, int>  $claimedUnits
-     */
-    private function totalFor(BloodRequest $request, array $claimedUnits): float
-    {
-        if ($request->target_facility_id === null) {
-            return 0.0;
-        }
-
-        $total = 0.0;
-
-        foreach ($claimedUnits as $componentId => $units) {
-            $unitPrice = (float) ($this->bloodComponentRepository
-                ->setting((int) $request->target_facility_id, (int) $componentId)
-                ?->price ?? 0);
-
-            $total += $unitPrice * $units;
-        }
-
-        return round($total, 2);
     }
 
     /**
@@ -255,6 +227,7 @@ class BillingService
                 'reference_number' => $request->reference_number,
                 'status' => $request->status->value,
                 'status_label' => $request->status->label(),
+                'request_purpose' => $request->request_purpose->value,
                 'requesting_facility' => $request->requestingFacility?->name,
                 'blood_type' => $request->bloodType?->code,
                 'quantity' => $request->quantity,
@@ -276,6 +249,10 @@ class BillingService
      * alone: a part-paid statement that is then subsidised has a refund to
      * settle outside this system, and quietly deleting the payment rows would
      * destroy the only record that it was ever received.
+     *
+     * A statement-only one has nothing collected in RedAgos to waive, and a
+     * statement with a checkout open could be paid while it is being waived;
+     * both are refused.
      *
      * @return array<string, mixed>
      */
@@ -302,7 +279,17 @@ class BillingService
                 );
             }
 
-            $charged = (float) $statement->total_amount;
+            if ($statement->status === BillingStatus::StatementOnly) {
+                throw $this->refuse(
+                    409,
+                    'billing_not_collectible',
+                    'This weekly order is billed by statement only; there is nothing collected in RedAgos to waive.'
+                );
+            }
+
+            $this->assertNoOpenCheckout($statement);
+
+            $charged = Money::toCentavos($statement->total_amount);
             $collected = $this->collectedFor($statement);
 
             $statement->total_amount = 0;
@@ -313,13 +300,13 @@ class BillingService
                 'request_id' => $statement->request_id,
                 // The figure that was waived, kept because the statement no longer
                 // carries it and a subsidy nobody can size cannot be reported on.
-                'amount_waived' => $charged,
-                'already_collected' => $collected,
+                'amount_waived' => Money::toFloat($charged),
+                'already_collected' => Money::toFloat($collected),
                 'reason' => $reason,
             ], fn ($value): bool => $value !== null));
 
             return [
-                'message' => $collected > 0.0
+                'message' => $collected > 0
                     ? 'Statement covered by the government subsidy. Payments already recorded are unchanged.'
                     : 'Statement covered by the government subsidy.',
                 'billing' => $this->format($statement->fresh()),
@@ -333,7 +320,8 @@ class BillingService
      * The Capstone states twice that no unit leaves without confirmed payment.
      * Under the present subsidy every statement is zero and already paid, so
      * this passes silently — but it is the real gate, not a placeholder, and it
-     * starts refusing the moment a component carries a price.
+     * starts refusing the moment a component carries a price. A weekly order's
+     * statement-only statement clears it, by owner decision.
      *
      * Reads the statement without locking it: its caller, release(), already
      * holds the request, and every writer takes the request first, so what it
@@ -363,45 +351,195 @@ class BillingService
     }
 
     /**
-     * Record a settlement against a statement.
+     * Issue a Statement of Account for one of this centre's requests, or show the current one again.
+     *
+     * Freezes the statement as it stands into a numbered revision. Issuing
+     * again while nothing has changed hands back the same revision rather than
+     * consuming another number.
+     *
+     * @return array<string, mixed>
+     */
+    public function issueStatement(User $staff, int $requestId): array
+    {
+        [$revision, $created] = DocumentNumbering::transaction(function () use ($staff, $requestId): array {
+            [$request, $billing] = $this->lockForMutation($requestId, (int) $staff->facility_id);
+
+            if ($billing->status === BillingStatus::Void) {
+                throw $this->refuse(409, 'billing_void', 'This statement has been voided, so no statement can be issued for it.');
+            }
+
+            return $this->statements->issueOrReuse($request, $billing, $staff, 'statement');
+        });
+
+        if ($created) {
+            $this->auditLogger->record($staff, 'billing.statement_issued', $revision->billing, [
+                'revision_id' => $revision->id,
+                'document_number' => $revision->document_number,
+                'revision_number' => $revision->revision_number,
+            ]);
+        }
+
+        return [
+            'message' => $created
+                ? 'Statement issued.'
+                : 'Nothing has changed since the last statement, so it is shown again.',
+            'created' => $created,
+            'revision' => $this->statements->format($revision),
+        ];
+    }
+
+    /**
+     * Record money billing staff received against a statement.
+     *
+     * Always a completed, manual payment naming its recorder: an attempt that
+     * may still fail is a payment provider's, not this form's. Refused when
+     * the statement takes no payment at all (see assertAcceptsPayment()), and
+     * while a gateway checkout is open on it, which could collect the same
+     * balance a second time.
+     *
+     * Pinned to the statement revision it was made against — the latest, or a
+     * new one if the bill or balance has moved since — and issued its receipt
+     * in the same transaction.
      *
      * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
      */
     public function recordPayment(User $actor, Billing $billing, array $payload): array
     {
-        return DB::transaction(function () use ($actor, $billing, $payload): array {
+        return DocumentNumbering::transaction(function () use ($actor, $billing, $payload): array {
             // Worked out from the locked statement, not the one the caller
             // loaded: a correction approved a moment ago may have changed
             // what has been collected, and this must not put the old status back.
-            [, $statement] = $this->lockForMutation((int) $billing->request_id, (int) $actor->facility_id);
+            [$request, $statement] = $this->lockForMutation((int) $billing->request_id, (int) $actor->facility_id);
+
+            $this->assertAcceptsPayment($statement);
+            $this->assertNoOpenCheckout($statement);
+
+            $balanceBefore = $this->outstandingFor($statement);
+            [$revision] = $this->statements->issueOrReuse($request, $statement, $actor, 'payment');
 
             $payment = Payment::query()->create([
                 'billing_id' => $statement->id,
-                'amount_paid' => $payload['amount_paid'],
+                'billing_revision_id' => $revision->id,
+                'amount_paid' => Money::toDecimal(Money::toCentavos($payload['amount_paid'])),
                 'payment_method' => $payload['payment_method'],
                 'reference_number' => $payload['reference_number'] ?? null,
-                'status' => $payload['status'] ?? PaymentStatus::Completed,
+                'status' => PaymentStatus::Completed,
+                'source' => PaymentSource::Manual,
+                'recorded_by' => $actor->id,
                 'payment_date' => now(),
             ]);
 
-            $collected = $this->collectedFor($statement);
+            $collected = $this->applyCollected($statement);
 
-            $statement->status = $this->settlementFor((float) $statement->total_amount, $collected);
-            $statement->save();
+            $receipt = $this->receipts->issue(
+                $payment,
+                $request,
+                $revision,
+                $balanceBefore,
+                $actor,
+                $payload['payer_name'] ?? null
+            );
 
             $this->auditLogger->record($actor, 'billing.payment_recorded', $statement, [
                 'payment_id' => $payment->id,
-                'amount_paid' => (float) $payment->amount_paid,
+                'amount_paid' => Money::toFloat(Money::toCentavos($payment->amount_paid)),
                 'payment_method' => $payment->payment_method->value,
-                'collected' => $collected,
+                'collected' => Money::toFloat($collected),
                 'status' => $statement->status->value,
+                'receipt_number' => $receipt->receipt_number,
             ]);
 
             return [
                 'message' => 'Payment recorded.',
                 'billing' => $this->format($statement->fresh()),
+                'receipt' => $this->receipts->format($receipt),
             ];
+        });
+    }
+
+    /**
+     * Record the payment a verified gateway checkout collected, exactly once.
+     *
+     * Called only after the server re-fetched the provider's session and found
+     * it completed for this attempt's reference, currency and amount. Locks the
+     * request, the statement and the attempt in that order; an attempt already
+     * completed is left as it is, so a repeated or late confirmation never
+     * records the money twice (payments.payment_attempt_id is unique as well).
+     *
+     * Money that moved is always recorded. If the statement was decided, settled
+     * or changed while the checkout was open, the payment still goes in, the
+     * decided status is kept, and the attempt is flagged for a person to review
+     * — a refund or an overpayment is theirs to settle.
+     */
+    public function confirmGatewayPayment(PaymentAttempt $attempt, string $providerPaymentId): ?Payment
+    {
+        $attempt->loadMissing('billing.request');
+        $request = $attempt->billing->request;
+
+        return DocumentNumbering::transaction(function () use ($attempt, $request, $providerPaymentId): ?Payment {
+            [$lockedRequest, $statement] = $this->lockForMutation((int) $request->id, (int) $request->target_facility_id);
+
+            $locked = PaymentAttempt::query()->whereKey($attempt->id)->lockForUpdate()->firstOrFail();
+
+            if ($locked->status === PaymentAttemptStatus::Completed) {
+                return $locked->payment;
+            }
+
+            $balanceBefore = Money::toCentavos($statement->total_amount) - $this->collectedFor($statement);
+
+            $reviewReason = match (true) {
+                ! $statement->status->isCollectible() => 'statement_settled_by_decision',
+                $balanceBefore <= 0 => 'nothing_outstanding',
+                ! $locked->status->isOpen() => 'late_completion',
+                $balanceBefore !== $locked->amount_centavos => 'statement_changed',
+                default => null,
+            };
+
+            $payment = Payment::query()->create([
+                'billing_id' => $statement->id,
+                'billing_revision_id' => $locked->billing_revision_id,
+                'payment_attempt_id' => $locked->id,
+                'amount_paid' => Money::toDecimal($locked->amount_centavos),
+                'payment_method' => PaymentMethod::Gcash,
+                'reference_number' => $providerPaymentId,
+                'status' => PaymentStatus::Completed,
+                'source' => PaymentSource::Gateway,
+                'provider' => $locked->provider,
+                'payment_date' => now(),
+            ]);
+
+            $collected = $this->applyCollected($statement);
+
+            $receipt = $this->receipts->issue(
+                $payment,
+                $lockedRequest,
+                $locked->revision,
+                $balanceBefore,
+                null,
+                $locked->payer_name
+            );
+
+            $locked->fill([
+                'status' => PaymentAttemptStatus::Completed,
+                'completed_at' => now(),
+                'provider_payment_id' => $providerPaymentId,
+                'next_verification_at' => null,
+                'review_required_at' => $reviewReason !== null ? now() : null,
+                'review_reason' => $reviewReason,
+            ])->save();
+
+            $this->auditLogger->record(null, 'billing.payment_confirmed', $statement, [
+                'payment_id' => $payment->id,
+                'payment_attempt_id' => $locked->id,
+                'amount_paid' => Money::toFloat($locked->amount_centavos),
+                'collected' => Money::toFloat($collected),
+                'status' => $statement->status->value,
+                'receipt_number' => $receipt->receipt_number,
+                'review_reason' => $reviewReason,
+            ]);
+
+            return $payment;
         });
     }
 
@@ -413,6 +551,9 @@ class BillingService
      * is not a way to turn money received into money refused. The statement is
      * then re-settled from what it has now collected, unless somebody decided
      * it (void, subsidised), which a payment never overrides.
+     *
+     * The payment's receipt, if it has one, is voided and replaced by a receipt
+     * showing the corrected figures, so the original stays on record.
      *
      * A correction approved after the units were released can reopen the
      * statement. That is deliberate: the figure on the statement has to be true.
@@ -430,6 +571,10 @@ class BillingService
     {
         if ($lockedBilling->status === BillingStatus::Void) {
             throw $this->refuse(409, 'billing_void', 'This statement has been voided, so its payments can no longer be corrected.');
+        }
+
+        if ($lockedPayment->source === PaymentSource::Gateway) {
+            throw $this->refuse(409, 'gateway_payment_not_correctable', 'A payment confirmed by the payment provider carries the provider\'s figures and cannot be corrected.');
         }
 
         // A correction carries the whole corrected payload, so what is audited
@@ -466,13 +611,11 @@ class BillingService
 
         $statusFrom = $lockedBilling->status;
 
-        if (! $statusFrom->isSettledByDecision()) {
-            $lockedBilling->status = $this->settlementFor(
-                (float) $lockedBilling->total_amount,
-                $this->collectedFor($lockedBilling)
-            );
-            $lockedBilling->save();
-        }
+        $this->applyCollected($lockedBilling);
+
+        $receipt = $fields === []
+            ? null
+            : $this->receipts->reissue($lockedPayment, $lockedRequest, $actor, 'Replaced after an approved correction to the payment.');
 
         $this->auditLogger->record($actor, 'billing.payment_corrected', $lockedBilling, [
             'request_id' => $lockedRequest->id,
@@ -481,6 +624,7 @@ class BillingService
             'status_from' => $statusFrom->value,
             'status_to' => $lockedBilling->status->value,
             'request_status' => $lockedRequest->status->value,
+            'receipt_number' => $receipt?->receipt_number,
         ]);
     }
 
@@ -494,13 +638,15 @@ class BillingService
      *
      * can_request_correction and pending_correction describe the viewer and are
      * there to draw the screen. CorrectionService::request() enforces the same
-     * rules on its own.
+     * rules on its own. A gateway payment is never correctable.
      *
      * @return array<int, array<string, mixed>>
      */
     public function payments(Billing $billing, User $viewer): array
     {
-        $payments = $billing->payments()->orderBy('payment_date')->orderBy('id')->get();
+        $payments = $billing->payments()
+            ->with(['receipts' => fn ($query) => $query->whereNull('voided_at')])
+            ->orderBy('payment_date')->orderBy('id')->get();
 
         $pending = CorrectionRequest::query()
             ->where('subject', CorrectionSubject::Payment->value)
@@ -514,18 +660,22 @@ class BillingService
 
         return $payments->map(function (Payment $payment) use ($pending, $mayFile): array {
             $isPending = in_array($payment->id, $pending, true);
+            $receipt = $payment->receipts->first();
 
             return [
                 'id' => $payment->id,
-                'amount_paid' => (float) $payment->amount_paid,
+                'amount_paid' => Money::toFloat(Money::toCentavos($payment->amount_paid)),
                 'payment_method' => $payment->payment_method->value,
                 'payment_method_label' => $payment->payment_method->label(),
                 'reference_number' => $payment->reference_number,
                 'status' => $payment->status->value,
                 'status_label' => $payment->status->label(),
+                'source' => $payment->source->value,
+                'source_label' => $payment->source->label(),
                 'payment_date' => $payment->payment_date?->toIso8601String(),
+                'receipt' => $receipt ? $this->receipts->format($receipt) : null,
                 'pending_correction' => $isPending,
-                'can_request_correction' => $mayFile && ! $isPending,
+                'can_request_correction' => $mayFile && ! $isPending && $payment->source === PaymentSource::Manual,
             ];
         })->all();
     }
@@ -540,12 +690,14 @@ class BillingService
         return [
             'id' => $billing->id,
             'request_id' => $billing->request_id,
-            'total_amount' => (float) $billing->total_amount,
-            'collected' => $this->collectedFor($billing),
+            'total_amount' => Money::toFloat(Money::toCentavos($billing->total_amount)),
+            'collected' => Money::toFloat($this->collectedFor($billing)),
             'status' => $billing->status->value,
             'status_label' => $billing->status->label(),
             'is_zero_rated' => $billing->isZeroRated(),
             'is_subsidised' => $billing->status === BillingStatus::Subsidised,
+            'is_statement_only' => $billing->status === BillingStatus::StatementOnly,
+            'collects_payment' => $billing->status->isCollectible(),
             // Distinguishes "nothing was owed" from "the money came in", which
             // a status alone cannot once a subsidy zeroes the total.
             'represents_collected_money' => $billing->status->representsCollectedMoney(),
@@ -555,30 +707,163 @@ class BillingService
     }
 
     /**
-     * Sum what a statement has actually collected.
-     *
-     * Only completed payments count. A failed or refunded attempt is part of
-     * the trail, never part of the total.
+     * What is left to collect on a statement, in centavos. Zero for one that collects nothing.
      */
-    private function collectedFor(Billing $billing): float
+    public function outstandingFor(Billing $billing): int
     {
-        return (float) $billing->payments()->collected()->sum('amount_paid');
+        if (! $billing->status->isCollectible()) {
+            return 0;
+        }
+
+        return max(Money::toCentavos($billing->total_amount) - $this->collectedFor($billing), 0);
     }
 
     /**
-     * Decide a statement's settlement state from what it asks and what it has.
+     * Refuse a payment or checkout against a statement that takes none.
+     *
+     * A voided or subsidised statement was settled by a decision, and a
+     * payment would have overturned it. A statement-only one is a weekly order
+     * settled outside RedAgos. A statement with nothing outstanding — paid in
+     * full, or raised at zero — has nothing to pay. Judged on the locked row,
+     * like everything else a payment changes.
+     */
+    public function assertAcceptsPayment(Billing $lockedBilling): void
+    {
+        if ($lockedBilling->status === BillingStatus::Void) {
+            throw $this->refuse(
+                409,
+                'billing_settled_by_decision',
+                'This statement has been voided, so no payment can be recorded against it.'
+            );
+        }
+
+        if ($lockedBilling->status === BillingStatus::Subsidised) {
+            throw $this->refuse(
+                409,
+                'billing_settled_by_decision',
+                'This statement is covered by the government subsidy, so no payment can be recorded against it.'
+            );
+        }
+
+        if ($lockedBilling->status === BillingStatus::StatementOnly) {
+            throw $this->refuse(
+                409,
+                'billing_not_collectible',
+                'This weekly order is billed by statement only; no payment is recorded against it in RedAgos.'
+            );
+        }
+
+        if ($this->outstandingFor($lockedBilling) <= 0) {
+            throw $this->refuse(
+                409,
+                'billing_settled',
+                'Nothing is outstanding on this statement.'
+            );
+        }
+    }
+
+    /**
+     * Sum what a statement has actually collected, in centavos.
+     */
+    public function collectedFor(Billing $billing): int
+    {
+        return $this->figures->collectedFor($billing);
+    }
+
+    /**
+     * Whether a request's statement collects payment in RedAgos at all.
+     *
+     * Only a Patient Transfusion does: its patient or watcher owes the bill. A
+     * replenishment request is a weekly order, billed by statement only.
+     */
+    private function collectsPayment(BloodRequest $request): bool
+    {
+        return $request->request_purpose === RequestPurpose::PatientTransfusion;
+    }
+
+    /**
+     * Refuse while a gateway checkout is open on the statement.
+     *
+     * Taking cash or waiving the charge while the payer may be paying online
+     * would collect, or forgive, the same balance twice.
+     */
+    private function assertNoOpenCheckout(Billing $lockedBilling): void
+    {
+        $open = PaymentAttempt::query()
+            ->where('billing_id', $lockedBilling->id)
+            ->open()
+            ->exists();
+
+        if ($open) {
+            throw $this->refuse(
+                409,
+                'payment_in_progress',
+                'A GCash checkout is open on this statement. Wait for it to finish, or supersede it, before taking another payment.'
+            );
+        }
+    }
+
+    /**
+     * Supersede the checkouts a changed statement would otherwise let a payer pay at the old figure.
+     *
+     * Only creating and active ones: an attempt awaiting verification may
+     * already have collected money, so it keeps running to its own end.
+     */
+    private function supersedeOpenCheckouts(Billing $lockedBilling, string $reason): void
+    {
+        PaymentAttempt::query()
+            ->where('billing_id', $lockedBilling->id)
+            ->whereIn('status', [PaymentAttemptStatus::Creating, PaymentAttemptStatus::Active])
+            ->update([
+                'status' => PaymentAttemptStatus::Superseded->value,
+                'failure_code' => $reason,
+                'next_verification_at' => now(),
+                'updated_at' => now(),
+            ]);
+    }
+
+    /**
+     * Re-settle a locked statement from what it has collected, unless its status is not money's to decide.
+     *
+     * Void and Subsidised are decisions, and StatementOnly is settled outside
+     * RedAgos; no payment, correction or re-pricing changes those. Saves the
+     * statement either way, so a caller that has just changed its total has
+     * that change stored too.
+     *
+     * Must be called on a statement locked under lockForMutation()'s order.
+     *
+     * @return int What the statement has collected, in centavos.
+     */
+    private function applyCollected(Billing $lockedBilling): int
+    {
+        $collected = $this->collectedFor($lockedBilling);
+
+        if ($lockedBilling->status->isCollectible()) {
+            $lockedBilling->status = $this->settlementFor(
+                Money::toCentavos($lockedBilling->total_amount),
+                $collected
+            );
+        }
+
+        $lockedBilling->save();
+
+        return $collected;
+    }
+
+    /**
+     * Decide a statement's settlement state from what it asks and what it has, both in centavos.
      *
      * A zero total is Paid rather than Unpaid: nothing is owed, so nothing is
      * outstanding, and treating it as unpaid would block every release under
      * the present subsidy.
      */
-    private function settlementFor(float $total, float $collected): BillingStatus
+    private function settlementFor(int $total, int $collected): BillingStatus
     {
-        if ($total <= 0.0 || $collected >= $total) {
+        if ($total <= 0 || $collected >= $total) {
             return BillingStatus::Paid;
         }
 
-        return $collected > 0.0 ? BillingStatus::Partial : BillingStatus::Unpaid;
+        return $collected > 0 ? BillingStatus::Partial : BillingStatus::Unpaid;
     }
 
     /**

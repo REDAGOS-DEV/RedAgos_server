@@ -9,6 +9,7 @@ use App\Enums\ClearanceKind;
 use App\Enums\CorrectionSubject;
 use App\Enums\CorrectionTarget;
 use App\Enums\DonationStatus;
+use App\Enums\PaymentSource;
 use App\Models\Billing;
 use App\Models\BloodCollection;
 use App\Models\BloodRequest;
@@ -563,6 +564,13 @@ class CorrectionService
         if ($subject === CorrectionSubject::Payment) {
             if ($locked[1]->status === BillingStatus::Void) {
                 throw $this->refuse(409, 'billing_void', 'This statement has been voided, so its payments can no longer be corrected.');
+            }
+
+            // A gateway payment's figures are the provider's, not anybody's
+            // entry, so there is no mistake of ours to correct; a dispute goes
+            // to refund. The database refuses the update as well.
+            if ($locked[2]->source === PaymentSource::Gateway) {
+                throw $this->refuse(409, 'gateway_payment_not_correctable', 'A payment confirmed by the payment provider carries the provider\'s figures and cannot be corrected.');
             }
 
             return;

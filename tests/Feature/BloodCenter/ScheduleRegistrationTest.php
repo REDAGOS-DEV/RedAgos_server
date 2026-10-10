@@ -83,6 +83,26 @@ class ScheduleRegistrationTest extends TestCase
         $this->assertSame(10, $event->expiresAt);
     }
 
+    public function test_payment_reconciliation_runs_every_minute_and_recovers_from_a_crashed_run(): void
+    {
+        // The second net under GCash webhooks: a watcher is waiting at the
+        // counter, so a lost webhook must be found within minutes.
+        $event = $this->eventFor('payments:reconcile');
+
+        $this->assertSame('* * * * *', $event->expression);
+        $this->assertTrue($event->withoutOverlapping);
+        $this->assertTrue($event->onOneServer);
+        $this->assertSame(10, $event->expiresAt);
+    }
+
+    public function test_webhook_record_retention_runs_daily(): void
+    {
+        $event = $this->eventFor('payments:purge-events');
+
+        $this->assertSame('15 1 * * *', $event->expression);
+        $this->assertTrue($event->onOneServer);
+    }
+
     /**
      * The registered sweep, or a failed test saying it is missing.
      */

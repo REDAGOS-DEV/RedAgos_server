@@ -3,6 +3,7 @@
 use App\Http\Controllers\AdminPrivilegeController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\BloodCenterBillingController;
+use App\Http\Controllers\BloodCenterCheckoutController;
 use App\Http\Controllers\BloodCenterCollectionController;
 use App\Http\Controllers\BloodCenterComponentController;
 use App\Http\Controllers\BloodCenterCorrectionController;
@@ -12,10 +13,12 @@ use App\Http\Controllers\BloodCenterFacilityController;
 use App\Http\Controllers\BloodCenterInventoryController;
 use App\Http\Controllers\BloodCenterLaboratoryController;
 use App\Http\Controllers\BloodCenterProfileController;
+use App\Http\Controllers\BloodCenterReceiptController;
 use App\Http\Controllers\BloodCenterReferenceController;
 use App\Http\Controllers\BloodCenterReferralController;
 use App\Http\Controllers\BloodCenterRequestController;
 use App\Http\Controllers\BloodCenterStaffController;
+use App\Http\Controllers\BloodCenterStatementController;
 use App\Http\Controllers\BloodCenterWalkInController;
 use App\Http\Controllers\BookingCatalogController;
 use App\Http\Controllers\DonorAppointmentController;
@@ -31,6 +34,7 @@ use App\Http\Controllers\FacilityApprovalController;
 use App\Http\Controllers\FacilityManagementController;
 use App\Http\Controllers\FacilityNotificationController;
 use App\Http\Controllers\HospitalAvailabilityController;
+use App\Http\Controllers\HospitalBillingController;
 use App\Http\Controllers\HospitalBloodRequestController;
 use App\Http\Controllers\HospitalDirectDistributionController;
 use App\Http\Controllers\HospitalInventoryController;
@@ -41,6 +45,7 @@ use App\Http\Controllers\HospitalWeeklyRequestController;
 use App\Http\Controllers\PasswordResetController;
 use App\Http\Controllers\StockThresholdController;
 use App\Http\Controllers\UserController;
+use App\Http\Controllers\XenditWebhookController;
 use App\Http\Resources\UserResource;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -157,6 +162,13 @@ Route::middleware('auth:sanctum')->group(function (): void {
 });
 
 Route::get('/support/contact-info', fn () => response()->json(config('donation.support')));
+
+// Xendit's webhooks. Public by necessity — Xendit is the caller — and admitted
+// only with the account's callback token, compared in constant time. The body
+// is stored and queued; nothing is recorded until the server has re-fetched
+// the session from Xendit itself.
+Route::post('/webhooks/xendit', [XenditWebhookController::class, 'store'])
+    ->middleware(['throttle:120,1', 'xendit.callback']);
 
 // There is deliberately no public facility registration route here. Blood
 // centres and hospital blood banks are created by a Super Admin through
@@ -374,7 +386,55 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             Route::post('/{bloodRequest}/subsidy', [BloodCenterBillingController::class, 'storeSubsidy'])
                 ->middleware('can:billing.record_payment')
                 ->whereNumber('bloodRequest');
+
+            // Statements of Account: frozen revisions of the statement. Reading
+            // them is billing.view, like the statement; issuing one consumes a
+            // document number, so it is the Billing department's.
+            Route::get('/{bloodRequest}/statements', [BloodCenterStatementController::class, 'index'])
+                ->middleware('can:billing.view')
+                ->whereNumber('bloodRequest');
+
+            Route::post('/{bloodRequest}/statements', [BloodCenterStatementController::class, 'store'])
+                ->middleware(['can:billing.record_payment', 'throttle:30,1'])
+                ->whereNumber('bloodRequest');
+
+            // GCash checkouts billing staff open at the counter for a patient's
+            // watcher. Taking money electronically is taking money, so the same
+            // ability as recording it. Resolving a checkout flagged for review
+            // is narrowed further to the Billing Supervisor in the service.
+            Route::post('/{bloodRequest}/checkout', [BloodCenterCheckoutController::class, 'store'])
+                ->middleware(['can:billing.record_payment', 'throttle:20,1'])
+                ->whereNumber('bloodRequest');
+
+            Route::get('/{bloodRequest}/attempts', [BloodCenterCheckoutController::class, 'index'])
+                ->middleware('can:billing.record_payment')
+                ->whereNumber('bloodRequest');
+
+            Route::post('/{bloodRequest}/attempts/{attempt}/supersede', [BloodCenterCheckoutController::class, 'supersede'])
+                ->middleware('can:billing.record_payment')
+                ->whereNumber('bloodRequest')
+                ->whereNumber('attempt');
+
+            Route::post('/{bloodRequest}/attempts/{attempt}/reverify', [BloodCenterCheckoutController::class, 'reverify'])
+                ->middleware(['can:billing.record_payment', 'throttle:20,1'])
+                ->whereNumber('bloodRequest')
+                ->whereNumber('attempt');
+
+            Route::post('/{bloodRequest}/attempts/{attempt}/close', [BloodCenterCheckoutController::class, 'close'])
+                ->middleware('can:billing.record_payment')
+                ->whereNumber('bloodRequest')
+                ->whereNumber('attempt');
         });
+
+        Route::get('/statements/{revision}/pdf', [BloodCenterStatementController::class, 'pdf'])
+            ->middleware(['can:billing.view', 'throttle:30,1'])
+            ->whereNumber('revision');
+
+        // A receipt names the payment reference, so it is read behind the
+        // ability to record payments, like the payments list.
+        Route::get('/receipts/{receipt}/pdf', [BloodCenterReceiptController::class, 'pdf'])
+            ->middleware(['can:billing.record_payment', 'throttle:30,1'])
+            ->whereNumber('receipt');
 
         Route::get('/notifications', [FacilityNotificationController::class, 'index']);
         Route::get('/notifications/unread-count', [FacilityNotificationController::class, 'unreadCount']);
@@ -730,6 +790,18 @@ Route::middleware(['auth:sanctum', 'role:blood_bank', 'facility.operational'])
         // side of the API rather than beside the release endpoint.
         Route::post('/blood-requests/{bloodRequest}/confirm-receipt', [HospitalBloodRequestController::class, 'confirmReceipt'])
             ->whereNumber('bloodRequest');
+
+        // What the hospital's requests were billed, read only. The patient or
+        // watcher pays at the blood centre, and a weekly order is billed by
+        // statement only, so nothing here takes money.
+        Route::get('/blood-requests/{bloodRequest}/billing', [HospitalBillingController::class, 'show'])
+            ->whereNumber('bloodRequest');
+        Route::get('/statements/{revision}/pdf', [HospitalBillingController::class, 'statementPdf'])
+            ->middleware('throttle:30,1')
+            ->whereNumber('revision');
+        Route::get('/receipts/{receipt}/pdf', [HospitalBillingController::class, 'receiptPdf'])
+            ->middleware('throttle:30,1')
+            ->whereNumber('receipt');
 
         Route::get('/notifications', [FacilityNotificationController::class, 'index']);
         Route::get('/notifications/unread-count', [FacilityNotificationController::class, 'unreadCount']);

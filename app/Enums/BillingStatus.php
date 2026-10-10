@@ -19,6 +19,14 @@ namespace App\Enums;
  * A statement raised at zero because the component carries no price is still
  * Paid: nothing was waived, there was simply nothing to charge. Subsidised is
  * a decision somebody took.
+ *
+ * `StatementOnly` is the statement of a weekly (replenishment) order. The
+ * project owner decided on 2026-10-10 that only the patient or watcher of a
+ * Patient Transfusion owes money in RedAgos; a weekly order is billed to the
+ * hospital by statement and settled outside the system. Nothing is collected
+ * against it, it clears release, and its total still follows the units
+ * reserved. That is a recorded exception to the Capstone rule that no unit
+ * leaves without confirmed payment, for weekly orders only.
  */
 enum BillingStatus: string
 {
@@ -31,6 +39,8 @@ enum BillingStatus: string
     case Void = 'void';
 
     case Subsidised = 'subsidised';
+
+    case StatementOnly = 'statement_only';
 
     /**
      * Get every accepted billing status value.
@@ -53,6 +63,7 @@ enum BillingStatus: string
             self::Paid => 'Paid',
             self::Void => 'Void',
             self::Subsidised => 'Government Subsidised',
+            self::StatementOnly => 'Statement Only',
         };
     }
 
@@ -68,11 +79,14 @@ enum BillingStatus: string
      *
      * `Subsidised` clears for the same reason it exists: the government has met
      * the cost, so nothing is owed by the hospital and the units may go.
+     *
+     * `StatementOnly` clears because nothing is owed in RedAgos at all: the
+     * weekly order is settled outside the system, by owner decision.
      */
     public function clearsRelease(): bool
     {
         return match ($this) {
-            self::Paid, self::Void, self::Subsidised => true,
+            self::Paid, self::Void, self::Subsidised, self::StatementOnly => true,
             self::Unpaid, self::Partial => false,
         };
     }
@@ -84,6 +98,9 @@ enum BillingStatus: string
      * deliberately settled to zero — voiding says it should never have existed,
      * subsidy says the government met the cost, and silently turning either
      * back into an unpaid balance would undo that decision.
+     *
+     * StatementOnly is not settled by decision: its total keeps following the
+     * units reserved, only its status stays put.
      */
     public function isSettledByDecision(): bool
     {
@@ -91,10 +108,27 @@ enum BillingStatus: string
     }
 
     /**
+     * Determine whether money is collected in RedAgos against this statement at all.
+     *
+     * False for a voided or subsidised statement, which somebody settled by
+     * decision, and for a statement-only one, which is settled outside the
+     * system. Only a collectible statement takes a payment or a checkout, and
+     * only its status is worked out from what it has collected.
+     */
+    public function isCollectible(): bool
+    {
+        return match ($this) {
+            self::Unpaid, self::Partial, self::Paid => true,
+            self::Void, self::Subsidised, self::StatementOnly => false,
+        };
+    }
+
+    /**
      * Determine whether money was actually collected against this statement.
      *
      * The distinction a revenue report needs: a subsidised or voided statement
-     * cleared its request without a peso changing hands.
+     * cleared its request without a peso changing hands, and a statement-only
+     * one was settled outside RedAgos.
      */
     public function representsCollectedMoney(): bool
     {

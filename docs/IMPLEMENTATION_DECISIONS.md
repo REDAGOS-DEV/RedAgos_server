@@ -387,10 +387,10 @@ destroy the only record the money was received; the refund is settled outside
 this system. The waived amount and anything already collected are both written
 to the audit log, because the statement itself no longer carries them.
 
-**UNRESOLVED:** The hospital has no view of its own statement. There is no
-`/hospital/.../billing` route, and `useBloodRequestBilling.js` calls endpoints
-that do not exist. A requester currently learns what was charged, or that the
-subsidy covered it, only by being told.
+**RESOLVED (2026-10-10):** ~~The hospital has no view of its own statement.~~
+`GET /hospital/blood-requests/{id}/billing` now gives the requesting hospital a
+read-only view of the statement, its issued Statements of Account and its
+receipts. See "Billing: who owes, statements, receipts and GCash checkout".
 
 ## Fulfillment: the three states a unit actually has
 
@@ -1319,3 +1319,30 @@ stateDiagram-v2
 - The sweep marks an episode announced even when no account is eligible to hear it at that moment.
 - Thresholds are per facility; there is no network-wide or per-storage-location minimum.
 - A hospital's count excludes bags past their date even before the nightly sweep expires them, and a centre's does the same.
+
+## Billing: who owes, statements, receipts and GCash checkout
+
+**SOURCE:** decisions taken by the project owner on 2026-10-10 while planning the Xendit integration. Finance and legal confirmation of the document wording is still outstanding.
+
+**DECISION (who owes):** Only the patient or watcher of a **Patient Transfusion** owes money in RedAgos, walk-ins included. A **weekly (replenishment) order** is billed to the hospital **by statement only**: `BillingStatus::StatementOnly`, raised from the request's purpose when the first unit is reserved. Nothing is collected against it in RedAgos (`409 billing_not_collectible` on payment, subsidy and checkout), its total still follows the units reserved, and it is never counted as outstanding or as collected money.
+
+**CONFLICT, RECORDED (owner-approved exception):** The Capstone states that no unit leaves without confirmed payment. A statement-only statement **clears release**, so weekly orders are dispatched without any payment in RedAgos. This is an explicit exception for weekly orders only, approved by the owner on 2026-10-10; Patient Transfusion statements are gated exactly as before.
+
+**DECISION (who takes the money):** Blood-centre billing staff. Cash at the counter is unchanged. For GCash, billing staff open a Xendit hosted checkout at the counter (`POST /blood-center/billings/{id}/checkout`, behind `billing.record_payment`) and hand the watcher the link or its QR code. Hospital users only read. The watcher's name, typed by staff, is the only personal data sent to Xendit; it is stored encrypted on the attempt and never returned by the API.
+
+**DECISION (merchant of record):** One RedAgos master Xendit account; each blood centre collects into its own XenPlatform sub-account, recorded in `facilities.xendit_sub_account_id` by the operator command `facility:set-xendit-account` and sent as the `for-user-id` header. A centre without one has no gateway checkout; cash is unaffected. `XENDIT_CHECKOUT_ENABLED` (default off) switches off *new* checkouts only — the rollback lever — while webhooks, verification and reconciliation keep running so open checkouts always settle.
+
+**DECISION (documents):** A pre-payment **Statement of Account** (`SOA-{facility}-{seq}`) and a **Payment Acknowledgement Receipt** (`AR-{facility}-{seq}`). Neither is an invoice or a BIR official receipt, and both say so. No VAT line. Numbers come from a per-facility counter (`facility_document_sequences`) locked last in the issuing transaction, so committed numbers are gapless; a persistent collision is refused with `409 document_number_conflict`.
+
+**DECISION (statements are frozen revisions):** `billings` stays the live draft the release gate reads; it must keep changing as units are topped up. Every issued statement, checkout and payment is pinned to an immutable `billing_revisions` row with its lines. A revision is reused while the statement is unchanged and frozen anew when the bill or balance moves. Revisions, their lines, receipts and gateway payments are protected by **database triggers** on PostgreSQL and SQLite, not only by model hooks.
+
+**DECISION (receipts):** One per confirmed payment (cash or gateway), issued in the same transaction, frozen in a snapshot that carries the statement it settles against, the balance before, the amount received and the balance after; a partial payment is marked as such. The only change the database allows is one complete void. An approved correction to a manual payment voids its receipt and issues a replacement naming it. A subsidy issues no receipt.
+
+**DECISION (the payments ledger):** Delete-protected and correction-controlled: no payment is ever deleted; a payment's `source` (`manual | gateway`) never changes; a gateway payment is never updated and cannot be corrected (`409 gateway_payment_not_correctable`); manual payments change only through the approved correction workflow. A manual payment is always `completed` — the `status` input was removed. Money is counted in integer centavos (`App\Support\Money`), never floats.
+
+**DECISION (webhooks):** `POST /api/webhooks/xendit` is admitted only with the account's `x-callback-token` (constant-time compare), stores the delivery's hash and a minimal summary (never the raw body), and queues `ProcessPaymentProviderEvent` on the database queue (retries with backoff; exhausted jobs land in `failed_jobs` and flag the attempt). Nothing is recorded on a webhook's word: the session is re-fetched from Xendit and its reference, currency and amount checked. A claim Xendit has not reflected yet moves the attempt to `awaiting_verification` and is retried until a deadline, then flagged for the Billing Supervisor. `payments:reconcile` (every minute) is the second net. Event names are configuration (`XENDIT_EVENTS_*`), to be confirmed in the sandbox.
+
+**UNRESOLVED / TO CONFIRM:**
+- Finance and legal: whether a Payment Acknowledgement Receipt is sufficient or a BIR official receipt is required; retention of financial records; refunds and overpayment handling (an amount above the balance is still accepted on a manual payment); void approval.
+- Xendit sandbox: GCash activation on the account and acceptance in the Payment Session configuration; the machine names and payload paths of delivered webhooks; which callback token signs sub-account events; whether non-integer peso amounts are accepted.
+- The PostgreSQL trigger SQL has been written but not yet run against PostgreSQL; the test suite runs on SQLite.

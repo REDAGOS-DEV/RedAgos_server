@@ -7,7 +7,9 @@ use App\Http\Requests\ListBillingsRequest;
 use App\Http\Requests\RecordPaymentRequest;
 use App\Models\Billing;
 use App\Models\BloodRequest;
+use App\Models\PaymentAttempt;
 use App\Service\BillingService;
+use App\Service\PaymentCheckoutService;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -22,7 +24,8 @@ use Illuminate\Http\Request;
 class BloodCenterBillingController extends Controller
 {
     public function __construct(
-        private readonly BillingService $billingService
+        private readonly BillingService $billingService,
+        private readonly PaymentCheckoutService $checkout
     ) {}
 
     /**
@@ -43,12 +46,20 @@ class BloodCenterBillingController extends Controller
 
     /**
      * Show the statement for one of this facility's incoming requests.
+     *
+     * With whether a GCash checkout could be opened for it now, and the one
+     * that is open, if any — so the screen can offer the right action.
      */
     public function show(Request $request, int $bloodRequest): JsonResponse
     {
         $billing = $this->billingForFacility($bloodRequest, $request->user()->facility_id);
+        $open = PaymentAttempt::query()->where('billing_id', $billing->id)->open()->latest('id')->first();
 
-        return response()->json(['billing' => $this->billingService->format($billing)]);
+        return response()->json([
+            'billing' => $this->billingService->format($billing),
+            'checkout' => $this->checkout->availability($billing, $request->user()->facility),
+            'open_attempt' => $open ? $this->checkout->format($open) : null,
+        ]);
     }
 
     /**
