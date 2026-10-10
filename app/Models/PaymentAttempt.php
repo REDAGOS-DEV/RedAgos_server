@@ -22,6 +22,7 @@ class PaymentAttempt extends Model
         'billing_revision_id',
         'initiated_by',
         'initiator_facility_id',
+        'cash_session_id',
         'provider',
         'provider_account_id',
         'reference_id',

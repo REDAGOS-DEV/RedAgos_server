@@ -26,6 +26,7 @@ class BillingRevision extends Model
         'document_number',
         'issuing_facility_id',
         'payer_facility_id',
+        'issuer_logo_path',
         'currency',
         'total_amount',
         'collected_at_issue',

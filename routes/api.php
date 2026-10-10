@@ -3,6 +3,7 @@
 use App\Http\Controllers\AdminPrivilegeController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\BloodCenterBillingController;
+use App\Http\Controllers\BloodCenterBillingTransactionController;
 use App\Http\Controllers\BloodCenterCheckoutController;
 use App\Http\Controllers\BloodCenterCollectionController;
 use App\Http\Controllers\BloodCenterComponentController;
@@ -12,6 +13,7 @@ use App\Http\Controllers\BloodCenterDriveController;
 use App\Http\Controllers\BloodCenterFacilityController;
 use App\Http\Controllers\BloodCenterInventoryController;
 use App\Http\Controllers\BloodCenterLaboratoryController;
+use App\Http\Controllers\BloodCenterPosController;
 use App\Http\Controllers\BloodCenterProfileController;
 use App\Http\Controllers\BloodCenterReceiptController;
 use App\Http\Controllers\BloodCenterReferenceController;
@@ -364,8 +366,19 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             Route::get('/', [BloodCenterBillingController::class, 'index'])
                 ->middleware('can:billing.view');
 
+            // Counted on the server from the journal and the statements, never
+            // from the page a browser happens to hold. No references in it.
+            Route::get('/summary', [BloodCenterBillingController::class, 'summary'])
+                ->middleware('can:billing.view');
+
             Route::get('/{bloodRequest}', [BloodCenterBillingController::class, 'show'])
                 ->middleware('can:billing.view')
+                ->whereNumber('bloodRequest');
+
+            // A weekly bill the hospital settled outside RedAgos, recorded with
+            // its reference. No money moves; it is the Billing department's record.
+            Route::post('/{bloodRequest}/settlement', [BloodCenterBillingController::class, 'storeSettlement'])
+                ->middleware(['can:billing.record_payment', 'throttle:30,1'])
                 ->whereNumber('bloodRequest');
 
             // The payments themselves, with their reference numbers. Not part
@@ -435,6 +448,50 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         Route::get('/receipts/{receipt}/pdf', [BloodCenterReceiptController::class, 'pdf'])
             ->middleware(['can:billing.record_payment', 'throttle:30,1'])
             ->whereNumber('receipt');
+
+        // The same receipt as data, for the counter's 80mm print.
+        Route::get('/receipts/{receipt}', [BloodCenterReceiptController::class, 'show'])
+            ->middleware('can:billing.record_payment')
+            ->whereNumber('receipt');
+
+        // The billing journal. Its rows carry payment references, so it is
+        // read behind the ability to record payments, like the payments list.
+        Route::get('/billing-transactions', [BloodCenterBillingTransactionController::class, 'index'])
+            ->middleware('can:billing.record_payment');
+
+        Route::get('/billing-transactions/export', [BloodCenterBillingTransactionController::class, 'export'])
+            ->middleware(['can:billing.record_payment', 'throttle:10,1']);
+
+        // The billing counter: cash shifts and finding a patient's bill. Taking
+        // money at the counter is billing.record_payment; overseeing every
+        // cashier's shifts is narrowed to the Billing Supervisor in the service.
+        Route::prefix('pos')->middleware('can:billing.record_payment')->group(function (): void {
+            Route::get('/session', [BloodCenterPosController::class, 'current']);
+
+            Route::get('/sessions', [BloodCenterPosController::class, 'index']);
+
+            Route::post('/sessions', [BloodCenterPosController::class, 'open'])
+                ->middleware('throttle:20,1');
+
+            Route::get('/sessions/{session}', [BloodCenterPosController::class, 'show'])
+                ->whereNumber('session');
+
+            Route::post('/sessions/{session}/close', [BloodCenterPosController::class, 'close'])
+                ->middleware('throttle:20,1')
+                ->whereNumber('session');
+
+            Route::get('/sessions/{session}/pdf', [BloodCenterPosController::class, 'pdf'])
+                ->middleware('throttle:30,1')
+                ->whereNumber('session');
+
+            Route::get('/lookup', [BloodCenterPosController::class, 'lookup'])
+                ->middleware('throttle:120,1');
+
+            Route::get('/queue', [BloodCenterPosController::class, 'queue']);
+
+            Route::get('/bills/{bloodRequest}', [BloodCenterPosController::class, 'bill'])
+                ->whereNumber('bloodRequest');
+        });
 
         Route::get('/notifications', [FacilityNotificationController::class, 'index']);
         Route::get('/notifications/unread-count', [FacilityNotificationController::class, 'unreadCount']);
@@ -579,6 +636,11 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             ->middleware(['can:corrections.request', 'throttle:30,1'])->whereNumber('allocation');
 
         Route::post('/payments/{payment}/corrections', [BloodCenterCorrectionController::class, 'storeForPayment'])
+            ->middleware(['can:corrections.request', 'throttle:30,1'])->whereNumber('payment');
+
+        // A void of a counter payment while its shift is open, decided like a
+        // correction. Refunds are settled outside RedAgos.
+        Route::post('/payments/{payment}/void', [BloodCenterCorrectionController::class, 'storeVoidForPayment'])
             ->middleware(['can:corrections.request', 'throttle:30,1'])->whereNumber('payment');
 
         Route::post('/corrections/{correction}/approve', [BloodCenterCorrectionController::class, 'approve'])

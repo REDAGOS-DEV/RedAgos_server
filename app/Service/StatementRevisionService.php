@@ -10,6 +10,7 @@ use App\Models\Facility;
 use App\Models\User;
 use App\Repository\DocumentSequenceRepository;
 use App\Support\DocumentNumbering;
+use App\Support\FacilityMonogram;
 use App\Support\Money;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Exceptions\HttpResponseException;
@@ -74,11 +75,15 @@ class StatementRevisionService
             'document_number' => DocumentNumbering::format('SOA', $issuingFacilityId, $sequence),
             'issuing_facility_id' => $issuingFacilityId,
             'payer_facility_id' => (int) $lockedRequest->facility_id,
+            // The logo it is issued with, so a reprint after the centre changes
+            // its logo still shows the one on the copy the payer was given.
+            'issuer_logo_path' => Facility::query()->whereKey($issuingFacilityId)->value('logo_path'),
             'currency' => 'PHP',
             'total_amount' => Money::toDecimal($total),
             'collected_at_issue' => Money::toDecimal($collected),
             'amount_due' => Money::toDecimal($due),
-            'statement_only' => $status === BillingStatus::StatementOnly,
+            // A weekly bill is the hospital's, before and after it settles it.
+            'statement_only' => $status === BillingStatus::StatementOnly || $status === BillingStatus::SettledOutside,
             'billing_status' => $status,
             'reason' => $reason,
             'created_by' => $actor?->id,
@@ -137,7 +142,11 @@ class StatementRevisionService
             'amount_due' => $revision->amount_due,
             'issued_at' => $revision->created_at?->toIso8601String(),
             'issued_by' => $revision->creator ? trim($revision->creator->first_name.' '.$revision->creator->last_name) : null,
-            'issuer' => $this->facilityCard($revision->issuingFacility),
+            'issuer' => [
+                ...$this->facilityCard($revision->issuingFacility),
+                // The issuing centre's own logo heads the document, never a shared mark.
+                'logo_url' => $this->facilityLogoService->urlForPath($revision->issuingFacility, $revision->issuer_logo_path),
+            ],
             // A Patient Transfusion statement is the patient's to settle; a
             // weekly order is the requesting hospital's (owner, 2026-10-10).
             'bill_to' => [
@@ -186,8 +195,7 @@ class StatementRevisionService
      */
     public function pdf(BillingRevision $revision, User $viewer): Response
     {
-        $revision->loadMissing(['items', 'issuingFacility', 'payerFacility', 'billing.request', 'creator']);
-        $request = $revision->billing?->request;
+        $data = $this->viewData($revision);
 
         $this->auditLogger->record($viewer, 'billing.statement_downloaded', $revision->billing, [
             'revision_id' => $revision->id,
@@ -195,17 +203,7 @@ class StatementRevisionService
             'facility_id' => $viewer->facility_id,
         ]);
 
-        // dompdf cannot decode a PNG without GD; the statement still prints without the logo.
-        $images = extension_loaded('gd');
-
-        return Pdf::loadView('pdf.billing-statement', [
-            'revision' => $revision,
-            'request' => $request,
-            // A weekly order has no patient; a Patient Transfusion statement is
-            // the patient's, and names them.
-            'patient' => $revision->statement_only ? null : $request?->patientFullName(),
-            'logo' => $images ? $this->facilityLogoService->dataUriFor($revision->issuingFacility) : null,
-        ])
+        return Pdf::loadView('pdf.billing-statement', $data)
             ->setPaper('a4')
             ->setOptions([
                 'isRemoteEnabled' => false,
@@ -213,6 +211,30 @@ class StatementRevisionService
                 'defaultFont' => 'DejaVu Sans',
             ])
             ->download("{$revision->document_number}.pdf");
+    }
+
+    /**
+     * Everything the printed Statement of Account needs, read from the revision alone.
+     *
+     * @return array<string, mixed>
+     */
+    public function viewData(BillingRevision $revision): array
+    {
+        $revision->loadMissing(['items', 'issuingFacility', 'payerFacility', 'billing.request', 'creator']);
+        $request = $revision->billing?->request;
+
+        // dompdf cannot decode a PNG without GD; the statement still prints without the logo.
+        $images = extension_loaded('gd');
+
+        return [
+            'revision' => $revision,
+            'request' => $request,
+            // A weekly order has no patient; a Patient Transfusion statement is
+            // the patient's, and names them.
+            'patient' => $revision->statement_only ? null : $request?->patientFullName(),
+            'logo' => $images ? $this->facilityLogoService->dataUriForPath($revision->issuingFacility, $revision->issuer_logo_path) : null,
+            'monogram' => FacilityMonogram::of($revision->issuingFacility?->name),
+        ];
     }
 
     /**

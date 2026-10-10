@@ -9,16 +9,22 @@ use App\Enums\PaymentMethod;
 use App\Enums\PaymentSource;
 use App\Enums\PaymentStatus;
 use App\Enums\RequestPurpose;
+use App\Enums\TransactionChannel;
+use App\Enums\TransactionType;
 use App\Models\Billing;
+use App\Models\BillingTransaction;
 use App\Models\BloodRequest;
+use App\Models\CashSession;
 use App\Models\CorrectionRequest;
 use App\Models\Payment;
 use App\Models\PaymentAttempt;
+use App\Models\PaymentReceipt;
 use App\Models\User;
 use App\Repository\BloodRequestRepository;
 use App\Support\CorrectionValues;
 use App\Support\DocumentNumbering;
 use App\Support\Money;
+use App\Support\OperationalDay;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\QueryException;
@@ -67,7 +73,9 @@ class BillingService
         private readonly BloodRequestRepository $bloodRequestRepository,
         private readonly StatementFigures $figures,
         private readonly StatementRevisionService $statements,
-        private readonly PaymentReceiptService $receipts
+        private readonly PaymentReceiptService $receipts,
+        private readonly BillingLedger $ledger,
+        private readonly CashSessionService $cashSessions
     ) {}
 
     /**
@@ -140,6 +148,17 @@ class BillingService
                 'statement_only' => $billing->status === BillingStatus::StatementOnly,
             ]);
 
+            // Posted even at zero: the journal records that the bill was raised.
+            $this->ledger->post(
+                $billing,
+                $request,
+                TransactionType::Charge,
+                TransactionChannel::System,
+                $total,
+                $actor,
+                note: 'Bill raised for the units reserved.'
+            );
+
             return $billing;
         }
 
@@ -152,13 +171,23 @@ class BillingService
             return $billing;
         }
 
-        $changed = Money::toCentavos($billing->total_amount) !== $total;
+        $difference = $total - Money::toCentavos($billing->total_amount);
 
         $billing->total_amount = Money::toDecimal($total);
         $collected = $this->applyCollected($billing);
 
-        if ($changed) {
+        if ($difference !== 0) {
             $this->supersedeOpenCheckouts($billing, 'statement_changed');
+
+            $this->ledger->post(
+                $billing,
+                $request,
+                $difference > 0 ? TransactionType::Charge : TransactionType::ChargeAdjustment,
+                TransactionChannel::System,
+                $difference,
+                $actor,
+                note: $difference > 0 ? 'More units reserved.' : 'Fewer units held.'
+            );
         }
 
         $this->auditLogger->record($actor, 'billing.updated', $billing, [
@@ -193,6 +222,18 @@ class BillingService
             ->when(
                 isset($filters['outstanding']) && $filters['outstanding'],
                 fn (Builder $query): Builder => $query->outstanding()
+            )
+            // Kept apart because they are owed by different people: a patient
+            // at the counter, a hospital by statement.
+            ->when(
+                isset($filters['category']),
+                fn (Builder $query): Builder => $query->whereHas(
+                    'request',
+                    fn (Builder $request): Builder => $request->where(
+                        'request_purpose',
+                        $filters['category'] === 'weekly' ? RequestPurpose::Replenishment->value : RequestPurpose::PatientTransfusion->value
+                    )
+                )
             )
             ->when(
                 isset($filters['search']),
@@ -267,7 +308,7 @@ class BillingService
         return DB::transaction(function () use ($actor, $billing, $reason): array {
             // The statement the caller loaded may be out of date by now. Every
             // check and every figure below reads the locked row instead.
-            [, $statement] = $this->lockForMutation((int) $billing->request_id, (int) $actor->facility_id);
+            [$request, $statement] = $this->lockForMutation((int) $billing->request_id, (int) $actor->facility_id);
 
             if ($statement->status === BillingStatus::Subsidised) {
                 throw $this->refuse(
@@ -285,7 +326,7 @@ class BillingService
                 );
             }
 
-            if ($statement->status === BillingStatus::StatementOnly) {
+            if ($this->isWeeklyStatement($statement)) {
                 throw $this->refuse(
                     409,
                     'billing_not_collectible',
@@ -301,6 +342,18 @@ class BillingService
             $statement->total_amount = 0;
             $statement->status = BillingStatus::Subsidised;
             $statement->save();
+
+            // The whole charge is waived. Anything already collected now reads
+            // as a credit, refunded — if at all — outside RedAgos.
+            $this->ledger->post(
+                $statement,
+                $request,
+                TransactionType::Subsidy,
+                TransactionChannel::System,
+                -$charged,
+                $actor,
+                note: $reason ?? 'Covered by the government subsidy.'
+            );
 
             $this->auditLogger->record($actor, 'billing.subsidised', $statement, array_filter([
                 'request_id' => $statement->request_id,
@@ -407,6 +460,13 @@ class BillingService
      * new one if the bill or balance has moved since — and issued its receipt
      * in the same transaction.
      *
+     * Taken at the counter. When the counter works in cash shifts
+     * (blood_center.cash_shifts), it goes into the recorder's open shift and
+     * is refused without one (409 no_open_cash_session); otherwise it carries
+     * no shift. The amount recorded is never more than is outstanding. For
+     * cash, the amount handed over is recorded beside it, and the difference
+     * is the change given back; the drawer gains only what was paid.
+     *
      * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
      */
@@ -421,13 +481,36 @@ class BillingService
             $this->assertAcceptsPayment($statement);
             $this->assertNoOpenCheckout($statement);
 
+            // Locked after the request and the statement, as every writer does.
+            $shift = $this->cashSessions->enabled() ? $this->cashSessions->lockOpenShiftOf($actor) : null;
+
             $balanceBefore = $this->outstandingFor($statement);
+            $paid = Money::toCentavos($payload['amount_paid']);
+
+            if ($paid > $balanceBefore) {
+                throw ValidationException::withMessages([
+                    'amount_paid' => ['Only '.Money::toDecimal($balanceBefore).' is outstanding. Record that much; anything handed over beyond it is change.'],
+                ]);
+            }
+
+            $isCash = $payload['payment_method'] === PaymentMethod::Cash->value;
+            $tendered = $isCash ? Money::toCentavos($payload['amount_tendered'] ?? $payload['amount_paid']) : null;
+
+            if ($tendered !== null && $tendered < $paid) {
+                throw ValidationException::withMessages([
+                    'amount_tendered' => ['The cash handed over is less than the amount being recorded.'],
+                ]);
+            }
+
             [$revision] = $this->statements->issueOrReuse($request, $statement, $actor, 'payment');
 
             $payment = Payment::query()->create([
                 'billing_id' => $statement->id,
                 'billing_revision_id' => $revision->id,
-                'amount_paid' => Money::toDecimal(Money::toCentavos($payload['amount_paid'])),
+                'cash_session_id' => $shift?->id,
+                'amount_paid' => Money::toDecimal($paid),
+                'amount_tendered' => $tendered === null ? null : Money::toDecimal($tendered),
+                'change_given' => $tendered === null ? null : Money::toDecimal($tendered - $paid),
                 'payment_method' => $payload['payment_method'],
                 'reference_number' => $payload['reference_number'] ?? null,
                 'status' => PaymentStatus::Completed,
@@ -447,19 +530,38 @@ class BillingService
                 $payload['payer_name'] ?? null
             );
 
+            $this->ledger->post(
+                $statement,
+                $request,
+                TransactionType::Payment,
+                TransactionChannel::Counter,
+                -$paid,
+                $actor,
+                payment: $payment,
+                receipt: $receipt,
+                revision: $revision,
+                cashSessionId: $shift?->id,
+                reference: $payment->reference_number,
+            );
+
             $this->auditLogger->record($actor, 'billing.payment_recorded', $statement, [
                 'payment_id' => $payment->id,
-                'amount_paid' => Money::toFloat(Money::toCentavos($payment->amount_paid)),
+                'amount_paid' => Money::toFloat($paid),
                 'payment_method' => $payment->payment_method->value,
                 'collected' => Money::toFloat($collected),
                 'status' => $statement->status->value,
                 'receipt_number' => $receipt->receipt_number,
+                'cash_session' => $shift?->session_number,
+                'change_given' => $tendered === null ? null : Money::toFloat($tendered - $paid),
             ]);
 
+            $change = $tendered === null ? 0 : $tendered - $paid;
+
             return [
-                'message' => 'Payment recorded.',
+                'message' => $change > 0 ? 'Payment recorded. Change due: '.Money::toDecimal($change).'.' : 'Payment recorded.',
                 'billing' => $this->format($statement->fresh()),
                 'receipt' => $this->receipts->format($receipt),
+                'change_given' => $tendered === null ? null : Money::toDecimal($change),
             ];
         });
     }
@@ -502,10 +604,19 @@ class BillingService
                 default => null,
             };
 
+            // The shift whose cashier opened the checkout, so its reading shows
+            // the GCash it took — unless it has closed since, when a late
+            // payment must not change a drawer already counted.
+            $shiftId = $locked->cash_session_id !== null
+                && CashSession::query()->whereKey($locked->cash_session_id)->open()->exists()
+                    ? (int) $locked->cash_session_id
+                    : null;
+
             $payment = Payment::query()->create([
                 'billing_id' => $statement->id,
                 'billing_revision_id' => $locked->billing_revision_id,
                 'payment_attempt_id' => $locked->id,
+                'cash_session_id' => $shiftId,
                 'amount_paid' => Money::toDecimal($locked->amount_centavos),
                 'payment_method' => PaymentMethod::Gcash,
                 'reference_number' => $providerPaymentId,
@@ -524,6 +635,21 @@ class BillingService
                 $balanceBefore,
                 null,
                 $locked->payer_name
+            );
+
+            $this->ledger->post(
+                $statement,
+                $lockedRequest,
+                TransactionType::Payment,
+                TransactionChannel::Gateway,
+                -$locked->amount_centavos,
+                payment: $payment,
+                receipt: $receipt,
+                revision: $locked->revision,
+                attempt: $locked,
+                cashSessionId: $shiftId,
+                reference: $providerPaymentId,
+                note: $reviewReason === null ? null : 'Flagged for review: '.$reviewReason.'.',
             );
 
             $locked->fill([
@@ -571,9 +697,14 @@ class BillingService
      * the billing row, then the payment — see lockForMutation(). Nothing here
      * locks.
      *
+     * The journal records the change: the difference in amount, or — when the
+     * method changed — the original reversed and the corrected one posted, so
+     * a shift's cash and GCash each stay right. Those rows belong to the
+     * payment's shift only while it is still open.
+     *
      * @param  array<string, mixed>  $changes  Already validated and normalised.
      */
-    public function correctPayment(User $actor, BloodRequest $lockedRequest, Billing $lockedBilling, Payment $lockedPayment, array $changes): void
+    public function correctPayment(User $actor, BloodRequest $lockedRequest, Billing $lockedBilling, Payment $lockedPayment, array $changes, ?int $correctionRequestId = null): void
     {
         if ($lockedBilling->status === BillingStatus::Void) {
             throw $this->refuse(409, 'billing_void', 'This statement has been voided, so its payments can no longer be corrected.');
@@ -582,6 +713,13 @@ class BillingService
         if ($lockedPayment->source === PaymentSource::Gateway) {
             throw $this->refuse(409, 'gateway_payment_not_correctable', 'A payment confirmed by the payment provider carries the provider\'s figures and cannot be corrected.');
         }
+
+        if ($lockedPayment->status === PaymentStatus::Voided) {
+            throw $this->refuse(409, 'payment_voided', 'This payment has been voided, so it can no longer be corrected.');
+        }
+
+        $amountBefore = Money::toCentavos($lockedPayment->amount_paid);
+        $methodBefore = $lockedPayment->payment_method;
 
         // A correction carries the whole corrected payload, so what is audited
         // is the fields whose value actually differs, in canonical form.
@@ -623,6 +761,10 @@ class BillingService
             ? null
             : $this->receipts->reissue($lockedPayment, $lockedRequest, $actor, 'Replaced after an approved correction to the payment.');
 
+        if ($fields !== []) {
+            $this->postCorrection($actor, $lockedRequest, $lockedBilling, $lockedPayment, $receipt, $amountBefore, $methodBefore, $fields, $correctionRequestId);
+        }
+
         $this->auditLogger->record($actor, 'billing.payment_corrected', $lockedBilling, [
             'request_id' => $lockedRequest->id,
             'payment_id' => $lockedPayment->id,
@@ -635,6 +777,264 @@ class BillingService
     }
 
     /**
+     * Post a corrected payment to the journal.
+     *
+     * @param  array<int, string>  $fields
+     */
+    private function postCorrection(
+        User $actor,
+        BloodRequest $lockedRequest,
+        Billing $lockedBilling,
+        Payment $lockedPayment,
+        ?PaymentReceipt $receipt,
+        int $amountBefore,
+        PaymentMethod $methodBefore,
+        array $fields,
+        ?int $correctionRequestId
+    ): void {
+        $amountAfter = Money::toCentavos($lockedPayment->amount_paid);
+        $shiftId = $this->openShiftIdOfPayment($lockedPayment);
+        $note = 'Corrected: '.implode(', ', array_map(fn (string $field): string => str_replace('_', ' ', $field), $fields)).'.';
+
+        $post = fn (int $amount, PaymentMethod $method, ?string $reference) => $this->ledger->post(
+            $lockedBilling,
+            $lockedRequest,
+            TransactionType::PaymentCorrection,
+            TransactionChannel::Counter,
+            $amount,
+            $actor,
+            payment: $lockedPayment,
+            receipt: $receipt,
+            cashSessionId: $shiftId,
+            correctionRequestId: $correctionRequestId,
+            reference: $reference,
+            note: $note,
+            paymentMethod: $method,
+        );
+
+        if ($methodBefore !== $lockedPayment->payment_method) {
+            // Taken out of the method it was recorded under, and put back under the corrected one.
+            $post($amountBefore, $methodBefore, null);
+            $post(-$amountAfter, $lockedPayment->payment_method, $lockedPayment->reference_number);
+
+            return;
+        }
+
+        $post(-($amountAfter - $amountBefore), $lockedPayment->payment_method, $lockedPayment->reference_number);
+    }
+
+    /**
+     * Apply an approved void to one recorded payment.
+     *
+     * Only a manual payment still inside its void window (voidWindowIsOpen()):
+     * after it, money handed back is a refund, and refunds are settled outside
+     * RedAgos (owner, 2026-10-11). A gateway payment moved through the provider
+     * and is never voided here.
+     *
+     * The payment stays on the ledger, marked voided with who decided and why,
+     * and stops counting as collected. Its receipt is voided. The statement is
+     * re-settled — which can reopen a balance, surfaced as outstanding if the
+     * units have already gone, as a correction does. The journal posts the
+     * reversal of the payment's own row, in the same shift when there is one.
+     *
+     * Must be called inside a transaction that already holds the request, then
+     * the billing row, then the payment — see lockForMutation(). Nothing here
+     * locks but the shift.
+     */
+    public function voidPayment(User $approver, BloodRequest $lockedRequest, Billing $lockedBilling, Payment $lockedPayment, string $reason, ?int $correctionRequestId = null): void
+    {
+        $this->assertVoidable($lockedPayment);
+
+        $shift = null;
+
+        // With shifts, judged again under the shift's lock, so a close cannot slip in between.
+        if ($this->cashSessions->enabled()) {
+            $shift = CashSession::query()->whereKey($lockedPayment->cash_session_id)->lockForUpdate()->first();
+
+            if ($shift === null || ! $shift->isOpen()) {
+                throw $this->refuse(409, 'void_window_closed', $this->voidWindowClosedMessage());
+            }
+        }
+
+        $statusFrom = $lockedBilling->status;
+
+        $lockedPayment->forceFill([
+            'status' => PaymentStatus::Voided,
+            'voided_at' => now(),
+            'voided_by' => $approver->id,
+            'void_reason' => mb_substr($reason, 0, 255),
+        ])->save();
+
+        $receipt = $lockedPayment->receipts()->active()->first();
+
+        $receipt?->forceFill([
+            'voided_at' => now(),
+            'voided_by' => $approver->id,
+            'void_reason' => 'Payment voided: '.mb_substr($reason, 0, 230),
+        ])->save();
+
+        $this->applyCollected($lockedBilling);
+
+        $original = BillingTransaction::query()
+            ->where('payment_id', $lockedPayment->id)
+            ->where('type', TransactionType::Payment->value)
+            ->first();
+
+        $this->ledger->post(
+            $lockedBilling,
+            $lockedRequest,
+            TransactionType::PaymentVoid,
+            TransactionChannel::Counter,
+            Money::toCentavos($lockedPayment->amount_paid),
+            $approver,
+            payment: $lockedPayment,
+            receipt: $receipt,
+            cashSessionId: $shift?->id,
+            correctionRequestId: $correctionRequestId,
+            reverses: $original,
+            reference: $lockedPayment->reference_number,
+            note: $reason,
+        );
+
+        $this->auditLogger->record($approver, 'billing.payment_voided', $lockedBilling, [
+            'request_id' => $lockedRequest->id,
+            'payment_id' => $lockedPayment->id,
+            'amount' => Money::toFloat(Money::toCentavos($lockedPayment->amount_paid)),
+            'cash_session' => $shift?->session_number,
+            'status_from' => $statusFrom->value,
+            'status_to' => $lockedBilling->status->value,
+            'request_status' => $lockedRequest->status->value,
+            'receipt_number' => $receipt?->receipt_number,
+        ]);
+    }
+
+    /**
+     * Refuse a void the payment cannot take, whoever is asking and whenever.
+     *
+     * Checked when the void is filed and again under the locks when it is
+     * approved. With shifts, the shift being open is checked there too, under
+     * its own lock.
+     */
+    public function assertVoidable(Payment $payment): void
+    {
+        if ($payment->source === PaymentSource::Gateway) {
+            throw $this->refuse(409, 'gateway_payment_not_voidable', 'A GCash checkout payment moved through the provider and cannot be voided. A refund is settled outside RedAgos.');
+        }
+
+        if ($payment->status !== PaymentStatus::Completed) {
+            throw $this->refuse(409, 'payment_not_voidable', 'Only a completed payment can be voided.');
+        }
+
+        if (! $this->voidWindowIsOpen($payment)) {
+            throw $this->refuse(409, 'void_window_closed', $this->voidWindowClosedMessage());
+        }
+    }
+
+    /**
+     * Whether a payment may still be voided, rather than refunded outside RedAgos.
+     *
+     * With cash shifts, while the shift that took it is open: once its drawer
+     * is counted, money handed back is a refund. Without them — one billing
+     * staff member, no drawer to hand over — on the operational (Manila) day
+     * it was taken.
+     */
+    public function voidWindowIsOpen(Payment $payment): bool
+    {
+        if ($this->cashSessions->enabled()) {
+            return $payment->cash_session_id !== null
+                && CashSession::query()->whereKey($payment->cash_session_id)->open()->exists();
+        }
+
+        return $payment->payment_date !== null
+            && OperationalDay::dateOf($payment->payment_date) === OperationalDay::todayAsDate();
+    }
+
+    private function voidWindowClosedMessage(): string
+    {
+        return $this->cashSessions->enabled()
+            ? 'The shift that took this payment has closed. Money handed back now is a refund, settled outside RedAgos.'
+            : 'This payment was taken on an earlier day. Money handed back now is a refund, settled outside RedAgos.';
+    }
+
+    /**
+     * Record that the hospital settled a weekly bill, outside RedAgos.
+     *
+     * Only a statement-only statement, and only once its request is closed, so
+     * the figure the hospital settled is final; a weekly request closes when
+     * its one delivery is dispatched. No money moves here: the statement
+     * becomes Settled by Hospital with the hospital's reference and date, its
+     * figure is frozen, and the journal records the settlement.
+     *
+     * @param  array{settlement_reference: string, settled_at: string, settlement_note?: string|null}  $payload
+     * @return array<string, mixed>
+     */
+    public function settleWeekly(User $actor, int $requestId, array $payload): array
+    {
+        return DB::transaction(function () use ($actor, $requestId, $payload): array {
+            [$request, $statement] = $this->lockForMutation($requestId, (int) $actor->facility_id);
+
+            if ($statement->status === BillingStatus::SettledOutside) {
+                throw $this->refuse(409, 'weekly_already_settled', 'This weekly bill has already been recorded as settled.');
+            }
+
+            if ($statement->status !== BillingStatus::StatementOnly) {
+                throw $this->refuse(409, 'not_a_weekly_statement', 'Only a weekly order billed by statement is settled by the hospital.');
+            }
+
+            if (! $request->isClosed()) {
+                throw $this->refuse(409, 'weekly_not_final', 'This weekly order is still open, so its bill may still change. Record the settlement once it has been dispatched.');
+            }
+
+            $total = Money::toCentavos($statement->total_amount);
+
+            $statement->fill([
+                'status' => BillingStatus::SettledOutside,
+                'settled_at' => $payload['settled_at'],
+                'settled_by' => $actor->id,
+                'settlement_reference' => $payload['settlement_reference'],
+                'settlement_note' => $payload['settlement_note'] ?? null,
+            ])->save();
+
+            $this->ledger->post(
+                $statement,
+                $request,
+                TransactionType::ExternalSettlement,
+                TransactionChannel::Outside,
+                -$total,
+                $actor,
+                reference: $payload['settlement_reference'],
+                note: $payload['settlement_note'] ?? 'Settled by the hospital outside RedAgos.',
+            );
+
+            $this->auditLogger->record($actor, 'billing.weekly_settled', $statement, [
+                'request_id' => $request->id,
+                'total_amount' => Money::toFloat($total),
+                'settled_at' => $payload['settled_at'],
+                'settlement_reference' => $payload['settlement_reference'],
+            ]);
+
+            return [
+                'message' => 'The hospital\'s settlement of this weekly bill is recorded.',
+                'billing' => $this->format($statement->fresh()),
+            ];
+        });
+    }
+
+    /**
+     * The payment's cash shift if it is still open, else none.
+     */
+    private function openShiftIdOfPayment(Payment $payment): ?int
+    {
+        if ($payment->cash_session_id === null) {
+            return null;
+        }
+
+        return CashSession::query()->whereKey($payment->cash_session_id)->open()->exists()
+            ? (int) $payment->cash_session_id
+            : null;
+    }
+
+    /**
      * The payments recorded against a statement, as the one viewing them may act on each.
      *
      * Separate from format() on purpose. billing.view is held by roles that
@@ -642,35 +1042,43 @@ class BillingService
      * reference number they have no business reading; this is reached only
      * through billing.record_payment.
      *
-     * can_request_correction and pending_correction describe the viewer and are
-     * there to draw the screen. CorrectionService::request() enforces the same
-     * rules on its own. A gateway payment is never correctable.
+     * can_request_correction, can_request_void and the pending flags describe
+     * the viewer and are there to draw the screen. CorrectionService::request()
+     * enforces the same rules on its own. A gateway payment is never corrected
+     * or voided, and a void is offered only inside voidWindowIsOpen().
      *
      * @return array<int, array<string, mixed>>
      */
     public function payments(Billing $billing, User $viewer): array
     {
         $payments = $billing->payments()
-            ->with(['receipts' => fn ($query) => $query->whereNull('voided_at')])
+            ->with(['receipts' => fn ($query) => $query->whereNull('voided_at'), 'cashSession:id,session_number,status'])
             ->orderBy('payment_date')->orderBy('id')->get();
 
         $pending = CorrectionRequest::query()
-            ->where('subject', CorrectionSubject::Payment->value)
+            ->whereIn('subject', [CorrectionSubject::Payment->value, CorrectionSubject::PaymentVoid->value])
             ->where('status', 'pending')
             ->whereIn('payment_id', $payments->pluck('id'))
-            ->pluck('payment_id')
-            ->all();
+            ->get(['payment_id', 'subject'])
+            ->groupBy('payment_id');
 
-        $mayFile = $billing->status !== BillingStatus::Void
-            && CorrectionSubject::Payment->mayBeFiledBy($viewer);
+        $notVoid = $billing->status !== BillingStatus::Void;
+        $mayCorrect = $notVoid && CorrectionSubject::Payment->mayBeFiledBy($viewer);
+        $mayVoid = $notVoid && CorrectionSubject::PaymentVoid->mayBeFiledBy($viewer);
 
-        return $payments->map(function (Payment $payment) use ($pending, $mayFile): array {
-            $isPending = in_array($payment->id, $pending, true);
+        return $payments->map(function (Payment $payment) use ($pending, $mayCorrect, $mayVoid): array {
+            $subjects = ($pending->get($payment->id) ?? collect())->pluck('subject')->map(
+                fn ($subject): string => $subject instanceof CorrectionSubject ? $subject->value : (string) $subject
+            );
+            $anyPending = $subjects->isNotEmpty();
             $receipt = $payment->receipts->first();
+            $live = $payment->source === PaymentSource::Manual && $payment->status === PaymentStatus::Completed;
 
             return [
                 'id' => $payment->id,
                 'amount_paid' => Money::toFloat(Money::toCentavos($payment->amount_paid)),
+                'amount_tendered' => $payment->amount_tendered,
+                'change_given' => $payment->change_given,
                 'payment_method' => $payment->payment_method->value,
                 'payment_method_label' => $payment->payment_method->label(),
                 'reference_number' => $payment->reference_number,
@@ -679,9 +1087,18 @@ class BillingService
                 'source' => $payment->source->value,
                 'source_label' => $payment->source->label(),
                 'payment_date' => $payment->payment_date?->toIso8601String(),
+                'cash_session' => $payment->cashSession ? [
+                    'id' => $payment->cashSession->id,
+                    'session_number' => $payment->cashSession->session_number,
+                    'is_open' => $payment->cashSession->isOpen(),
+                ] : null,
+                'voided_at' => $payment->voided_at?->toIso8601String(),
+                'void_reason' => $payment->void_reason,
                 'receipt' => $receipt ? $this->receipts->format($receipt) : null,
-                'pending_correction' => $isPending,
-                'can_request_correction' => $mayFile && ! $isPending && $payment->source === PaymentSource::Manual,
+                'pending_correction' => $subjects->contains(CorrectionSubject::Payment->value),
+                'pending_void' => $subjects->contains(CorrectionSubject::PaymentVoid->value),
+                'can_request_correction' => $mayCorrect && ! $anyPending && $live,
+                'can_request_void' => $mayVoid && ! $anyPending && $live && $this->voidWindowIsOpen($payment),
             ];
         })->all();
     }
@@ -702,13 +1119,21 @@ class BillingService
             'status_label' => $billing->status->label(),
             'is_zero_rated' => $billing->isZeroRated(),
             'is_subsidised' => $billing->status === BillingStatus::Subsidised,
-            'is_statement_only' => $billing->status === BillingStatus::StatementOnly,
+            // A weekly bill, before and after the hospital settles it.
+            'is_statement_only' => $this->isWeeklyStatement($billing),
+            'is_settled_outside' => $billing->status === BillingStatus::SettledOutside,
             'collects_payment' => $billing->status->isCollectible(),
             // Distinguishes "nothing was owed" from "the money came in", which
             // a status alone cannot once a subsidy zeroes the total.
             'represents_collected_money' => $billing->status->representsCollectedMoney(),
             'clears_release' => $billing->clearsRelease(),
             'billing_date' => $billing->billing_date?->toIso8601String(),
+            // Set once the hospital settles a weekly bill outside RedAgos.
+            'settlement' => $billing->status === BillingStatus::SettledOutside ? [
+                'settled_at' => $billing->settled_at?->toDateString(),
+                'reference' => $billing->settlement_reference,
+                'note' => $billing->settlement_note,
+            ] : null,
         ];
     }
 
@@ -751,7 +1176,7 @@ class BillingService
             );
         }
 
-        if ($lockedBilling->status === BillingStatus::StatementOnly) {
+        if ($this->isWeeklyStatement($lockedBilling)) {
             throw $this->refuse(
                 409,
                 'billing_not_collectible',
@@ -774,6 +1199,14 @@ class BillingService
     public function collectedFor(Billing $billing): int
     {
         return $this->figures->collectedFor($billing);
+    }
+
+    /**
+     * Whether a statement is a weekly order's, billed to the hospital by statement: settled or not.
+     */
+    public function isWeeklyStatement(Billing $billing): bool
+    {
+        return $billing->status === BillingStatus::StatementOnly || $billing->status === BillingStatus::SettledOutside;
     }
 
     /**

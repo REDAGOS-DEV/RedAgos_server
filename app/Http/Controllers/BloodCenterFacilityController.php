@@ -36,9 +36,12 @@ class BloodCenterFacilityController extends Controller
 
     /**
      * Stream a facility logo. Reached only through a signed, expiring URL.
+     *
+     * A billing document's link names the exact file it was issued with; the
+     * path is covered by the signature, so it cannot be swapped.
      */
-    public function showLogo(Facility $facility): mixed
+    public function showLogo(Request $request, Facility $facility): mixed
     {
-        return $this->facilityLogoService->response($facility);
+        return $this->facilityLogoService->response($facility, $request->query('path'));
     }
 }

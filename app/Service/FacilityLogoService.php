@@ -2,7 +2,9 @@
 
 namespace App\Service;
 
+use App\Models\BillingRevision;
 use App\Models\Facility;
+use App\Models\PaymentReceipt;
 use App\Models\User;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\UploadedFile;
@@ -20,6 +22,12 @@ use Illuminate\Support\Facades\URL;
  * Only a supervisor changes it (`center.configure`), and only for the facility
  * their own account belongs to — the facility is resolved from the token,
  * never from the request.
+ *
+ * A billing document reprints exactly as it was issued, logo included: a
+ * Statement of Account records the file in issuer_logo_path, a receipt in its
+ * snapshot. A replaced or removed logo is therefore deleted only once no
+ * issued document prints it, and the *ForPath() methods serve the exact file
+ * a document names.
  */
 class FacilityLogoService
 {
@@ -50,8 +58,8 @@ class FacilityLogoService
 
         // Only once the new path is saved, so a failed save never leaves the
         // facility pointing at a file that has been deleted.
-        if ($previous && $previous !== $path && Storage::disk(self::DISK)->exists($previous)) {
-            Storage::disk(self::DISK)->delete($previous);
+        if ($previous && $previous !== $path) {
+            $this->discard($previous);
         }
 
         $this->auditLogger->record($staff, 'center.logo_updated', $facility, [
@@ -77,8 +85,8 @@ class FacilityLogoService
         $facility->logo_path = null;
         $facility->save();
 
-        if ($previous && Storage::disk(self::DISK)->exists($previous)) {
-            Storage::disk(self::DISK)->delete($previous);
+        if ($previous) {
+            $this->discard($previous);
         }
 
         $this->auditLogger->record($staff, 'center.logo_removed', $facility, [
@@ -110,6 +118,31 @@ class FacilityLogoService
     }
 
     /**
+     * A short-lived signed link to the exact logo file a billing document was issued with.
+     *
+     * Falls back to the facility's current logo for a document that recorded
+     * none — issued before logos were frozen, or while the centre had none —
+     * and for one whose file is gone.
+     */
+    public function urlForPath(?Facility $facility, ?string $path): ?string
+    {
+        if ($facility === null) {
+            return null;
+        }
+
+        if (! $this->isLogoFile($path)) {
+            return $this->urlFor($facility);
+        }
+
+        // The path is part of what is signed, so it cannot be swapped for another file.
+        return URL::temporarySignedRoute(
+            'blood-center.facility.logo',
+            now()->addMinutes(30),
+            ['facility' => $facility->id, 'path' => $path]
+        );
+    }
+
+    /**
      * The logo as a data URI for dompdf, or null when there is none.
      */
     public function dataUriFor(?Facility $facility): ?string
@@ -118,20 +151,30 @@ class FacilityLogoService
             return null;
         }
 
-        $disk = Storage::disk(self::DISK);
-        $mime = $disk->mimeType($facility->logo_path) ?: 'image/png';
-
-        return 'data:'.$mime.';base64,'.base64_encode((string) $disk->get($facility->logo_path));
+        return $this->dataUri($facility->logo_path);
     }
 
     /**
-     * Stream the logo for the signed route.
+     * The exact logo file a billing document was issued with, as a data URI, falling back as urlForPath() does.
      */
-    public function response(Facility $facility): mixed
+    public function dataUriForPath(?Facility $facility, ?string $path): ?string
     {
-        abort_unless($this->hasLogo($facility), 404);
+        return $this->isLogoFile($path) ? $this->dataUri($path) : $this->dataUriFor($facility);
+    }
 
-        return Storage::disk(self::DISK)->response($facility->logo_path, null, [
+    /**
+     * Stream a logo for the signed route: the facility's current one, or the exact file the signed link names.
+     */
+    public function response(Facility $facility, ?string $path = null): mixed
+    {
+        if ($path !== null) {
+            abort_unless($this->isLogoFile($path), 404);
+        } else {
+            abort_unless($this->hasLogo($facility), 404);
+            $path = $facility->logo_path;
+        }
+
+        return Storage::disk(self::DISK)->response($path, null, [
             'Cache-Control' => 'private, max-age=1800',
             'X-Content-Type-Options' => 'nosniff',
         ]);
@@ -141,6 +184,38 @@ class FacilityLogoService
     {
         return $facility->logo_path !== null
             && Storage::disk(self::DISK)->exists($facility->logo_path);
+    }
+
+    /**
+     * Whether a path names a stored logo file, and nothing else on the disk.
+     */
+    private function isLogoFile(?string $path): bool
+    {
+        return $path !== null
+            && str_starts_with($path, self::DIRECTORY.'/')
+            && ! str_contains($path, '..')
+            && Storage::disk(self::DISK)->exists($path);
+    }
+
+    private function dataUri(string $path): string
+    {
+        $disk = Storage::disk(self::DISK);
+        $mime = $disk->mimeType($path) ?: 'image/png';
+
+        return 'data:'.$mime.';base64,'.base64_encode((string) $disk->get($path));
+    }
+
+    /**
+     * Delete a logo the facility no longer uses, unless an issued billing document still prints it.
+     */
+    private function discard(string $path): void
+    {
+        $printed = BillingRevision::query()->where('issuer_logo_path', $path)->exists()
+            || PaymentReceipt::query()->where('snapshot->issuing_facility->logo_path', $path)->exists();
+
+        if (! $printed && Storage::disk(self::DISK)->exists($path)) {
+            Storage::disk(self::DISK)->delete($path);
+        }
     }
 
     /**

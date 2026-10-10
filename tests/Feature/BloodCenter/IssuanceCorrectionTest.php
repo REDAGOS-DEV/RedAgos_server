@@ -489,7 +489,8 @@ class IssuanceCorrectionTest extends TestCase
             [$this->clerk, ['unit_details']],
             [$this->dispatcher, ['dispatch']],
             [$this->head, ['dispatch']],
-            [User::factory()->bloodCenterStaff($this->centre, StaffRole::BillingClerk)->create(), ['payment']],
+            // A billing clerk corrects a payment, or asks for one to be voided.
+            [User::factory()->bloodCenterStaff($this->centre, StaffRole::BillingClerk)->create(), ['payment', 'payment_void']],
             [User::factory()->bloodCenterStaff($this->centre, StaffRole::Phlebotomist)->create(), ['collection']],
             [$custom, []],
             [$this->centerAdmin, CorrectionSubject::values()],

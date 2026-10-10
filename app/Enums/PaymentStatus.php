@@ -20,6 +20,13 @@ enum PaymentStatus: string
     case Refunded = 'refunded';
 
     /**
+     * An entry voided on the Billing Supervisor's approval while its cash
+     * shift was open: recorded in error, or the money handed straight back.
+     * The row stays on the ledger and stops counting as collected.
+     */
+    case Voided = 'voided';
+
+    /**
      * Get every accepted payment status value.
      *
      * @return array<int, string>
@@ -39,6 +46,7 @@ enum PaymentStatus: string
             self::Completed => 'Completed',
             self::Failed => 'Failed',
             self::Refunded => 'Refunded',
+            self::Voided => 'Voided',
         };
     }
 

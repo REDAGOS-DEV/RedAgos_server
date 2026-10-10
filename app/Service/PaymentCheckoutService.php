@@ -46,7 +46,8 @@ class PaymentCheckoutService
         private readonly StatementRevisionService $statements,
         private readonly XenditGateway $gateway,
         private readonly PaymentEventProcessor $processor,
-        private readonly AuditLogger $auditLogger
+        private readonly AuditLogger $auditLogger,
+        private readonly CashSessionService $cashSessions
     ) {}
 
     /**
@@ -93,6 +94,9 @@ class PaymentCheckoutService
                 'billing_revision_id' => $revision->id,
                 'initiated_by' => $staff->id,
                 'initiator_facility_id' => $facility->id,
+                // The counter shift it was opened in, if any, so the shift's
+                // reading shows the GCash it took. GCash never touches the drawer.
+                'cash_session_id' => $this->cashSessions->openShiftIdOf($staff),
                 'provider' => 'xendit',
                 'provider_account_id' => $account,
                 'reference_id' => 'RA-'.Str::ulid(),
@@ -140,7 +144,8 @@ class PaymentCheckoutService
         $reason = match (true) {
             ! config('services.xendit.checkout_enabled') => 'checkout_disabled',
             $this->accountFor($facility) === null => 'merchant_not_configured',
-            $billing->status === BillingStatus::StatementOnly => 'billing_not_collectible',
+            $billing->status === BillingStatus::StatementOnly,
+            $billing->status === BillingStatus::SettledOutside => 'billing_not_collectible',
             ! $billing->status->isCollectible() => 'billing_settled_by_decision',
             $this->billingService->outstandingFor($billing) <= 0 => 'billing_settled',
             PaymentAttempt::query()->where('billing_id', $billing->id)->open()->exists() => 'payment_in_progress',

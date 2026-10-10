@@ -10,6 +10,7 @@ use App\Enums\CorrectionSubject;
 use App\Enums\CorrectionTarget;
 use App\Enums\DonationStatus;
 use App\Enums\PaymentSource;
+use App\Enums\PaymentStatus;
 use App\Models\Billing;
 use App\Models\BloodCollection;
 use App\Models\BloodRequest;
@@ -170,14 +171,20 @@ class CorrectionService
 
             $this->guardCorrectable($locked, $subject);
 
+            // A payment's correction and its void are one queue: approving
+            // either changes what the other was judged against.
             $pending = CorrectionRequest::query()
                 ->where($target->column(), $record->getKey())
-                ->where('subject', $subject->value)
+                ->whereIn('subject', $target === CorrectionTarget::Payment
+                    ? CorrectionSubject::valuesFor(CorrectionTarget::Payment)
+                    : [$subject->value])
                 ->where('status', 'pending')
                 ->exists();
 
             if ($pending) {
-                throw $this->refuse(409, 'correction_pending', "A correction to this {$subject->label()} is already waiting for a decision.");
+                throw $this->refuse(409, 'correction_pending', $target === CorrectionTarget::Payment
+                    ? 'A correction or void of this payment is already waiting for a decision.'
+                    : "A correction to this {$subject->label()} is already waiting for a decision.");
             }
 
             $validated = $this->validateChanges($subject, $changes, $requester, $record->getKey());
@@ -230,7 +237,7 @@ class CorrectionService
 
             $applied = $correction->subject->target() === CorrectionTarget::Donation
                 ? $this->applyDonationCorrection($approver, $requester, $correction)
-                : $this->applyRecordCorrection($requester, $correction, $facility);
+                : $this->applyRecordCorrection($approver, $requester, $correction, $facility);
 
             $correction->status = 'approved';
             $correction->reviewed_by = $approver->id;
@@ -399,9 +406,12 @@ class CorrectionService
      * request was filed. A field someone else has changed since is not
      * overwritten with a value chosen against the old one.
      *
+     * A payment void is applied as the approver, who decided it; a correction
+     * is written as the requester, through the original path.
+     *
      * @return Model The record corrected, which the applied entry is audited against.
      */
-    private function applyRecordCorrection(User $requester, CorrectionRequest $correction, Facility $facility): Model
+    private function applyRecordCorrection(User $approver, User $requester, CorrectionRequest $correction, Facility $facility): Model
     {
         $subject = $correction->subject;
 
@@ -424,7 +434,8 @@ class CorrectionService
         match ($subject) {
             CorrectionSubject::UnitDetails => $this->inventoryService->update($requester, (string) $record->getKey(), $changes),
             CorrectionSubject::Dispatch => $this->fulfillmentService->correctDispatch($requester, $locked[0], $locked[1], $changes),
-            CorrectionSubject::Payment => $this->billingService->correctPayment($requester, $locked[0], $locked[1], $locked[2], $changes),
+            CorrectionSubject::Payment => $this->billingService->correctPayment($requester, $locked[0], $locked[1], $locked[2], $changes, $correction->id),
+            CorrectionSubject::PaymentVoid => $this->billingService->voidPayment($approver, $locked[0], $locked[1], $locked[2], (string) $correction->reason, $correction->id),
         };
 
         return $record;
@@ -573,6 +584,20 @@ class CorrectionService
                 throw $this->refuse(409, 'gateway_payment_not_correctable', 'A payment confirmed by the payment provider carries the provider\'s figures and cannot be corrected.');
             }
 
+            if ($locked[2]->status === PaymentStatus::Voided) {
+                throw $this->refuse(409, 'payment_voided', 'This payment has been voided, so it can no longer be corrected.');
+            }
+
+            return;
+        }
+
+        if ($subject === CorrectionSubject::PaymentVoid) {
+            if ($locked[1]->status === BillingStatus::Void) {
+                throw $this->refuse(409, 'billing_void', 'This statement has been voided, so its payments can no longer be voided.');
+            }
+
+            $this->billingService->assertVoidable($locked[2]);
+
             return;
         }
 
@@ -686,6 +711,9 @@ class CorrectionService
                 'amount_paid' => $record->amount_paid,
                 'payment_method' => $record->payment_method?->value,
                 'reference_number' => $record->reference_number,
+            ],
+            CorrectionSubject::PaymentVoid => [
+                'void' => $record->status === PaymentStatus::Voided,
             ],
         };
 

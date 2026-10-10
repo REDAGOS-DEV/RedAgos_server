@@ -78,6 +78,27 @@ class BloodCenterCorrectionController extends Controller
     }
 
     /**
+     * Ask for a payment to be voided, on the Billing Supervisor's approval.
+     *
+     * The body is the reason alone: what a void changes is fixed.
+     */
+    public function storeVoidForPayment(Request $request, int $payment): JsonResponse
+    {
+        $validated = $request->validate(
+            ['reason' => ['required', 'string', 'max:1000']],
+            ['reason.required' => 'Say why the payment is being voided.']
+        );
+
+        return response()->json($this->correctionService->request(
+            $request->user(),
+            $payment,
+            CorrectionSubject::PaymentVoid,
+            ['void' => true],
+            $validated['reason']
+        ), 201);
+    }
+
+    /**
      * File a correction whose subject the route itself implies.
      *
      * Validation runs before the service so a malformed body is a 422 for

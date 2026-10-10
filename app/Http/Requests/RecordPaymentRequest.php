@@ -56,6 +56,19 @@ class RecordPaymentRequest extends FormRequest
             ],
             'status' => ['prohibited'],
 
+            // The cash handed over at the counter, when it is more than the
+            // amount recorded: the difference is the change given back. Cash
+            // only; a GCash transfer is for the amount itself.
+            'amount_tendered' => [
+                'sometimes',
+                'nullable',
+                'numeric',
+                'decimal:0,2',
+                'min:0.01',
+                'max:9999999.99',
+                Rule::prohibitedIf(fn (): bool => $this->input('payment_method') !== PaymentMethod::Cash->value && $this->filled('amount_tendered')),
+            ],
+
             // Who handed the money over — usually the patient's watcher. Printed
             // on the receipt as "Received from", and nowhere else.
             'payer_name' => ['sometimes', 'nullable', 'string', 'max:120'],
@@ -75,6 +88,7 @@ class RecordPaymentRequest extends FormRequest
             'reference_number.required' => 'A GCash payment needs its reference number.',
             'reference_number.unique' => 'That payment reference has already been recorded.',
             'status.prohibited' => 'A recorded payment is money received; its status cannot be chosen.',
+            'amount_tendered.prohibited' => 'Only a cash payment has an amount tendered.',
         ];
     }
 }

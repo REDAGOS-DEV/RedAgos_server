@@ -46,7 +46,7 @@ A step-by-step guide to the whole internal process, from the donor's QR code bei
 | | **Issuance** (requests) | **Head (approves change requests):**<br>ICO<br>`inventory.control.officer@redagos.test` | | |
 | 15 | **Review and reserve** | **ICO**<br>`inventory.control.officer@redagos.test`<br>Reject only: **ICO** or **Dispatch Coordinator**<br>`dispatch.coordinator@redagos.test` | Bags `reserved`; billing statement raised | 16 |
 | | **Billing** | **Head (approves change requests):**<br>Billing Supervisor<br>`billing.supervisor@redagos.test` | | |
-| 16 | **Billing** | **Billing Clerk**<br>`billing.clerk@redagos.test`<br>or **Billing Supervisor**<br>`billing.supervisor@redagos.test` | Statement `paid` or `subsidised` | 17 |
+| 16 | **Billing** | **Billing Clerk**<br>`billing.clerk@redagos.test`<br>or **Billing Supervisor**<br>`billing.supervisor@redagos.test` | Statement `paid` or `subsidised` (taken at the Billing Counter) | 17 |
 | | **Issuance** (dispatch) | **Head (approves change requests):**<br>ICO<br>`inventory.control.officer@redagos.test` | | |
 | 17 | **Dispatch** | **Dispatch Coordinator**<br>`dispatch.coordinator@redagos.test`<br>or **ICO**<br>`inventory.control.officer@redagos.test` | Bags `issued`; request Partially Fulfilled / Fulfilled | 18 |
 | | **Hospital Blood Bank** (no departments, so no head) | Every account does every action | | |
@@ -112,7 +112,7 @@ flowchart TD
 | **Inventory Control Officer (ICO)** | Blood Center | Issuance | Issuance | 11, 12, 13, 15, 17 |
 | **Dispatch / Transport Coordinator** | Blood Center | Issuance | Request Fulfillment | 13 (view), 15 (reject, return holds or close a line; cannot reserve), 17 |
 | **IT Data Entry Clerk** | Blood Center | Issuance | Blood Inventory | 13 (audit, view only) |
-| **Billing Clerk**, **Billing Supervisor** | Blood Center | Billing | Billing & Payments | 16 |
+| **Billing Clerk**, **Billing Supervisor** | Blood Center | Billing | Billing Counter, Bills & Statements, Billing Transactions | 16 |
 | **Center Admin** | Blood Center | none (a supervisor) | Center Overview | Any step; plus the approvals in §5.1 |
 | **Blood-bank account** | Hospital Blood Bank | none | Dashboard | 14, 18, 19 |
 
@@ -309,11 +309,11 @@ Only `available` bags that are **not past their date** count as stock. Quarantin
 
 | | |
 |---|---|
-| **Log in as** | **Billing Clerk** or **Billing Supervisor** (Billing & Payments page) |
-| **Actions** | Reads the statement raised at reservation (priced at the *fulfilling center's own* component prices). **Records payments** (Cash, or GCash with its provider reference; no gateway is configured, so billing staff enter the reference). Or **applies the government subsidy**, which writes the balance to zero. |
-| **Status changes** | Statement `unpaid` → `partial` → `paid`, or `subsidised`, or `void`. **Paid and Subsidised both clear the request for release.** Today components carry no price, so statements come to zero and are settled on creation, and the gate passes without anyone acting. |
-| **Approvals** | The **Billing Supervisor** approves payment corrections (amount, method, reference). A clerk's correction goes to the supervisor; a supervisor's own goes to the **Center Admin**. A correction approved *after* dispatch can reopen a balance: the units stay released and the statement shows as outstanding. |
-| **Hands off to** | **Dispatch** (Step 17). Release is refused with `billing_unsettled` (or `billing_missing`) until the statement clears. |
+| **Log in as** | **Billing Clerk** or **Billing Supervisor** (Billing Counter, Bills & Statements and Billing Transactions pages) |
+| **Actions** | At the Billing Counter, finds the patient's bill (request or PTR reference, or patient name) and **takes the payment in person**: cash, entering the amount handed over (the counter shows the change), a GCash transfer by its reference, or a **GCash checkout** the watcher pays by QR code. Prints the **80mm receipt**; the A4 receipt and the Statement of Account stay available. Or **applies the government subsidy**, which writes the balance to zero. A **weekly bill** is billed to the hospital by statement; once the hospital settles it, billing staff **record the settlement** with the hospital's reference and date. Cash shifts (float, drawer count, Z report) are **off** while one billing staff member runs the counter; with `BILLING_CASH_SHIFTS=true`, the cashier opens a shift with the float before taking payments and closes it with the drawer counted. |
+| **Status changes** | Patient bill `unpaid` → `partial` → `paid`, or `subsidised`. Weekly bill `statement_only` → `settled_outside`. **Paid, Subsidised and both weekly statuses clear the request for release.** Every money event is a numbered row in the **billing journal** (`TXN-`). Today components carry no price, so statements come to zero and are settled on creation, and the gate passes without anyone acting. |
+| **Approvals** | The **Billing Supervisor** approves payment corrections (amount, method, reference) and **voids** (a counter payment recorded in error, on the day it was taken, or while its shift is still open when shifts are on; refunds are settled outside RedAgos). A clerk's request goes to the supervisor; a supervisor's own goes to the **Center Admin**. A correction or void approved *after* dispatch can reopen a balance: the units stay released and the statement shows as outstanding. With shifts on, a shift cannot close while a void of one of its payments awaits a decision. |
+| **Hands off to** | **Dispatch** (Step 17). Release is refused with `billing_unsettled` (or `billing_missing`) until the statement clears. With shifts on, a counter payment is refused with `no_open_cash_session` until the cashier opens a shift. |
 
 ### Step 17. Dispatch
 
@@ -428,7 +428,11 @@ A saved record is never overwritten. The person whose role wrote it files a **co
 
 **Blood request** (`blood_requests.status`): `pending` → `processing` → `partial` → `fulfilled`; `rejected` and `cancelled`. Derived from the lines, never set by hand.
 
-**Billing statement** (`billings.status`): `unpaid` → `partial` → `paid`; `subsidised`; `void`.
+**Billing statement** (`billings.status`): `unpaid` → `partial` → `paid`; `subsidised`; `void`; for a weekly order `statement_only` → `settled_outside`.
+
+**Payment** (`payments.status`): `completed`; `voided` once an approved void is applied.
+
+**Cash shift** (`cash_sessions.status`, only when `BILLING_CASH_SHIFTS=true`): `open` → `closed`. A closed shift never changes.
 
 **Hospital unit** (`hospital_units.status`): `available`, `tag_assigned`, `tag_crossmatched`, `pending_return`, `transfused`, `expired`, `discarded`.
 
@@ -444,7 +448,8 @@ These are recorded in the decision log; they are listed here so nobody assumes o
 
 - **Clinical sign-off** of the quarantine-and-release rules has not been obtained.
 - **Quality control before dispatch** is not a step. The fulfillment screen tracks `allocated → released → received` only.
-- **The hospital cannot see its own billing statement.** It learns what was charged, or that the subsidy covered it, only by being told.
+- **Refunds are settled outside RedAgos.** A counter payment can be voided only on the day it was taken (or, with cash shifts on, while its shift is open); after that, money handed back is not recorded here.
+- **Cash shifts are off** while one billing staff member runs the counter, so there is no float, drawer count or Z report until they are turned on.
 - **A mis-keyed reactive result cannot be undone in the app.**
 - **There is no MOA or partner relationship** between a hospital and a center in the schema; a request may be addressed to any approved center.
 - **The handover half of the DOH request form** (type of crossmatching, donors provided, received-by and extracted-by signatures) is printed blank and filled in on paper.

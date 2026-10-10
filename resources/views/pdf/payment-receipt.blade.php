@@ -9,6 +9,10 @@
     Laid out as the owner's billing mock-up (2026-10-11), like the statement.
     A receipt issued before receipts carried their lines prints without the
     lines table. Not a BIR official receipt: the receipt says so.
+
+    Headed by the issuing centre — the logo frozen in the snapshot, or its
+    initials when it has none — never by a shared mark. RedAgos is named only
+    in the footer.
 --}}
 @php
     $peso = fn (string|int|float|null $amount): string => '₱'.number_format((float) ($amount ?? 0), 2);
@@ -35,7 +39,8 @@
         table { border-collapse: collapse; width: 100%; }
         td, th { vertical-align: top; }
         .muted { color: #657180; }
-        .mark { width: 34px; height: 34px; background: #b91f2b; color: #fff; border-radius: 9px; text-align: center; font-size: 20pt; font-weight: bold; line-height: 34px; }
+        .issuer-logo { max-width: 120px; max-height: 56px; }
+        .monogram { width: 52px; height: 52px; background: #2f3b48; color: #fff; border-radius: 12px; text-align: center; font-size: 17pt; font-weight: bold; line-height: 52px; }
         .brand-name { font-size: 15pt; font-weight: bold; }
         .doc-title { text-align: right; }
         .doc-title .name { font-size: 14pt; font-weight: bold; color: #b91f2b; letter-spacing: 0.5px; }
@@ -49,7 +54,6 @@
         .box h3 { margin: 0 0 5px; font-size: 7pt; text-transform: uppercase; letter-spacing: 0.6px; color: #657180; }
         .box strong { display: block; margin-bottom: 2px; }
         .box p { margin: 1px 0; color: #657180; font-size: 7.5pt; }
-        .box img { max-width: 34px; max-height: 34px; margin-bottom: 4px; }
         .section { font-size: 9pt; font-weight: bold; margin: 16px 0 6px; }
         .lines th { text-align: left; font-size: 7pt; text-transform: uppercase; letter-spacing: 0.5px; color: #657180; background: #f5f7f9; padding: 6px; border-bottom: 1px solid #e1e6eb; }
         .lines td { padding: 7px 6px; border-bottom: 1px solid #e1e6eb; }
@@ -81,11 +85,19 @@
 <body>
     <table>
         <tr>
-            <td style="width: 44px;"><div class="mark">+</div></td>
+            <td style="width: {{ $logo ? 132 : 64 }}px;">
+                @if ($logo)
+                    <img class="issuer-logo" src="{{ $logo }}" alt="">
+                @else
+                    <div class="monogram">{{ $monogram }}</div>
+                @endif
+            </td>
             <td>
-                <div class="brand-name">RedAgos</div>
-                <div class="muted">Blood Bank Management &amp; Inventory System</div>
-                <div class="muted">{{ $facility['name'] ?? '' }}</div>
+                <div class="brand-name">{{ $facility['name'] ?? '' }}</div>
+                @if (! empty($facility['address']))
+                    <div class="muted">{{ $facility['address'] }}</div>
+                @endif
+                <div class="muted">Blood service facility</div>
             </td>
             <td class="doc-title">
                 <div class="name">PAYMENT ACKNOWLEDGEMENT RECEIPT</div>
@@ -110,9 +122,6 @@
         <tr>
             <td class="box">
                 <h3>Issued by</h3>
-                @if ($logo)
-                    <img src="{{ $logo }}" alt="">
-                @endif
                 <strong>{{ $facility['name'] ?? '' }}</strong>
                 @if (! empty($facility['address']))
                     <p>{{ $facility['address'] }}</p>
@@ -216,6 +225,13 @@
                 <table class="kv">
                     <tr><td class="k">Payment method</td><td class="v">{{ $payment['method_label'] ?? '' }}</td></tr>
                     <tr><td class="k">Amount received</td><td class="v">{{ $peso($snapshot['amount_paid'] ?? null) }}</td></tr>
+                    @if (! empty($payment['amount_tendered']))
+                        <tr><td class="k">Cash tendered</td><td class="v">{{ $peso($payment['amount_tendered']) }}</td></tr>
+                        <tr><td class="k">Change given</td><td class="v">{{ $peso($payment['change_given'] ?? 0) }}</td></tr>
+                    @endif
+                    @if (! empty($payment['cash_session_number']))
+                        <tr><td class="k">Counter shift</td><td class="v">{{ $payment['cash_session_number'] }}</td></tr>
+                    @endif
                     <tr><td class="k">Payment reference</td><td class="v">{{ $payment['reference_number'] ?? '—' }}</td></tr>
                     <tr><td class="k">Payment date</td><td class="v">{{ $paidAt->format('j M Y, g:i A') }}</td></tr>
                     <tr><td class="k">Received by</td><td class="v">{{ $snapshot['received_by'] ?? 'Confirmed by the payment provider' }}</td></tr>
@@ -249,8 +265,8 @@
 
     <table class="footer">
         <tr>
-            <td>RedAgos &middot; Payment Acknowledgement Receipt</td>
-            <td style="text-align: center;">Keep this receipt for reference</td>
+            <td>{{ $facility['name'] ?? '' }} &middot; Payment Acknowledgement Receipt</td>
+            <td style="text-align: center;">Keep this receipt for reference &middot; Generated by RedAgos</td>
             <td style="text-align: right;">{{ $snapshot['receipt_number'] ?? '' }}</td>
         </tr>
     </table>

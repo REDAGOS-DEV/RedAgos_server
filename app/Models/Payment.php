@@ -37,7 +37,10 @@ class Payment extends Model
         'billing_id',
         'billing_revision_id',
         'payment_attempt_id',
+        'cash_session_id',
         'amount_paid',
+        'amount_tendered',
+        'change_given',
         'payment_method',
         'reference_number',
         'status',
@@ -58,7 +61,10 @@ class Payment extends Model
             'status' => PaymentStatus::class,
             'source' => PaymentSource::class,
             'amount_paid' => 'decimal:2',
+            'amount_tendered' => 'decimal:2',
+            'change_given' => 'decimal:2',
             'payment_date' => 'immutable_datetime',
+            'voided_at' => 'immutable_datetime',
         ];
     }
 
@@ -98,6 +104,22 @@ class Payment extends Model
     public function attempt(): BelongsTo
     {
         return $this->belongsTo(PaymentAttempt::class, 'payment_attempt_id');
+    }
+
+    /**
+     * The cash shift that took this payment at the counter. Null before shifts, and for a gateway payment opened outside one.
+     */
+    public function cashSession(): BelongsTo
+    {
+        return $this->belongsTo(CashSession::class);
+    }
+
+    /**
+     * The approver whose decision voided this payment.
+     */
+    public function voidedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'voided_by');
     }
 
     /**

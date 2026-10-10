@@ -5,10 +5,12 @@ namespace App\Http\Controllers;
 use App\Http\Requests\ApplySubsidyRequest;
 use App\Http\Requests\ListBillingsRequest;
 use App\Http\Requests\RecordPaymentRequest;
+use App\Http\Requests\SettleWeeklyBillRequest;
 use App\Models\Billing;
 use App\Models\BloodRequest;
 use App\Models\PaymentAttempt;
 use App\Service\BillingService;
+use App\Service\BillingTransactionService;
 use App\Service\PaymentCheckoutService;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
@@ -25,7 +27,8 @@ class BloodCenterBillingController extends Controller
 {
     public function __construct(
         private readonly BillingService $billingService,
-        private readonly PaymentCheckoutService $checkout
+        private readonly PaymentCheckoutService $checkout,
+        private readonly BillingTransactionService $transactions
     ) {}
 
     /**
@@ -41,6 +44,24 @@ class BloodCenterBillingController extends Controller
                 $filters,
                 (int) ($filters['per_page'] ?? 15)
             )
+        );
+    }
+
+    /**
+     * The centre's billing at a glance, counted on the server.
+     */
+    public function summary(Request $request): JsonResponse
+    {
+        return response()->json($this->transactions->summary($request->user()));
+    }
+
+    /**
+     * Record that the hospital settled a weekly bill outside RedAgos.
+     */
+    public function storeSettlement(SettleWeeklyBillRequest $request, int $bloodRequest): JsonResponse
+    {
+        return response()->json(
+            $this->billingService->settleWeekly($request->user(), $bloodRequest, $request->validated())
         );
     }
 

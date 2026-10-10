@@ -29,6 +29,8 @@ class ListBillingsRequest extends FormRequest
         return [
             'status' => ['sometimes', Rule::in(BillingStatus::values())],
             'outstanding' => ['sometimes', 'boolean'],
+            // Patient bills, settled at the counter, or the hospitals' weekly statements.
+            'category' => ['sometimes', Rule::in(['patient', 'weekly'])],
             'search' => ['sometimes', 'string', 'max:60'],
             'per_page' => ['sometimes', 'integer', 'min:1', 'max:100'],
             'page' => ['sometimes', 'integer', 'min:1'],

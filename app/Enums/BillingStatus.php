@@ -27,6 +27,11 @@ namespace App\Enums;
  * against it, it clears release, and its total still follows the units
  * reserved. That is a recorded exception to the Capstone rule that no unit
  * leaves without confirmed payment, for weekly orders only.
+ *
+ * `SettledOutside` is a statement-only statement the hospital has since
+ * settled, outside RedAgos, with billing staff recording its reference and
+ * date (owner, 2026-10-11). No money moved through RedAgos; the statement is
+ * closed, and its total no longer follows anything.
  */
 enum BillingStatus: string
 {
@@ -41,6 +46,8 @@ enum BillingStatus: string
     case Subsidised = 'subsidised';
 
     case StatementOnly = 'statement_only';
+
+    case SettledOutside = 'settled_outside';
 
     /**
      * Get every accepted billing status value.
@@ -64,6 +71,7 @@ enum BillingStatus: string
             self::Void => 'Void',
             self::Subsidised => 'Government Subsidised',
             self::StatementOnly => 'Statement Only',
+            self::SettledOutside => 'Settled by Hospital',
         };
     }
 
@@ -81,12 +89,13 @@ enum BillingStatus: string
      * the cost, so nothing is owed by the hospital and the units may go.
      *
      * `StatementOnly` clears because nothing is owed in RedAgos at all: the
-     * weekly order is settled outside the system, by owner decision.
+     * weekly order is settled outside the system, by owner decision. So does
+     * `SettledOutside`, the same statement once the hospital has settled it.
      */
     public function clearsRelease(): bool
     {
         return match ($this) {
-            self::Paid, self::Void, self::Subsidised, self::StatementOnly => true,
+            self::Paid, self::Void, self::Subsidised, self::StatementOnly, self::SettledOutside => true,
             self::Unpaid, self::Partial => false,
         };
     }
@@ -100,11 +109,12 @@ enum BillingStatus: string
      * back into an unpaid balance would undo that decision.
      *
      * StatementOnly is not settled by decision: its total keeps following the
-     * units reserved, only its status stays put.
+     * units reserved, only its status stays put. SettledOutside is: the
+     * hospital settled the figure it was billed, which must not move after.
      */
     public function isSettledByDecision(): bool
     {
-        return $this === self::Void || $this === self::Subsidised;
+        return $this === self::Void || $this === self::Subsidised || $this === self::SettledOutside;
     }
 
     /**
@@ -119,7 +129,7 @@ enum BillingStatus: string
     {
         return match ($this) {
             self::Unpaid, self::Partial, self::Paid => true,
-            self::Void, self::Subsidised, self::StatementOnly => false,
+            self::Void, self::Subsidised, self::StatementOnly, self::SettledOutside => false,
         };
     }
 

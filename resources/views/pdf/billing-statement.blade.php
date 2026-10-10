@@ -9,6 +9,10 @@
     Laid out as the owner's billing mock-up (2026-10-11): issuer, bill-to and
     transaction boxes, the lines, the totals, notes, and a footer band. It is
     titled a Statement of Account, not an invoice: it is not a BIR document.
+
+    Headed by the issuing centre — its own logo, the one frozen on the
+    revision, or its initials when it has none — never by a shared mark.
+    RedAgos is named only in the footer, as the system that produced it.
 --}}
 @php
     use App\Enums\BillingStatus;
@@ -23,7 +27,7 @@
     $collected = (float) $revision->collected_at_issue;
     $issuedBy = $revision->creator ? trim($revision->creator->first_name.' '.$revision->creator->last_name) : null;
     $tone = match ($status) {
-        BillingStatus::Paid => 'paid',
+        BillingStatus::Paid, BillingStatus::SettledOutside => 'paid',
         BillingStatus::Subsidised, BillingStatus::StatementOnly => 'info',
         BillingStatus::Void => 'void',
         default => 'due',
@@ -40,7 +44,8 @@
         table { border-collapse: collapse; width: 100%; }
         td, th { vertical-align: top; }
         .muted { color: #657180; }
-        .mark { width: 34px; height: 34px; background: #b91f2b; color: #fff; border-radius: 9px; text-align: center; font-size: 20pt; font-weight: bold; line-height: 34px; }
+        .issuer-logo { max-width: 120px; max-height: 56px; }
+        .monogram { width: 52px; height: 52px; background: #2f3b48; color: #fff; border-radius: 12px; text-align: center; font-size: 17pt; font-weight: bold; line-height: 52px; }
         .brand-name { font-size: 15pt; font-weight: bold; }
         .doc-title { text-align: right; }
         .doc-title .name { font-size: 15pt; font-weight: bold; color: #b91f2b; letter-spacing: 0.5px; }
@@ -55,7 +60,6 @@
         .box h3 { margin: 0 0 5px; font-size: 7pt; text-transform: uppercase; letter-spacing: 0.6px; color: #657180; }
         .box strong { display: block; margin-bottom: 2px; }
         .box p { margin: 1px 0; color: #657180; font-size: 7.5pt; }
-        .box img { max-width: 34px; max-height: 34px; margin-bottom: 4px; }
         .section { font-size: 9pt; font-weight: bold; margin: 16px 0 6px; }
         .lines th { text-align: left; font-size: 7pt; text-transform: uppercase; letter-spacing: 0.5px; color: #657180; background: #f5f7f9; padding: 6px; border-bottom: 1px solid #e1e6eb; }
         .lines td { padding: 7px 6px; border-bottom: 1px solid #e1e6eb; }
@@ -76,11 +80,19 @@
 <body>
     <table>
         <tr>
-            <td style="width: 44px;"><div class="mark">+</div></td>
+            <td style="width: {{ $logo ? 132 : 64 }}px;">
+                @if ($logo)
+                    <img class="issuer-logo" src="{{ $logo }}" alt="">
+                @else
+                    <div class="monogram">{{ $monogram }}</div>
+                @endif
+            </td>
             <td>
-                <div class="brand-name">RedAgos</div>
-                <div class="muted">Blood Bank Management &amp; Inventory System</div>
-                <div class="muted">{{ $facility?->name }}</div>
+                <div class="brand-name">{{ $facility?->name }}</div>
+                @if ($facility?->address)
+                    <div class="muted">{{ $facility->address }}</div>
+                @endif
+                <div class="muted">Blood service facility</div>
             </td>
             <td class="doc-title">
                 <div class="name">STATEMENT OF ACCOUNT</div>
@@ -97,9 +109,6 @@
         <tr>
             <td class="box">
                 <h3>Issued by</h3>
-                @if ($logo)
-                    <img src="{{ $logo }}" alt="">
-                @endif
                 <strong>{{ $facility?->name }}</strong>
                 @if ($facility?->address)
                     <p>{{ $facility->address }}</p>
@@ -200,6 +209,16 @@
                 Weekly replenishment order. This statement goes to the requesting hospital for settlement
                 outside RedAgos; no payment is collected against it in this system.
             </p>
+        @elseif ($status === BillingStatus::SettledOutside)
+            <p class="status-note">
+                Weekly replenishment order, settled by the requesting hospital outside RedAgos
+                @if ($revision->billing?->settled_at)
+                    on {{ $revision->billing->settled_at->format('j M Y') }}
+                @endif
+                @if ($revision->billing?->settlement_reference)
+                    (reference {{ $revision->billing->settlement_reference }})
+                @endif.
+            </p>
         @elseif ($subsidised)
             <p class="status-note">
                 Covered by the government subsidy. Nothing is payable on this request.
@@ -227,8 +246,8 @@
 
     <table class="footer">
         <tr>
-            <td>RedAgos &middot; Statement of Account</td>
-            <td style="text-align: center;">Keep this document for reference</td>
+            <td>{{ $facility?->name }} &middot; Statement of Account</td>
+            <td style="text-align: center;">Keep this document for reference &middot; Generated by RedAgos</td>
             <td style="text-align: right;">{{ $revision->document_number }}</td>
         </tr>
     </table>

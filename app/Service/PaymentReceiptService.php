@@ -9,6 +9,7 @@ use App\Models\PaymentReceipt;
 use App\Models\User;
 use App\Repository\DocumentSequenceRepository;
 use App\Support\DocumentNumbering;
+use App\Support\FacilityMonogram;
 use App\Support\Money;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Exceptions\HttpResponseException;
@@ -76,6 +77,9 @@ class PaymentReceiptService
                     'doh_license_number' => $request->targetFacility?->doh_license_number,
                     'phone' => $request->targetFacility?->phone,
                     'email' => $request->targetFacility?->email,
+                    // The logo the receipt is issued with, so a reprint shows
+                    // the one on the copy the payer was handed.
+                    'logo_path' => $request->targetFacility?->logo_path,
                 ],
                 'payer_name' => $payerName,
                 'received_by' => $issuer ? trim($issuer->first_name.' '.$issuer->last_name) : null,
@@ -108,6 +112,10 @@ class PaymentReceiptService
                     'reference_number' => $payment->reference_number,
                     'source' => $payment->source->value,
                     'paid_at' => $payment->payment_date?->toIso8601String(),
+                    // Cash at the counter: what was handed over, and the change given back.
+                    'amount_tendered' => $payment->amount_tendered,
+                    'change_given' => $payment->change_given,
+                    'cash_session_number' => $payment->cashSession?->session_number,
                 ],
                 'replaces_receipt_number' => $replaces?->receipt_number,
             ],
@@ -175,7 +183,14 @@ class PaymentReceiptService
             'balance_before' => $snapshot['balance_before'] ?? null,
             'payer_name' => $snapshot['payer_name'] ?? null,
             'received_by' => $snapshot['received_by'] ?? null,
-            'issuing_facility' => $snapshot['issuing_facility'] ?? null,
+            // The file path stays on the server; the screen gets a signed link to it.
+            'issuing_facility' => isset($snapshot['issuing_facility']) ? [
+                ...array_diff_key($snapshot['issuing_facility'], ['logo_path' => true]),
+                'logo_url' => $this->facilityLogoService->urlForPath(
+                    $receipt->issuingFacility,
+                    $snapshot['issuing_facility']['logo_path'] ?? null
+                ),
+            ] : null,
             'request' => $snapshot['request'] ?? null,
             'statement' => $snapshot['statement'] ?? null,
             // Without its reference number: the hospital reads this too, and
@@ -184,6 +199,9 @@ class PaymentReceiptService
                 'method_label' => $snapshot['payment']['method_label'] ?? null,
                 'source' => $snapshot['payment']['source'] ?? null,
                 'paid_at' => $snapshot['payment']['paid_at'] ?? null,
+                'amount_tendered' => $snapshot['payment']['amount_tendered'] ?? null,
+                'change_given' => $snapshot['payment']['change_given'] ?? null,
+                'cash_session_number' => $snapshot['payment']['cash_session_number'] ?? null,
             ],
             // Empty on a receipt issued before receipts carried their lines.
             'lines' => $snapshot['lines'] ?? [],
@@ -219,21 +237,13 @@ class PaymentReceiptService
      */
     public function pdf(PaymentReceipt $receipt, User $viewer): Response
     {
-        $receipt->loadMissing('issuingFacility');
-
         $this->auditLogger->record($viewer, 'billing.receipt_downloaded', $receipt->payment?->billing, [
             'receipt_id' => $receipt->id,
             'receipt_number' => $receipt->receipt_number,
             'facility_id' => $viewer->facility_id,
         ]);
 
-        $images = extension_loaded('gd');
-
-        return Pdf::loadView('pdf.payment-receipt', [
-            'receipt' => $receipt,
-            'snapshot' => $receipt->snapshot,
-            'logo' => $images ? $this->facilityLogoService->dataUriFor($receipt->issuingFacility) : null,
-        ])
+        return Pdf::loadView('pdf.payment-receipt', $this->viewData($receipt))
             ->setPaper('a4')
             ->setOptions([
                 'isRemoteEnabled' => false,
@@ -241,6 +251,27 @@ class PaymentReceiptService
                 'defaultFont' => 'DejaVu Sans',
             ])
             ->download("{$receipt->receipt_number}.pdf");
+    }
+
+    /**
+     * Everything the printed receipt needs, read from its snapshot.
+     *
+     * @return array<string, mixed>
+     */
+    public function viewData(PaymentReceipt $receipt): array
+    {
+        $receipt->loadMissing('issuingFacility');
+        $issuer = $receipt->snapshot['issuing_facility'] ?? [];
+
+        // dompdf cannot decode a PNG without GD; the receipt still prints without the logo.
+        $images = extension_loaded('gd');
+
+        return [
+            'receipt' => $receipt,
+            'snapshot' => $receipt->snapshot,
+            'logo' => $images ? $this->facilityLogoService->dataUriForPath($receipt->issuingFacility, $issuer['logo_path'] ?? null) : null,
+            'monogram' => FacilityMonogram::of($issuer['name'] ?? $receipt->issuingFacility?->name),
+        ];
     }
 
     private function notFound(): HttpResponseException

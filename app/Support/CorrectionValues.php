@@ -15,7 +15,8 @@ use DateTimeInterface;
  * Every value is put through here before it is stored or compared.
  *
  * Used by the Issuance and Billing subjects only. The donation subjects keep
- * the values exactly as their own writes validate them.
+ * the values exactly as their own writes validate them. A null stays null
+ * whatever the type, so "no answer" never reads as false.
  */
 final class CorrectionValues
 {
@@ -26,6 +27,11 @@ final class CorrectionValues
     public const MONEY = 'money';
 
     public const STRING = 'string';
+
+    /**
+     * A yes or no, such as whether a payment is to be voided.
+     */
+    public const BOOLEAN = 'boolean';
 
     /**
      * Put one value in canonical form.
@@ -41,6 +47,7 @@ final class CorrectionValues
             self::DATE => self::moment($value)->toDateString(),
             self::MONEY => Money::toDecimal(Money::toCentavos($value)),
             self::STRING => self::text($value),
+            self::BOOLEAN => filter_var($value, FILTER_VALIDATE_BOOLEAN),
             default => $value,
         };
     }

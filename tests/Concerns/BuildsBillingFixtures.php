@@ -26,6 +26,8 @@ use Illuminate\Testing\TestResponse;
  */
 trait BuildsBillingFixtures
 {
+    use OpensCashShifts;
+
     protected Facility $centre;
 
     protected Facility $hospital;
@@ -130,12 +132,19 @@ trait BuildsBillingFixtures
     }
 
     /**
-     * Record a cash payment as the billing clerk.
+     * Record a cash payment as the billing clerk, at the counter.
+     *
+     * With cash shifts on, a counter payment goes into the cashier's open
+     * shift, so one is opened for the clerk first if they have none.
      *
      * @param  array<string, mixed>  $extra
      */
     protected function payCash(BloodRequest $request, float|int|string $amount, array $extra = []): TestResponse
     {
+        if (config('blood_center.cash_shifts')) {
+            $this->shiftFor($this->billingClerk);
+        }
+
         return $this->actingAs($this->billingClerk)
             ->postJson("/api/blood-center/billings/{$request->id}/payments", [
                 'amount_paid' => $amount,

@@ -32,6 +32,10 @@ class Billing extends Model
         'billing_date',
         'total_amount',
         'status',
+        'settled_at',
+        'settled_by',
+        'settlement_reference',
+        'settlement_note',
     ];
 
     protected function casts(): array
@@ -40,7 +44,24 @@ class Billing extends Model
             'status' => BillingStatus::class,
             'total_amount' => 'decimal:2',
             'billing_date' => 'immutable_datetime',
+            'settled_at' => 'immutable_date',
         ];
+    }
+
+    /**
+     * The staff member who recorded that the hospital settled a weekly bill.
+     */
+    public function settledBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'settled_by');
+    }
+
+    /**
+     * The bill's journal: every money event on it, oldest first.
+     */
+    public function transactions(): HasMany
+    {
+        return $this->hasMany(BillingTransaction::class)->orderBy('id');
     }
 
     public function request(): BelongsTo
