@@ -36,6 +36,7 @@ trait FakesXendit
             'services.xendit.secret_key' => 'xnd_development_test_key',
             'services.xendit.webhook_token' => 'test-callback-token',
             'services.xendit.checkout_enabled' => true,
+            'services.xendit.allow_main_account' => false,
             'services.xendit.base_url' => 'https://api.xendit.co',
         ]);
 

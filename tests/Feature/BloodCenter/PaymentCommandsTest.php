@@ -47,6 +47,14 @@ class PaymentCommandsTest extends TestCase
         $this->assertNull($this->hospital->refresh()->xendit_sub_account_id);
     }
 
+    public function test_the_word_for_the_master_account_cannot_be_linked_as_a_sub_account(): void
+    {
+        $this->artisan('facility:set-xendit-account', ['facility' => $this->centre->id, 'account' => 'main'])
+            ->assertFailed();
+
+        $this->assertNull($this->centre->refresh()->xendit_sub_account_id);
+    }
+
     public function test_one_sub_account_belongs_to_one_centre(): void
     {
         $other = Facility::factory()->approved()->create();

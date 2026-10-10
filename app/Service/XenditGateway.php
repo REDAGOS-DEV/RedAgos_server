@@ -25,9 +25,30 @@ use Throwable;
  *
  * Every amount Xendit sends back is turned into centavos here, in centavos(),
  * and handled as an integer from then on.
+ *
+ * MAIN_ACCOUNT in place of a sub-account id means the master account itself,
+ * with no for-user-id header. Only allowsMainAccount() may put it on an
+ * attempt: a local test before XenPlatform is approved, on a test key.
  */
 class XenditGateway
 {
+    /**
+     * Stands for the master account wherever a sub-account id would go.
+     */
+    public const MAIN_ACCOUNT = 'main';
+
+    /**
+     * Whether a centre with no sub-account may collect into the master account.
+     *
+     * Needs the XENDIT_ALLOW_MAIN_ACCOUNT switch and a test key. A live key
+     * moves real money, which belongs to the centre and never to RedAgos.
+     */
+    public function allowsMainAccount(): bool
+    {
+        return (bool) config('services.xendit.allow_main_account')
+            && str_starts_with((string) config('services.xendit.secret_key'), 'xnd_development_');
+    }
+
     /**
      * Open a hosted checkout session on a sub-account's behalf.
      *
@@ -78,7 +99,7 @@ class XenditGateway
     }
 
     /**
-     * A request authenticated as the master account, acting for one sub-account.
+     * A request authenticated as the master account, acting for one sub-account or for itself.
      */
     private function client(string $subAccountId): PendingRequest
     {
@@ -90,7 +111,7 @@ class XenditGateway
 
         return Http::baseUrl(rtrim((string) config('services.xendit.base_url'), '/'))
             ->withBasicAuth($secret, '')
-            ->withHeaders(['for-user-id' => $subAccountId])
+            ->withHeaders($subAccountId === self::MAIN_ACCOUNT ? [] : ['for-user-id' => $subAccountId])
             ->acceptJson()
             ->asJson()
             ->timeout(15)

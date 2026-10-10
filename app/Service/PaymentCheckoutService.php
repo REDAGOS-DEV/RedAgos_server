@@ -35,6 +35,9 @@ use Illuminate\Support\Str;
  * centre without a Xendit sub-account, or checkout switched off are refused.
  * Cash is unaffected by any of this, except that it waits while a checkout is
  * open.
+ *
+ * In a local test on a test key, XENDIT_ALLOW_MAIN_ACCOUNT lets a centre with
+ * no sub-account collect into the master account instead (accountFor()).
  */
 class PaymentCheckoutService
 {
@@ -58,9 +61,9 @@ class PaymentCheckoutService
         }
 
         $facility = $this->facilityOf($staff);
-        $account = $facility->xendit_sub_account_id;
+        $account = $this->accountFor($facility);
 
-        if (blank($account)) {
+        if ($account === null) {
             throw $this->refuse(409, 'merchant_not_configured', 'This blood centre has no GCash merchant account set up yet.');
         }
 
@@ -136,7 +139,7 @@ class PaymentCheckoutService
     {
         $reason = match (true) {
             ! config('services.xendit.checkout_enabled') => 'checkout_disabled',
-            blank($facility?->xendit_sub_account_id) => 'merchant_not_configured',
+            $this->accountFor($facility) === null => 'merchant_not_configured',
             $billing->status === BillingStatus::StatementOnly => 'billing_not_collectible',
             ! $billing->status->isCollectible() => 'billing_settled_by_decision',
             $this->billingService->outstandingFor($billing) <= 0 => 'billing_settled',
@@ -354,9 +357,14 @@ class PaymentCheckoutService
                 'metadata' => ['payment_attempt_id' => (string) $attempt->id],
             ]);
         } catch (RequestException $exception) {
-            $this->fail($attempt, (string) ($exception->response->json('error_code') ?? 'gateway_error'), $exception->response->status());
-        } catch (ConnectionException) {
-            $this->fail($attempt, 'gateway_unreachable', null);
+            $this->fail(
+                $attempt,
+                (string) ($exception->response->json('error_code') ?? 'gateway_error'),
+                $exception->response->status(),
+                (string) $exception->response->json('message'),
+            );
+        } catch (ConnectionException $exception) {
+            $this->fail($attempt, 'gateway_unreachable', null, $exception->getMessage());
         }
 
         $sessionId = $session['payment_session_id'] ?? null;
@@ -380,8 +388,11 @@ class PaymentCheckoutService
 
     /**
      * Mark an attempt that never opened as failed, and refuse the caller.
+     *
+     * The detail is Xendit's error message or the connection error, for the
+     * operator. Neither carries the key, which travels only in a header.
      */
-    private function fail(PaymentAttempt $attempt, string $code, ?int $httpStatus): never
+    private function fail(PaymentAttempt $attempt, string $code, ?int $httpStatus, string $detail = ''): never
     {
         $attempt->forceFill([
             'status' => PaymentAttemptStatus::Failed,
@@ -392,6 +403,7 @@ class PaymentCheckoutService
             'payment_attempt_id' => $attempt->id,
             'http_status' => $httpStatus,
             'error_code' => $code,
+            'detail' => substr($detail, 0, 300),
         ]);
 
         throw $this->refuse(502, 'gateway_unavailable', 'The payment provider could not open a checkout. Take the payment in cash, or try again.');
@@ -436,6 +448,21 @@ class PaymentCheckoutService
         if (! $staff->is_supervisor && $staff->staff_role !== StaffRole::BillingSupervisor) {
             throw $this->refuse(403, 'not_billing_supervisor', 'Only the Billing Supervisor or the Center Admin can resolve a checkout.');
         }
+    }
+
+    /**
+     * The Xendit account a centre collects into, or null when it has none.
+     *
+     * Its own sub-account; failing that, the master account only while
+     * XenditGateway::allowsMainAccount() says a local test permits it.
+     */
+    private function accountFor(?Facility $facility): ?string
+    {
+        if (filled($facility?->xendit_sub_account_id)) {
+            return $facility->xendit_sub_account_id;
+        }
+
+        return $this->gateway->allowsMainAccount() ? XenditGateway::MAIN_ACCOUNT : null;
     }
 
     /**

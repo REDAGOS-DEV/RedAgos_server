@@ -39,5 +39,9 @@
         <env name="PULSE_ENABLED" value="false"/>
         <env name="TELESCOPE_ENABLED" value="false"/>
         <env name="NIGHTWATCH_ENABLED" value="false"/>
+        <env name="XENDIT_SECRET_KEY" value=""/>
+        <env name="XENDIT_WEBHOOK_TOKEN" value=""/>
+        <env name="XENDIT_CHECKOUT_ENABLED" value="false"/>
+        <env name="XENDIT_ALLOW_MAIN_ACCOUNT" value="false"/>
     </php>
 </phpunit>

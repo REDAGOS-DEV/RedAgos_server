@@ -49,6 +49,11 @@ return [
     | Webhooks, verification and reconciliation keep running regardless, so a
     | checkout already open always settles.
     |
+    | allow_main_account is for local testing before XenPlatform is approved:
+    | a centre without a sub-account collects into the master account itself.
+    | It only takes effect with a test key (xnd_development_…), so it can never
+    | send a centre's real money to the RedAgos account.
+    |
     | webhook_events maps the machine event names this account actually
     | delivers onto the three things the processor cares about. The defaults
     | are the names in Xendit's documentation; confirm them in the sandbox and
@@ -61,6 +66,7 @@ return [
         'webhook_token' => env('XENDIT_WEBHOOK_TOKEN'),
         'base_url' => env('XENDIT_API_BASE_URL', 'https://api.xendit.co'),
         'checkout_enabled' => (bool) env('XENDIT_CHECKOUT_ENABLED', false),
+        'allow_main_account' => (bool) env('XENDIT_ALLOW_MAIN_ACCOUNT', false),
         'session_ttl_minutes' => (int) env('XENDIT_SESSION_TTL_MINUTES', 30),
         'verification_grace_minutes' => (int) env('XENDIT_VERIFICATION_GRACE_MINUTES', 60),
         // GCash's documented per-transaction ceiling, in pesos.

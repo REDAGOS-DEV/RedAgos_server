@@ -130,6 +130,58 @@ class GatewayCheckoutTest extends TestCase
             ->assertJsonPath('code', 'merchant_not_configured');
     }
 
+    public function test_a_local_test_lets_a_centre_without_a_sub_account_collect_into_the_master_account(): void
+    {
+        config(['services.xendit.allow_main_account' => true]);
+        $this->centre->forceFill(['xendit_sub_account_id' => null])->save();
+        $request = $this->allocatedRequest(2);
+
+        $this->actingAs($this->billingClerk)
+            ->getJson("/api/blood-center/billings/{$request->id}")
+            ->assertJsonPath('checkout.available', true);
+
+        $attempt = $this->openCheckout($request);
+        $this->assertSame('main', $attempt->provider_account_id);
+
+        $this->sessionStatus = 'COMPLETED';
+        $this->webhook($this->sessionEvent($attempt))->assertOk();
+
+        $this->assertSame(PaymentAttemptStatus::Completed, $attempt->refresh()->status);
+        Http::assertSent(fn (Request $sent): bool => $sent->method() === 'POST' && ! $sent->hasHeader('for-user-id'));
+        Http::assertSent(fn (Request $sent): bool => $sent->method() === 'GET' && ! $sent->hasHeader('for-user-id'));
+        Http::assertNotSent(fn (Request $sent): bool => $sent->hasHeader('for-user-id'));
+    }
+
+    public function test_the_master_account_is_never_used_with_a_live_key(): void
+    {
+        config([
+            'services.xendit.allow_main_account' => true,
+            'services.xendit.secret_key' => 'xnd_production_live_key',
+        ]);
+        $this->centre->forceFill(['xendit_sub_account_id' => null])->save();
+        $request = $this->allocatedRequest(1);
+
+        $this->actingAs($this->billingClerk)
+            ->getJson("/api/blood-center/billings/{$request->id}")
+            ->assertJsonPath('checkout.reason', 'merchant_not_configured');
+
+        $this->actingAs($this->billingClerk)
+            ->postJson("/api/blood-center/billings/{$request->id}/checkout", ['payer_name' => 'Maria Santos'])
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'merchant_not_configured');
+
+        Http::assertNothingSent();
+    }
+
+    public function test_a_centre_with_its_own_sub_account_keeps_using_it_when_the_test_switch_is_on(): void
+    {
+        config(['services.xendit.allow_main_account' => true]);
+        $request = $this->allocatedRequest(1);
+
+        $this->assertSame('sub-centre-1', $this->openCheckout($request)->provider_account_id);
+        Http::assertSent(fn (Request $sent): bool => $sent->hasHeader('for-user-id', 'sub-centre-1'));
+    }
+
     public function test_checkout_is_refused_for_a_weekly_order_and_for_a_statement_with_nothing_owed(): void
     {
         $weekly = $this->allocatedRequest(1, replenishment: true);

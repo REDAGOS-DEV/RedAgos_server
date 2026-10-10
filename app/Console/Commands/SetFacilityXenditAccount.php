@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Enums\FacilityTypeName;
 use App\Models\Facility;
 use App\Service\AuditLogger;
+use App\Service\XenditGateway;
 use Illuminate\Console\Command;
 
 /**
@@ -57,6 +58,13 @@ class SetFacilityXenditAccount extends Command
 
         if ($account !== null && strlen($account) > 64) {
             $this->error('That does not look like a Xendit account id: it is longer than 64 characters.');
+
+            return self::FAILURE;
+        }
+
+        // The gateway reads this word as "the master account itself".
+        if ($account === XenditGateway::MAIN_ACCOUNT) {
+            $this->error('"'.XenditGateway::MAIN_ACCOUNT.'" is not a sub-account id. Give the id Xendit shows for the sub-account.');
 
             return self::FAILURE;
         }
