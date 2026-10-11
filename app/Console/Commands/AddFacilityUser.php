@@ -7,6 +7,7 @@ use App\Console\Commands\Concerns\ResolvesActingAdministrator;
 use App\Enums\Department;
 use App\Enums\FacilityStatus;
 use App\Enums\FacilityTypeName;
+use App\Enums\HospitalRole;
 use App\Enums\StaffPrivilege;
 use App\Enums\StaffRole;
 use App\Models\Facility;
@@ -57,6 +58,7 @@ class AddFacilityUser extends Command
                             {--position= : Job title, optional}
                             {--employee-id= : Badge number, unique within the facility}
                             {--role= : Staff role, e.g. medical_receptionist or lab_supervisor (blood centers only)}
+                            {--hospital-role= : head, inventory_staff or requesting_staff (blood banks only; default head)}
                             {--supervisor : Grant the management level; with --role, a working supervisor}
                             {--privileges= : Comma-separated cap: read,write,update,delete (default: all four)}
                             {--primary : Also record this account as the facility contact}
@@ -111,6 +113,12 @@ class AddFacilityUser extends Command
             return self::FAILURE;
         }
 
+        $hospitalRole = $this->resolveHospitalRole($type);
+
+        if ($hospitalRole === false) {
+            return self::FAILURE;
+        }
+
         $attributes = $this->collectAttributes();
 
         if ($attributes === null) {
@@ -143,7 +151,7 @@ class AddFacilityUser extends Command
             return self::FAILURE;
         }
 
-        $staff = $this->createAccount($facility, $type, $attributes, $role, $isSupervisor, $privileges);
+        $staff = $this->createAccount($facility, $type, $attributes, $role, $isSupervisor, $privileges, $hospitalRole);
 
         $this->auditLogger->record($admin, 'staff.created', $staff, [
             'facility_id' => $facility->id,
@@ -378,6 +386,44 @@ class AddFacilityUser extends Command
     }
 
     /**
+     * The role a hospital blood bank account holds: Head unless told otherwise.
+     *
+     * Hospital roles were added by the project owner on 2026-10-11; an account
+     * without one reaches nothing in the hospital portal, and the operator at
+     * the terminal is vouching for it as every hospital account once was.
+     *
+     * @return HospitalRole|false|null Null for a blood-centre account; false on a role this application does not know.
+     */
+    private function resolveHospitalRole(FacilityTypeName $type): HospitalRole|false|null
+    {
+        $typed = $this->option('hospital-role');
+
+        if ($type !== FacilityTypeName::BloodBank) {
+            if (filled($typed)) {
+                $this->error('--hospital-role is for hospital blood banks only.');
+
+                return false;
+            }
+
+            return null;
+        }
+
+        if (blank($typed)) {
+            return HospitalRole::Head;
+        }
+
+        $role = HospitalRole::tryFrom(Str::lower(trim((string) $typed)));
+
+        if ($role === null) {
+            $this->error('Unknown hospital role. Use one of: '.implode(', ', HospitalRole::values()).'.');
+
+            return false;
+        }
+
+        return $role;
+    }
+
+    /**
      * Write the account, its role, and the facility contact if asked for.
      *
      * @param  array<string, mixed>  $attributes
@@ -388,9 +434,10 @@ class AddFacilityUser extends Command
         array $attributes,
         ?StaffRole $role,
         bool $isSupervisor,
-        ?array $privileges = null
+        ?array $privileges = null,
+        ?HospitalRole $hospitalRole = null
     ): User {
-        return DB::transaction(function () use ($facility, $type, $attributes, $role, $isSupervisor, $privileges): User {
+        return DB::transaction(function () use ($facility, $type, $attributes, $role, $isSupervisor, $privileges, $hospitalRole): User {
             $staff = $this->bloodCenterRepository->createStaffUser([
                 'uuid' => (string) Str::uuid(),
                 'first_name' => $attributes['first_name'],
@@ -412,6 +459,11 @@ class AddFacilityUser extends Command
             $this->authRepository->markVerified($staff);
 
             $this->facilityRepository->attachRole($staff, $type->role());
+
+            if ($hospitalRole !== null) {
+                $staff->hospital_role = $hospitalRole;
+                $staff->save();
+            }
 
             if ($this->option('primary')) {
                 $this->facilityRepository->setPrimaryAccount($facility, $staff);

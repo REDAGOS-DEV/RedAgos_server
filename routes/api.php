@@ -42,6 +42,7 @@ use App\Http\Controllers\HospitalDirectDistributionController;
 use App\Http\Controllers\HospitalInventoryController;
 use App\Http\Controllers\HospitalReferenceController;
 use App\Http\Controllers\HospitalReplenishmentScheduleController;
+use App\Http\Controllers\HospitalStaffController;
 use App\Http\Controllers\HospitalTransfusionRequestController;
 use App\Http\Controllers\HospitalWeeklyRequestController;
 use App\Http\Controllers\PasswordResetController;
@@ -698,16 +699,14 @@ Route::middleware(['auth:sanctum', 'role:admin', 'throttle:60,1'])
 // Named deliberately, unlike the routes around them: DonorIdentityDecisionRequest
 // Hospital Blood Bank — the requester side of the blood request workflow.
 //
-// Guarded by role and the operational gate, with no `can:` ability. That is
-// deliberate and worth explaining, because every blood-centre route above does
-// carry one. Abilities exist here to separate the four departments *within* a
-// blood centre, which is what docs/BLOOD-CENTER.md charters. A hospital blood
-// bank has no departments — users.department is null for all of its staff — and
-// every one of its accounts does the same job, so there is nothing for an
-// ability to separate. Adding one would also mean resolving the facility's type
-// inside User::abilities(), which App\Support\AdminPrivileges documents as
-// forbidden: that method runs on every gate check and every serialised user,
-// and must not touch a relation.
+// Guarded by role, the operational gate, and since 2026-10-11 a `can:` ability
+// per route. The project owner split a blood bank's work into roles
+// (App\Enums\HospitalRole): the Head holds everything and keeps the staff,
+// requesting staff raise requests and confirm dispatched blood arrived, and
+// inventory staff stock bags in and handle them. The abilities are in
+// App\Support\HospitalPermissions, read from users.hospital_role alone, so
+// User::abilities() still touches no relation. Notifications and reference
+// data stay open to every role.
 //
 // facility.operational carries the rest of the weight. Despite the middleware
 // class being named for the blood centre, its checks are role-agnostic —
@@ -717,153 +716,220 @@ Route::middleware(['auth:sanctum', 'role:blood_bank', 'facility.operational'])
     ->prefix('hospital')->group(function (): void {
         Route::get('/reference-data', [HospitalReferenceController::class, 'index']);
 
-        Route::get('/availability', [HospitalAvailabilityController::class, 'index']);
-        Route::get('/facilities', [HospitalAvailabilityController::class, 'facilities']);
+        Route::get('/availability', [HospitalAvailabilityController::class, 'index'])
+            ->middleware('can:hospital.requests.view');
+        Route::get('/facilities', [HospitalAvailabilityController::class, 'facilities'])
+            ->middleware('can:hospital.requests.view');
 
         // The blood bank's own stock: bags this hospital confirmed receipt of,
         // and the patient tags placed on them. Type, component and expiry are
         // read from the centre's blood_units row and never copied, so a tag can
         // never reset a date.
         Route::prefix('inventory')->group(function (): void {
-            Route::get('/', [HospitalInventoryController::class, 'index']);
+            Route::get('/', [HospitalInventoryController::class, 'index'])
+                ->middleware('can:hospital.inventory.view');
 
             // Declared before /{unit}: the bag number is a string and would
             // otherwise swallow these.
-            Route::get('/summary', [HospitalInventoryController::class, 'summary']);
-            Route::get('/tag-events', [HospitalInventoryController::class, 'tagEvents']);
+            Route::get('/summary', [HospitalInventoryController::class, 'summary'])
+                ->middleware('can:hospital.inventory.view');
+            Route::get('/tag-events', [HospitalInventoryController::class, 'tagEvents'])
+                ->middleware('can:hospital.inventory.view');
 
-            // The hospital's own minimum stock per blood type and component.
-            // A blood bank has no departments or abilities, so any account
-            // may read and set them. Declared before /{unit} like the two
-            // above: the bag number is a string and would swallow it.
-            Route::get('/thresholds', [StockThresholdController::class, 'index']);
-            Route::put('/thresholds', [StockThresholdController::class, 'update']);
+            // The hospital's own minimum stock per blood type and component:
+            // every role reads them, inventory staff set them. Declared before
+            // /{unit} like the two above: the bag number is a string and would
+            // swallow it.
+            Route::get('/thresholds', [StockThresholdController::class, 'index'])
+                ->middleware('can:hospital.inventory.view');
+            Route::put('/thresholds', [StockThresholdController::class, 'update'])
+                ->middleware('can:hospital.inventory.thresholds');
+
+            // Step two of receiving: put arrived bags on a shelf, each with an
+            // optional storage location. Declared before /{unit} like the rest.
+            Route::post('/stock-in', [HospitalInventoryController::class, 'stockIn'])
+                ->middleware('can:hospital.inventory.stock_in');
 
             Route::get('/{unit}', [HospitalInventoryController::class, 'show'])
-                ->where('unit', '[A-Za-z0-9\-]+');
+                ->where('unit', '[A-Za-z0-9\-]+')
+                ->middleware('can:hospital.inventory.view');
             Route::post('/{unit}/tag', [HospitalInventoryController::class, 'tag'])
-                ->where('unit', '[A-Za-z0-9\-]+');
+                ->where('unit', '[A-Za-z0-9\-]+')
+                ->middleware('can:hospital.inventory.handle');
             Route::post('/{unit}/crossmatch', [HospitalInventoryController::class, 'crossmatch'])
-                ->where('unit', '[A-Za-z0-9\-]+');
+                ->where('unit', '[A-Za-z0-9\-]+')
+                ->middleware('can:hospital.inventory.handle');
             Route::post('/{unit}/transfuse', [HospitalInventoryController::class, 'transfuse'])
-                ->where('unit', '[A-Za-z0-9\-]+');
+                ->where('unit', '[A-Za-z0-9\-]+')
+                ->middleware('can:hospital.inventory.handle');
             Route::post('/{unit}/release', [HospitalInventoryController::class, 'release'])
-                ->where('unit', '[A-Za-z0-9\-]+');
+                ->where('unit', '[A-Za-z0-9\-]+')
+                ->middleware('can:hospital.inventory.handle');
             Route::post('/{unit}/return', [HospitalInventoryController::class, 'confirmReturn'])
-                ->where('unit', '[A-Za-z0-9\-]+');
+                ->where('unit', '[A-Za-z0-9\-]+')
+                ->middleware('can:hospital.inventory.handle');
             Route::post('/{unit}/discard', [HospitalInventoryController::class, 'discard'])
-                ->where('unit', '[A-Za-z0-9\-]+');
+                ->where('unit', '[A-Za-z0-9\-]+')
+                ->middleware('can:hospital.inventory.discard');
         });
 
         // A patient's need, split across the centres asked to supply it. Each
         // share is a facility allocation — a blood request below — which the
         // centre works exactly as it always has.
         Route::prefix('transfusion-requests')->group(function (): void {
-            Route::get('/', [HospitalTransfusionRequestController::class, 'index']);
-            Route::post('/', [HospitalTransfusionRequestController::class, 'store']);
+            Route::get('/', [HospitalTransfusionRequestController::class, 'index'])
+                ->middleware('can:hospital.requests.view');
+            Route::post('/', [HospitalTransfusionRequestController::class, 'store'])
+                ->middleware('can:hospital.requests.manage');
 
             // Advisory: which centres hold matching stock, earliest expiry
             // first. A POST so it can carry the component lines.
             Route::post('/sourcing', [HospitalTransfusionRequestController::class, 'draftSourcing'])
-                ->middleware('throttle:60,1');
+                ->middleware('throttle:60,1')
+                ->middleware('can:hospital.requests.manage');
 
             // The check before recording a second requirement for the same
             // patient — including one a blood centre recorded here after a
             // walk-in. A POST so the patient's name stays out of URLs and
             // access logs.
             Route::post('/patient-matches', [HospitalTransfusionRequestController::class, 'patientMatches'])
-                ->middleware('throttle:60,1');
+                ->middleware('throttle:60,1')
+                ->middleware('can:hospital.requests.manage');
 
             // Either reference on the watcher's paperwork: the PTR, or the RQ
             // of any of its allocations. Declared before {transfusionRequest}.
             Route::get('/track/{reference}', [HospitalTransfusionRequestController::class, 'track'])
-                ->where('reference', '[A-Za-z0-9\-]+');
+                ->where('reference', '[A-Za-z0-9\-]+')
+                ->middleware('can:hospital.requests.view');
 
             Route::get('/{transfusionRequest}', [HospitalTransfusionRequestController::class, 'show'])
-                ->whereNumber('transfusionRequest');
+                ->whereNumber('transfusionRequest')
+                ->middleware('can:hospital.requests.view');
             Route::get('/{transfusionRequest}/history', [HospitalTransfusionRequestController::class, 'history'])
-                ->whereNumber('transfusionRequest');
+                ->whereNumber('transfusionRequest')
+                ->middleware('can:hospital.requests.view');
             Route::get('/{transfusionRequest}/sourcing', [HospitalTransfusionRequestController::class, 'sourcing'])
                 ->whereNumber('transfusionRequest')
-                ->middleware('throttle:60,1');
+                ->middleware('throttle:60,1')
+                ->middleware('can:hospital.requests.view');
 
             Route::post('/{transfusionRequest}/allocations', [HospitalTransfusionRequestController::class, 'addAllocations'])
-                ->whereNumber('transfusionRequest');
+                ->whereNumber('transfusionRequest')
+                ->middleware('can:hospital.requests.manage');
             Route::post('/{transfusionRequest}/allocations/{allocation}/withdraw', [HospitalTransfusionRequestController::class, 'withdrawAllocation'])
                 ->whereNumber('transfusionRequest')
-                ->whereNumber('allocation');
+                ->whereNumber('allocation')
+                ->middleware('can:hospital.requests.manage');
             Route::post('/{transfusionRequest}/items/{item}/close', [HospitalTransfusionRequestController::class, 'closeLine'])
                 ->whereNumber('transfusionRequest')
-                ->whereNumber('item');
+                ->whereNumber('item')
+                ->middleware('can:hospital.requests.manage');
             Route::post('/{transfusionRequest}/cancel', [HospitalTransfusionRequestController::class, 'cancel'])
-                ->whereNumber('transfusionRequest');
+                ->whereNumber('transfusionRequest')
+                ->middleware('can:hospital.requests.manage');
         });
 
         // Receiving: the blood bank's request days, the weekly request it
         // sends a centre on them, and deliveries from outside RedAgos typed in
         // bag by bag. A weekly request is one replenishment per blood type —
         // its receipt is confirmed on each, through confirm-receipt below.
-        Route::get('/replenishment-schedules', [HospitalReplenishmentScheduleController::class, 'index']);
+        Route::get('/replenishment-schedules', [HospitalReplenishmentScheduleController::class, 'index'])
+            ->middleware('can:hospital.requests.view');
         Route::put('/replenishment-schedules/{targetFacility}', [HospitalReplenishmentScheduleController::class, 'update'])
-            ->whereNumber('targetFacility');
+            ->whereNumber('targetFacility')
+            ->middleware('can:hospital.schedules.manage');
         Route::delete('/replenishment-schedules/{targetFacility}', [HospitalReplenishmentScheduleController::class, 'destroy'])
-            ->whereNumber('targetFacility');
+            ->whereNumber('targetFacility')
+            ->middleware('can:hospital.schedules.manage');
 
         Route::prefix('weekly-requests')->group(function (): void {
-            Route::get('/', [HospitalWeeklyRequestController::class, 'index']);
-            Route::post('/', [HospitalWeeklyRequestController::class, 'store']);
-            Route::get('/status', [HospitalWeeklyRequestController::class, 'status']);
+            Route::get('/', [HospitalWeeklyRequestController::class, 'index'])
+                ->middleware('can:hospital.requests.view');
+            Route::post('/', [HospitalWeeklyRequestController::class, 'store'])
+                ->middleware('can:hospital.requests.manage');
+            Route::get('/status', [HospitalWeeklyRequestController::class, 'status'])
+                ->middleware('can:hospital.requests.view');
             Route::get('/{weeklyRequest}', [HospitalWeeklyRequestController::class, 'show'])
-                ->whereNumber('weeklyRequest');
+                ->whereNumber('weeklyRequest')
+                ->middleware('can:hospital.requests.view');
         });
 
-        Route::get('/direct-distributions', [HospitalDirectDistributionController::class, 'index']);
-        Route::post('/direct-distributions', [HospitalDirectDistributionController::class, 'store']);
-        Route::get('/external-blood-sources', [HospitalDirectDistributionController::class, 'sources']);
-        Route::post('/external-blood-sources', [HospitalDirectDistributionController::class, 'storeSource']);
+        Route::get('/direct-distributions', [HospitalDirectDistributionController::class, 'index'])
+            ->middleware('can:hospital.inventory.view');
+        Route::post('/direct-distributions', [HospitalDirectDistributionController::class, 'store'])
+            ->middleware('can:hospital.receiving.direct');
+        Route::get('/external-blood-sources', [HospitalDirectDistributionController::class, 'sources'])
+            ->middleware('can:hospital.inventory.view');
+        Route::post('/external-blood-sources', [HospitalDirectDistributionController::class, 'storeSource'])
+            ->middleware('can:hospital.receiving.direct');
 
         // Replenishment orders, and every facility allocation's own page:
         // receipt, the DOH form and its history live on the allocation.
-        Route::get('/blood-requests', [HospitalBloodRequestController::class, 'index']);
+        Route::get('/blood-requests', [HospitalBloodRequestController::class, 'index'])
+            ->middleware('can:hospital.requests.view');
 
         // Declared before the {bloodRequest} route below, which would otherwise
         // swallow "track" and then fail to match it as an integer.
         Route::get('/blood-requests/track/{reference}', [HospitalBloodRequestController::class, 'track'])
-            ->where('reference', '[A-Za-z0-9\-]+');
+            ->where('reference', '[A-Za-z0-9\-]+')
+            ->middleware('can:hospital.requests.view');
 
         Route::get('/blood-requests/{bloodRequest}/form', [HospitalBloodRequestController::class, 'form'])
-            ->whereNumber('bloodRequest');
+            ->whereNumber('bloodRequest')
+            ->middleware('can:hospital.requests.view');
 
         Route::get('/blood-requests/{bloodRequest}', [HospitalBloodRequestController::class, 'show'])
-            ->whereNumber('bloodRequest');
+            ->whereNumber('bloodRequest')
+            ->middleware('can:hospital.requests.view');
         Route::post('/blood-requests/{bloodRequest}/cancel', [HospitalBloodRequestController::class, 'cancel'])
-            ->whereNumber('bloodRequest');
+            ->whereNumber('bloodRequest')
+            ->middleware('can:hospital.requests.manage');
 
         Route::get('/blood-requests/{bloodRequest}/history', [HospitalBloodRequestController::class, 'history'])
-            ->whereNumber('bloodRequest');
+            ->whereNumber('bloodRequest')
+            ->middleware('can:hospital.requests.view');
 
         Route::post('/blood-requests/{bloodRequest}/items/{item}/close', [HospitalBloodRequestController::class, 'closeLine'])
             ->whereNumber('bloodRequest')
-            ->whereNumber('item');
+            ->whereNumber('item')
+            ->middleware('can:hospital.requests.manage');
 
         // Receipt is confirmed by the receiving facility and nobody else. The
         // centre that dispatched the units cannot assert on the hospital's
         // behalf that they arrived, which is why this sits on the requester
         // side of the API rather than beside the release endpoint.
         Route::post('/blood-requests/{bloodRequest}/confirm-receipt', [HospitalBloodRequestController::class, 'confirmReceipt'])
-            ->whereNumber('bloodRequest');
+            ->whereNumber('bloodRequest')
+            ->middleware('can:hospital.receipt.confirm');
 
         // What the hospital's requests were billed, read only. The patient or
         // watcher pays at the blood centre, and a weekly order is billed by
         // statement only, so nothing here takes money.
         Route::get('/blood-requests/{bloodRequest}/billing', [HospitalBillingController::class, 'show'])
-            ->whereNumber('bloodRequest');
+            ->whereNumber('bloodRequest')
+            ->middleware('can:hospital.billing.view');
         Route::get('/statements/{revision}/pdf', [HospitalBillingController::class, 'statementPdf'])
             ->middleware('throttle:30,1')
-            ->whereNumber('revision');
+            ->whereNumber('revision')
+            ->middleware('can:hospital.billing.view');
         Route::get('/receipts/{receipt}/pdf', [HospitalBillingController::class, 'receiptPdf'])
             ->middleware('throttle:30,1')
-            ->whereNumber('receipt');
+            ->whereNumber('receipt')
+            ->middleware('can:hospital.billing.view');
+
+        // The blood bank's staff, kept by its Head.
+        Route::prefix('staff')->group(function (): void {
+            Route::get('/', [HospitalStaffController::class, 'index'])
+                ->middleware('can:hospital.staff.manage');
+            Route::post('/', [HospitalStaffController::class, 'store'])
+                ->middleware('can:hospital.staff.manage');
+            Route::patch('/{uuid}', [HospitalStaffController::class, 'update'])->whereUuid('uuid')
+                ->middleware('can:hospital.staff.manage');
+            Route::delete('/{uuid}', [HospitalStaffController::class, 'destroy'])->whereUuid('uuid')
+                ->middleware('can:hospital.staff.manage');
+            Route::post('/{uuid}/restore', [HospitalStaffController::class, 'restore'])->whereUuid('uuid')
+                ->middleware('can:hospital.staff.manage');
+        });
 
         Route::get('/notifications', [FacilityNotificationController::class, 'index']);
         Route::get('/notifications/unread-count', [FacilityNotificationController::class, 'unreadCount']);

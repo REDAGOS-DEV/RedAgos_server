@@ -5,6 +5,7 @@ namespace Tests\Feature\Admin;
 use App\Console\Commands\AddFacilityUser;
 use App\Enums\AccountStatus;
 use App\Enums\Department;
+use App\Enums\HospitalRole;
 use App\Enums\RoleName;
 use App\Enums\StaffRole;
 use App\Models\Facility;
@@ -170,6 +171,29 @@ class AddFacilityUserTest extends TestCase
         $this->assertSame($bloodBank->id, $staff->facility_id);
         $this->assertNull($staff->department);
         $this->assertTrue($staff->hasRole(RoleName::BloodBank));
+
+        // Head unless told otherwise.
+        $this->assertSame(HospitalRole::Head, $staff->hospital_role);
+    }
+
+    public function test_a_blood_bank_account_may_be_given_a_narrower_hospital_role(): void
+    {
+        $bloodBank = Facility::factory()->bloodBank()->approved()->create();
+
+        $this->artisan('facility:add-user', [
+            '--facility' => $bloodBank->id,
+            '--hospital-role' => 'inventory_staff',
+            ...self::ACCOUNT,
+        ])->assertSuccessful();
+
+        $this->assertSame(HospitalRole::InventoryStaff, User::where('email', 'jomar@redagos.test')->sole()->hospital_role);
+
+        $this->artisan('facility:add-user', [
+            '--facility' => $bloodBank->id,
+            '--hospital-role' => 'nurse',
+            ...self::ACCOUNT,
+            '--email' => 'other@redagos.test',
+        ])->assertFailed();
     }
 
     public function test_a_blood_bank_has_no_departments_to_be_posted_to(): void

@@ -1134,14 +1134,14 @@ It never carries the donor's name.
 
 **DECIDED BY:** The project owner, on 2026-10-02. That covers the four questions the specification left open: where stock comes from, how a tag names its patient, early release, and what happens to a bag after Untagged Crossmatched.
 
-**DECISION (stock comes from receipt only):** A hospital blood bank's own stock is the bags it confirmed receipt of, from now on.
+**DECISION (stock comes from receipt only):** A hospital blood bank's own stock is the bags it confirmed receipt of, from now on. *(Amended 2026-10-11 by "Hospital roles and two-step receiving": receipt takes a bag into custody as `received`; inventory staff then stock it in, which makes it `available`.)*
 - `FulfillmentService::confirmReceipt()` calls `HospitalInventoryService::stockReceived()` in the same transaction. That call inserts one `hospital_units` row per received hold, as `available`. It only inserts, so receipt's lock order is unchanged.
 - The response gains `stocked_count`.
 - Bags received before this existed are not backfilled, because many of them will have been used already.
 - Bags from outside RedAgos are not booked in: `blood_units.id` is global and `donation_id` is required. *(Superseded 2026-10-05 by D-R1: they are now booked in by direct distribution, the second way stock reaches a hospital.)*
 
 **DECISION (a custody table, not a status on blood_units):**
-- `hospital_units` holds one row per physical bag in a hospital's custody. It has one row per bag, not one per state, and its status is `available | tag_assigned | tag_crossmatched | pending_return | transfused | expired | discarded`.
+- `hospital_units` holds one row per physical bag in a hospital's custody. It has one row per bag, not one per state, and its status is `available | tag_assigned | tag_crossmatched | pending_return | transfused | expired | discarded` (and, since 2026-10-11, `received` before `available`).
 - The bag's own facts (type, component, volume and **expiry**) stay on the centre's `blood_units` row. They are read through `unit_id` and never copied, so a tag cannot reset an expiry date. FEFO orders by `blood_units.expiry_date`.
 - The centre's side of the bag is not touched. It stays `issued` with the centre's `facility_id`, so the centre's summary, its expiry sweep and FEFO allocation behave exactly as before.
 - Why not extend existing structures:
@@ -1228,7 +1228,7 @@ stateDiagram-v2
 **KNOWN LIMITATIONS:**
 - `hospital_units.unit_id` is unique. A future return-to-centre flow would need it relaxed to a partial "active custody" index, as `request_allocations` was.
 - `hospital_units.request_allocation_id` is nullable since 2026-10-05 (still unique): a bag received by direct distribution had no dispatched hold.
-- Hospital stock has no storage location of its own. The centre's `storage_location` describes the centre's shelf and is not shown.
+- Hospital stock has no storage location of its own. The centre's `storage_location` describes the centre's shelf and is not shown. *(Superseded 2026-10-11: a bag is given a hospital storage location when it is stocked in, on `hospital_units.storage_location`.)*
 - Deadlines have second precision, matching `timestamp` columns.
 
 **STILL OUTSTANDING:**
@@ -1370,3 +1370,27 @@ stateDiagram-v2
 - The PostgreSQL trigger and partial-index SQL of the journal and cash shifts has run on the local development PostgreSQL; the test suite runs on SQLite.
 - Cash shifts are off until more than one cashier shares the counter; the owner turns them on with `BILLING_CASH_SHIFTS=true`.
 - There is no hardware drawer kick or direct ESC/POS printing; the receipt prints from the browser.
+
+## Hospital roles and two-step receiving
+
+**SOURCE:** The project owner, 2026-10-11, on confirming receipt of dispatched units: putting them straight into stock "is wrong — it must be done by the inventory staff, like which storage location it will go, as the blood center did on passing the blood unit in issuance."
+
+**DECIDED BY:** The project owner, 2026-10-11, choosing among options: two steps rather than one; hospital roles rather than any account; an optional storage location, as at the centre's Stock Intake; external bags through the same step; Head, Inventory Staff and Requesting Staff; the Head keeps the staff; Requesting Staff and the Head confirm arrival.
+
+**DECISION (hospital roles):** A hospital blood bank account holds one `HospitalRole`, stored on `users.hospital_role` (a string, as `staff_role` is): `head`, `inventory_staff` or `requesting_staff`. `App\Support\HospitalPermissions` maps each to `hospital.*` abilities, read from that column alone, so `User::abilities()` still touches no relation. Every `/hospital` route carries `can:` (notifications and reference data excepted).
+- **Every role** reads requests and stock (`hospital.requests.view`, `hospital.inventory.view`).
+- **Requesting Staff** raise, source, cancel and close requests (`hospital.requests.manage`), keep the request days (`hospital.schedules.manage`), confirm dispatched blood arrived (`hospital.receipt.confirm`) and read billing documents (`hospital.billing.view`).
+- **Inventory Staff** stock bags in (`hospital.inventory.stock_in`), tag, crossmatch, transfuse, release and return them (`hospital.inventory.handle`), discard them (`hospital.inventory.discard`), set stock thresholds (`hospital.inventory.thresholds`) and book blood from outside RedAgos (`hospital.receiving.direct`).
+- **The Head** holds every hospital ability, and alone keeps the staff (`hospital.staff.manage`).
+- An account with no hospital role reaches nothing but its notifications. A blood-centre account holds no `hospital.*` ability.
+- Existing hospital accounts became Head (`assign_heads_to_hospital_accounts`), which takes nothing away. A facility's primary account is its Head: Facility Management, `facility:create`, and approval of a self-registered blood bank set it; `facility:add-user` takes `--hospital-role` (default `head`).
+
+**DECISION (the Head keeps the staff):** `/hospital/staff` (index, store, update, destroy, restore) lets the Head add colleagues with a role and a first password (they verify their address before signing in), change a role or title, and remove or restore an account. A blood bank always keeps at least one active Head (409 `last_head`), checked under a facility lock. Another blood bank's account is a 404. Audited as `hospital_staff.created | role_changed | deleted | restored`.
+
+**DECISION (two-step receiving):** Confirming receipt, and booking a bag by direct distribution, now insert the custody row as `received` (audit `hospital_inventory.received`), not `available`. A `received` bag is in custody but not stock: it counts in no stock figure (types, near expiry, thresholds) and cannot be tagged. `POST /hospital/inventory/stock-in` takes `units[]` of `unit_id` and an optional `storage_location` (≤100 characters, a label only) and makes each `available`, stamping `stocked_at` and `stocked_by` (audit `hospital_inventory.stocked`, with the location). It is all or nothing: a bag not this blood bank's is 404, one not awaiting stock-in 409 `not_awaiting_stock_in`, one past its date 409 `bag_expired`. Bags are locked in custody-row id order, as the expiry sweep takes them. A `received` bag may be discarded (damaged on arrival), and the nightly sweep expires a `received` bag past its date as it does an available one, recording the real previous status. The stock-in form is offered the centre's configured locations (`blood_center.storage_locations`, generic fridges and freezers) and every location this blood bank has used, in the inventory summary's `storage_locations`. Bags already in stock keep no location: they were shelved before there was anywhere to say where. Migrations `add_hospital_role_to_users_table`, `assign_heads_to_hospital_accounts` and `add_stock_in_to_hospital_units_table`.
+
+**DECISION (the screens):** Blood Bank Inventory shows an *Awaiting stock-in* panel while any bag waits: each bag with a location field (new arrivals come ticked), a location for all the ticked bags, Stock in, and Discard. A bag's location shows under its number in the stock list. The request page's *Units on their way* offers Confirm Receipt only to roles that hold it, and says the units then wait for stock-in. The sidebar, the page search and each page's `requires` follow the role; a page a role cannot open sends it to the dashboard (`hospital-portal` middleware). The Head has a Staff page.
+
+**UNRESOLVED / TO CONFIRM:**
+- Hospital staff have no per-person Read/Write/Update/Delete privileges, as centre staff do; a role is the whole of what they may do.
+- The hospital's storage locations are suggestions, not a managed list.

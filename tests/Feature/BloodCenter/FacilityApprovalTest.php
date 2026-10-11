@@ -3,6 +3,7 @@
 namespace Tests\Feature\BloodCenter;
 
 use App\Enums\FacilityStatus;
+use App\Enums\HospitalRole;
 use App\Enums\RoleName;
 use App\Models\Facility;
 use App\Models\User;
@@ -53,6 +54,20 @@ class FacilityApprovalTest extends TestCase
         // A centre with several staff is approved once, not once per person.
         $this->assertTrue($contact->fresh()->hasRole(RoleName::BloodCenter));
         $this->assertTrue($colleague->fresh()->hasRole(RoleName::BloodCenter));
+    }
+
+    public function test_approving_a_blood_bank_makes_its_registrant_the_head(): void
+    {
+        $facility = Facility::factory()->bloodBank()->pendingApproval()->create();
+        $registrant = User::factory()->create(['facility_id' => $facility->id]);
+
+        $this->actingAs($this->admin())
+            ->postJson("/api/admin/facilities/{$facility->id}/approve")
+            ->assertOk();
+
+        $registrant->refresh();
+        $this->assertTrue($registrant->hasRole(RoleName::BloodBank));
+        $this->assertSame(HospitalRole::Head, $registrant->hospital_role);
     }
 
     public function test_approving_twice_is_refused(): void

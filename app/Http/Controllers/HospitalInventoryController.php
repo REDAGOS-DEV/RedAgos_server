@@ -6,6 +6,7 @@ use App\Http\Requests\DiscardBloodUnitRequest;
 use App\Http\Requests\ListHospitalInventoryRequest;
 use App\Http\Requests\ListUnitTagEventsRequest;
 use App\Http\Requests\ReleaseUnitTagRequest;
+use App\Http\Requests\StockInHospitalUnitsRequest;
 use App\Http\Requests\TagHospitalUnitRequest;
 use App\Service\HospitalInventoryService;
 use Illuminate\Http\JsonResponse;
@@ -125,6 +126,16 @@ class HospitalInventoryController extends Controller
     {
         return response()->json(
             $this->hospitalInventoryService->discard($request->user(), $unit, $request->validated()['reason'])
+        );
+    }
+
+    /**
+     * Stock in arrived bags, each with an optional storage location.
+     */
+    public function stockIn(StockInHospitalUnitsRequest $request): JsonResponse
+    {
+        return response()->json(
+            $this->hospitalInventoryService->stockIn($request->user(), $request->validated()['units'])
         );
     }
 }

@@ -71,9 +71,10 @@ class DirectDistributionService
         $count = $delivery->quantity;
 
         return [
+            // In custody, awaiting stock-in like any arrived bag (project owner, 2026-10-11).
             'message' => $count === 1
-                ? "Bag {$delivery->external_unit_number} received into your blood bank."
-                : "{$count} bags under {$delivery->external_unit_number} received into your blood bank.",
+                ? "Bag {$delivery->external_unit_number} received. Stock it in from Blood Bank Inventory."
+                : "{$count} bags under {$delivery->external_unit_number} received. Stock them in from Blood Bank Inventory.",
             'direct_distribution' => $this->format($this->repository->findFor($delivery->id, $facilityId)),
         ];
     }

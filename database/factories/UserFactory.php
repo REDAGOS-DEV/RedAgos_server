@@ -4,6 +4,7 @@ namespace Database\Factories;
 
 use App\Enums\AccountStatus;
 use App\Enums\Department;
+use App\Enums\HospitalRole;
 use App\Enums\RoleName;
 use App\Enums\StaffRole;
 use App\Models\DonorProfile;
@@ -239,7 +240,18 @@ class UserFactory extends Factory
             'position' => 'Medical Technologist',
             'staff_role' => null,
             'is_supervisor' => false,
+            // The Head can do everything, as every hospital account could
+            // before roles; narrow it with hospitalRole().
+            'hospital_role' => HospitalRole::Head,
         ])->withRole(RoleName::BloodBank);
+    }
+
+    /**
+     * Give a hospital blood bank account a narrower role than Head.
+     */
+    public function hospitalRole(HospitalRole $role): static
+    {
+        return $this->state(fn (array $attributes): array => ['hospital_role' => $role]);
     }
 
     /**

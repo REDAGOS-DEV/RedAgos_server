@@ -49,14 +49,16 @@ A step-by-step guide to the whole internal process, from the donor's QR code bei
 | 16 | **Billing** | **Billing Clerk**<br>`billing.clerk@redagos.test`<br>or **Billing Supervisor**<br>`billing.supervisor@redagos.test` | Statement `paid` or `subsidised` (taken at the Billing Counter) | 17 |
 | | **Issuance** (dispatch) | **Head (approves change requests):**<br>ICO<br>`inventory.control.officer@redagos.test` | | |
 | 17 | **Dispatch** | **Dispatch Coordinator**<br>`dispatch.coordinator@redagos.test`<br>or **ICO**<br>`inventory.control.officer@redagos.test` | Bags `issued`; request Partially Fulfilled / Fulfilled | 18 |
-| | **Hospital Blood Bank** (no departments, so no head) | Every account does every action | | |
-| 18 | **Confirm receipt** | **Any blood-bank account**<br>`user@redagos.ph` | Bags enter the hospital's stock as `available` | 19 |
-| 19 | **Tag, crossmatch, transfuse** | **Any blood-bank account**<br>`user@redagos.ph` | `tag_assigned` → `tag_crossmatched` → `transfused` | End |
+| | **Hospital Blood Bank** (roles since 2026-10-11) | **Blood Bank Head** (every action; keeps the staff):<br>`user@redagos.ph` | | |
+| 18 | **Confirm receipt** | **Requesting Staff** or the **Head** | Bags enter the hospital's custody as `received` (awaiting stock-in) | 18b |
+| 18b | **Stock in** | **Inventory Staff** or the **Head** | Bags `available`, each with an optional storage location | 19 |
+| 19 | **Tag, crossmatch, transfuse** | **Inventory Staff** or the **Head** | `tag_assigned` → `tag_crossmatched` → `transfused` | End |
 
 **About the heads and the emails.**
 
 - **Heads.** A department's head approves its *change requests* (corrections to records already saved; see §5.1). Nobody decides their own request, so when a **head** files one it goes to the **Center Admin** (`supervisor@redagos.test`). A hospital blood bank has no departments and no change-request approval.
 - **Emails.** The addresses are the demo accounts that `BloodCenterStaffSeeder` creates for Sub-National Blood Center, plus the SPMC Blood Bank account in the local database. They exist only on local and test setups. On any other deployment, use the real account for each role. Passwords are deliberately not listed here.
+- **Demo stock.** On a local setup, Sub-National Blood Center's shelves come from `DemoInventorySeeder`: **50 available units of every component in every blood type** (2,800 units), each behind a cleared donation. Its 1,200 demo donors (`demo-donor-…@redagos.test`) exist only to give the units a donation; they hold no password anyone knows. The seeder stocks only components whose shelf life the centre has configured, and needs the staff accounts first.
 
 **The order of Testing and Processing.** Steps 7–8 (Testing) and 9–10 (Processing) start the moment the donation is `collected`, and neither waits for the other. Processing does *not* wait for test results, because plasma has to be frozen within hours of the draw. The two meet at **Step 12**: a bag cannot leave quarantine until Processing has handed it over (Step 11 needs a `completed` donation) *and* Testing has issued both clearance tokens. Steps 7 and 8 can also be done in either order, by two people.
 
@@ -86,7 +88,7 @@ flowchart TD
     end
     subgraph BB["HOSPITAL BLOOD BANK"]
         S14["14. Raise request<br/>Blood-bank account"]
-        S18["18. Confirm receipt<br/>Blood-bank account"] --> S19["19. Tag, crossmatch, transfuse<br/>Blood-bank account"]
+        S18["18. Confirm receipt<br/>Requesting Staff"] --> S18b["18b. Stock in<br/>Inventory Staff"] --> S19["19. Tag, crossmatch, transfuse<br/>Inventory Staff"]
     end
     S6 --> S7 & S8 & S9
     S10 --> S11
@@ -270,7 +272,7 @@ Only `available` bags that are **not past their date** count as stock. Quarantin
 
 | | |
 |---|---|
-| **Log in as** | **Any blood-bank account** |
+| **Log in as** | **Requesting Staff** or the **Blood Bank Head** |
 | **Actions** | Chooses one of two routes. |
 
 **14a. Weekly Request (restock the shelf).** Weekly Request page, sent only on a **request day** saved in "Before you start".
@@ -333,19 +335,29 @@ Only `available` bags that are **not past their date** count as stock. Quarantin
 
 | | |
 |---|---|
-| **Log in as** | **Any blood-bank account** (the request's page; or, for a weekly delivery, the Weekly Request page) |
+| **Log in as** | **Requesting Staff** or the **Blood Bank Head** (the request's page; or, for a weekly delivery, the Weekly Request page) |
 | **Actions** | Confirms receipt of the dispatched units. For a weekly delivery, **scans or types the bag numbers**; they are matched against that delivery's dispatched, unreceived bags. |
-| **Status changes** | Receipt is stamped per unit, and **in the same transaction each received bag enters the hospital's own stock as `available`**. The center's side stays `issued`. Receipt does **not** change the request's status; the page reports "received x of y". |
+| **Status changes** | Receipt is stamped per unit, and **in the same transaction each received bag enters the hospital's custody as `received`, awaiting stock-in**. It is not stock yet: it cannot be tagged and counts in no stock figure. The center's side stays `issued`. Receipt does **not** change the request's status; the page reports "received x of y". |
 | **Approvals** | **Only the hospital can confirm arrival.** The dispatching center cannot assert it. |
-| **Hands off to** | The Blood Bank shelf (Step 19). |
+| **Hands off to** | Stock-in (Step 18b). |
 
-**Alternative entry: Direct Distribution** (blood from outside RedAgos, for example the Philippine Red Cross). A blood-bank account books each bag in on the Direct Distribution page: external source, the **sender's own bag number** (RedAgos prints none), blood type, component, volume, expiry, and either the PTR it is for or who requested it. The bag goes straight to `available`. Bags from outside have no storage location and no clearance tokens; RedAgos records what the sender's label says and does not re-test it.
+**Alternative entry: Direct Distribution** (blood from outside RedAgos, for example the Philippine Red Cross). **Inventory Staff** or the **Head** book each bag in on the Direct Distribution page: external source, the **sender's own bag number** (RedAgos prints none), blood type, component, volume, expiry, and either the PTR it is for or who requested it. The bag waits for stock-in like any arrived bag. Bags from outside have no clearance tokens; RedAgos records what the sender's label says and does not re-test it.
+
+### Step 18b. Stock in
+
+| | |
+|---|---|
+| **Log in as** | **Inventory Staff** or the **Blood Bank Head** (Blood Bank Inventory page, *Awaiting stock-in*) |
+| **Actions** | Ticks the arrived bags (new arrivals come ticked), gives each a **storage location** if wanted (a fridge or freezer from the list, or typed), and **stocks them in**. A bag damaged on arrival is discarded instead (reason required). |
+| **Status changes** | `received` → `available`, with the location, when, and by whom. A bag past its date cannot be stocked in; the nightly sweep expires it like any other. |
+| **Approvals** | None. All or nothing: a bag already stocked in, or another blood bank's, refuses the lot. |
+| **Hands off to** | The Blood Bank shelf (Step 19). |
 
 ### Step 19. Tag, crossmatch, transfuse
 
 | | |
 |---|---|
-| **Log in as** | **Any blood-bank account** (Blood Bank Inventory page) |
+| **Log in as** | **Inventory Staff** or the **Blood Bank Head** (Blood Bank Inventory page). Requesting Staff see the stock but cannot act on it. |
 | **Actions** | **Tag** a specific bag for a named patient (surname, first name, age and sex required; an optional PTR). **Crossmatch** it (records a completed, compatible crossmatch). **Transfuse** it. Or **release** the tag early (reason required), **confirm a bag back** into storage, or **discard** it (reason required). |
 | **Status changes** | See the diagram below. |
 | **Approvals** | None: every blood-bank account may do every action. Each transition is audited, and patient names stay out of the audit log. |

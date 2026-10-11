@@ -4,6 +4,8 @@ namespace App\Service;
 
 use App\Enums\FacilityStatus;
 use App\Enums\FacilityTypeName;
+use App\Enums\HospitalRole;
+use App\Enums\RoleName;
 use App\Models\Facility;
 use App\Models\User;
 use App\Notifications\FacilityRegistrationDecision;
@@ -179,6 +181,13 @@ class FacilityApprovalService
 
         foreach ($this->bloodCenterRepository->staffForFacility($facility->id) as $staff) {
             $this->bloodCenterRepository->attachRole($staff, $role->value);
+
+            // A blood bank's registrants run it: they are its Head until they
+            // give colleagues narrower roles (project owner, 2026-10-11).
+            if ($role === RoleName::BloodBank && $staff->hospital_role === null) {
+                $staff->hospital_role = HospitalRole::Head;
+                $staff->save();
+            }
         }
     }
 

@@ -41,6 +41,8 @@ class UserResource extends JsonResource
             'department' => $this->department?->value,
             'department_label' => $this->department?->label(),
             'staff_role' => $this->staff_role?->value,
+            'hospital_role' => $this->hospital_role?->value,
+            'hospital_role_label' => $this->hospital_role?->label(),
             'staff_role_label' => $this->staff_role?->label(),
             'custom_role' => $this->custom_role,
             'role_label' => $this->resource->roleLabel(),

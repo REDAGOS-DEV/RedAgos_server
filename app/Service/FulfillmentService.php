@@ -299,12 +299,16 @@ class FulfillmentService
         $lines = $this->resolver->figures($request);
 
         return [
-            'message' => 'Receipt confirmed.',
+            // In custody now; inventory staff stock them in (project owner, 2026-10-11).
+            'message' => 'Receipt confirmed. The units now wait in Inventory for stock-in.',
             'status' => $request->status->value,
             'status_label' => $request->status->label(),
             'received_count' => (int) $lines->sum('received'),
             'fulfilled_quantity' => (int) $lines->sum('fulfilled'),
+            // The bags taken into custody, awaiting stock-in. The key keeps
+            // its name for the screens that already read it.
             'stocked_count' => $stocked,
+            'awaiting_stock_in' => $stocked,
         ];
     }
 

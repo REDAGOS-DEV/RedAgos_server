@@ -216,7 +216,7 @@ class WeeklyDispatchTest extends TestCase
         $this->assertSame(1, $request->allocations()->where('status', AllocationStatus::Allocated)->count());
     }
 
-    public function test_receipt_puts_the_weekly_delivery_on_the_hospitals_shelf(): void
+    public function test_receipt_takes_the_weekly_delivery_into_the_hospitals_custody(): void
     {
         $request = $this->requestOf($this->sentWeekly([[$this->bloodType, $this->prbc, 3]]));
         $this->stock($this->centre, $this->prbc, 2);
@@ -227,9 +227,10 @@ class WeeklyDispatchTest extends TestCase
             ->assertOk()
             ->assertJsonPath('stocked_count', 2);
 
+        // Awaiting stock-in: inventory staff put them on a shelf.
         $this->assertSame(
             2,
-            HospitalUnit::query()->where('facility_id', $this->hospital->id)->where('status', HospitalUnitStatus::Available)->count()
+            HospitalUnit::query()->where('facility_id', $this->hospital->id)->where('status', HospitalUnitStatus::Received)->count()
         );
 
         $this->actingAs($this->requester)

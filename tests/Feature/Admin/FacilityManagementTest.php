@@ -5,6 +5,7 @@ namespace Tests\Feature\Admin;
 use App\Enums\AccountStatus;
 use App\Enums\FacilityStatus;
 use App\Enums\FacilityTypeName;
+use App\Enums\HospitalRole;
 use App\Enums\RoleName;
 use App\Models\AuditLog;
 use App\Models\Facility;
@@ -150,6 +151,10 @@ class FacilityManagementTest extends TestCase
 
         $this->assertTrue($bank->hasRole(RoleName::BloodBank));
         $this->assertFalse($bank->hasRole(RoleName::BloodCenter));
+
+        // A blood bank's primary account is its Head; a centre's holds no hospital role.
+        $this->assertSame(HospitalRole::Head, $bank->hospital_role);
+        $this->assertNull($centre->hospital_role);
     }
 
     #[DataProvider('facilityTypes')]

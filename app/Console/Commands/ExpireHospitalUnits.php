@@ -78,7 +78,8 @@ class ExpireHospitalUnits extends Command
                             'hospital_unit_id' => $unit->id,
                             'operational_date' => $today,
                             'expiry_date' => $unit->bloodUnit?->expiry_date?->toDateString(),
-                            'previous_status' => HospitalUnitStatus::Available->value,
+                            // Read under the lock, before the update: available, or still awaiting stock-in.
+                            'previous_status' => $unit->status->value,
                             'new_status' => HospitalUnitStatus::Expired->value,
                             'source' => 'schedule:hospital:expire-units',
                             'run_id' => $runId,

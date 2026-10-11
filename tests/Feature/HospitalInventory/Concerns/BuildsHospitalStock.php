@@ -13,20 +13,39 @@ use Tests\Feature\BloodRequest\Concerns\BuildsFulfilmentScenarios;
  * A hospital blood bank with bags on its own shelf.
  *
  * Stock is built the only way the workflow allows: a centre allocates and
- * releases, and the hospital confirms receipt through the real endpoints.
- * A test therefore starts from hospital_units rows written exactly as receipt
- * writes them, never from a factory's idea of what receipt does.
+ * releases, the hospital confirms receipt, and the bags are stocked in,
+ * through the real endpoints. A test therefore starts from hospital_units
+ * rows written exactly as receiving writes them, never from a factory's idea
+ * of what receiving does.
  */
 trait BuildsHospitalStock
 {
     use BuildsFulfilmentScenarios;
 
     /**
-     * Receive bags of one component from the scenario's centre, returning them as stocked.
+     * Receive bags of one component from the scenario's centre and stock them in, returning them available.
      *
      * @return Collection<int, HospitalUnit>
      */
     protected function receiveStock(int $count = 1, ?BloodComponent $component = null, ?int $expiresInDays = null): Collection
+    {
+        $units = $this->receiveUnstocked($count, $component, $expiresInDays);
+
+        $this->actingAs($this->requester)
+            ->postJson('/api/hospital/inventory/stock-in', [
+                'units' => $units->map(fn (HospitalUnit $unit): array => ['unit_id' => $unit->unit_id])->values()->all(),
+            ])
+            ->assertOk();
+
+        return $units->map(fn (HospitalUnit $unit): HospitalUnit => $unit->fresh());
+    }
+
+    /**
+     * Receive bags without stocking them in: in custody, awaiting stock-in.
+     *
+     * @return Collection<int, HospitalUnit>
+     */
+    protected function receiveUnstocked(int $count = 1, ?BloodComponent $component = null, ?int $expiresInDays = null): Collection
     {
         $request = $this->releasedRequest($count, $component, $expiresInDays);
 

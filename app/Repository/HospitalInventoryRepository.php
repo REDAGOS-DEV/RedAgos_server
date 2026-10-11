@@ -40,6 +40,7 @@ class HospitalInventoryRepository
         'requestAllocation:id,request_id',
         'requestAllocation.request:id,reference_number,transfusion_request_id,weekly_request_id',
         'requestAllocation.request.transfusionRequest:id,reference_number',
+        'stockedBy:id,first_name,last_name',
     ];
 
     /**
@@ -159,10 +160,46 @@ class HospitalInventoryRepository
                 'facility_id' => $facilityId,
                 'unit_id' => $bag['unit_id'],
                 'request_allocation_id' => $bag['request_allocation_id'],
-                'status' => HospitalUnitStatus::Available,
+                // In custody, not yet stock: inventory staff stock it in.
+                'status' => HospitalUnitStatus::Received,
             ]),
             $bags
         ));
+    }
+
+    /**
+     * The storage locations a hospital has already stocked bags into, A to Z.
+     *
+     * @return array<int, string>
+     */
+    public function distinctStorageLocations(int $facilityId): array
+    {
+        return HospitalUnit::query()
+            ->forFacility($facilityId)
+            ->whereNotNull('hospital_units.storage_location')
+            ->distinct()
+            ->orderBy('hospital_units.storage_location')
+            ->pluck('hospital_units.storage_location')
+            ->all();
+    }
+
+    /**
+     * Resolve this hospital's bags by their unit ids, in custody-row id order.
+     *
+     * So a write over several bags locks them in the order the expiry sweep
+     * does, and the two cannot deadlock.
+     *
+     * @param  array<int, string>  $unitIds
+     * @return array<int, string>
+     */
+    public function unitIdsInLockOrder(int $facilityId, array $unitIds): array
+    {
+        return HospitalUnit::query()
+            ->forFacility($facilityId)
+            ->whereIn('hospital_units.unit_id', $unitIds)
+            ->orderBy('hospital_units.id')
+            ->pluck('hospital_units.unit_id')
+            ->all();
     }
 
     /**
@@ -433,7 +470,8 @@ class HospitalInventoryRepository
     }
 
     /**
-     * Available hospital bags past their date, across every hospital.
+     * Untagged hospital bags past their date, across every hospital: on the
+     * shelf, or arrived and still awaiting stock-in.
      *
      * Deliberately NOT facility-scoped, and CANDIDATES only, exactly as
      * InventoryRepository::dueUnits(). Touches the hospital's side of the bag
@@ -444,7 +482,7 @@ class HospitalInventoryRepository
     public function dueUnits(string $operationalDate): Builder
     {
         return HospitalUnit::query()
-            ->where('hospital_units.status', HospitalUnitStatus::Available->value)
+            ->whereIn('hospital_units.status', [HospitalUnitStatus::Available->value, HospitalUnitStatus::Received->value])
             ->whereHas('bloodUnit', fn (Builder $bag): Builder => $bag->whereDate('expiry_date', '<', $operationalDate));
     }
 

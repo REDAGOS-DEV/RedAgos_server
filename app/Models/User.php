@@ -4,12 +4,14 @@ namespace App\Models;
 
 use App\Enums\AccountStatus;
 use App\Enums\Department;
+use App\Enums\HospitalRole;
 use App\Enums\RoleName;
 use App\Enums\StaffRole;
 use App\Notifications\ResetPasswordNotification;
 use App\Notifications\VerifyEmailNotification;
 use App\Support\AdminPrivileges;
 use App\Support\DepartmentPermissions;
+use App\Support\HospitalPermissions;
 use Database\Factories\UserFactory;
 use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
@@ -68,6 +70,7 @@ class User extends Authenticatable implements MustVerifyEmail
             'account_status' => AccountStatus::class,
             'department' => Department::class,
             'staff_role' => StaffRole::class,
+            'hospital_role' => HospitalRole::class,
             'staff_privileges' => 'array',
             'is_supervisor' => 'boolean',
             'is_super_admin' => 'boolean',
@@ -146,6 +149,7 @@ class User extends Authenticatable implements MustVerifyEmail
     {
         return array_values(array_unique([
             ...DepartmentPermissions::for($this),
+            ...HospitalPermissions::for($this),
             ...AdminPrivileges::for($this),
         ]));
     }
