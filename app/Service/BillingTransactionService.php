@@ -29,7 +29,8 @@ class BillingTransactionService
      * @var array<int, string>
      */
     public const FORMAT_RELATIONS = [
-        'request:id,reference_number',
+        'request:id,reference_number,patient_surname,patient_first_name,patient_middle_name,facility_id',
+        'request.requestingFacility:id,name',
         'receipt:id,receipt_number',
         'revision:id,document_number',
         'cashSession:id,session_number',
@@ -161,7 +162,26 @@ class BillingTransactionService
 
         $now = now();
 
+        // This month's patient bills by where they stand now, for the counter's overview.
+        $patientBills = Billing::query()
+            ->whereHas('request', fn (Builder $request) => $request->addressedTo($facilityId)->where('request_purpose', RequestPurpose::PatientTransfusion->value))
+            ->where('billing_date', '>=', $monthStart)
+            ->selectRaw('status, COUNT(*) as bills')
+            ->groupBy('status')
+            ->pluck('bills', 'status');
+
         return [
+            'patient_bills_this_month' => [
+                'paid' => (int) ($patientBills[BillingStatus::Paid->value] ?? 0),
+                'partial' => (int) ($patientBills[BillingStatus::Partial->value] ?? 0),
+                'unpaid' => (int) ($patientBills[BillingStatus::Unpaid->value] ?? 0),
+                'subsidised' => (int) ($patientBills[BillingStatus::Subsidised->value] ?? 0),
+            ],
+            'payments_today' => BillingTransaction::query()
+                ->where('facility_id', $facilityId)
+                ->where('type', TransactionType::Payment->value)
+                ->whereBetween('occurred_at', [$todayStart, $todayEnd])
+                ->count(),
             'outstanding' => [
                 'count' => $outstanding->count(),
                 'amount' => Money::toDecimal($owed),
@@ -225,7 +245,12 @@ class BillingTransactionService
             'direction' => $amount > 0 ? 'debit' : ($amount < 0 ? 'credit' : 'none'),
             'balance_after' => $row->balance_after,
             'billing_id' => $row->billing_id,
-            'request' => $row->request ? ['id' => $row->request->id, 'reference_number' => $row->request->reference_number] : null,
+            'request' => $row->request ? [
+                'id' => $row->request->id,
+                'reference_number' => $row->request->reference_number,
+                'patient_name' => $row->request->patientFullName(),
+                'requesting_facility' => $row->request->requestingFacility?->name,
+            ] : null,
             'payment_id' => $row->payment_id,
             'receipt' => $row->receipt ? ['id' => $row->receipt->id, 'receipt_number' => $row->receipt->receipt_number] : null,
             'statement' => $row->revision ? ['id' => $row->revision->id, 'document_number' => $row->revision->document_number] : null,

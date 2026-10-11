@@ -26,10 +26,11 @@ class RecordPaymentRequest extends FormRequest
     /**
      * Get the validation rules that apply to the request.
      *
-     * A GCash settlement must carry its provider reference. No payment gateway
-     * is configured yet, so that reference is the only evidence the money moved
-     * — recording an electronic payment without one would leave billing staff
-     * asserting a transfer nobody can check.
+     * A GCash, card or bank-transfer settlement must carry its provider
+     * reference. RedAgos checks none of them with the provider, so that
+     * reference is the only evidence the money moved — recording an electronic
+     * payment without one would leave billing staff asserting a transfer nobody
+     * can check.
      *
      * At most two decimal places: an amount is pesos and centavos, and
      * BillingService counts in whole centavos.
@@ -48,7 +49,7 @@ class RecordPaymentRequest extends FormRequest
             'amount_paid' => ['required', 'numeric', 'decimal:0,2', 'min:0.01', 'max:9999999.99'],
             'payment_method' => ['required', Rule::in(PaymentMethod::values())],
             'reference_number' => [
-                Rule::requiredIf(fn (): bool => $this->input('payment_method') === PaymentMethod::Gcash->value),
+                Rule::requiredIf(fn (): bool => PaymentMethod::tryFrom((string) $this->input('payment_method'))?->isElectronic() ?? false),
                 'nullable',
                 'string',
                 'max:100',
@@ -58,7 +59,7 @@ class RecordPaymentRequest extends FormRequest
 
             // The cash handed over at the counter, when it is more than the
             // amount recorded: the difference is the change given back. Cash
-            // only; a GCash transfer is for the amount itself.
+            // only; a GCash, card or bank payment is for the amount itself.
             'amount_tendered' => [
                 'sometimes',
                 'nullable',
@@ -85,7 +86,7 @@ class RecordPaymentRequest extends FormRequest
         return [
             'amount_paid.decimal' => 'Record the amount in pesos and centavos, with at most two decimal places.',
             'amount_paid.min' => 'Record the amount actually received.',
-            'reference_number.required' => 'A GCash payment needs its reference number.',
+            'reference_number.required' => 'A GCash, card or bank-transfer payment needs its reference number.',
             'reference_number.unique' => 'That payment reference has already been recorded.',
             'status.prohibited' => 'A recorded payment is money received; its status cannot be chosen.',
             'amount_tendered.prohibited' => 'Only a cash payment has an amount tendered.',

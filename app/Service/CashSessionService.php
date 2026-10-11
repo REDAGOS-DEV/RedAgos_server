@@ -396,8 +396,9 @@ class CashSessionService
      * The drawer's figures, in centavos, worked out from the shift's journal rows.
      *
      * Cash rows count both ways: a payment and an increase on correction put
-     * cash in, a void or a decrease takes it out. GCash never touches the
-     * drawer and is shown beside it, split by how it came in.
+     * cash in, a void or a decrease takes it out. GCash, card and bank-transfer
+     * payments never touch the drawer and are shown beside it, GCash split by
+     * how it came in.
      *
      * @param  Collection<int, BillingTransaction>|null  $rows
      * @return array<string, int>
@@ -425,9 +426,13 @@ class CashSessionService
             'expected_cash' => $expected,
             'gcash_counter' => $sum(fn (BillingTransaction $row): bool => $row->payment_method === PaymentMethod::Gcash && $row->channel === TransactionChannel::Counter),
             'gcash_checkout' => $sum(fn (BillingTransaction $row): bool => $row->channel === TransactionChannel::Gateway),
+            'card_counter' => $sum(fn (BillingTransaction $row): bool => $row->payment_method === PaymentMethod::Card && $row->channel === TransactionChannel::Counter),
+            'bank_transfer_counter' => $sum(fn (BillingTransaction $row): bool => $row->payment_method === PaymentMethod::BankTransfer && $row->channel === TransactionChannel::Counter),
         ];
 
-        $figures['total_collected'] = $figures['cash_collected'] - $figures['cash_voided'] + $figures['gcash_counter'] + $figures['gcash_checkout'];
+        $figures['total_collected'] = $figures['cash_collected'] - $figures['cash_voided']
+            + $figures['gcash_counter'] + $figures['gcash_checkout']
+            + $figures['card_counter'] + $figures['bank_transfer_counter'];
 
         if (! $session->isOpen()) {
             $figures['expected_cash'] = Money::toCentavos($session->expected_cash);

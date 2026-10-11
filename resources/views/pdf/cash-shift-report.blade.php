@@ -5,7 +5,7 @@
     Rendered from CashSessionService::report(), whose figures come from the
     shift's own journal rows: the float, cash taken, cash voided, what the
     drawer should hold, and — once closed — what was counted and the
-    difference. GCash is shown beside the drawer, never in it.
+    difference. GCash, card and bank transfers are shown beside the drawer, never in it.
 
     Headed by the centre's own logo, or its initials, like every billing
     document. Tables only and absolute sizes, because dompdf supports neither
@@ -127,6 +127,8 @@
                 <table class="kv">
                     <tr><td class="k">GCash recorded at the counter</td><td class="v">{{ $peso($figures['gcash_counter']) }}</td></tr>
                     <tr><td class="k">GCash checkouts</td><td class="v">{{ $peso($figures['gcash_checkout']) }}</td></tr>
+                    <tr><td class="k">Card</td><td class="v">{{ $peso($figures['card_counter']) }}</td></tr>
+                    <tr><td class="k">Bank transfer</td><td class="v">{{ $peso($figures['bank_transfer_counter']) }}</td></tr>
                     <tr class="total"><td class="k">Total collected this shift</td><td class="v">{{ $peso($figures['total_collected']) }}</td></tr>
                 </table>
             </td>

@@ -6,15 +6,22 @@ namespace App\Enums;
  * How a blood service fee was settled.
  *
  * Cash is confirmed by billing staff at the counter; GCash is the paper's
- * named electronic method. No payment gateway is configured yet, so a GCash
- * payment is currently recorded from its reference number rather than verified
- * against a provider.
+ * named electronic method. A GCash transfer taken at the counter is recorded
+ * from its reference number rather than verified against a provider.
+ *
+ * A card payment and a bank transfer were added by the project owner on
+ * 2026-10-11 and are recorded the same way: from the card terminal's or the
+ * bank's reference, which RedAgos does not check with anyone.
  */
 enum PaymentMethod: string
 {
     case Cash = 'cash';
 
     case Gcash = 'gcash';
+
+    case Card = 'card';
+
+    case BankTransfer = 'bank_transfer';
 
     /**
      * Get every accepted payment method value.
@@ -34,14 +41,19 @@ enum PaymentMethod: string
         return match ($this) {
             self::Cash => 'Cash',
             self::Gcash => 'GCash',
+            self::Card => 'Card',
+            self::BankTransfer => 'Bank transfer',
         };
     }
 
     /**
      * Determine whether settlement depends on an external provider.
+     *
+     * Such a payment must carry the provider's reference: it is the only
+     * evidence the money moved. Cash is in the drawer.
      */
     public function isElectronic(): bool
     {
-        return $this === self::Gcash;
+        return $this !== self::Cash;
     }
 }

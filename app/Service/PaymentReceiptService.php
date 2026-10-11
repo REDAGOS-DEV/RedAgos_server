@@ -11,7 +11,10 @@ use App\Repository\DocumentSequenceRepository;
 use App\Support\DocumentNumbering;
 use App\Support\FacilityMonogram;
 use App\Support\Money;
+use App\Support\OperationalDay;
 use Barryvdh\DomPDF\Facade\Pdf;
+use Illuminate\Contracts\Pagination\LengthAwarePaginator;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Response;
 
@@ -170,6 +173,9 @@ class PaymentReceiptService
         return [
             'id' => $receipt->id,
             'receipt_number' => $receipt->receipt_number,
+            // So a screen can open the statement and the payment it belongs to.
+            'payment_id' => $receipt->payment_id,
+            'request_id' => $receipt->payment?->billing?->request_id,
             'issued_at' => $receipt->issued_at?->toIso8601String(),
             'amount_paid' => $snapshot['amount_paid'] ?? null,
             'balance_after' => $snapshot['balance_after'] ?? null,
@@ -206,6 +212,43 @@ class PaymentReceiptService
             // Empty on a receipt issued before receipts carried their lines.
             'lines' => $snapshot['lines'] ?? [],
         ];
+    }
+
+    /**
+     * The receipts a centre has issued, newest first.
+     *
+     * Searched by receipt number, request reference or patient name; the
+     * payer's name lives only in the frozen snapshot, which is not searched.
+     *
+     * @param  array<string, mixed>  $filters
+     */
+    public function list(int $facilityId, array $filters, int $perPage): LengthAwarePaginator
+    {
+        return PaymentReceipt::query()
+            ->where('issuing_facility_id', $facilityId)
+            ->with(['payment.billing:id,request_id', 'issuingFacility'])
+            ->when(($filters['status'] ?? null) === 'valid', fn (Builder $query) => $query->active())
+            ->when(($filters['status'] ?? null) === 'voided', fn (Builder $query) => $query->whereNotNull('voided_at'))
+            ->when(isset($filters['from']), function (Builder $query) use ($filters): void {
+                $query->where('issued_at', '>=', OperationalDay::boundsFor($filters['from'])[0]);
+            })
+            ->when(isset($filters['to']), function (Builder $query) use ($filters): void {
+                $query->where('issued_at', '<=', OperationalDay::boundsFor($filters['to'])[1]);
+            })
+            ->when(isset($filters['search']), function (Builder $query) use ($filters): void {
+                $like = '%'.trim($filters['search']).'%';
+
+                $query->where(fn (Builder $match) => $match
+                    ->where('receipt_number', 'like', $like)
+                    ->orWhereHas('payment.billing.request', fn (Builder $request) => $request
+                        ->where('reference_number', 'like', $like)
+                        ->orWhere('patient_surname', 'like', $like)
+                        ->orWhere('patient_first_name', 'like', $like)));
+            })
+            ->latest('issued_at')
+            ->latest('id')
+            ->paginate($perPage)
+            ->through(fn (PaymentReceipt $receipt): array => $this->format($receipt));
     }
 
     /**

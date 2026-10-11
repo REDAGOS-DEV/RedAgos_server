@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Requests\ApplySubsidyRequest;
 use App\Http\Requests\ListBillingsRequest;
 use App\Http\Requests\RecordPaymentRequest;
+use App\Http\Requests\RecordSplitPaymentRequest;
 use App\Http\Requests\SettleWeeklyBillRequest;
 use App\Models\Billing;
 use App\Models\BloodRequest;
@@ -68,8 +69,9 @@ class BloodCenterBillingController extends Controller
     /**
      * Show the statement for one of this facility's incoming requests.
      *
-     * With whether a GCash checkout could be opened for it now, and the one
-     * that is open, if any — so the screen can offer the right action.
+     * With the request behind it and its live lines, whether a GCash checkout
+     * could be opened for it now, and the one that is open, if any — so the
+     * screen can offer the right action.
      */
     public function show(Request $request, int $bloodRequest): JsonResponse
     {
@@ -77,7 +79,7 @@ class BloodCenterBillingController extends Controller
         $open = PaymentAttempt::query()->where('billing_id', $billing->id)->open()->latest('id')->first();
 
         return response()->json([
-            'billing' => $this->billingService->format($billing),
+            'billing' => $this->billingService->detail($billing),
             'checkout' => $this->checkout->availability($billing, $request->user()->facility),
             'open_attempt' => $open ? $this->checkout->format($open) : null,
         ]);
@@ -102,6 +104,19 @@ class BloodCenterBillingController extends Controller
 
         return response()->json(
             $this->billingService->recordPayment($request->user(), $billing, $request->validated()),
+            201
+        );
+    }
+
+    /**
+     * Record one payment split across methods, every part or none.
+     */
+    public function storeSplitPayment(RecordSplitPaymentRequest $request, int $bloodRequest): JsonResponse
+    {
+        $billing = $this->billingForFacility($bloodRequest, $request->user()->facility_id);
+
+        return response()->json(
+            $this->billingService->recordSplitPayment($request->user(), $billing, $request->validated()),
             201
         );
     }

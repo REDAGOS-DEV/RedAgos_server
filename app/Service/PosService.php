@@ -105,12 +105,7 @@ class PosService
 
         return [
             ...$this->summaryOf($request),
-            'lines' => array_map(fn (array $line): array => [
-                'component_name' => $line['component_name'],
-                'quantity' => $line['quantity'],
-                'unit_price' => Money::toDecimal($line['unit_price']),
-                'line_total' => Money::toDecimal($line['line_total']),
-            ], $this->figures->linesFor($request)),
+            'lines' => $this->figures->displayLinesFor($request),
             'billing' => $this->billingService->format($billing),
             'checkout' => $this->checkout->availability($billing, $staff->facility),
             'open_attempt' => $open ? $this->checkout->format($open) : null,
@@ -130,7 +125,7 @@ class PosService
                 'billing',
                 'requestingFacility:id,name',
                 'transfusionRequest:id,reference_number',
-                'walkIn:id,request_id,presented_reference',
+                'walkIn:id,request_id,presented_reference,attending_physician',
                 'items.component:id,name',
                 'items.bloodType:id,code',
             ]);
@@ -158,6 +153,10 @@ class PosService
             'requesting_facility' => $request->requestingFacility?->name,
             'blood_types' => $request->bloodTypeCodes(),
             'is_emergency' => $request->urgency_level->isPrioritised(),
+            'urgency_label' => $request->urgency_level->label(),
+            'purpose_label' => $request->request_purpose->label(),
+            // Named on a walk-in's request form; a hospital's request does not carry one.
+            'attending_physician' => $request->walkIn?->attending_physician,
             'request_date' => $request->request_date?->toIso8601String(),
             'billing_status' => $billing->status->value,
             'billing_status_label' => $billing->status->label(),

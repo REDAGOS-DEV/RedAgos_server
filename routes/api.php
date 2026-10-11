@@ -394,6 +394,10 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
                 ->middleware('can:billing.record_payment')
                 ->whereNumber('bloodRequest');
 
+            Route::post('/{bloodRequest}/payments/split', [BloodCenterBillingController::class, 'storeSplitPayment'])
+                ->middleware('can:billing.record_payment')
+                ->whereNumber('bloodRequest');
+
             // Waiving a charge settles a statement, so it sits behind the same
             // ability as taking money for one: both decide that nothing more
             // is owed, and both release blood.
@@ -449,6 +453,9 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         Route::get('/receipts/{receipt}/pdf', [BloodCenterReceiptController::class, 'pdf'])
             ->middleware(['can:billing.record_payment', 'throttle:30,1'])
             ->whereNumber('receipt');
+
+        Route::get('/receipts', [BloodCenterReceiptController::class, 'index'])
+            ->middleware('can:billing.record_payment');
 
         // The same receipt as data, for the counter's 80mm print.
         Route::get('/receipts/{receipt}', [BloodCenterReceiptController::class, 'show'])

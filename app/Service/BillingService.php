@@ -239,9 +239,10 @@ class BillingService
                 isset($filters['search']),
                 fn (Builder $query): Builder => $query->whereHas(
                     'request',
-                    fn (Builder $request): Builder => $request->where(
-                        'reference_number', 'like', '%'.$filters['search'].'%'
-                    )
+                    fn (Builder $request): Builder => $request->where(fn (Builder $match) => $match
+                        ->where('reference_number', 'like', '%'.$filters['search'].'%')
+                        ->orWhere('patient_surname', 'like', '%'.$filters['search'].'%')
+                        ->orWhere('patient_first_name', 'like', '%'.$filters['search'].'%'))
                 )
             )
             ->latest('billing_date')
@@ -273,6 +274,8 @@ class BillingService
                 'status_label' => $request->status->label(),
                 'request_purpose' => $request->request_purpose->value,
                 'requesting_facility' => $request->requestingFacility?->name,
+                // A weekly order has no patient; the hospital is the payer.
+                'patient_name' => $request->patientFullName(),
                 'blood_type' => $request->bloodType?->code ?? (implode(', ', $request->bloodTypeCodes()) ?: null),
                 'quantity' => $request->quantity,
                 'urgency_level' => $request->urgency_level->value,
@@ -285,6 +288,47 @@ class BillingService
                     ->all(),
                 'request_date' => $request->request_date?->toIso8601String(),
             ] : null,
+        ];
+    }
+
+    /**
+     * Project one statement for its own page: the request behind it, what it
+     * bills line by line, and what is left to collect.
+     *
+     * The lines are the live statement, as the next Statement of Account
+     * would freeze them; issued revisions are read from the statements route.
+     *
+     * @return array<string, mixed>
+     */
+    public function detail(Billing $billing): array
+    {
+        $billing->loadMissing([
+            'request.requestingFacility',
+            'request.transfusionRequest:id,reference_number',
+            'request.walkIn:id,request_id,presented_reference,attending_physician',
+            'request.items.component',
+            'request.items.bloodType',
+            'request.bloodType',
+        ]);
+
+        $request = $billing->request;
+        $formatted = $this->formatWithRequest($billing);
+
+        return [
+            ...$formatted,
+            'request' => $request ? [
+                ...$formatted['request'],
+                'purpose_label' => $request->request_purpose->label(),
+                'urgency_label' => $request->urgency_level->label(),
+                'transfusion_reference' => $request->transfusionRequest?->reference_number,
+                'presented_reference' => $request->walkIn?->presented_reference,
+                'attending_physician' => $request->walkIn?->attending_physician,
+                'is_walk_in' => $request->request_source->isWalkIn(),
+                // A weekly bill is settled once its order closes and its total is final.
+                'is_closed' => $request->isClosed(),
+            ] : null,
+            'lines' => $request ? $this->figures->displayLinesFor($request) : [],
+            'outstanding' => Money::toDecimal($this->outstandingFor($billing)),
         ];
     }
 
@@ -562,6 +606,51 @@ class BillingService
                 'billing' => $this->format($statement->fresh()),
                 'receipt' => $this->receipts->format($receipt),
                 'change_given' => $tendered === null ? null : Money::toDecimal($change),
+            ];
+        });
+    }
+
+    /**
+     * Record one payment at the counter split across methods, all or nothing.
+     *
+     * Asked for by the project owner on 2026-10-11: the payer hands over less
+     * cash than is due and pays the rest by card, GCash or bank transfer. Each
+     * part is an ordinary payment with its own receipt and journal row,
+     * recorded in order by recordPayment(), so each is held to the balance the
+     * parts before it left. They share one transaction: a part refused — a
+     * reference already used, an amount beyond what is left — refuses the lot,
+     * and the counter never has half a payment on record.
+     *
+     * @param  array{tenders: array<int, array<string, mixed>>, payer_name?: string|null}  $payload  Validated by RecordSplitPaymentRequest.
+     * @return array<string, mixed>
+     */
+    public function recordSplitPayment(User $actor, Billing $billing, array $payload): array
+    {
+        return DocumentNumbering::transaction(function () use ($actor, $billing, $payload): array {
+            $parts = [];
+
+            foreach (array_values($payload['tenders']) as $index => $tender) {
+                try {
+                    $parts[] = $this->recordPayment($actor, $billing, [
+                        ...$tender,
+                        'payer_name' => $payload['payer_name'] ?? null,
+                    ]);
+                } catch (ValidationException $exception) {
+                    // Said against the part that was refused, so the counter can point to it.
+                    throw ValidationException::withMessages(collect($exception->errors())
+                        ->mapWithKeys(fn (array $messages, string $field): array => ["tenders.{$index}.{$field}" => $messages])
+                        ->all());
+                }
+            }
+
+            $change = collect($parts)->pluck('change_given')->filter(fn (?string $value): bool => $value !== null)->first();
+
+            return [
+                'message' => 'Payment recorded in '.count($parts).' parts.'
+                    .($change !== null && Money::toCentavos($change) > 0 ? ' Change due: '.$change.'.' : ''),
+                'billing' => end($parts)['billing'],
+                'receipts' => array_column($parts, 'receipt'),
+                'change_given' => $change,
             ];
         });
     }

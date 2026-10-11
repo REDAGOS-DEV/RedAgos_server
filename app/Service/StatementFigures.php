@@ -73,6 +73,32 @@ class StatementFigures
     }
 
     /**
+     * The live lines as a billing screen shows them: decimal strings, each with its blood type.
+     *
+     * The component is named plainly here, since the blood type has a column of
+     * its own; the issued document keeps the combined name linesFor() gives it.
+     *
+     * @return array<int, array{component_name: string, blood_type: string|null, quantity: int, unit_price: string, line_total: string}>
+     */
+    public function displayLinesFor(BloodRequest $request): array
+    {
+        $request->loadMissing(['items.component', 'items.bloodType', 'bloodType']);
+        $items = $request->items->keyBy('id');
+
+        return array_map(function (array $line) use ($items, $request): array {
+            $item = $items->get($line['request_item_id']);
+
+            return [
+                'component_name' => $item?->component?->name ?? $line['component_name'],
+                'blood_type' => $item?->bloodType?->code ?? $request->bloodType?->code,
+                'quantity' => $line['quantity'],
+                'unit_price' => Money::toDecimal($line['unit_price']),
+                'line_total' => Money::toDecimal($line['line_total']),
+            ];
+        }, $this->linesFor($request));
+    }
+
+    /**
      * The total of a set of lines.
      *
      * @param  array<int, array{line_total: int}>  $lines
