@@ -91,7 +91,7 @@ class TwoPhaseLabelingTest extends TestCase
 
         return $this->actingAs($as ?? $this->officer)->postJson('/api/blood-center/inventory', [
             'donation_id' => $this->donation->id,
-            'units' => array_map(fn (array $unit): array => ['expiry_date' => $expiry, ...$unit], $units),
+            'units' => array_map(fn (array $unit): array => ['expiry_date' => $expiry, 'storage_location' => 'Cold Storage A-1', ...$unit], $units),
         ]);
     }
 

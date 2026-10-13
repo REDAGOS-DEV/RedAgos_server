@@ -43,6 +43,7 @@ class Payment extends Model
         'change_given',
         'payment_method',
         'reference_number',
+        'additional_information',
         'status',
         'source',
         'provider',

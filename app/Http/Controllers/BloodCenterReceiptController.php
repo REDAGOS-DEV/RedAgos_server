@@ -34,9 +34,10 @@ class BloodCenterReceiptController extends Controller
     /**
      * Show one receipt as its snapshot reads, for the counter to print or reprint.
      *
-     * The projection leaves the payment reference out, because the hospital
-     * reads it too; billing staff here may read references, as the payments
-     * list shows them, so it is added beside it.
+     * The projection leaves the payment reference and a card payment's
+     * additional information out, because the hospital reads it too; billing
+     * staff here may read both, as the payments list shows them, so they are
+     * added beside it.
      */
     public function show(Request $request, int $receipt): JsonResponse
     {
@@ -45,6 +46,7 @@ class BloodCenterReceiptController extends Controller
         return response()->json([
             'receipt' => $this->receipts->format($found),
             'payment_reference' => $found->snapshot['payment']['reference_number'] ?? null,
+            'payment_additional_information' => $found->snapshot['payment']['additional_information'] ?? null,
         ]);
     }
 

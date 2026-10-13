@@ -26,7 +26,8 @@ class StoreBloodUnitsRequest extends FormRequest
             'units' => ['required', 'array', 'min:1', 'max:10'],
 
             'units.*.component_id' => ['required', 'integer', 'exists:blood_components,id'],
-            'units.*.storage_location' => ['nullable', 'string', 'max:100'],
+            // Every bag is booked onto a shelf (project owner, 2026-10-13).
+            'units.*.storage_location' => ['required', 'string', 'max:100'],
 
             // Checked here and caught again at the index: this is check-then-
             // insert, so a concurrent intake can still take the id in between.
@@ -50,6 +51,7 @@ class StoreBloodUnitsRequest extends FormRequest
         return [
             'units.*.expiry_date.after_or_equal' => 'An expiry date that has already passed cannot be recorded.',
             'units.*.unit_id.unique' => 'This unit number has already been recorded.',
+            'units.*.storage_location.required' => 'Every bag needs a storage location.',
         ];
     }
 }

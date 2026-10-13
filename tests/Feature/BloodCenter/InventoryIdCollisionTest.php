@@ -164,6 +164,7 @@ class InventoryIdCollisionTest extends TestCase
         $payload['units'][] = [
             'component_id' => $this->component->id,
             'unit_id' => 'BAG-778813',
+            'storage_location' => 'Cold Storage A-1',
             'expiry_date' => $this->inDays(30),
         ];
 

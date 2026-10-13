@@ -62,6 +62,27 @@ class SplitPaymentTest extends TestCase
         );
     }
 
+    public function test_only_the_card_part_carries_additional_information(): void
+    {
+        $request = $this->allocatedRequest(2); // 1,800
+
+        $this->split($request, [
+            ['amount_paid' => 1000, 'payment_method' => 'cash', 'amount_tendered' => 1000, 'additional_information' => 'Dela Cruz'],
+            ['amount_paid' => 800, 'payment_method' => 'card', 'reference_number' => 'RRN-1'],
+        ])->assertJsonValidationErrors(['tenders.0.additional_information' => 'Only a card payment carries additional information.']);
+
+        $this->split($request, [
+            ['amount_paid' => 1000, 'payment_method' => 'cash', 'amount_tendered' => 1000],
+            ['amount_paid' => 800, 'payment_method' => 'card', 'reference_number' => 'RRN-1', 'additional_information' => 'Dela Cruz'],
+        ])->assertCreated();
+
+        $this->assertSame(
+            [['cash', null], ['card', 'Dela Cruz']],
+            Payment::query()->orderBy('id')->get()
+                ->map(fn (Payment $payment): array => [$payment->payment_method->value, $payment->additional_information])->all()
+        );
+    }
+
     public function test_cash_paid_last_gives_the_change(): void
     {
         $request = $this->allocatedRequest(2); // 1,800

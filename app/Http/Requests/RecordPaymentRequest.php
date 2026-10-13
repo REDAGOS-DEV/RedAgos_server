@@ -70,6 +70,17 @@ class RecordPaymentRequest extends FormRequest
                 Rule::prohibitedIf(fn (): bool => $this->input('payment_method') !== PaymentMethod::Cash->value && $this->filled('amount_tendered')),
             ],
 
+            // A card payment's additional information: the cardholder's last
+            // name, to match the terminal slip (project owner, 2026-10-13).
+            // Card only, and optional.
+            'additional_information' => [
+                'sometimes',
+                'nullable',
+                'string',
+                'max:100',
+                Rule::prohibitedIf(fn (): bool => $this->input('payment_method') !== PaymentMethod::Card->value && $this->filled('additional_information')),
+            ],
+
             // Who handed the money over — usually the patient's watcher. Printed
             // on the receipt as "Received from", and nowhere else.
             'payer_name' => ['sometimes', 'nullable', 'string', 'max:120'],
@@ -90,6 +101,7 @@ class RecordPaymentRequest extends FormRequest
             'reference_number.unique' => 'That payment reference has already been recorded.',
             'status.prohibited' => 'A recorded payment is money received; its status cannot be chosen.',
             'amount_tendered.prohibited' => 'Only a cash payment has an amount tendered.',
+            'additional_information.prohibited' => 'Only a card payment carries additional information.',
         ];
     }
 }

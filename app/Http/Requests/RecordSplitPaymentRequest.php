@@ -11,7 +11,8 @@ use Illuminate\Validation\Rule;
  * card, GCash or bank transfer (asked for by the project owner on 2026-10-11).
  *
  * Each part is held to the rules of RecordPaymentRequest: every method but
- * cash carries its own reference, and only cash takes an amount tendered. The
+ * cash carries its own reference, only cash takes an amount tendered, and only
+ * card takes additional information (the cardholder's last name). The
  * cash is counted once, so at most one part is cash. Whether the parts fit the
  * balance is decided by BillingService, which records them in order against
  * the locked statement.
@@ -35,7 +36,7 @@ class RecordSplitPaymentRequest extends FormRequest
     {
         return [
             'tenders' => ['required', 'array', 'min:2', 'max:4'],
-            'tenders.*' => ['array:amount_paid,payment_method,reference_number,amount_tendered'],
+            'tenders.*' => ['array:amount_paid,payment_method,reference_number,amount_tendered,additional_information'],
             'tenders.*.amount_paid' => ['required', 'numeric', 'decimal:0,2', 'min:0.01', 'max:9999999.99'],
             'tenders.*.payment_method' => ['required', Rule::in(PaymentMethod::values())],
             'tenders.*.reference_number' => [
@@ -53,6 +54,12 @@ class RecordSplitPaymentRequest extends FormRequest
                 'decimal:0,2',
                 'min:0.01',
                 'max:9999999.99',
+            ],
+            'tenders.*.additional_information' => [
+                'prohibited_unless:tenders.*.payment_method,'.PaymentMethod::Card->value,
+                'nullable',
+                'string',
+                'max:100',
             ],
             'status' => ['prohibited'],
 
@@ -97,6 +104,7 @@ class RecordSplitPaymentRequest extends FormRequest
             'tenders.*.reference_number.distinct' => 'Each part needs its own reference.',
             'tenders.*.reference_number.unique' => 'That payment reference has already been recorded.',
             'tenders.*.amount_tendered.prohibited_unless' => 'Only a cash payment has an amount tendered.',
+            'tenders.*.additional_information.prohibited_unless' => 'Only a card payment carries additional information.',
             'status.prohibited' => 'A recorded payment is money received; its status cannot be chosen.',
         ];
     }

@@ -113,6 +113,9 @@ class PaymentReceiptService
                     'method' => $payment->payment_method->value,
                     'method_label' => $payment->payment_method->label(),
                     'reference_number' => $payment->reference_number,
+                    // Card only: the cardholder's last name. Kept beside the
+                    // reference and, like it, off the hospital's projection.
+                    'additional_information' => $payment->additional_information,
                     'source' => $payment->source->value,
                     'paid_at' => $payment->payment_date?->toIso8601String(),
                     // Cash at the counter: what was handed over, and the change given back.

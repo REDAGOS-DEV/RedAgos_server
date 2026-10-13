@@ -172,7 +172,7 @@ class InventoryIntakeTest extends TestCase
     public function test_several_units_may_be_recorded_from_one_donation(): void
     {
         $payload = $this->payload();
-        $payload['units'][] = ['component_id' => $this->component->id, 'expiry_date' => $this->inDays(20)];
+        $payload['units'][] = ['component_id' => $this->component->id, 'storage_location' => 'Cold Storage A-1', 'expiry_date' => $this->inDays(20)];
 
         $response = $this->actingAs($this->staff)
             ->postJson('/api/blood-center/inventory', $payload)
@@ -189,7 +189,7 @@ class InventoryIntakeTest extends TestCase
         $payload = $this->payload();
 
         for ($i = 0; $i < 10; $i++) {
-            $payload['units'][] = ['component_id' => $this->component->id, 'expiry_date' => $this->inDays(20)];
+            $payload['units'][] = ['component_id' => $this->component->id, 'storage_location' => 'Cold Storage A-1', 'expiry_date' => $this->inDays(20)];
         }
 
         $this->actingAs($this->staff)
@@ -248,6 +248,20 @@ class InventoryIntakeTest extends TestCase
             ->postJson('/api/blood-center/inventory', $payload)
             ->assertStatus(422)
             ->assertJsonValidationErrors('units.0.expiry_date');
+    }
+
+    public function test_a_bag_without_a_storage_location_is_refused(): void
+    {
+        $payload = $this->payload();
+        unset($payload['units'][0]['storage_location']);
+        $payload['units'][] = ['component_id' => $this->component->id, 'storage_location' => '', 'expiry_date' => $this->inDays(20)];
+
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/inventory', $payload)
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['units.0.storage_location', 'units.1.storage_location']);
+
+        $this->assertDatabaseCount('blood_units', 0);
     }
 
     public function test_an_expiry_date_of_today_is_accepted(): void
@@ -333,6 +347,7 @@ class InventoryIntakeTest extends TestCase
         for ($i = 0; $i < 10; $i++) {
             $units[] = [
                 'component_id' => $this->component->id,
+                'storage_location' => 'Cold Storage A-1',
                 'expiry_date' => $this->inDays(30),
             ];
         }

@@ -768,6 +768,7 @@ class CollectionWorkflowTest extends TestCase
                 'donation_id' => $id,
                 'units' => [[
                     'component_id' => BloodComponent::factory()->create()->id,
+                    'storage_location' => 'Cold Storage A-1',
                     'expiry_date' => now()->addDays(30)->toDateString(),
                 ]],
             ])

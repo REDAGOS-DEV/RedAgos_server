@@ -15,7 +15,9 @@ use Tests\TestCase;
  * on 2026-10-11.
  *
  * What is locked in: both are recorded from their reference, as a GCash
- * transfer is, and refused without one; neither takes an amount tendered; the
+ * transfer is, and refused without one; neither takes an amount tendered; a
+ * card payment alone may carry additional information (the cardholder's last
+ * name, added 2026-10-13), shown to billing staff only; the
  * receipt and the journal name the method; the journal filters by it; a
  * payment can be corrected onto either; a shift shows both beside the drawer,
  * never in it; and the columns widened for them still refuse a deleted
@@ -49,6 +51,46 @@ class CardAndBankTransferTest extends TestCase
         $row = BillingTransaction::query()->where('type', 'payment')->sole();
         $this->assertSame('card', $row->payment_method->value);
         $this->assertSame('counter', $row->channel->value);
+    }
+
+    public function test_a_card_payment_carries_the_cardholders_last_name_for_billing_staff(): void
+    {
+        $request = $this->allocatedRequest(1);
+
+        $this->payCash($request, 900, [
+            'payment_method' => 'card',
+            'reference_number' => 'RRN-000123456789',
+            'additional_information' => 'Dela Cruz',
+        ])->assertCreated();
+
+        $payment = Payment::query()->sole();
+        $this->assertSame('Dela Cruz', $payment->additional_information);
+
+        $this->actingAs($this->billingClerk)
+            ->getJson("/api/blood-center/billings/{$request->id}/payments")
+            ->assertJsonPath('payments.0.additional_information', 'Dela Cruz');
+
+        // Beside the reference, and like it, off the projection the hospital reads.
+        $this->actingAs($this->billingClerk)
+            ->getJson("/api/blood-center/receipts/{$payment->receipts()->sole()->id}")
+            ->assertJsonPath('payment_additional_information', 'Dela Cruz')
+            ->assertJsonMissingPath('receipt.payment.additional_information');
+    }
+
+    public function test_only_a_card_payment_takes_additional_information(): void
+    {
+        $request = $this->allocatedRequest(1);
+
+        $this->payCash($request, 900, ['amount_tendered' => 900, 'additional_information' => 'Dela Cruz'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['additional_information' => 'Only a card payment carries additional information.']);
+
+        $this->payCash($request, 900, ['payment_method' => 'gcash', 'reference_number' => 'GC-1', 'additional_information' => 'Dela Cruz'])
+            ->assertJsonValidationErrors('additional_information');
+
+        // Optional on a card payment.
+        $this->payCash($request, 900, ['payment_method' => 'card', 'reference_number' => 'RRN-1'])->assertCreated();
+        $this->assertNull(Payment::query()->sole()->additional_information);
     }
 
     public function test_a_bank_transfer_needs_its_reference(): void

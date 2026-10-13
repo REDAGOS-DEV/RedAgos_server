@@ -119,8 +119,8 @@ class DonationToInventoryChainTest extends TestCase
             ->postJson('/api/blood-center/inventory', [
                 'donation_id' => $donationId,
                 'units' => [
-                    ['component_id' => $this->packedRbc->id, 'expiry_date' => now()->addDays(35)->toDateString()],
-                    ['component_id' => $this->plasma->id, 'expiry_date' => now()->addDays(365)->toDateString()],
+                    ['component_id' => $this->packedRbc->id, 'storage_location' => 'Cold Storage A-1', 'expiry_date' => now()->addDays(35)->toDateString()],
+                    ['component_id' => $this->plasma->id, 'storage_location' => 'Cold Storage A-1', 'expiry_date' => now()->addDays(365)->toDateString()],
                 ],
             ])
             ->assertCreated();
@@ -162,7 +162,7 @@ class DonationToInventoryChainTest extends TestCase
             ['component_id' => $this->packedRbc->id, 'volume_ml' => 230],
         ]);
 
-        $unit = ['component_id' => $this->packedRbc->id, 'expiry_date' => now()->addDays(35)->toDateString()];
+        $unit = ['component_id' => $this->packedRbc->id, 'storage_location' => 'Cold Storage A-1', 'expiry_date' => now()->addDays(35)->toDateString()];
 
         // Separate intakes: the second unit must take the second bag.
         $this->actingAs($this->inventory)
@@ -212,7 +212,7 @@ class DonationToInventoryChainTest extends TestCase
             ->postJson('/api/blood-center/inventory', [
                 'donation_id' => $donationId,
                 'units' => [
-                    ['component_id' => $this->plasma->id, 'expiry_date' => now()->addDays(365)->toDateString()],
+                    ['component_id' => $this->plasma->id, 'storage_location' => 'Cold Storage A-1', 'expiry_date' => now()->addDays(365)->toDateString()],
                 ],
             ])
             ->assertStatus(422)
@@ -231,8 +231,8 @@ class DonationToInventoryChainTest extends TestCase
             ->postJson('/api/blood-center/inventory', [
                 'donation_id' => $donationId,
                 'units' => [
-                    ['component_id' => $this->packedRbc->id, 'expiry_date' => now()->addDays(35)->toDateString()],
-                    ['component_id' => $this->packedRbc->id, 'expiry_date' => now()->addDays(35)->toDateString()],
+                    ['component_id' => $this->packedRbc->id, 'storage_location' => 'Cold Storage A-1', 'expiry_date' => now()->addDays(35)->toDateString()],
+                    ['component_id' => $this->packedRbc->id, 'storage_location' => 'Cold Storage A-1', 'expiry_date' => now()->addDays(35)->toDateString()],
                 ],
             ])
             ->assertStatus(409)
@@ -245,7 +245,7 @@ class DonationToInventoryChainTest extends TestCase
             ['component_id' => $this->packedRbc->id, 'volume_ml' => 250],
         ]);
 
-        $unit = ['component_id' => $this->packedRbc->id, 'expiry_date' => now()->addDays(35)->toDateString()];
+        $unit = ['component_id' => $this->packedRbc->id, 'storage_location' => 'Cold Storage A-1', 'expiry_date' => now()->addDays(35)->toDateString()];
 
         $this->actingAs($this->inventory)
             ->postJson('/api/blood-center/inventory', ['donation_id' => $donationId, 'units' => [$unit]])
@@ -291,7 +291,7 @@ class DonationToInventoryChainTest extends TestCase
         $this->actingAs($this->inventory)
             ->postJson('/api/blood-center/inventory', [
                 'donation_id' => $donationId,
-                'units' => [['component_id' => $this->packedRbc->id, 'expiry_date' => now()->addDays(35)->toDateString()]],
+                'units' => [['component_id' => $this->packedRbc->id, 'storage_location' => 'Cold Storage A-1', 'expiry_date' => now()->addDays(35)->toDateString()]],
             ])
             ->assertStatus(409)
             ->assertJsonPath('code', 'donation_not_completed');
@@ -362,7 +362,7 @@ class DonationToInventoryChainTest extends TestCase
         $unitId = $this->actingAs($this->inventory)
             ->postJson('/api/blood-center/inventory', [
                 'donation_id' => $donationId,
-                'units' => [['component_id' => $this->packedRbc->id, 'expiry_date' => now()->addDays(35)->toDateString()]],
+                'units' => [['component_id' => $this->packedRbc->id, 'storage_location' => 'Cold Storage A-1', 'expiry_date' => now()->addDays(35)->toDateString()]],
             ])
             ->assertCreated()
             ->assertJsonPath('units.0.status', 'quarantined')
