@@ -3,6 +3,7 @@
 use App\Http\Controllers\AdminAccountController;
 use App\Http\Controllers\AdminAuditLogController;
 use App\Http\Controllers\AdminPrivilegeController;
+use App\Http\Controllers\AdminReportController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\BloodCenterBillingController;
 use App\Http\Controllers\BloodCenterBillingTransactionController;
@@ -977,6 +978,13 @@ Route::middleware(['auth:sanctum', 'role:admin', 'can:admin.accounts.manage', 't
 // whatever their privileges, may change their own.
 Route::middleware(['auth:sanctum', 'role:admin', 'throttle:10,1'])
     ->post('admin/account/password', [AdminAccountController::class, 'updatePassword']);
+
+// Network reports: a summary and CSV exports (2026-10-15).
+Route::middleware(['auth:sanctum', 'role:admin', 'can:admin.reports.export', 'throttle:60,1'])
+    ->prefix('admin/reports')->group(function (): void {
+        Route::get('/summary', [AdminReportController::class, 'summary']);
+        Route::get('/export', [AdminReportController::class, 'export']);
+    });
 
 // The platform audit trail, read only (2026-10-15).
 Route::middleware(['auth:sanctum', 'role:admin', 'can:admin.audit.view', 'throttle:60,1'])
