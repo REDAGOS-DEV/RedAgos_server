@@ -242,6 +242,12 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         Route::get('/inventory/summary', [BloodCenterInventoryController::class, 'summary'])
             ->middleware('can:inventory.view');
 
+        // The centre's own stock movements from the audit trail, for the
+        // inventory page's activity feed and a unit's history. Before
+        // /inventory/{unit} for the same reason as the summary.
+        Route::get('/inventory/activity', [BloodCenterInventoryController::class, 'activity'])
+            ->middleware('can:inventory.view');
+
         // The minimum stock per blood type and component. Everyone who can see
         // the inventory can see how it stands against its minimums; only the
         // Inventory Control Officer sets them. Declared

@@ -17,10 +17,13 @@ class SaveStockThresholdsRequest extends FormRequest
     }
 
     /**
-     * `minimum_units` must be present on every cell, and null is a real answer
-     * that clears it, so the screen can send the whole grid or only what it
-     * changed. The bounds are a typing guard, not clinical guidance: nothing in
-     * this application decides what a safe minimum is.
+     * Each cell carries `minimum_units` (the critical level), `par_units`, or
+     * both, and a level it leaves out keeps its saved value. That is what lets
+     * the screen save its PAR and critical tables apart. Null is a real answer
+     * that clears a level. The bounds are a typing guard, not clinical
+     * guidance: nothing in this application decides what a safe level is.
+     * Whether the critical level sits at or under PAR depends on the saved
+     * values too, so the service judges that.
      *
      * A component must still exist and not be retired, because a threshold on a
      * retired one could never be seen or edited again.
@@ -51,14 +54,23 @@ class SaveStockThresholdsRequest extends FormRequest
                     }
                 },
             ],
-            'thresholds.*' => ['required', 'array'],
+            'thresholds.*' => [
+                'required',
+                'array',
+                function (string $attribute, mixed $value, Closure $fail): void {
+                    if (is_array($value) && ! array_key_exists('minimum_units', $value) && ! array_key_exists('par_units', $value)) {
+                        $fail('Send a critical level or a PAR level, or null to remove one.');
+                    }
+                },
+            ],
             'thresholds.*.blood_type_id' => ['required', 'integer', Rule::exists('blood_types', 'id')],
             'thresholds.*.component_id' => [
                 'required',
                 'integer',
                 Rule::exists('blood_components', 'id')->whereNull('deleted_at'),
             ],
-            'thresholds.*.minimum_units' => ['present', 'nullable', 'integer', 'min:1', 'max:9999'],
+            'thresholds.*.minimum_units' => ['sometimes', 'nullable', 'integer', 'min:1', 'max:9999'],
+            'thresholds.*.par_units' => ['sometimes', 'nullable', 'integer', 'min:1', 'max:9999'],
             'thresholds.*.alerts_enabled' => ['sometimes', 'nullable', 'boolean'],
         ];
     }
@@ -69,8 +81,8 @@ class SaveStockThresholdsRequest extends FormRequest
     public function messages(): array
     {
         return [
-            'thresholds.*.minimum_units.present' => 'Send a minimum, or null to remove it.',
-            'thresholds.*.minimum_units.min' => 'A minimum of less than one unit cannot be recorded.',
+            'thresholds.*.minimum_units.min' => 'A critical level of less than one unit cannot be recorded.',
+            'thresholds.*.par_units.min' => 'A PAR level of less than one unit cannot be recorded.',
             'thresholds.*.component_id.exists' => 'That blood component is no longer available.',
         ];
     }

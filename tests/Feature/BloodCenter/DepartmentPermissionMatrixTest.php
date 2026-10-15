@@ -299,6 +299,7 @@ class DepartmentPermissionMatrixTest extends TestCase
         foreach ([
             '/api/blood-center/corrections?scope=review',
             '/api/blood-center/inventory',
+            '/api/blood-center/inventory/activity',
             '/api/blood-center/inventory/thresholds',
             '/api/blood-center/inventory/stock-report',
             '/api/blood-center/blood-requests',

@@ -311,6 +311,27 @@ class CheckStockThresholdsTest extends TestCase
         $this->assertSame(0, AuditLog::query()->where('action', 'stock_threshold.alerted')->count());
     }
 
+    public function test_a_par_level_alone_is_never_swept_or_alerted(): void
+    {
+        // PAR is the stock to aim for, not an alert level.
+        StockThreshold::factory()->forCell($this->centre, $this->oPositive, $this->prbc)->parOnly(10)->create();
+
+        $this->assertSame([], app(StockThresholdService::class)->facilityIdsToSweep());
+
+        $this->sweep();
+        $this->assertCount(0, $this->alertsFor($this->officer));
+    }
+
+    public function test_below_par_but_above_the_critical_level_sends_nothing(): void
+    {
+        $this->stockCentre($this->centre, $this->oPositive, $this->prbc, 4);
+        StockThreshold::factory()->forCell($this->centre, $this->oPositive, $this->prbc)->minimum(3)->par(10)->create();
+
+        $this->sweep();
+
+        $this->assertCount(0, $this->alertsFor($this->officer));
+    }
+
     public function test_a_failed_send_rolls_the_marks_back_and_the_next_run_retries_it(): void
     {
         $otherCentre = Facility::factory()->approved()->create();

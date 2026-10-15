@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Requests\DiscardBloodUnitRequest;
+use App\Http\Requests\ListInventoryActivityRequest;
 use App\Http\Requests\ListInventoryRequest;
 use App\Http\Requests\StoreBloodUnitsRequest;
 use App\Http\Requests\UpdateBloodUnitRequest;
@@ -58,6 +59,20 @@ class BloodCenterInventoryController extends Controller
     {
         return response()->json(
             $this->inventoryService->summary($request->user())
+        );
+    }
+
+    /**
+     * What has happened to the caller's facility stock, newest first.
+     */
+    public function activity(ListInventoryActivityRequest $request): JsonResponse
+    {
+        return response()->json(
+            $this->inventoryService->activity(
+                $request->user(),
+                $request->validated('unit_id'),
+                $request->integer('per_page', 10)
+            )
         );
     }
 

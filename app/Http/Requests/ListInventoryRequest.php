@@ -26,6 +26,8 @@ class ListInventoryRequest extends FormRequest
             'donation_id' => ['sometimes', 'integer'],
             'expiring_within_days' => ['sometimes', 'integer', 'min:0', 'max:365'],
             'search' => ['sometimes', 'string', 'max:50'],
+            // fefo (the default) or recent: the newest bags first.
+            'sort' => ['sometimes', 'string', Rule::in(['fefo', 'recent'])],
             'per_page' => ['sometimes', 'integer', 'min:1', 'max:100'],
         ];
     }

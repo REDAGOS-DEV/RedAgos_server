@@ -51,6 +51,22 @@ class StockThresholdFactory extends Factory
     }
 
     /**
+     * Indicate the PAR level, in units.
+     */
+    public function par(int $units): static
+    {
+        return $this->state(fn (array $attributes): array => ['par_units' => $units]);
+    }
+
+    /**
+     * Indicate a cell with a PAR level and no critical level.
+     */
+    public function parOnly(int $units): static
+    {
+        return $this->state(fn (array $attributes): array => ['minimum_units' => null, 'par_units' => $units]);
+    }
+
+    /**
      * Indicate notifications are switched off for this cell.
      */
     public function alertsOff(): static

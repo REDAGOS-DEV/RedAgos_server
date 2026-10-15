@@ -103,8 +103,9 @@ class StockThresholdRepository
     /**
      * Facilities with something for the sweep to do.
      *
-     * A threshold with alerts on can start an episode, and one already alerted
-     * can end it, whether or not alerts are still on. Anything else is inert.
+     * A threshold with a critical level and alerts on can start an episode,
+     * and one already alerted can end it, whether or not alerts are still on.
+     * Anything else, a PAR-only row included, is inert.
      *
      * @return array<int, int>
      */
@@ -113,7 +114,8 @@ class StockThresholdRepository
         return StockThreshold::query()
             ->onActiveComponents()
             ->where(function ($query): void {
-                $query->where('alerts_enabled', true)->orWhereNotNull('alerted_at');
+                $query->where(fn ($query) => $query->where('alerts_enabled', true)->whereNotNull('minimum_units'))
+                    ->orWhereNotNull('alerted_at');
             })
             ->distinct()
             ->orderBy('facility_id')

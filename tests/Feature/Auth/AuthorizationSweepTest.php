@@ -164,6 +164,7 @@ class AuthorizationSweepTest extends TestCase
             'reference data' => ['get', '/api/blood-center/reference-data', 'reference.view'],
             'inventory list' => ['get', '/api/blood-center/inventory', 'inventory.view'],
             'inventory summary' => ['get', '/api/blood-center/inventory/summary', 'inventory.view'],
+            'inventory activity' => ['get', '/api/blood-center/inventory/activity', 'inventory.view'],
             'stock thresholds' => ['get', '/api/blood-center/inventory/thresholds', 'inventory.view'],
             'save stock thresholds' => ['put', '/api/blood-center/inventory/thresholds', 'inventory.thresholds'],
             'daily stock report' => ['get', '/api/blood-center/inventory/stock-report', 'inventory.stock_report'],

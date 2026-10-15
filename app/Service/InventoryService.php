@@ -5,6 +5,7 @@ namespace App\Service;
 use App\Enums\BloodUnitStatus;
 use App\Enums\ClearanceKind;
 use App\Enums\DonationStatus;
+use App\Models\AuditLog;
 use App\Models\BloodUnit;
 use App\Models\Donation;
 use App\Models\FacilityBloodComponent;
@@ -49,6 +50,26 @@ class InventoryService
      * docs/IMPLEMENTATION_DECISIONS.md.
      */
     private const INTAKE_DONATION_STATUS = DonationStatus::Completed;
+
+    /**
+     * The audit actions that make up a centre's inventory activity, and what
+     * each one is called on the page.
+     *
+     * Only actions recorded against a unit, and only ones this centre takes: a
+     * hospital receiving a bag is audited on the same unit but is not stock
+     * moving here.
+     */
+    private const ACTIVITY_KINDS = [
+        'inventory.recorded' => 'booked_in',
+        'inventory.released_from_quarantine' => 'released',
+        'allocation.reserved' => 'reserved',
+        'allocation.issued' => 'issued',
+        'allocation.expired_hold_released' => 'hold_returned',
+        'inventory.updated' => 'updated',
+        'inventory.reinstated' => 'reinstated',
+        'inventory.discarded' => 'discarded',
+        'inventory.expired' => 'expired',
+    ];
 
     public function __construct(
         private readonly InventoryRepository $inventoryRepository,
@@ -177,15 +198,47 @@ class InventoryService
     {
         $facilityId = $this->requireFacilityId($user);
         $today = OperationalDay::todayAsDate();
+        [$dayStart, $dayEnd] = OperationalDay::boundsFor();
 
         return [
             'totals' => $this->inventoryRepository->summaryCounts($facilityId),
             'by_blood_type' => $this->inventoryRepository->countsByBloodType($facilityId),
             'by_component' => $this->inventoryRepository->countsByComponent($facilityId),
             'near_expiry' => $this->inventoryRepository->nearExpiryCounts($facilityId, $today),
+            // Units that left this centre for a request today.
+            'issued_today' => $this->inventoryRepository->issuedCountBetween($facilityId, $dayStart, $dayEnd),
+            // Units that joined issuable stock this week, out of quarantine.
+            // now() rather than the operational clock: released_at is stored
+            // in the application's timezone, and so is this bound.
+            'released_last_7_days' => $this->inventoryRepository->releasedToStockSince($facilityId, CarbonImmutable::now()->subDays(7)),
             'storage_locations' => $this->storageLocations($facilityId),
             'as_of' => OperationalDay::today()->toIso8601String(),
         ];
+    }
+
+    /**
+     * What has happened to the caller's facility stock, newest first.
+     *
+     * @return LengthAwarePaginator<int, array<string, mixed>>
+     */
+    public function activity(User $user, ?string $unitId, int $perPage): LengthAwarePaginator
+    {
+        $facilityId = $this->requireFacilityId($user);
+
+        return $this->inventoryRepository
+            ->paginateActivity($facilityId, array_keys(self::ACTIVITY_KINDS), $unitId, $perPage)
+            ->through(fn (AuditLog $entry): array => [
+                'id' => $entry->id,
+                'kind' => self::ACTIVITY_KINDS[$entry->action],
+                'unit_id' => $entry->auditable_id,
+                'blood_type' => $entry->getAttribute('blood_type_code'),
+                'component' => $entry->getAttribute('component_name'),
+                // Null for the expiry sweep, which has no one behind it.
+                'actor' => $entry->actor === null
+                    ? null
+                    : trim($entry->actor->first_name.' '.$entry->actor->last_name),
+                'at' => $entry->created_at?->toIso8601String(),
+            ]);
     }
 
     /**
@@ -762,6 +815,11 @@ class InventoryService
                 : null,
             'storage_location' => $unit->storage_location,
             'donation_id' => $unit->donation_id,
+            // When the bag was collected: its donation's date. Read only when
+            // the listing loaded it, so a single-unit response costs no query.
+            'collected_at' => $unit->relationLoaded('donation')
+                ? $unit->donation?->donation_date?->toIso8601String()
+                : null,
             'recorded_at' => $unit->created_at?->toIso8601String(),
             'expired_at' => $unit->expired_at?->toIso8601String(),
             'discarded_at' => $unit->discarded_at?->toIso8601String(),

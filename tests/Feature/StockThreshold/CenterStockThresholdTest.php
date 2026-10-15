@@ -22,7 +22,7 @@ use Tests\TestCase;
  * A blood centre's minimum stock per blood type and component.
  *
  * Counts are derived from the units under the Daily Stock Report's rule, and
- * the minimum is the only thing stored. Reading is everyone with
+ * only the levels are stored: the minimum (the critical level) and PAR. Reading is everyone with
  * `inventory.view`; setting is the Inventory Control Officer and the Center
  * Admin.
  */
@@ -305,7 +305,9 @@ class CenterStockThresholdTest extends TestCase
             'minimum below one' => ['thresholds' => [[...$valid, 'minimum_units' => 0]]],
             'minimum too large' => ['thresholds' => [[...$valid, 'minimum_units' => 10000]]],
             'minimum not a number' => ['thresholds' => [[...$valid, 'minimum_units' => 'lots']]],
-            'minimum missing' => ['thresholds' => [['blood_type_id' => $valid['blood_type_id'], 'component_id' => $valid['component_id']]]],
+            'no level at all' => ['thresholds' => [['blood_type_id' => $valid['blood_type_id'], 'component_id' => $valid['component_id']]]],
+            'par below one' => ['thresholds' => [[...$valid, 'par_units' => 0]]],
+            'par too large' => ['thresholds' => [[...$valid, 'par_units' => 10000]]],
             'unknown blood type' => ['thresholds' => [[...$valid, 'blood_type_id' => 9999]]],
             'unknown component' => ['thresholds' => [[...$valid, 'component_id' => 9999]]],
             'duplicate cell' => ['thresholds' => [$valid, $valid]],
@@ -318,6 +320,136 @@ class CenterStockThresholdTest extends TestCase
         }
 
         $this->assertDatabaseCount('stock_thresholds', 0);
+    }
+
+    public function test_a_par_level_saves_on_its_own_and_leaves_the_critical_level_alone(): void
+    {
+        StockThreshold::factory()->forCell($this->centre, $this->oPositive, $this->prbc)->minimum(3)->alertsOff()->create();
+
+        $response = $this->actingAs($this->officer)
+            ->putJson('/api/blood-center/inventory/thresholds', ['thresholds' => [$this->parPayload('O+', $this->prbc, 10)]])
+            ->assertOk();
+
+        $cell = $this->cell($response, 'O+', 'Packed RBC');
+        $this->assertSame(10, $cell['par_units']);
+        $this->assertSame(3, $cell['minimum_units']);
+        $this->assertFalse($cell['alerts_enabled']);
+
+        $audit = AuditLog::query()->where('action', 'stock_threshold.saved')->sole();
+        $this->assertNull($audit->context['par_units_before']);
+        $this->assertSame(10, $audit->context['par_units_after']);
+        $this->assertSame(3, $audit->context['minimum_units_after']);
+    }
+
+    public function test_a_par_level_can_be_set_before_any_critical_level(): void
+    {
+        $this->actingAs($this->officer)
+            ->putJson('/api/blood-center/inventory/thresholds', ['thresholds' => [$this->parPayload('O+', $this->prbc, 8)]])
+            ->assertOk()
+            ->assertJsonPath('totals.monitored', 0);
+
+        $this->assertDatabaseHas('stock_thresholds', [
+            'facility_id' => $this->centre->id,
+            'minimum_units' => null,
+            'par_units' => 8,
+        ]);
+    }
+
+    public function test_a_critical_level_saves_on_its_own_and_leaves_the_par_level_alone(): void
+    {
+        StockThreshold::factory()->forCell($this->centre, $this->oPositive, $this->prbc)->minimum(3)->par(10)->create();
+
+        $this->actingAs($this->officer)
+            ->putJson('/api/blood-center/inventory/thresholds', ['thresholds' => [$this->payload('O+', $this->prbc, 6)]])
+            ->assertOk();
+
+        $this->assertDatabaseHas('stock_thresholds', ['minimum_units' => 6, 'par_units' => 10]);
+    }
+
+    public function test_the_status_reports_par_and_how_far_stock_is_from_it(): void
+    {
+        $bPositive = $this->bloodType('B+');
+
+        $this->stockCentre($this->centre, $this->oPositive, $this->prbc, 4);
+        $this->stockCentre($this->centre, $bPositive, $this->prbc, 12);
+
+        StockThreshold::factory()->forCell($this->centre, $this->oPositive, $this->prbc)->minimum(3)->par(10)->create();
+        StockThreshold::factory()->forCell($this->centre, $bPositive, $this->prbc)->minimum(3)->par(10)->create();
+
+        $response = $this->actingAs($this->officer)->getJson('/api/blood-center/inventory/thresholds')->assertOk();
+
+        // Under PAR but over the critical level: short of the aim, not an alert.
+        $under = $this->cell($response, 'O+', 'Packed RBC');
+        $this->assertSame('ok', $under['status']);
+        $this->assertSame(10, $under['par_units']);
+        $this->assertSame(6, $under['to_par']);
+
+        $this->assertSame(0, $this->cell($response, 'B+', 'Packed RBC')['to_par']);
+
+        $response->assertJsonPath('totals.below_par', 1)->assertJsonPath('totals.low', 0);
+    }
+
+    public function test_clearing_the_critical_level_keeps_the_par_level_and_clearing_both_deletes_the_row(): void
+    {
+        StockThreshold::factory()->forCell($this->centre, $this->oPositive, $this->prbc)->minimum(3)->par(10)->create();
+
+        $this->actingAs($this->officer)
+            ->putJson('/api/blood-center/inventory/thresholds', ['thresholds' => [$this->payload('O+', $this->prbc, null)]])
+            ->assertOk();
+
+        $this->assertDatabaseHas('stock_thresholds', ['minimum_units' => null, 'par_units' => 10]);
+        $this->assertSame(0, AuditLog::query()->where('action', 'stock_threshold.cleared')->count());
+
+        $this->actingAs($this->officer)
+            ->putJson('/api/blood-center/inventory/thresholds', ['thresholds' => [$this->parPayload('O+', $this->prbc, null)]])
+            ->assertOk();
+
+        $this->assertDatabaseCount('stock_thresholds', 0);
+        $this->assertSame(10, AuditLog::query()->where('action', 'stock_threshold.cleared')->sole()->context['par_units_before']);
+    }
+
+    public function test_a_critical_level_above_par_is_refused_however_it_arrives(): void
+    {
+        StockThreshold::factory()->forCell($this->centre, $this->oPositive, $this->prbc)->minimum(3)->par(10)->create();
+
+        $cases = [
+            'critical raised over the saved PAR' => [$this->payload('O+', $this->prbc, 11)],
+            'PAR lowered under the saved critical level' => [$this->parPayload('O+', $this->prbc, 2)],
+            'both in one cell' => [[...$this->payload('O+', $this->prbc, 9), 'par_units' => 8]],
+        ];
+
+        foreach ($cases as $name => $thresholds) {
+            $this->actingAs($this->officer)
+                ->putJson('/api/blood-center/inventory/thresholds', ['thresholds' => $thresholds])
+                ->assertUnprocessable($name)
+                ->assertJsonPath('code', 'critical_above_par');
+        }
+
+        // One bad cell refuses the whole save, before anything is written.
+        $aPositive = $this->bloodType('A+');
+
+        $this->actingAs($this->officer)
+            ->putJson('/api/blood-center/inventory/thresholds', ['thresholds' => [
+                $this->payload('A+', $this->prbc, 4),
+                $this->payload('O+', $this->prbc, 11),
+            ]])
+            ->assertUnprocessable()
+            ->assertJsonPath('message', 'O+ Packed RBC: the critical level (11) cannot be above the PAR level (10).');
+
+        $this->assertDatabaseMissing('stock_thresholds', ['blood_type_id' => $aPositive->id]);
+        $this->assertDatabaseHas('stock_thresholds', ['minimum_units' => 3, 'par_units' => 10]);
+        $this->assertSame(0, AuditLog::query()->where('action', 'stock_threshold.saved')->count());
+    }
+
+    public function test_a_critical_level_equal_to_par_is_allowed(): void
+    {
+        $this->actingAs($this->officer)
+            ->putJson('/api/blood-center/inventory/thresholds', ['thresholds' => [
+                [...$this->payload('O+', $this->prbc, 5), 'par_units' => 5],
+            ]])
+            ->assertOk();
+
+        $this->assertDatabaseHas('stock_thresholds', ['minimum_units' => 5, 'par_units' => 5]);
     }
 
     public function test_a_retired_component_cannot_be_given_a_threshold(): void
@@ -349,6 +481,18 @@ class CenterStockThresholdTest extends TestCase
         }
 
         return $cell;
+    }
+
+    /**
+     * @return array{blood_type_id: int, component_id: int, par_units: int|null}
+     */
+    private function parPayload(string $bloodTypeCode, BloodComponent $component, ?int $par): array
+    {
+        return [
+            'blood_type_id' => $this->bloodType($bloodTypeCode)->id,
+            'component_id' => $component->id,
+            'par_units' => $par,
+        ];
     }
 
     /**

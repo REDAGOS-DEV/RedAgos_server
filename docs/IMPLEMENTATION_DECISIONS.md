@@ -1320,6 +1320,12 @@ stateDiagram-v2
 - Thresholds are per facility; there is no network-wide or per-storage-location minimum.
 - A hospital's count excludes bags past their date even before the nightly sweep expires them, and a centre's does the same.
 
+**DECISION (PAR and critical levels, 2026-10-16):** The redesigned Stock Thresholds page sets two levels per blood type and component, each in its own table with its own Save. The project owner supplied the design.
+- **Critical level.** This is the existing `minimum_units`, renamed on screen only. Alerts, episodes and the four statuses are unchanged.
+- **PAR level.** A new nullable `par_units` (1–9999) holds the stock the facility aims to keep. It is reported and never alerted on. The status adds `par_units` and `to_par` to each cell and `below_par` to the totals.
+- **Saving.** `minimum_units` became nullable, so PAR can be set before a critical level. Each `PUT` cell carries `minimum_units`, `par_units`, or both, and a level left out keeps its saved value. A cell left with neither level is deleted, as before. A PAR-only row is not swept.
+- **Rule.** A critical level may not exceed its PAR level. The service judges this on the levels as they will stand, saved values included. A breach refuses the whole save with 422 `critical_above_par`, before anything is written. The screen checks the same rule first, and tells the user which table to save first when the order matters.
+
 ## Billing: who owes, statements, receipts and GCash checkout
 
 **SOURCE:** decisions taken by the project owner on 2026-10-10 while planning the Xendit integration. Finance and legal confirmation of the document wording is still outstanding.
@@ -1485,3 +1491,43 @@ stateDiagram-v2
 - **Everyone else:** nobody else decides their own request, a head never decides a peer head's, and no management level decides anything.
 - **Not covered:** custom roles never count as the head.
 - **Client:** the correction dialog tells a head the correction applies at once ("Apply correction"). The laboratory, testing, fulfilment and statement pages reload the record when a correction comes back approved.
+
+## Blood Inventory dashboard
+
+**SOURCE:** The owner's mock-up of the Blood Center Inventory page (2026-10-16): five headline cards, per-type availability cards with a ring and a component breakdown, the unit list, Expiring Soon and Recent Activity. Every figure is for the signed-in staff member's own centre only.
+
+**DECIDED BY:** Claude, building the mock-up on 2026-10-16; the owner has not yet ruled on the points below.
+
+**DECISION (scope comes from the session):** Every read takes the facility from the authenticated user (`requireFacilityId`), never from the request, and the page sends no facility id. Nothing is aggregated across centres and there is no facility switch.
+
+**DECISION (what each headline counts):**
+- *Total Available Units*: issuable units, which means the same cells the type cards and the thresholds use (available and not past date). The page falls back to the summary's `totals.available` only when the thresholds read fails.
+- *Critical Low Stock*: blood types whose worst monitored component is below its minimum (`low` or `critical`). It shows a dash, not a zero, when no minimum is set.
+- *Expiring Soon*: `near_expiry.within_7_days`.
+- *Reserved for Requests*: `totals.reserved`.
+- *Issued Today*: new `issued_today`, which counts `request_allocations` released within today's operational bounds and is scoped through the unit's facility.
+- The "added" line: new `released_last_7_days`, which counts units whose `released_at` (out of quarantine) falls within 7 days. This is not a week-on-week change in stock, which would need history that is not kept.
+
+**DECISION (the ring):** Each type's ring shows how much of its minimum stock is on the shelf: Σ min(available, minimum) / Σ minimum, over the components with a minimum, rounded down. A surplus in one component cannot hide an empty shelf in another, and 100% means every minimum is met. A type with no minimum shows no ring value and "No minimum set". The page does not invent a target. When the PAR level lands, the ring could measure against PAR instead.
+
+**DECISION (rare):** Every Rh-negative type is tagged Rare. In the Philippine donor population each one is under 1%. This is a display tag, not stored data.
+
+**DECISION (activity):** `GET /blood-center/inventory/activity` (`inventory.view`) reads `audit_logs` rows about a `BloodUnit`, joined to `blood_units` for the facility, never to the row's context. The action whitelist is:
+- `inventory.recorded`
+- `inventory.released_from_quarantine`
+- `allocation.reserved`
+- `allocation.issued`
+- `allocation.expired_hold_released`
+- `inventory.updated`
+- `inventory.reinstated`
+- `inventory.discarded`
+- `inventory.expired`
+
+So a hospital's `hospital_inventory.received` on the same bag is excluded. An optional `unit_id` gives one bag's history, which the details drawer uses. A hold returned to stock by staff is audited against the request, not the unit, so it does not appear.
+
+**DECISION (unit list):** The list pages on the server (8 per page). `GET /inventory` gained:
+- `sort=recent`, newest booked in first. The default stays FEFO for every other caller.
+- `collected_at`, the donation date, which is filled only when the listing loaded the donation.
+- A case-insensitive search across the unit id and storage location.
+
+**KNOWN LIMITATIONS:** Activity reads the audit trail, so it shows only what was audited per unit. The page refreshes once a minute while the tab is visible; it is not pushed.

@@ -9,9 +9,11 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
- * One facility's minimum stock for a blood type and component.
+ * One facility's stock levels for a blood type and component.
  *
- * See the migration for why only the minimum is stored: the count is always
+ * `minimum_units` is the critical level a low-stock alert is judged against;
+ * `par_units` is the stock the facility aims to keep. Either may be null, but
+ * never both. See the migrations for why no count is stored: it is always
  * derived from the units.
  */
 class StockThreshold extends Model
@@ -24,6 +26,7 @@ class StockThreshold extends Model
         'blood_type_id',
         'component_id',
         'minimum_units',
+        'par_units',
         'alerts_enabled',
         'alerted_at',
         'updated_by',
@@ -33,6 +36,7 @@ class StockThreshold extends Model
     {
         return [
             'minimum_units' => 'integer',
+            'par_units' => 'integer',
             'alerts_enabled' => 'boolean',
             'alerted_at' => 'datetime',
         ];

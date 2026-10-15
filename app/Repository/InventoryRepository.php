@@ -6,6 +6,7 @@ use App\Enums\AllocationStatus;
 use App\Enums\BloodUnitStatus;
 use App\Enums\ClearanceKind;
 use App\Enums\DonationStatus;
+use App\Models\AuditLog;
 use App\Models\BloodUnit;
 use App\Models\Donation;
 use App\Models\RequestAllocation;
@@ -33,10 +34,83 @@ class InventoryRepository
     {
         return $this->filtered($facilityId, $filters)
             // The donation and its clearances, for the quarantine state of a
-            // held unit. Constrained so a page of available stock does not
-            // drag every donation's columns along.
-            ->with(['bloodType', 'component', 'donation:id,status', 'donation.clearances'])
-            ->fefo()
+            // held unit, and its date, for when the bag was collected.
+            // Constrained so a page of available stock does not drag every
+            // donation's columns along.
+            ->with(['bloodType', 'component', 'donation:id,status,donation_date', 'donation.clearances'])
+            // FEFO unless the caller asks for the newest bags first: a listing
+            // of every status in FEFO order opens on long-gone units.
+            ->when(
+                ($filters['sort'] ?? 'fefo') === 'recent',
+                fn (Builder $query): Builder => $query->orderByDesc('created_at')->orderByDesc('id'),
+                fn (Builder $query): Builder => $query->fefo()
+            )
+            ->paginate($perPage)
+            ->withQueryString();
+    }
+
+    /**
+     * Units this facility issued between two instants.
+     *
+     * Counted from the allocation's released_at, the moment a bag left the
+     * building, and scoped through the unit, so only this centre's own bags
+     * count.
+     */
+    public function issuedCountBetween(int $facilityId, CarbonImmutable $from, CarbonImmutable $to): int
+    {
+        return RequestAllocation::query()
+            ->join('blood_units', 'blood_units.id', '=', 'request_allocations.unit_id')
+            ->where('blood_units.facility_id', $facilityId)
+            ->where('request_allocations.status', AllocationStatus::Released->value)
+            ->whereBetween('request_allocations.released_at', [$from, $to])
+            ->count();
+    }
+
+    /**
+     * Units this facility released from quarantine to stock since an instant.
+     */
+    public function releasedToStockSince(int $facilityId, CarbonImmutable $since): int
+    {
+        return BloodUnit::query()
+            ->forFacility($facilityId)
+            ->where('released_at', '>=', $since)
+            ->count();
+    }
+
+    /**
+     * What happened to this facility's units, newest first.
+     *
+     * Read from the audit trail, scoped through the unit each row is about
+     * rather than through the row's context: a facility id in the context is
+     * written by some actions and not others, and the unit is the one thing
+     * every row has. Only the actions this centre itself takes are listed, so
+     * a hospital confirming receipt of a bag never shows up here.
+     *
+     * @param  array<int, string>  $actions
+     * @return LengthAwarePaginator<int, AuditLog>
+     */
+    public function paginateActivity(int $facilityId, array $actions, ?string $unitId, int $perPage): LengthAwarePaginator
+    {
+        return AuditLog::query()
+            ->join('blood_units', 'blood_units.id', '=', 'audit_logs.auditable_id')
+            ->join('blood_types', 'blood_types.id', '=', 'blood_units.blood_type_id')
+            ->join('blood_components', 'blood_components.id', '=', 'blood_units.component_id')
+            ->where('audit_logs.auditable_type', BloodUnit::class)
+            ->where('blood_units.facility_id', $facilityId)
+            ->whereIn('audit_logs.action', $actions)
+            ->when($unitId !== null, fn (Builder $query): Builder => $query->where('blood_units.id', $unitId))
+            ->with('actor:id,first_name,last_name')
+            ->select([
+                'audit_logs.id',
+                'audit_logs.actor_id',
+                'audit_logs.action',
+                'audit_logs.auditable_id',
+                'audit_logs.created_at',
+                'blood_types.code as blood_type_code',
+                'blood_components.name as component_name',
+            ])
+            ->orderByDesc('audit_logs.created_at')
+            ->orderByDesc('audit_logs.id')
             ->paginate($perPage)
             ->withQueryString();
     }
@@ -687,9 +761,17 @@ class InventoryRepository
                             ->toDateString(),
                     ])
             )
+            // The unit number or where it is kept, either case: a scanned or
+            // typed number arrives as printed, a location as someone recalls it.
             ->when(
                 isset($filters['search']),
-                fn (Builder $query): Builder => $query->where('id', 'like', '%'.$filters['search'].'%')
+                function (Builder $query) use ($filters): Builder {
+                    $term = '%'.mb_strtolower($filters['search']).'%';
+
+                    return $query->where(fn (Builder $match): Builder => $match
+                        ->whereRaw('LOWER(blood_units.id) LIKE ?', [$term])
+                        ->orWhereRaw('LOWER(blood_units.storage_location) LIKE ?', [$term]));
+                }
             );
     }
 }

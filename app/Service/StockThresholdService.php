@@ -18,7 +18,12 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 /**
- * A facility's minimum stock per blood type and component, and the alerts that follow.
+ * A facility's stock levels per blood type and component, and the alerts that follow.
+ *
+ * Each cell has two levels, either of which may be unset. The critical level
+ * (`minimum_units`) is what a low-stock alert is judged against. The PAR level
+ * (`par_units`) is the stock the facility aims to keep. It is reported, never
+ * alerted on, and the critical level may not sit above it.
  *
  * Serves blood centres and hospital blood banks through one code path; the
  * facility's type only decides whose shelf is counted. Stock is never stored
@@ -62,10 +67,14 @@ class StockThresholdService
     }
 
     /**
-     * Set, correct or clear minimums for the caller's own facility.
+     * Set, correct or clear levels for the caller's own facility.
      *
-     * A null `minimum_units` clears the cell. Unchanged cells are skipped, so
-     * a save that sends the whole grid writes and audits only what changed.
+     * A cell may carry either level or both; one it leaves out keeps its
+     * saved value, so the PAR and critical tables save apart. A null clears a
+     * level, and a cell left with neither is deleted. Unchanged cells are
+     * skipped, so a save that sends the whole grid writes and audits only what
+     * changed. A save that would leave any critical level above its PAR level
+     * is refused whole, before anything is written.
      *
      * `alerted_at` is reconciled against the counts as they stand when the
      * edit lands. A cell that is no longer breached under its new minimum, or
@@ -74,7 +83,7 @@ class StockThresholdService
      * leave the old mark in place and the second shortage would never notify.
      * A cell still breached with alerts on is the same episode and keeps it.
      *
-     * @param  array<int, array{blood_type_id: int, component_id: int, minimum_units: int|null, alerts_enabled?: bool|null}>  $cells
+     * @param  array<int, array{blood_type_id: int, component_id: int, minimum_units?: int|null, par_units?: int|null, alerts_enabled?: bool|null}>  $cells
      * @return array<string, mixed>
      */
     public function save(User $staff, array $cells): array
@@ -94,6 +103,9 @@ class StockThresholdService
             }
 
             $existing = $this->repository->lockForFacility($facility->id);
+
+            $this->refuseCriticalAbovePar($existing, $cells);
+
             $counts = $this->issuableCounts($facility);
 
             foreach ($cells as $cell) {
@@ -217,9 +229,9 @@ class StockThresholdService
         $key = StockThresholdRepository::cellKey($bloodTypeId, $componentId);
 
         $before = $existing->get($key);
-        $minimum = isset($cell['minimum_units']) ? (int) $cell['minimum_units'] : null;
+        [$minimum, $par] = $this->levelsAfter($cell, $before);
 
-        if ($minimum === null) {
+        if ($minimum === null && $par === null) {
             if ($before === null) {
                 return;
             }
@@ -229,6 +241,7 @@ class StockThresholdService
                 'blood_type_id' => $bloodTypeId,
                 'component_id' => $componentId,
                 'minimum_units_before' => $before->minimum_units,
+                'par_units_before' => $before->par_units,
                 'alerts_enabled_before' => $before->alerts_enabled,
                 'episode_reset' => $before->alerted_at !== null,
                 'reason' => 'cleared_by_staff',
@@ -243,7 +256,12 @@ class StockThresholdService
             ? (bool) $cell['alerts_enabled']
             : ($before?->alerts_enabled ?? true);
 
-        if ($before !== null && $before->minimum_units === $minimum && $before->alerts_enabled === $alertsEnabled) {
+        if (
+            $before !== null
+            && $before->minimum_units === $minimum
+            && $before->par_units === $par
+            && $before->alerts_enabled === $alertsEnabled
+        ) {
             return;
         }
 
@@ -252,6 +270,7 @@ class StockThresholdService
 
         $saved = $this->repository->upsert($facility->id, $bloodTypeId, $componentId, [
             'minimum_units' => $minimum,
+            'par_units' => $par,
             'alerts_enabled' => $alertsEnabled,
             'alerted_at' => $alertedAt,
             // From the authenticated user, never the request body.
@@ -264,10 +283,68 @@ class StockThresholdService
             'component_id' => $componentId,
             'minimum_units_before' => $before?->minimum_units,
             'minimum_units_after' => $saved->minimum_units,
+            'par_units_before' => $before?->par_units,
+            'par_units_after' => $saved->par_units,
             'alerts_enabled_before' => $before?->alerts_enabled,
             'alerts_enabled_after' => $saved->alerts_enabled,
             'episode_reset' => $before?->alerted_at !== null && $alertedAt === null,
         ]);
+    }
+
+    /**
+     * The critical and PAR levels a cell will hold once this save lands.
+     *
+     * A level the cell leaves out keeps its saved value; a null clears it.
+     *
+     * @param  array<string, mixed>  $cell
+     * @return array{0: int|null, 1: int|null}
+     */
+    private function levelsAfter(array $cell, ?StockThreshold $before): array
+    {
+        $level = static fn (string $field, ?int $saved): ?int => array_key_exists($field, $cell)
+            ? ($cell[$field] === null ? null : (int) $cell[$field])
+            : $saved;
+
+        return [
+            $level('minimum_units', $before?->minimum_units),
+            $level('par_units', $before?->par_units),
+        ];
+    }
+
+    /**
+     * Refuse a save that would leave a critical level above its PAR level.
+     *
+     * Judged on the levels as they will stand, saved values included, so a
+     * PAR lowered under a saved critical level is refused just as a critical
+     * level raised over a saved PAR is.
+     *
+     * @param  Collection<string, StockThreshold>  $existing
+     * @param  array<int, array<string, mixed>>  $cells
+     */
+    private function refuseCriticalAbovePar(Collection $existing, array $cells): void
+    {
+        foreach ($cells as $cell) {
+            $bloodTypeId = (int) $cell['blood_type_id'];
+            $componentId = (int) $cell['component_id'];
+
+            [$minimum, $par] = $this->levelsAfter(
+                $cell,
+                $existing->get(StockThresholdRepository::cellKey($bloodTypeId, $componentId))
+            );
+
+            if ($minimum === null || $par === null || $minimum <= $par) {
+                continue;
+            }
+
+            $bloodType = $this->repository->bloodTypes()->firstWhere('id', $bloodTypeId)?->code;
+            $component = $this->repository->activeComponents()->firstWhere('id', $componentId)?->name;
+
+            throw $this->refuse(
+                422,
+                'critical_above_par',
+                trim("{$bloodType} {$component}").": the critical level ({$minimum}) cannot be above the PAR level ({$par})."
+            );
+        }
     }
 
     /**
@@ -290,6 +367,7 @@ class StockThresholdService
                 $threshold = $thresholds->get($key);
                 $available = $counts[$key] ?? 0;
                 $minimum = $threshold?->minimum_units;
+                $par = $threshold?->par_units;
                 $level = StockLevel::judge($available, $minimum);
                 $updatedBy = $threshold?->updatedBy;
 
@@ -300,9 +378,12 @@ class StockThresholdService
                     'component_name' => $component->name,
                     'available' => $available,
                     'minimum_units' => $minimum,
+                    'par_units' => $par,
                     'alerts_enabled' => $threshold?->alerts_enabled ?? true,
                     'status' => $level->value,
                     'shortfall' => $minimum === null ? 0 : max(0, $minimum - $available),
+                    // Units still needed to reach PAR. Reported only: nothing alerts on it.
+                    'to_par' => $par === null ? 0 : max(0, $par - $available),
                     'alerted_at' => $threshold?->alerted_at?->toIso8601String(),
                     'updated_by' => $updatedBy === null ? null : trim($updatedBy->first_name.' '.$updatedBy->last_name),
                     'updated_at' => $threshold?->updated_at?->toIso8601String(),
@@ -341,6 +422,7 @@ class StockThresholdService
                 'ok' => $cells->where('status', StockLevel::Ok->value)->count(),
                 'low' => $cells->where('status', StockLevel::Low->value)->count(),
                 'critical' => $cells->where('status', StockLevel::Critical->value)->count(),
+                'below_par' => $cells->where('to_par', '>', 0)->count(),
             ],
             'as_of' => now()->toIso8601String(),
         ];
