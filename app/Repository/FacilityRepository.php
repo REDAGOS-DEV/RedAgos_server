@@ -4,6 +4,7 @@ namespace App\Repository;
 
 use App\Enums\FacilityStatus;
 use App\Enums\FacilityTypeName;
+use App\Enums\ManagementLevel;
 use App\Enums\RoleName;
 use App\Models\Facility;
 use App\Models\FacilityType;
@@ -58,13 +59,13 @@ class FacilityRepository
     }
 
     /**
-     * Create the facility's primary account, holding the supervisor level.
+     * Create the facility's primary account, holding the Admin level.
      *
-     * facility_id and is_supervisor are assigned directly for the same reason
-     * the approval trail is: the first is the facility-isolation boundary and
-     * the second grants every ability in the portal. staff_role stays null —
-     * a supervisor holds the full ability set regardless of where they sit,
-     * and the primary account is management rather than a posting.
+     * facility_id and management_level are assigned directly for the same
+     * reason the approval trail is: the first is the facility-isolation
+     * boundary and the second lets the account manage the centre's staff.
+     * staff_role stays null — the primary account is management rather than
+     * a posting, and creates the colleagues who do the department work.
      *
      * @param  array<string, mixed>  $attributes
      */
@@ -75,7 +76,7 @@ class FacilityRepository
         $user->fill($attributes);
         $user->facility_id = $facility->id;
         $user->staff_role = null;
-        $user->is_supervisor = true;
+        $user->management_level = ManagementLevel::Admin;
         $user->save();
 
         return $user;

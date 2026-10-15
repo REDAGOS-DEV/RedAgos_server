@@ -97,11 +97,16 @@ class CounsellingReferralTest extends TestCase
         ]);
     }
 
-    public function test_a_supervisor_may_read_the_list(): void
+    public function test_neither_management_level_may_read_the_list(): void
     {
-        $supervisor = User::factory()->bloodCenterSupervisor($this->facility)->create();
-
-        $this->actingAs($supervisor)->getJson('/api/blood-center/laboratory/referrals')->assertOk();
+        // The list names which marker a donor was reactive for. Monitoring
+        // the centre's numbers is not a reason to read it.
+        foreach ([
+            User::factory()->bloodCenterAdmin($this->facility)->create(),
+            User::factory()->bloodCenterSupervisor($this->facility)->create(),
+        ] as $manager) {
+            $this->actingAs($manager)->getJson('/api/blood-center/laboratory/referrals')->assertForbidden();
+        }
     }
 
     public function test_no_role_but_the_lab_supervisor_may_read_the_list(): void

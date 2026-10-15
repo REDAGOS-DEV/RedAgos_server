@@ -3,6 +3,7 @@
 namespace App\Http\Requests;
 
 use App\Enums\Department;
+use App\Enums\ManagementLevel;
 use App\Enums\StaffPrivilege;
 use App\Enums\StaffRole;
 use App\Support\AccountIdentity;
@@ -75,10 +76,10 @@ class StoreStaffRequest extends FormRequest
                     ->where('facility_id', $this->user()?->facility_id),
             ],
 
-            // A predefined role, or a custom one typed in its place. A
-            // non-supervisor needs one or the other (checked in after()); a
-            // custom role also needs a department, which a predefined role
-            // supplies itself.
+            // A predefined role, or a custom one typed in its place. An
+            // account with no management level needs one or the other
+            // (checked in after()); a custom role also needs a department,
+            // which a predefined role supplies itself.
             'department' => ['nullable', 'string', Rule::in(Department::values())],
             'staff_role' => ['nullable', 'string', Rule::in(StaffRole::values())],
             'custom_role' => ['nullable', 'string', 'max:100'],
@@ -87,7 +88,14 @@ class StoreStaffRequest extends FormRequest
             'staff_privileges' => ['sometimes', 'array', 'min:1'],
             'staff_privileges.*' => ['string', 'distinct', Rule::in(StaffPrivilege::values())],
 
-            'is_supervisor' => ['sometimes', 'boolean'],
+            // Admin or Supervisor, or null for an account that only does its
+            // role's work.
+            'management_level' => ['sometimes', 'nullable', Rule::enum(ManagementLevel::class)],
+
+            // Replaced by management_level. Refused rather than ignored, so a
+            // caller still sending it learns the account did not get a level.
+            'is_supervisor' => ['prohibited'],
+
             'password' => ['required', 'confirmed', Password::min(8)->mixedCase()->numbers()],
         ];
     }
@@ -109,8 +117,8 @@ class StoreStaffRequest extends FormRequest
                 $department = Department::tryFrom((string) $this->input('department'));
 
                 if ($role === null && ! $this->filled('custom_role')) {
-                    if (! $this->boolean('is_supervisor')) {
-                        $validator->errors()->add('staff_role', 'Choose or type a role, or grant the supervisor level instead.');
+                    if (! $this->filled('management_level')) {
+                        $validator->errors()->add('staff_role', 'Choose or type a role, or give them the Admin or Supervisor level instead.');
                     }
 
                     return;
@@ -137,6 +145,7 @@ class StoreStaffRequest extends FormRequest
     {
         return [
             'email.unique' => 'An account already exists for this email address.',
+            'is_supervisor.prohibited' => 'is_supervisor was replaced by management_level: admin or supervisor.',
             'phone.unique' => 'An account already exists for this phone number.',
             'phone.regex' => 'Please enter a valid Philippine mobile number.',
             'employee_id.unique' => 'Another staff member at this facility already has this employee ID.',

@@ -511,7 +511,7 @@ class LaboratoryService
         }
 
         // A token is what releases units. The result it stands on cannot be
-        // rewritten underneath it — by anyone, a supervisor included.
+        // rewritten underneath it — by anyone.
         if ($this->clearanceRepository->has($donation->id, $kind)) {
             throw $this->refuse(
                 409,
@@ -762,7 +762,7 @@ class LaboratoryService
      *
      * Processing needs to know whether the panel passed; it does not need to
      * know which infection a donor carries. The readings go to whoever may
-     * record them — Testing, and supervisors — and to nobody else.
+     * record them — Testing — and to nobody else.
      *
      * @return array<string, mixed>
      */

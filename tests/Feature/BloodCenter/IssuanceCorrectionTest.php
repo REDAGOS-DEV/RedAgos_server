@@ -72,7 +72,7 @@ class IssuanceCorrectionTest extends TestCase
         $this->head = User::factory()->bloodCenterStaff($this->centre, StaffRole::InventoryControlOfficer)->create();
         $this->clerk = User::factory()->bloodCenterStaff($this->centre, StaffRole::ItDataClerk)->create();
         $this->dispatcher = User::factory()->bloodCenterStaff($this->centre, StaffRole::DispatchCoordinator)->create();
-        $this->centerAdmin = User::factory()->bloodCenterSupervisor($this->centre)->create();
+        $this->centerAdmin = User::factory()->bloodCenterAdmin($this->centre)->create();
         $this->requester = User::factory()->bloodBankStaff($this->hospital)->create();
 
         $this->bloodType = BloodType::firstOrCreate(['code' => 'O+'], ['label' => 'O+']);
@@ -184,11 +184,19 @@ class IssuanceCorrectionTest extends TestCase
         $this->assertDatabaseCount('correction_requests', 0);
     }
 
-    public function test_a_supervisor_may_file_a_unit_correction(): void
+    public function test_the_center_admin_neither_files_nor_decides_corrections(): void
     {
+        // Corrections are the departments' own since 2026-10-15.
         $unit = $this->makeUnit(['id' => 'AVAIL-01']);
 
-        $this->fileForUnit($this->centerAdmin, $unit, ['storage_location' => 'Freezer B'])->assertCreated();
+        $this->fileForUnit($this->centerAdmin, $unit, ['storage_location' => 'Freezer B'])->assertForbidden();
+
+        $id = $this->fileForUnit($this->clerk, $unit, ['storage_location' => 'Freezer B'])->assertCreated()->json('data.id');
+
+        $this->actingAs($this->centerAdmin)->getJson('/api/blood-center/corrections')->assertForbidden();
+        $this->actingAs($this->centerAdmin)->postJson("/api/blood-center/corrections/{$id}/approve")->assertForbidden();
+
+        $this->assertSame('pending', CorrectionRequest::findOrFail($id)->status);
     }
 
     public function test_an_expired_units_date_can_be_corrected_but_not_its_shelf(): void
@@ -383,27 +391,16 @@ class IssuanceCorrectionTest extends TestCase
             ->assertForbidden();
     }
 
-    public function test_the_heads_own_dispatch_correction_goes_to_the_center_admin(): void
+    public function test_the_heads_own_dispatch_correction_is_applied_as_it_is_filed(): void
     {
         [$allocation] = $this->dispatched();
 
-        $id = $this->fileForAllocation($this->head, $allocation, ['handed_to' => 'Maria Santos'])->assertCreated()->json('data.id');
-
-        $this->actingAs($this->head)
-            ->postJson("/api/blood-center/corrections/{$id}/approve")
-            ->assertStatus(409)
-            ->assertJsonPath('code', 'self_approval');
-
-        $peer = User::factory()->bloodCenterStaff($this->centre, StaffRole::InventoryControlOfficer)->create();
-
-        $this->actingAs($peer)
-            ->postJson("/api/blood-center/corrections/{$id}/approve")
-            ->assertForbidden()
-            ->assertJsonPath('code', 'not_the_approver');
-
-        $this->actingAs($this->centerAdmin)->postJson("/api/blood-center/corrections/{$id}/approve")->assertOk();
+        $this->fileForAllocation($this->head, $allocation, ['handed_to' => 'Maria Santos'])
+            ->assertCreated()
+            ->assertJsonPath('data.status', 'approved');
 
         $this->assertSame('Maria Santos', $allocation->refresh()->handed_to);
+        $this->assertSame(0, CorrectionRequest::query()->where('status', 'pending')->count());
     }
 
     public function test_another_facilitys_dispatch_is_not_found(): void
@@ -440,7 +437,7 @@ class IssuanceCorrectionTest extends TestCase
 
     public function test_the_donation_route_does_not_accept_an_issuance_subject(): void
     {
-        $this->actingAs($this->centerAdmin)
+        $this->actingAs($this->head)
             ->postJson('/api/blood-center/donations/1/corrections', [
                 'subject' => 'unit_details',
                 'reason' => 'x',
@@ -493,7 +490,7 @@ class IssuanceCorrectionTest extends TestCase
             [User::factory()->bloodCenterStaff($this->centre, StaffRole::BillingClerk)->create(), ['payment', 'payment_void']],
             [User::factory()->bloodCenterStaff($this->centre, StaffRole::Phlebotomist)->create(), ['collection']],
             [$custom, []],
-            [$this->centerAdmin, CorrectionSubject::values()],
+            [$this->centerAdmin, []],
         ];
 
         foreach ($expected as [$user, $subjects]) {

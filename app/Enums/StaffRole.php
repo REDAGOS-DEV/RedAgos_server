@@ -157,7 +157,7 @@ enum StaffRole: string
     /**
      * Get a one-line statement of what the role does and what it is kept from.
      *
-     * Served to the staff form so a supervisor assigning a role reads the same
+     * Served to the staff form so the Admin assigning a role reads the same
      * boundary the matrix enforces.
      */
     public function description(): string

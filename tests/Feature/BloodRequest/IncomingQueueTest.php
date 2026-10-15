@@ -195,13 +195,18 @@ class IncomingQueueTest extends TestCase
             ->assertForbidden();
     }
 
-    public function test_a_supervisor_reaches_the_queue(): void
+    public function test_a_supervisor_watches_the_queue_but_decides_nothing(): void
     {
         $supervisor = User::factory()->bloodCenterSupervisor($this->centre)->create();
+        $request = $this->incoming();
 
         $this->actingAs($supervisor)
             ->getJson('/api/blood-center/blood-requests')
             ->assertOk();
+
+        $this->actingAs($supervisor)
+            ->postJson("/api/blood-center/blood-requests/{$request->id}/reject", ['reason' => 'No stock'])
+            ->assertForbidden();
     }
 
     /**

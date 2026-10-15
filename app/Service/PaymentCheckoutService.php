@@ -443,15 +443,17 @@ class PaymentCheckoutService
     }
 
     /**
-     * Refuse anyone but the Billing Supervisor or the Center Admin.
+     * Refuse anyone but the Billing Supervisor.
      *
-     * Checked after the attempt is found, so a role that may not act learns
-     * nothing it could not already see.
+     * Deciding what became of a patient's money is Billing's alone: the Blood
+     * Center Admin, who used to share it, does no department work since
+     * 2026-10-15. Checked after the attempt is found, so a role that may not
+     * act learns nothing it could not already see.
      */
     private function assertSupervisor(User $staff): void
     {
-        if (! $staff->is_supervisor && $staff->staff_role !== StaffRole::BillingSupervisor) {
-            throw $this->refuse(403, 'not_billing_supervisor', 'Only the Billing Supervisor or the Center Admin can resolve a checkout.');
+        if ($staff->staff_role !== StaffRole::BillingSupervisor) {
+            throw $this->refuse(403, 'not_billing_supervisor', 'Only the Billing Supervisor can resolve a checkout.');
         }
     }
 

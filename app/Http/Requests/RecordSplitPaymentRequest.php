@@ -63,7 +63,7 @@ class RecordSplitPaymentRequest extends FormRequest
             ],
             'status' => ['prohibited'],
 
-            // Who handed the money over, printed on every part's receipt.
+            // Who handed the money over, printed on the one receipt for every part.
             'payer_name' => ['sometimes', 'nullable', 'string', 'max:120'],
         ];
     }

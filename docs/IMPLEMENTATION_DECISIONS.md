@@ -978,7 +978,7 @@ collected volume.
 | Inventory, Distribution & Quarantine (`issuance`) | inventory_control_officer, dispatch_coordinator, it_data_clerk |
 | Billing / Payment (`billing`, kept at the project owner's request) | billing_clerk |
 
-- `is_supervisor` stays the **Center Admin**: it holds every ability, but the clinical hard rules are enforced in services and models, so it is bound by them too.
+- `is_supervisor` stays the **Center Admin**: it holds every ability, but the clinical hard rules are enforced in services and models, so it is bound by them too. *(Superseded 2026-10-15: see "Blood Center Admin and view-only Supervisor".)*
 - Abilities split: `donations.record` → `donations.register | screen | collect | close`; `lab.record_result` → `lab.record_serology | lab.record_immunohematology`. New: `donors.view_contact`, `donors.view_clinical`, `donors.view_identity`, `inventory.release_quarantine`, `corrections.request`, `corrections.approve`. `requests.process` now gates allocation (the cross-matching technician's act).
 - Counselling referrals are the Laboratory Supervisor's alone: the technologists who record markers are blind to the donor.
 - Incoming blood-request notifications go to roles holding `requests.approve` or `requests.process`, not to a department.
@@ -1371,6 +1371,17 @@ stateDiagram-v2
 
 **DECISION (a payment split across methods, 2026-10-11):** The owner: when the amount received is less than is due, it joins the payment summary and the rest is paid by another method. `POST /blood-center/billings/{request}/payments/split` (`RecordSplitPaymentRequest`, `BillingService::recordSplitPayment()`) takes two to four `tenders`, each held to the single-payment rules: a reference for every method but cash, distinct within the split and unique across payments, and an amount tendered on cash only. At most one part is cash, since the drawer is counted once. Each part is an ordinary payment, recorded in order by `recordPayment()` against the balance the parts before it left, with its own Acknowledgement Receipt and journal row. All parts share one transaction: a part refused refuses the lot, and the refusal is keyed to it (`tenders.1.amount_paid`). A split is not one receipt listing several tenders, because a receipt belongs to one payment, which is what voids and corrections act on. The counter's 80mm print takes the other receipts with `?with=` and prints them one slip after another. On the counter, an amount entered that is less than is left becomes **Add … to the payment**; the summary lists the parts, each removable until the payment is completed, and the due line becomes *Remaining balance*. The Partial Payment tab splits the amount paying now the same way.
 
+**DECISION (one receipt for a split payment, 2026-10-15):** The project owner: a payment split across methods at the counter is not separated into one receipt per method. This supersedes the receipt part of the entry above.
+- **One receipt:** a split is recorded as one `AR-` receipt that lists each part. Each part is still its own payment and journal row, and every part's journal row points to the shared receipt.
+- **What the snapshot holds:** `amount_paid` is the total, against one balance before and after. `payment.method_label` reads like "Cash + Card", and the tendered amount and change come from the cash part. `tenders` lists each part with its method, amount and reference.
+- **One revision:** all the parts are pinned to one statement revision. Before this, each part after the first issued a new revision, because the collected amount had moved.
+- **Which payments a receipt covers:** that is held in `payment_receipt_payments` (migration `2026_10_15_000010`, append-only by trigger, existing receipts carried in one to one). `payment_receipts.payment_id` still names the first part. `Payment::receipts()` goes through the new table, so each part finds the shared receipt.
+- **Correcting a part:** an approved correction voids the shared receipt and reissues it with every part on it, the corrected one as it now stands.
+- **Voiding a part:** voiding one part voids the shared receipt and issues a new one for the parts still standing, against the same balance before and naming the receipt it replaces. Voiding the last part leaves no receipt standing.
+- **References:** `format()` gives `tenders` without references, because the hospital reads it. The staff-only `GET /blood-center/receipts/{id}` adds `payment_parts` with each part's reference. The A4 PDF lists each part with its reference, as it already printed the single payment's.
+- **The counter:** shows the one receipt with its parts, and prints and downloads it once. `/blood-center/receipt-print/{id}` no longer takes `?with=`.
+- **Older splits:** splits recorded before this change keep their separate receipts.
+
 **UNRESOLVED / TO CONFIRM:**
 - Refunds remain outside RedAgos, as decided on 2026-10-10.
 - Card and bank-transfer references are keyed in, not verified. A verified card or bank channel (Xendit cards or virtual accounts) would wait on the xenPlatform approval.
@@ -1401,3 +1412,76 @@ stateDiagram-v2
 **UNRESOLVED / TO CONFIRM:**
 - Hospital staff have no per-person Read/Write/Update/Delete privileges, as centre staff do; a role is the whole of what they may do.
 - The hospital's storage locations are suggestions, not a managed list.
+
+## Blood Center Admin and view-only Supervisor
+
+**SOURCE:** The project owner, 2026-10-15: add a Blood Center Admin role and revise Supervisor permissions. The Supervisor loses department-level management access and keeps only the dashboard, department reports and view-only monitoring. The Admin manages staff accounts, roles and every administrative privilege. Blood Components moves to Processing, where components are added and their expiry periods set. Component prices stay with Billing alone.
+
+**DECIDED BY:** The project owner, 2026-10-15, choosing among options:
+- the Admin does administration only, with no department work;
+- the Supervisor monitors the whole centre, not only one department;
+- a component Processing adds goes into the shared catalogue, seen by every centre;
+- each setting belongs to its department head: the Component Technologist for components and shelf life, the Billing Supervisor for prices.
+
+**DECISION (two levels replace the supervisor flag):** `users.is_supervisor`, which held every ability, is replaced by `users.management_level` (`App\Enums\ManagementLevel`: `admin`, `supervisor`, or null). Migration `2026_10_15_000001_replace_is_supervisor_with_management_level` makes every supervisor an Admin, then drops the old column. The column is dropped rather than kept so that a check left reading `is_supervisor` fails closed instead of handing a Supervisor the old everything. Its `down()` turns an Admin back into a supervisor, and a Supervisor into no level at all.
+
+`DepartmentPermissions::for()` returns the role's set, capped by privileges, plus `forLevel()`. The level is never capped, and it adds to a role rather than replacing it.
+- **Supervisor (`MONITORING`):** `reference.view`, `reports.view_own`, `reports.view_all` (the overview), `inventory.view` (Blood Inventory, Stock Thresholds), `inventory.stock_report` (Daily Stock Report), `requests.view` (Incoming Requests) and `billing.view` (Statements). Every one is a read. Donor identity, questionnaires, screening and laboratory records are left out.
+- **Admin (`MONITORING` + `ADMINISTRATION`):** also `staff.manage`, `center.configure` (the logo), `corrections.request` and `corrections.approve`. `corrections.request` only reaches the corrections list: filing also needs the subject's own write ability, which no level grants, so the Admin decides corrections and files none.
+- Neither level holds `inventory.thresholds`, `components.configure`, `billing.prices` or any department write.
+
+**DECISION (who used to be "the supervisor"):**
+- Corrections: the Admin decides any request but their own, and sees every request for review (`CorrectionService`). `CorrectionSubject::mayBeFiledBy()` no longer admits a level past the named filing posts.
+- GCash checkouts flagged for review are resolved by the Billing Supervisor alone (`PaymentCheckoutService`, 403 `not_billing_supervisor`). Cash shifts are overseen by the Billing Supervisor alone (`CashSessionService::mayOversee()`).
+- Incoming blood-request notifications reach both levels (`BloodRequestNotifier`). Low-stock alerts follow `inventory.view`, so both levels hear them.
+- A facility must keep an active Admin: 409 `last_admin` replaces `last_supervisor`, still counted under the facility lock. A Supervisor does not count. Approving a self-registered facility makes its contact an Admin when it has none, and a facility's primary account is an Admin.
+- Staff API: `management_level` on create, update and the roster filter. `is_supervisor` is refused (422) rather than ignored. Level changes are audited as `staff.management_level_changed` with from and to. The roles catalogue serves `levels` with their labels and descriptions. `UserResource` and the roster expose `management_level` and `management_level_label`.
+- `facility:add-user` takes `--level=admin|supervisor` in place of `--supervisor`. A hospital blood bank is refused a level, because its Head (a hospital role) manages its staff.
+
+**DECISION (components and prices):**
+- **Processing:** `/blood-center/blood-components` is gated on `components.configure`, held by the Component Technologist alone (a named post, so custom Processing roles do not inherit it).
+  - `PATCH` writes the shelf life only and refuses a `price` (422).
+  - `POST` adds a component to the shared catalogue, with a name, a required bag code (letters and digits, starting with a letter, at most 10 characters, stored in capitals), an optional storage temperature, and optionally this centre's shelf life. Name and code are unique case-insensitively, retired components included.
+  - Audited as `center.component_added` and `center.component_configured`. The latter now records the shelf life only.
+- **Billing:** `/blood-center/component-prices` (`GET`, `PUT`) is gated on `billing.prices`, held by the Billing Supervisor alone. It writes the price only, refuses a `shelf_life_days` (422), and is audited as `billing.component_priced`.
+- **Fixed in passing:** the old combined `PATCH` cleared a saved price whenever the price was left out of the request. Each endpoint now writes only its own column.
+- **Stock report:** the Daily Stock Report moved from `inventory.create` to a new read ability, `inventory.stock_report`, held by the Inventory Control Officer and both levels. Laboratory roles, which hold `inventory.view`, still cannot open it.
+
+**DECISION (prices are saved together, and none may be blank):**
+- **Source:** the project owner, 2026-10-15.
+- **One save:** the screen has one *Save All Prices* button. `PUT /blood-center/component-prices` takes `prices: [{component_id, no_charge, price}]` and writes it in one transaction. It replaces the per-component `PATCH`. Unchanged lines are skipped, so only real changes are written and audited.
+- **No blanks:** each line is either a price above ₱0 (at most two decimals) or `no_charge: true`. A blank price, or ₱0 without `no_charge`, is refused (422).
+- **Every component covered:** the save is refused unless every component in the catalogue has a price or no charge once the save is applied. A component left out of the request counts if it is already configured. Otherwise the server returns 422 `prices_incomplete` with a message such as "Cannot save prices. Configure a price for: Fresh Frozen Plasma.", plus the components' ids. Nothing is written.
+- **The screen** checks the same rule before sending. It outlines each incomplete field in red, gives the reason, and scrolls to and focuses the first one. A component Processing adds after the page loaded is caught by the server, and the page reloads the list to mark it.
+- **No charge is stored as a price of zero:** `StatementFigures` already bills an unset price and a zero price alike, as a ₱0 line settled on creation that never holds a unit back. So no column was added. The API serves `no_charge: true` for a zero price. A price saved as ₱0 before this change now reads as no charge, with no change in behaviour.
+- **Still blank, still released:** a component this facility has not priced is still released without payment at billing. The rule is enforced when prices are saved, not at release. Blocking release on a blank would stop a centre that has never opened the screen.
+- **Audit:** `billing.component_priced` now also records `no_charge`. "Authorised" means it is set by the Billing Supervisor (`billing.prices`), and each decision is audited with who made it.
+
+**DECISION (the screens):**
+- **Navigation:** Blood Components moves from Management to the Processing group, with an Add component form and no price column. A new Component Prices page sits in the Billing group.
+- **Staff form:** the Supervisor checkbox becomes an *Access level* choice: Staff, Supervisor or Blood Center Admin, worded from the server's catalogue. The roster shows an Admin or Supervisor badge and counts both. An Admin who steps down is sent to their new home page.
+- **Dashboard:** it hides Record Donation and the request Process/Fulfil buttons from anyone who cannot use them. Both levels land on it.
+- **Wording:** the stock-threshold, logo and settings text now names the Inventory Control Officer or the Blood Center Admin instead of "a supervisor".
+
+**SEEDER:** `BloodCenterStaffSeeder` seeds `center.admin@redagos.test` (Eduardo Ramos, ADM-001) first, as the facility contact, and keeps `supervisor@redagos.test` (Teresa Aquino, SUP-001) as the view-only Supervisor. On the dev database, the migration made `supervisor@` an Admin, and it was then set to Supervisor by hand after the seeder added the Admin.
+
+**UNRESOLVED / TO CONFIRM:**
+- A component cannot be renamed or retired from the screen. Retiring one would remove it for every centre.
+- The dashboard's overview endpoint and the Reports & Analytics endpoints are still not built, so "department-specific reports" are the existing monitoring pages: stock, thresholds, the daily stock report, requests and statements.
+- A hospital's primary account also holds the Admin level, as it held the old flag. It is inert there, because every `/hospital` route checks hospital abilities.
+
+## Blood Center Admin narrowed; a head's own correction applies on filing
+
+**SOURCE:** The project owner, 2026-10-15, amending "Blood Center Admin and view-only Supervisor" the same day. Remove the Issuance and Billing pages (Blood Inventory, Stock Thresholds, Daily Stock Report, Incoming Requests, Statements) and Corrections from the Admin. Then: "no need for other confirmation, the head can modify without admin and supervisor."
+
+**DECISION (the Admin):** `ManagementLevel::Admin` now holds `OVERVIEW` plus `ADMINISTRATION`: `reference.view`, `reports.view_own`, `reports.view_all`, `staff.manage` and `center.configure`. That means the dashboard, Reports, Staff Accounts and the logo, and nothing else. `inventory.view`, `inventory.stock_report`, `requests.view`, `billing.view`, `corrections.request` and `corrections.approve` stay with the Supervisor (the reads) or the departments.
+- Incoming-request notifications go to the Supervisor and no longer to the Admin. Low-stock alerts follow `inventory.view`, so the Admin no longer receives them.
+- The dashboard links into Inventory and Requests, and the low-stock read, only for those who hold `inventory.view` or `requests.view`.
+
+**DECISION (heads' own corrections):** This replaces "an approver's own request goes to the Center Admin".
+- **Applied on filing:** when the requester holds the head role named by `Department::correctionApprover()` for the subject's department, `CorrectionService::request()` applies the correction in the same transaction it files it, through the same path an approval takes. The correction is stored as approved, with the head as reviewer, and both audit rows carry `self_applied: true`.
+- **Refused corrections leave nothing behind:** a guard that refuses the correction rolls back the filing too, so nothing is left pending.
+- **Older requests:** a head's own request left pending from before this change may be approved or rejected by that head.
+- **Everyone else:** nobody else decides their own request, a head never decides a peer head's, and no management level decides anything.
+- **Not covered:** custom roles never count as the head.
+- **Client:** the correction dialog tells a head the correction applies at once ("Apply correction"). The laboratory, testing, fulfilment and statement pages reload the record when a correction comes back approved.

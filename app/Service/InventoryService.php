@@ -348,7 +348,7 @@ class InventoryService
      * The Inventory Control Officer's act, and possible only on both clearance
      * tokens: TTI Testing's validated serology and Immunohematology's
      * concordant typing. The check is here, in the service, rather than in the
-     * gate, so a supervisor — who holds every ability — is bound by it too.
+     * gate, so it binds everyone who reaches the route.
      *
      * All or nothing per donation. The tokens belong to the donation, so its
      * bags are cleared together; a bag past its date must be discarded first

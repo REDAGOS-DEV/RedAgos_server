@@ -6,6 +6,7 @@ use App\Console\Commands\AddFacilityUser;
 use App\Enums\AccountStatus;
 use App\Enums\Department;
 use App\Enums\HospitalRole;
+use App\Enums\ManagementLevel;
 use App\Enums\RoleName;
 use App\Enums\StaffRole;
 use App\Models\Facility;
@@ -62,42 +63,65 @@ class AddFacilityUserTest extends TestCase
         $this->assertSame($this->bloodCenter->id, $staff->facility_id);
         $this->assertSame(StaffRole::InventoryControlOfficer, $staff->staff_role);
         $this->assertSame(Department::Issuance, $staff->department);
-        $this->assertFalse($staff->is_supervisor);
+        $this->assertNull($staff->management_level);
         $this->assertTrue($staff->hasRole(RoleName::BloodCenter));
         $this->assertSame(AccountStatus::Active, $staff->account_status);
         $this->assertTrue($staff->hasVerifiedEmail());
         $this->assertNotNull($staff->username);
     }
 
-    public function test_supervisor_grants_the_management_level_without_a_posting(): void
+    public function test_level_grants_a_management_level_without_a_posting(): void
     {
         $this->artisan('facility:add-user', [
             '--facility' => $this->bloodCenter->id,
-            '--supervisor' => true,
+            '--level' => 'admin',
             ...self::ACCOUNT,
         ])->assertSuccessful();
 
         $staff = User::where('email', 'jomar@redagos.test')->sole();
 
-        $this->assertTrue($staff->is_supervisor);
+        $this->assertSame(ManagementLevel::Admin, $staff->management_level);
         $this->assertNull($staff->staff_role);
         $this->assertNull($staff->department);
+        $this->assertContains('staff.manage', $staff->abilities());
     }
 
-    public function test_a_supervisor_may_also_hold_a_role(): void
+    public function test_a_level_may_sit_on_top_of_a_role(): void
     {
         $this->artisan('facility:add-user', [
             '--facility' => $this->bloodCenter->id,
-            '--supervisor' => true,
+            '--level' => 'supervisor',
             '--role' => 'lab_supervisor',
             ...self::ACCOUNT,
         ])->assertSuccessful();
 
         $staff = User::where('email', 'jomar@redagos.test')->sole();
 
-        $this->assertTrue($staff->is_supervisor);
+        $this->assertSame(ManagementLevel::Supervisor, $staff->management_level);
         $this->assertSame(StaffRole::LabSupervisor, $staff->staff_role);
         $this->assertSame(Department::Testing, $staff->department);
+    }
+
+    public function test_an_unknown_level_creates_nothing(): void
+    {
+        $this->artisan('facility:add-user', [
+            '--facility' => $this->bloodCenter->id,
+            '--level' => 'owner',
+            ...self::ACCOUNT,
+        ])->assertFailed();
+
+        $this->assertDatabaseMissing('users', ['email' => 'jomar@redagos.test']);
+    }
+
+    public function test_a_blood_bank_has_no_management_level(): void
+    {
+        $this->artisan('facility:add-user', [
+            '--facility' => Facility::factory()->bloodBank()->approved()->create()->id,
+            '--level' => 'admin',
+            ...self::ACCOUNT,
+        ])->assertFailed();
+
+        $this->assertDatabaseMissing('users', ['email' => 'jomar@redagos.test']);
     }
 
     public function test_a_blood_center_account_must_be_posted_or_promoted(): void
@@ -122,18 +146,18 @@ class AddFacilityUserTest extends TestCase
 
         $this->assertSame(StaffRole::SerologyTechnologist, $staff->staff_role);
         $this->assertSame(Department::Testing, $staff->department);
-        $this->assertFalse($staff->is_supervisor);
+        $this->assertNull($staff->management_level);
     }
 
-    public function test_the_prompt_offers_every_role_and_the_management_level(): void
+    public function test_the_prompt_offers_every_role_and_both_management_levels(): void
     {
         $choices = AddFacilityUser::levelChoices();
 
-        $this->assertSame([...StaffRole::values(), 'supervisor'], array_keys($choices));
+        $this->assertSame([...StaffRole::values(), 'admin', 'supervisor'], array_keys($choices));
         $this->assertSame('Testing — Laboratory Supervisor', $choices['lab_supervisor']);
     }
 
-    public function test_an_interactive_run_can_choose_the_management_level(): void
+    public function test_an_interactive_run_can_choose_a_management_level(): void
     {
         $this->artisan('facility:add-user', [
             '--facility' => $this->bloodCenter->id,
@@ -142,7 +166,7 @@ class AddFacilityUserTest extends TestCase
 
         $staff = User::where('email', 'jomar@redagos.test')->sole();
 
-        $this->assertTrue($staff->is_supervisor);
+        $this->assertSame(ManagementLevel::Supervisor, $staff->management_level);
         $this->assertNull($staff->department);
     }
 
@@ -213,7 +237,7 @@ class AddFacilityUserTest extends TestCase
     {
         $this->artisan('facility:add-user', [
             '--facility' => $this->bloodCenter->id,
-            '--supervisor' => true,
+            '--level' => 'admin',
             '--primary' => true,
             ...self::ACCOUNT,
         ])->assertSuccessful();

@@ -37,20 +37,22 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 /**
- * Changing a saved record: the writer asks, someone else in the department decides.
+ * Changing a saved record: the writer asks, the department's head decides.
  *
  * A staff member who entered something wrong cannot save over it. They file
  * the corrected values with a reason; the department's approver — the senior
- * role named by Department::correctionApprover() — or the Center Admin
- * approves or rejects it. An approved correction is applied through the very
+ * role named by Department::correctionApprover() — approves or rejects it. An approved correction is applied through the very
  * write that recorded the original, as the requester, so every guard and hard
  * rule that bound the first save binds the correction too: a reactive result
  * stays reactive. A cleared result may be corrected only while none of the
  * donation's bags has left quarantine; approving it revokes the old clearance
  * and the corrected result earns a new one only if it qualifies.
  *
- * Nobody approves their own request, and an approver's own request goes to
- * the Center Admin rather than to a peer.
+ * Nobody else's approval is needed for the head's own correction to their
+ * department's record: it is applied the moment it is filed, through the same
+ * write, and recorded as approved by the head (project owner, 2026-10-15; it
+ * used to go to the Center Admin). Anyone else never approves their own
+ * request, and a head never decides a peer head's.
  *
  * A correction is about one target: a donation's record, a unit, a dispatched
  * allocation or a payment (CorrectionTarget). Who may file each subject is
@@ -116,22 +118,18 @@ class CorrectionService
             ->orderByDesc('id');
 
         if ($scope === 'review') {
-            $query->where('requested_by', '!=', $viewer->id);
+            // Only the subjects whose department this viewer approves for.
+            $subjects = array_values(array_filter(
+                CorrectionSubject::cases(),
+                fn (CorrectionSubject $subject): bool => $this->headsDepartmentOf($viewer, $subject)
+            ));
 
-            if (! $viewer->is_supervisor) {
-                // Only the subjects whose department this viewer approves for.
-                $subjects = array_values(array_filter(
-                    CorrectionSubject::cases(),
-                    fn (CorrectionSubject $subject): bool => $viewer->staff_role !== null
-                        && $subject->department()->correctionApprover() === $viewer->staff_role
-                ));
-
-                $query->whereIn('subject', array_map(fn (CorrectionSubject $s): string => $s->value, $subjects))
-                    // A peer's own request goes to the Center Admin.
-                    ->whereHas('requester', fn ($q) => $q->where(fn ($inner) => $inner
-                        ->whereNull('staff_role')
-                        ->orWhere('staff_role', '!=', $viewer->staff_role?->value)));
-            }
+            $query->where('requested_by', '!=', $viewer->id)
+                ->whereIn('subject', array_map(fn (CorrectionSubject $s): string => $s->value, $subjects))
+                // A peer head's own request is theirs to settle, not this viewer's.
+                ->whereHas('requester', fn ($q) => $q->where(fn ($inner) => $inner
+                    ->whereNull('staff_role')
+                    ->orWhere('staff_role', '!=', $viewer->staff_role?->value)));
         } else {
             $query->where('requested_by', $viewer->id);
         }
@@ -162,7 +160,11 @@ class CorrectionService
 
         $target = $subject->target();
 
-        $correction = DB::transaction(function () use ($requester, $facility, $targetId, $subject, $target, $changes, $reason): CorrectionRequest {
+        // The department's head corrects their own record without a second
+        // approval: filed and applied in one transaction.
+        $byHead = $this->headsDepartmentOf($requester, $subject);
+
+        [$correction, $applied] = DB::transaction(function () use ($requester, $facility, $targetId, $subject, $target, $changes, $reason, $byHead): array {
             $locked = $this->lockTarget($subject, $targetId, $facility);
             $record = $this->primary($locked);
 
@@ -191,7 +193,7 @@ class CorrectionService
 
             $this->guardChanges($locked, $subject, $validated);
 
-            return CorrectionRequest::create([
+            $correction = CorrectionRequest::create([
                 'facility_id' => $facility->id,
                 $target->column() => $record->getKey(),
                 'subject' => $subject,
@@ -200,6 +202,13 @@ class CorrectionService
                 'changes' => $validated,
                 'previous' => $previous,
             ]);
+
+            // Applied through the very path an approval takes, so every
+            // guard binds the head too. A refusal rolls the filing back with
+            // it: nothing is left pending for nobody to decide.
+            $applied = $byHead ? $this->applyAndApprove($requester, $correction, $facility, null) : null;
+
+            return [$correction, $applied];
         });
 
         $this->auditLogger->record($requester, 'correction.requested', $correction, [
@@ -209,8 +218,14 @@ class CorrectionService
             'fields' => $this->changedFields($correction),
         ]);
 
+        if ($applied !== null) {
+            $this->recordApplied($requester, $correction, $applied, $facility, selfApplied: true);
+        }
+
         return [
-            'message' => 'Correction requested. It is applied once it is approved.',
+            'message' => $applied !== null
+                ? 'Correction applied. As the department head, yours needs no other approval.'
+                : 'Correction requested. It is applied once it is approved.',
             'data' => $this->format($correction->fresh(self::WITH), $requester),
         ];
     }
@@ -233,25 +248,52 @@ class CorrectionService
             $correction = $this->lockPending($correctionId, $facility);
             $this->guardMayDecide($approver, $correction);
 
-            $requester = $correction->requester()->firstOrFail();
-
-            $applied = $correction->subject->target() === CorrectionTarget::Donation
-                ? $this->applyDonationCorrection($approver, $requester, $correction)
-                : $this->applyRecordCorrection($approver, $requester, $correction, $facility);
-
-            $correction->status = 'approved';
-            $correction->reviewed_by = $approver->id;
-            $correction->reviewed_at = now();
-            $correction->review_note = $note === null ? null : trim($note);
-            $correction->save();
-
-            return [$correction, $applied];
+            return [$correction, $this->applyAndApprove($approver, $correction, $facility, $note)];
         });
 
+        $this->recordApplied($approver, $correction, $applied, $facility);
+
+        return [
+            'message' => 'Correction approved and applied.',
+            'data' => $this->format($correction->fresh(self::WITH), $approver),
+        ];
+    }
+
+    /**
+     * Apply a pending correction as its requester and mark it approved.
+     *
+     * Runs inside the caller's transaction, with the correction already held.
+     */
+    private function applyAndApprove(User $approver, CorrectionRequest $correction, Facility $facility, ?string $note): Model
+    {
+        $requester = $correction->requester()->firstOrFail();
+
+        $applied = $correction->subject->target() === CorrectionTarget::Donation
+            ? $this->applyDonationCorrection($approver, $requester, $correction)
+            : $this->applyRecordCorrection($approver, $requester, $correction, $facility);
+
+        $correction->status = 'approved';
+        $correction->reviewed_by = $approver->id;
+        $correction->reviewed_at = now();
+        $correction->review_note = $note === null ? null : trim($note);
+        $correction->save();
+
+        return $applied;
+    }
+
+    /**
+     * Audit an approval and what it changed.
+     *
+     * A head's own correction is marked self_applied, so the trail shows that
+     * no second person looked at it rather than implying one did.
+     */
+    private function recordApplied(User $approver, CorrectionRequest $correction, Model $applied, Facility $facility, bool $selfApplied = false): void
+    {
         $context = [
             'facility_id' => $facility->id,
             $correction->subject->target()->column() => $correction->targetKey(),
             'subject' => $correction->subject->value,
+            ...($selfApplied ? ['self_applied' => true] : []),
         ];
 
         $this->auditLogger->record($approver, 'correction.approved', $correction, $context);
@@ -264,11 +306,17 @@ class CorrectionService
             'requested_by' => $correction->requested_by,
             'fields' => $this->changedFields($correction),
         ]);
+    }
 
-        return [
-            'message' => 'Correction approved and applied.',
-            'data' => $this->format($correction->fresh(self::WITH), $approver),
-        ];
+    /**
+     * Whether a user is the head of the department that keeps this subject's records.
+     *
+     * The named post only: a custom role in the department never is.
+     */
+    private function headsDepartmentOf(User $user, CorrectionSubject $subject): bool
+    {
+        return $user->staff_role !== null
+            && $user->staff_role === $subject->department()->correctionApprover();
     }
 
     /**
@@ -306,35 +354,27 @@ class CorrectionService
     /**
      * Whether a user may decide on a correction.
      *
-     * A supervisor may decide any request but their own. Otherwise the
-     * decider must hold the approver role for the record's department, and
-     * must not share the requester's role: an approver's own request goes to
-     * the Center Admin, not to a colleague of equal standing.
+     * The decider must hold the approver role for the record's department.
+     * Their own request is theirs to settle: one filed before a head's
+     * corrections applied on filing is still pending, and nobody else may
+     * decide it. Anyone else's own request, and a peer head's, they may not.
      */
     public function mayDecide(User $user, CorrectionRequest $correction): bool
     {
-        if ((int) $correction->requested_by === (int) $user->id) {
+        if (! $this->headsDepartmentOf($user, $correction->subject)) {
             return false;
         }
 
-        if ($user->is_supervisor) {
+        if ((int) $correction->requested_by === (int) $user->id) {
             return true;
         }
 
-        $approverRole = $correction->subject->department()->correctionApprover();
-
-        if ($user->staff_role !== $approverRole) {
-            return false;
-        }
-
-        $requesterRole = $correction->requester?->staff_role;
-
-        return $requesterRole !== $approverRole;
+        return $correction->requester?->staff_role !== $user->staff_role;
     }
 
     private function guardMayDecide(User $user, CorrectionRequest $correction): void
     {
-        if ((int) $correction->requested_by === (int) $user->id) {
+        if ((int) $correction->requested_by === (int) $user->id && ! $this->headsDepartmentOf($user, $correction->subject)) {
             throw $this->refuse(409, 'self_approval', 'You cannot decide on your own correction request.');
         }
 
@@ -343,7 +383,7 @@ class CorrectionService
                 403,
                 'not_the_approver',
                 'This correction is decided by the '.$correction->subject->department()->correctionApprover()->label()
-                .' of '.$correction->subject->department()->label().', or by the Center Admin.'
+                .' of '.$correction->subject->department()->label().'.'
             );
         }
     }

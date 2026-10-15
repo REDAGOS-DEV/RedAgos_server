@@ -3,6 +3,7 @@
 namespace App\Support;
 
 use App\Enums\Department;
+use App\Enums\ManagementLevel;
 use App\Enums\StaffPrivilege;
 use App\Enums\StaffRole;
 use App\Models\User;
@@ -16,19 +17,24 @@ use App\Models\User;
  *     custom, typed role gets its department's full set (every predefined
  *     role of that department combined), less correction approval, which
  *     belongs to the department's named approver.
- *  2. Their privileges. The supervisor ticks Read / Write / Update / Delete
- *     per staff member, and only the abilities whose KIND is ticked survive.
+ *  2. Their privileges. The Admin ticks Read / Write / Update / Delete per
+ *     staff member, and only the abilities whose KIND is ticked survive.
  *     Privileges cap a role; they never widen it.
- *  3. The supervisor level (Center Admin), which holds everything and is not
- *     capped.
+ *  3. Their management level (ManagementLevel), which adds a fixed set on top
+ *     of whatever the role gives and is not capped. Both see the overview and
+ *     the reports (OVERVIEW). The Supervisor also watches every department's
+ *     monitoring pages (MONITORING); the Blood Center Admin instead keeps the
+ *     staff accounts and the centre's settings (ADMINISTRATION). Neither does
+ *     department work: until 2026-10-15 one supervisor flag held every
+ *     ability, and the project owner split it so that it no longer does.
  *
  * Declared here rather than in a database table on purpose: the matrix is
  * versioned with the code that depends on it and covered by a test.
  *
  * The matrix decides who may *reach* an endpoint. The clinical hard rules —
  * a reactive result can never be undone, a unit leaves quarantine only on both
- * clearance tokens — are enforced in the services, so that a supervisor, who
- * holds every ability, is bound by them too.
+ * clearance tokens — are enforced in the services, so that they bind everyone
+ * who reaches it.
  */
 final class DepartmentPermissions
 {
@@ -120,7 +126,7 @@ final class DepartmentPermissions
             'donations.close',
 
             // Donor/Collection's correction approver; their own screening
-            // corrections go to the Center Admin.
+            // corrections apply when filed (CorrectionService::request()).
             'corrections.request',
             'corrections.approve',
         ],
@@ -160,6 +166,12 @@ final class DepartmentPermissions
             // Complete or reject. The only donation status write the
             // laboratory side holds.
             'lab.update_status',
+
+            // Add a component to the catalogue and set this centre's shelf
+            // life for it, which decides every unit's expiry date. Processing
+            // makes the components, so Processing's head defines them; the
+            // price is Billing's (billing.prices).
+            'components.configure',
 
             // Processing's correction approver.
             'corrections.request',
@@ -226,6 +238,11 @@ final class DepartmentPermissions
             // tokens, so holding this is never enough on its own.
             'inventory.release_quarantine',
 
+            // Read the Daily Blood Stock Inventory. Issuance prepares it; its
+            // own ability rather than inventory.create so a Supervisor can
+            // read the sheet without being able to book stock in.
+            'inventory.stock_report',
+
             'requests.view',
             'requests.process',
             'requests.approve',
@@ -241,7 +258,7 @@ final class DepartmentPermissions
             'billing.view',
 
             // Issuance's correction approver. Edits a unit directly (above),
-            // so their own dispatch corrections go to the Center Admin.
+            // and their own dispatch corrections apply when filed.
             'corrections.request',
             'corrections.approve',
         ],
@@ -277,11 +294,16 @@ final class DepartmentPermissions
         StaffRole::BillingClerk->value => self::BILLING_DESK,
 
         // The desk's head: everything a clerk does, and Billing's correction
-        // approver. Records payments too, so their own corrections go to the
-        // Center Admin.
+        // approver. Records payments too; their own corrections apply when
+        // filed.
         StaffRole::BillingSupervisor->value => [
             ...self::BILLING_DESK,
             'corrections.approve',
+
+            // Price each component. A commercial decision, and a non-zero
+            // price switches on the payment-before-release gate, so it is the
+            // Billing department's alone and only its head's.
+            'billing.prices',
         ],
     ];
 
@@ -308,6 +330,7 @@ final class DepartmentPermissions
         'donations.view' => 'read',
         'lab.view' => 'read',
         'inventory.view' => 'read',
+        'inventory.stock_report' => 'read',
         'requests.view' => 'read',
         'billing.view' => 'read',
 
@@ -336,6 +359,11 @@ final class DepartmentPermissions
         'inventory.update' => 'update',
         'inventory.thresholds' => 'update',
         'inventory.release_quarantine' => 'update',
+
+        // Settings a named post keeps, like the stock minimums above: setting
+        // a value rather than recording a new entry.
+        'components.configure' => 'update',
+        'billing.prices' => 'update',
         'requests.approve' => 'update',
         'requests.release' => 'update',
         'corrections.approve' => 'update',
@@ -345,11 +373,62 @@ final class DepartmentPermissions
     ];
 
     /**
-     * Abilities held by a supervisor, which are every operational ability plus management.
+     * What both levels hold: the overview (the dashboard) and the reports.
      *
-     * Spelled out as a real list rather than short-circuited through
+     * @var array<int, string>
+     */
+    private const OVERVIEW = [
+        'reference.view',
+        'reports.view_own',
+        'reports.view_all',
+    ];
+
+    /**
+     * What the Supervisor level holds: the overview, and every department's
+     * view-only monitoring.
+     *
+     * Read abilities only, chosen by the pages they open: Blood Inventory and
+     * Stock Thresholds, the Daily Stock Report, Incoming Requests and the
+     * billing Statements. Each of those pages hides what its viewer cannot
+     * do. The clinical reads (donor identity, questionnaires, screening and
+     * laboratory detail) are left out: a supervisor monitors the centre's
+     * numbers, not a donor's record.
+     *
+     * @var array<int, string>
+     */
+    private const MONITORING = [
+        ...self::OVERVIEW,
+        'inventory.view',
+        'inventory.stock_report',
+        'requests.view',
+        'billing.view',
+    ];
+
+    /**
+     * What the Blood Center Admin holds: the overview, the staff accounts and
+     * their roles, and the centre's own settings (its logo). Nothing else.
+     *
+     * The department monitoring pages are the Supervisor's, and corrections
+     * are the departments' own: a head's correction to their own record
+     * applies when filed (project owner, 2026-10-15), so nothing escalates to
+     * the Admin. Shelf life is Processing's (components.configure) and price
+     * is Billing's (billing.prices).
+     *
+     * @var array<int, string>
+     */
+    private const ADMINISTRATION = [
+        ...self::OVERVIEW,
+        'staff.manage',
+        'center.configure',
+    ];
+
+    /**
+     * Abilities only a management level grants. No staff role holds them,
+     * and the matrix test keeps it that way.
+     *
+     * Spelled out as real lists rather than short-circuited through
      * Gate::before(), which would also override DonationAppointmentPolicy and
-     * make a supervisor the owner of every donor's appointment.
+     * make an Admin the owner of every donor's appointment.
      *
      * @var array<int, string>
      */
@@ -362,26 +441,40 @@ final class DepartmentPermissions
     /**
      * Resolve the abilities a user holds.
      *
-     * A supervisor gets the full set, uncapped. Anyone else gets their role's
-     * set — predefined, or their department's for a custom role — capped by
-     * their privileges. A user with neither role holds nothing, which is the
-     * intended fail-closed state for a staff account awaiting assignment.
+     * Their role's set — predefined, or their department's for a custom role
+     * — capped by their privileges, plus whatever their management level
+     * adds, uncapped. A user with neither a role nor a level holds nothing,
+     * which is the intended fail-closed state for a staff account awaiting
+     * assignment.
      *
      * @return array<int, string>
      */
     public static function for(User $user): array
     {
-        if ($user->is_supervisor) {
-            return self::all();
-        }
-
         $abilities = match (true) {
             $user->staff_role !== null => self::forRole($user->staff_role),
             filled($user->custom_role) && $user->department !== null => self::forCustomRole($user->department),
             default => [],
         };
 
-        return self::cap($abilities, self::privilegesOf($user));
+        return array_values(array_unique([
+            ...self::cap($abilities, self::privilegesOf($user)),
+            ...self::forLevel($user->management_level),
+        ]));
+    }
+
+    /**
+     * Get the abilities a management level adds, or none without one.
+     *
+     * @return array<int, string>
+     */
+    public static function forLevel(?ManagementLevel $level): array
+    {
+        return match ($level) {
+            ManagementLevel::Admin => self::ADMINISTRATION,
+            ManagementLevel::Supervisor => self::MONITORING,
+            null => [],
+        };
     }
 
     /**
@@ -432,7 +525,7 @@ final class DepartmentPermissions
      */
     public static function all(): array
     {
-        $abilities = [...self::SHARED, ...self::MANAGEMENT];
+        $abilities = [...self::SHARED, ...self::MANAGEMENT, ...self::MONITORING, ...self::ADMINISTRATION];
 
         foreach (self::MATRIX as $roleAbilities) {
             $abilities = [...$abilities, ...$roleAbilities];
@@ -461,7 +554,9 @@ final class DepartmentPermissions
      *
      * Approving is the named approver role's responsibility
      * (Department::correctionApprover()), and auditing a unit is the IT
-     * clerk's. A typed role never inherits either.
+     * clerk's. The stock minimums, the component catalogue with its shelf
+     * lives, and the prices are each kept by their department's head. A typed
+     * role never inherits any of them.
      *
      * @var array<int, string>
      */
@@ -469,6 +564,8 @@ final class DepartmentPermissions
         'corrections.approve',
         'inventory.audit',
         'inventory.thresholds',
+        'components.configure',
+        'billing.prices',
     ];
 
     /**
@@ -535,7 +632,7 @@ final class DepartmentPermissions
     }
 
     /**
-     * Get the departments, their roles, and the privileges as the staff form renders them.
+     * Get the departments, their roles, the management levels and the privileges as the staff form renders them.
      *
      * The labels and descriptions travel with each entry so the form describes
      * a role in the same words this file enforces it.
@@ -561,6 +658,12 @@ final class DepartmentPermissions
 
         return [
             'departments' => $departments,
+            'levels' => array_map(fn (ManagementLevel $level): array => [
+                'key' => $level->value,
+                'label' => $level->label(),
+                'description' => $level->description(),
+                'abilities' => self::forLevel($level),
+            ], ManagementLevel::cases()),
             'privileges' => array_map(fn (StaffPrivilege $privilege): array => [
                 'key' => $privilege->value,
                 'label' => $privilege->label(),

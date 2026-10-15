@@ -7,6 +7,7 @@ use App\Http\Controllers\BloodCenterBillingTransactionController;
 use App\Http\Controllers\BloodCenterCheckoutController;
 use App\Http\Controllers\BloodCenterCollectionController;
 use App\Http\Controllers\BloodCenterComponentController;
+use App\Http\Controllers\BloodCenterComponentPriceController;
 use App\Http\Controllers\BloodCenterCorrectionController;
 use App\Http\Controllers\BloodCenterDonorController;
 use App\Http\Controllers\BloodCenterDriveController;
@@ -200,20 +201,33 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             ->middleware('can:reference.view');
 
         // Shelf life and price, held per facility. Every department reads these
-        // through reference-data above, but only a supervisor sets them:
-        // center.configure is a MANAGEMENT ability, so no department grants it.
-        // They are facility-scoped rather than network-wide because one centre
-        // must not be able to change another's expiry dates, or switch on the
-        // payment-before-release gate for a facility that never set a price.
-        Route::prefix('blood-components')->middleware('can:center.configure')->group(function (): void {
+        // through reference-data above; each is set by its own department's
+        // head. They are facility-scoped rather than network-wide because one
+        // centre must not be able to change another's expiry dates, or switch
+        // on the payment-before-release gate for a facility that never set a
+        // price.
+        //
+        // Processing defines the components and their shelf life. Adding one
+        // adds it to the shared catalogue: every centre then sees it, as not
+        // configured until it sets its own shelf life.
+        Route::prefix('blood-components')->middleware('can:components.configure')->group(function (): void {
             Route::get('/', [BloodCenterComponentController::class, 'index']);
+            Route::post('/', [BloodCenterComponentController::class, 'store'])
+                ->middleware('throttle:20,1');
             Route::patch('/{component}', [BloodCenterComponentController::class, 'update'])
                 ->whereNumber('component');
         });
 
-        // The facility's own logo, printed on its reports. A supervisor's
-        // setting like shelf life and price, so the same ability. The facility
-        // is the caller's own, resolved from the token.
+        // Billing alone prices them, all in one save: every component needs a
+        // price or an explicit no charge before any of it is written.
+        Route::prefix('component-prices')->middleware('can:billing.prices')->group(function (): void {
+            Route::get('/', [BloodCenterComponentPriceController::class, 'index']);
+            Route::put('/', [BloodCenterComponentPriceController::class, 'update']);
+        });
+
+        // The facility's own logo, printed on its reports. The Blood Center
+        // Admin's setting, held by no department. The facility is the
+        // caller's own, resolved from the token.
         Route::post('/facility/logo', [BloodCenterFacilityController::class, 'uploadLogo'])
             ->middleware(['can:center.configure', 'throttle:10,1']);
 
@@ -230,7 +244,7 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
 
         // The minimum stock per blood type and component. Everyone who can see
         // the inventory can see how it stands against its minimums; only the
-        // Inventory Control Officer and the Center Admin set them. Declared
+        // Inventory Control Officer sets them. Declared
         // before /inventory/{unit} for the same reason as the summary above.
         Route::get('/inventory/thresholds', [StockThresholdController::class, 'index'])
             ->middleware('can:inventory.view');
@@ -248,13 +262,14 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
 
         // The Daily Blood Stock Inventory. Declared before /inventory/{unit}
         // for the same reason as the two above. Issuance prepares and signs
-        // it, so it carries Issuance's own ability rather than the shared
-        // inventory.view every laboratory department also holds.
+        // it, so it carries its own ability rather than the shared
+        // inventory.view every laboratory department also holds: Issuance's
+        // head, and the Supervisor who monitors the centre.
         Route::get('/inventory/stock-report', [BloodCenterInventoryController::class, 'stockReport'])
-            ->middleware('can:inventory.create');
+            ->middleware('can:inventory.stock_report');
 
         Route::get('/inventory/stock-report/pdf', [BloodCenterInventoryController::class, 'stockReportPdf'])
-            ->middleware(['can:inventory.create', 'throttle:20,1']);
+            ->middleware(['can:inventory.stock_report', 'throttle:20,1']);
 
         Route::post('/inventory', [BloodCenterInventoryController::class, 'store'])
             ->middleware('can:inventory.create');
@@ -625,8 +640,8 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         });
 
         // Correction requests. A saved record is changed only this way: its
-        // writer asks, and the department's approver or the Center Admin
-        // decides. CorrectionService checks the requester writes that record
+        // writer asks, and the department's approver decides; the approver's
+        // own correction is applied when filed. CorrectionService checks the requester writes that record
         // and the decider is the right one; the gates only say who may reach.
         Route::get('/corrections', [BloodCenterCorrectionController::class, 'index'])
             ->middleware('can:corrections.request');
@@ -657,9 +672,9 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         Route::post('/corrections/{correction}/reject', [BloodCenterCorrectionController::class, 'reject'])
             ->middleware('can:corrections.approve')->whereNumber('correction');
 
-        // Roster management, held by the supervisor alone. staff.manage says
-        // the caller may manage staff; StaffService is what scopes every
-        // lookup to their own facility.
+        // Roster management, held by the Blood Center Admin alone.
+        // staff.manage says the caller may manage staff; StaffService is what
+        // scopes every lookup to their own facility.
         Route::middleware('can:staff.manage')->prefix('staff')->group(function (): void {
             Route::get('/', [BloodCenterStaffController::class, 'index']);
 

@@ -5,6 +5,7 @@ namespace App\Models;
 use App\Enums\AccountStatus;
 use App\Enums\Department;
 use App\Enums\HospitalRole;
+use App\Enums\ManagementLevel;
 use App\Enums\RoleName;
 use App\Enums\StaffRole;
 use App\Notifications\ResetPasswordNotification;
@@ -72,7 +73,7 @@ class User extends Authenticatable implements MustVerifyEmail
             'staff_role' => StaffRole::class,
             'hospital_role' => HospitalRole::class,
             'staff_privileges' => 'array',
-            'is_supervisor' => 'boolean',
+            'management_level' => ManagementLevel::class,
             'is_super_admin' => 'boolean',
             'admin_privileges' => 'array',
             'password' => 'hashed',
@@ -137,7 +138,7 @@ class User extends Authenticatable implements MustVerifyEmail
     }
 
     /**
-     * Get every ability this account holds through its staff role or the management level.
+     * Get every ability this account holds through its staff role or its management level.
      *
      * This is what the `can:` route middleware resolves against, and what the
      * client mirrors to decide which navigation to render. The server remains
@@ -155,11 +156,30 @@ class User extends Authenticatable implements MustVerifyEmail
     }
 
     /**
+     * Whether this account is its blood centre's Admin: staff, roles, settings
+     * and escalated correction decisions, but no department work.
+     */
+    public function isCenterAdmin(): bool
+    {
+        return $this->management_level === ManagementLevel::Admin;
+    }
+
+    /**
+     * Whether this account holds the view-only Supervisor level.
+     *
+     * Not the Laboratory or Billing Supervisor: those are staff roles.
+     */
+    public function isCenterSupervisor(): bool
+    {
+        return $this->management_level === ManagementLevel::Supervisor;
+    }
+
+    /**
      * Determine whether the user works in the given department.
      *
-     * Deliberately independent of is_supervisor: this answers "where do they
-     * work", not "what may they do". Use abilities() for the latter, because a
-     * supervisor holds every ability whatever their department says.
+     * Deliberately independent of management_level: this answers "where do
+     * they work", not "what may they do". Use abilities() for the latter,
+     * because a level adds abilities whatever their department says.
      */
     public function worksIn(Department $department): bool
     {

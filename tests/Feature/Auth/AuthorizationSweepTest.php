@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Auth;
 
+use App\Enums\ManagementLevel;
 use App\Enums\RoleName;
 use App\Enums\StaffRole;
 use App\Models\User;
@@ -114,6 +115,11 @@ class AuthorizationSweepTest extends TestCase
             'testing referral update' => ['patch', '/api/blood-center/laboratory/referrals/1'],
             'daily stock report' => ['get', '/api/blood-center/inventory/stock-report'],
             'daily stock report pdf' => ['get', '/api/blood-center/inventory/stock-report/pdf'],
+            'component shelf lives' => ['get', '/api/blood-center/blood-components'],
+            'add component' => ['post', '/api/blood-center/blood-components'],
+            'set shelf life' => ['patch', '/api/blood-center/blood-components/1'],
+            'component prices' => ['get', '/api/blood-center/component-prices'],
+            'save prices' => ['put', '/api/blood-center/component-prices'],
             'facility logo upload' => ['post', '/api/blood-center/facility/logo'],
             'final bag labels' => ['get', '/api/blood-center/inventory/donations/1/labels'],
             'facility logo removal' => ['delete', '/api/blood-center/facility/logo'],
@@ -160,6 +166,12 @@ class AuthorizationSweepTest extends TestCase
             'inventory summary' => ['get', '/api/blood-center/inventory/summary', 'inventory.view'],
             'stock thresholds' => ['get', '/api/blood-center/inventory/thresholds', 'inventory.view'],
             'save stock thresholds' => ['put', '/api/blood-center/inventory/thresholds', 'inventory.thresholds'],
+            'daily stock report' => ['get', '/api/blood-center/inventory/stock-report', 'inventory.stock_report'],
+            'component shelf lives' => ['get', '/api/blood-center/blood-components', 'components.configure'],
+            'add component' => ['post', '/api/blood-center/blood-components', 'components.configure'],
+            'set shelf life' => ['patch', '/api/blood-center/blood-components/1', 'components.configure'],
+            'component prices' => ['get', '/api/blood-center/component-prices', 'billing.prices'],
+            'save prices' => ['put', '/api/blood-center/component-prices', 'billing.prices'],
             'record units' => ['post', '/api/blood-center/inventory', 'inventory.create'],
             'update unit' => ['patch', '/api/blood-center/inventory/RA1-1-01', 'inventory.update'],
             'discard unit' => ['post', '/api/blood-center/inventory/RA1-1-01/discard', 'inventory.discard'],
@@ -262,16 +274,30 @@ class AuthorizationSweepTest extends TestCase
         );
     }
 
-    public function test_a_supervisor_reaches_every_department_gated_route(): void
+    /**
+     * The same check for the two management levels, which hold no role.
+     *
+     * Only the gate is under test, so anything other than 403 is a pass — a
+     * 404 or 422 past the gate is the middleware having let them through.
+     */
+    public function test_each_management_level_is_admitted_exactly_where_the_matrix_says(): void
     {
-        $supervisor = User::factory()->bloodCenterSupervisor()->create();
+        foreach (ManagementLevel::cases() as $level) {
+            $user = match ($level) {
+                ManagementLevel::Admin => User::factory()->bloodCenterAdmin()->create(),
+                ManagementLevel::Supervisor => User::factory()->bloodCenterSupervisor()->create(),
+            };
+            $holds = DepartmentPermissions::forLevel($level);
 
-        // Only the gate is under test, so anything other than 403 is a pass —
-        // a 404 or 422 past the gate is the middleware having let them through.
-        foreach (self::departmentGatedRoutes() as [$method, $uri]) {
-            $response = $this->actingAs($supervisor)->json($method, $uri);
+            foreach (self::departmentGatedRoutes() as $name => [$method, $uri, $ability]) {
+                $status = $this->actingAs($user)->json($method, $uri)->getStatusCode();
 
-            $this->assertNotSame(403, $response->getStatusCode(), "A supervisor was refused [{$uri}].");
+                if (in_array($ability, $holds, true)) {
+                    $this->assertNotSame(403, $status, "The {$level->value} holds [{$ability}] but was refused {$name}.");
+                } else {
+                    $this->assertSame(403, $status, "The {$level->value} lacks [{$ability}] but reached {$name}.");
+                }
+            }
         }
     }
 

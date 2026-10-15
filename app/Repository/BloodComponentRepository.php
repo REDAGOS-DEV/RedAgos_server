@@ -30,6 +30,33 @@ class BloodComponentRepository
     }
 
     /**
+     * Add a component to the shared catalogue.
+     *
+     * @param  array<string, mixed>  $attributes
+     */
+    public function create(array $attributes): BloodComponent
+    {
+        return BloodComponent::query()->create($attributes);
+    }
+
+    /**
+     * Whether a component, retired ones included, already has this name or code.
+     *
+     * Case-insensitive, so "packed rbc" is not added beside "Packed RBC". A
+     * retired component keeps its row, and the unique index still covers it,
+     * so its name and code stay taken.
+     */
+    public function nameTaken(string $name): bool
+    {
+        return BloodComponent::withTrashed()->whereRaw('lower(name) = ?', [mb_strtolower($name)])->exists();
+    }
+
+    public function codeTaken(string $code): bool
+    {
+        return BloodComponent::withTrashed()->whereRaw('lower(code) = ?', [mb_strtolower($code)])->exists();
+    }
+
+    /**
      * One facility's settings, keyed by component id.
      *
      * Returned as a map rather than a list so callers can resolve a component
@@ -42,6 +69,20 @@ class BloodComponentRepository
     {
         return FacilityBloodComponent::query()
             ->where('facility_id', $facilityId)
+            ->get()
+            ->keyBy('component_id');
+    }
+
+    /**
+     * This facility's settings, locked for a save that writes several of them.
+     *
+     * @return SupportCollection<int, FacilityBloodComponent>
+     */
+    public function lockSettingsFor(int $facilityId): SupportCollection
+    {
+        return FacilityBloodComponent::query()
+            ->where('facility_id', $facilityId)
+            ->lockForUpdate()
             ->get()
             ->keyBy('component_id');
     }

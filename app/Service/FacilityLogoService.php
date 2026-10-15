@@ -19,7 +19,7 @@ use Illuminate\Support\Facades\URL;
  * 30-minute signed URL, and a PDF gets the bytes inlined as a data URI
  * because dompdf is run with remote fetching off.
  *
- * Only a supervisor changes it (`center.configure`), and only for the facility
+ * Only the Blood Center Admin changes it (`center.configure`), and only for the facility
  * their own account belongs to — the facility is resolved from the token,
  * never from the request.
  *

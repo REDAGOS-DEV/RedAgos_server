@@ -5,6 +5,7 @@ namespace Tests\Feature\BloodCenter;
 use App\Enums\BloodUnitStatus;
 use App\Enums\DonationStatus;
 use App\Enums\StaffRole;
+use App\Models\AuditLog;
 use App\Models\BloodCollection;
 use App\Models\BloodComponent;
 use App\Models\BloodUnit;
@@ -153,48 +154,102 @@ class CorrectionRequestTest extends TestCase
             ->assertJsonValidationErrors('changes.volume_ml');
     }
 
-    public function test_nobody_approves_their_own_request(): void
+    public function test_nobody_but_a_head_approves_their_own_request(): void
     {
-        $supervisor = $this->staff(StaffRole::LabSupervisor);
-        $this->recordSerology($supervisor)->assertCreated();
+        $technologist = $this->staff(StaffRole::SerologyTechnologist);
+        $this->recordSerology($technologist)->assertCreated();
 
-        $id = $this->ask($supervisor, 'serology', $this->panel(['hiv' => 'reactive', 'confirm_reactive' => true]))->assertCreated()->json('data.id');
+        $id = $this->ask($technologist, 'serology', $this->panel(['hiv' => 'reactive', 'confirm_reactive' => true]))->assertCreated()->json('data.id');
 
-        $this->actingAs($supervisor)
+        // Only a department's head holds the approval ability, so anyone else
+        // is turned away at the gate, before their own request is looked at.
+        $this->actingAs($technologist)
             ->postJson("/api/blood-center/corrections/{$id}/approve")
-            ->assertStatus(409)
-            ->assertJsonPath('code', 'self_approval');
+            ->assertForbidden();
 
-        // Nor does a Center Admin.
-        $admin = User::factory()->bloodCenterSupervisor($this->facility)->create();
+        // Nor does a Center Admin, here one who also works as a technologist:
+        // the level grants no correction ability at all.
+        $admin = User::factory()->bloodCenterAdmin($this->facility, StaffRole::SerologyTechnologist)->create();
         $other = Donation::factory()->create(['facility_id' => $this->facility->id, 'status' => DonationStatus::Collected]);
 
         $this->actingAs($admin)
             ->postJson("/api/blood-center/laboratory/donations/{$other->id}/serology", $this->panel())
             ->assertCreated();
 
-        $own = $this->ask($admin, 'serology', $this->panel(['hcv' => 'reactive', 'confirm_reactive' => true]), $other)->assertCreated()->json('data.id');
+        $own = $this->ask($admin, 'serology', $this->panel(['hcv' => 'reactive', 'confirm_reactive' => true]), $other)
+            ->assertCreated()
+            ->assertJsonPath('data.status', 'pending')
+            ->json('data.id');
 
         $this->actingAs($admin)
             ->postJson("/api/blood-center/corrections/{$own}/approve")
-            ->assertStatus(409)
-            ->assertJsonPath('code', 'self_approval');
+            ->assertForbidden();
+
+        $this->assertSame('pending', CorrectionRequest::findOrFail($own)->status);
     }
 
-    public function test_an_approvers_own_request_goes_to_the_center_admin_not_a_peer(): void
+    /**
+     * The department's head needs nobody's approval to correct their own record
+     * (project owner, 2026-10-15). It used to go to the Center Admin.
+     */
+    public function test_a_heads_own_correction_is_applied_as_it_is_filed(): void
     {
-        $supervisor = $this->staff(StaffRole::LabSupervisor);
-        $peer = $this->staff(StaffRole::LabSupervisor);
-        $this->recordSerology($supervisor)->assertCreated();
+        $head = $this->staff(StaffRole::LabSupervisor);
+        $this->recordSerology($head)->assertCreated();
 
-        $id = $this->ask($supervisor, 'serology', $this->panel(['hbsag' => 'reactive', 'confirm_reactive' => true]))->assertCreated()->json('data.id');
+        $id = $this->ask($head, 'serology', $this->panel(['hbsag' => 'reactive', 'confirm_reactive' => true]))
+            ->assertCreated()
+            ->assertJsonPath('data.status', 'approved')
+            ->json('data.id');
 
-        $this->actingAs($peer)
+        $correction = CorrectionRequest::findOrFail($id);
+        $this->assertSame($head->id, (int) $correction->reviewed_by);
+
+        // Applied through the original write: a reactive panel rejects.
+        $this->assertSame(DonationStatus::Rejected, $this->donation->fresh()->status);
+
+        $approved = AuditLog::query()->where('action', 'correction.approved')->sole();
+        $this->assertTrue($approved->context['self_applied']);
+        $this->assertSame(1, AuditLog::query()->where('action', 'correction.applied')->count());
+
+        // Nothing is left for a peer, the Supervisor or the Admin to decide.
+        $this->actingAs($this->staff(StaffRole::LabSupervisor))
+            ->getJson('/api/blood-center/corrections?scope=review')
+            ->assertOk()
+            ->assertJsonCount(0, 'data');
+    }
+
+    public function test_a_head_whose_correction_a_guard_refuses_is_left_with_nothing_pending(): void
+    {
+        $head = $this->staff(StaffRole::LabSupervisor);
+        $this->recordSerology($head, ['hiv' => 'reactive', 'confirm_reactive' => true])->assertCreated();
+
+        // A reactive result can never be corrected, by anyone.
+        $this->ask($head, 'serology', $this->panel())->assertStatus(409);
+
+        $this->assertDatabaseCount('correction_requests', 0);
+    }
+
+    public function test_a_head_settles_their_own_request_left_pending_from_before(): void
+    {
+        // Filed when a head's own request still waited for the Center Admin.
+        $technologist = $this->staff(StaffRole::SerologyTechnologist);
+        $head = $this->staff(StaffRole::LabSupervisor);
+        $this->recordSerology($technologist)->assertCreated();
+
+        $id = $this->ask($technologist, 'serology', $this->panel(['hcv' => 'reactive', 'confirm_reactive' => true]))->assertCreated()->json('data.id');
+        CorrectionRequest::query()->whereKey($id)->update(['requested_by' => $head->id]);
+
+        $this->actingAs($this->staff(StaffRole::LabSupervisor))
             ->postJson("/api/blood-center/corrections/{$id}/approve")
             ->assertForbidden()
             ->assertJsonPath('code', 'not_the_approver');
 
         $this->actingAs(User::factory()->bloodCenterSupervisor($this->facility)->create())
+            ->postJson("/api/blood-center/corrections/{$id}/approve")
+            ->assertForbidden();
+
+        $this->actingAs($head)
             ->postJson("/api/blood-center/corrections/{$id}/approve")
             ->assertOk();
     }
@@ -404,9 +459,9 @@ class CorrectionRequestTest extends TestCase
             ->assertJsonPath('data.0.can_decide', false);
     }
 
-    public function test_a_saved_record_is_not_saved_over_directly_even_by_a_supervisor(): void
+    public function test_a_saved_record_is_not_saved_over_directly_even_by_an_admin(): void
     {
-        $admin = User::factory()->bloodCenterSupervisor($this->facility)->create();
+        $admin = User::factory()->bloodCenterAdmin($this->facility, StaffRole::ComponentTechnologist)->create();
 
         $this->actingAs($admin)
             ->postJson("/api/blood-center/laboratory/donations/{$this->donation->id}/components", [

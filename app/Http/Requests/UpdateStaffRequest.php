@@ -4,6 +4,7 @@ namespace App\Http\Requests;
 
 use App\Enums\AccountStatus;
 use App\Enums\Department;
+use App\Enums\ManagementLevel;
 use App\Enums\StaffPrivilege;
 use App\Enums\StaffRole;
 use App\Support\AccountIdentity;
@@ -68,19 +69,22 @@ class UpdateStaffRequest extends FormRequest
             ],
 
             // Nullable here rather than conditionally required: a partial
-            // update may clear a role while the same request grants the
-            // supervisor level. StaffService checks the resulting combination,
+            // update may clear a role while the same request grants a
+            // management level. StaffService checks the resulting combination,
             // which is the only place both values are known.
             'department' => ['sometimes', 'nullable', 'string', Rule::in(Department::values())],
             'staff_role' => ['sometimes', 'nullable', 'string', Rule::in(StaffRole::values())],
             'custom_role' => ['sometimes', 'nullable', 'string', 'max:100'],
             'staff_privileges' => ['sometimes', 'array', 'min:1'],
             'staff_privileges.*' => ['string', 'distinct', Rule::in(StaffPrivilege::values())],
-            'is_supervisor' => ['sometimes', 'boolean'],
+            'management_level' => ['sometimes', 'nullable', Rule::enum(ManagementLevel::class)],
+
+            // Replaced by management_level; see StoreStaffRequest.
+            'is_supervisor' => ['prohibited'],
 
             // pending_verification is deliberately absent: it is set at
             // creation and cleared by the holder verifying their address, not
-            // something a supervisor reaches back into.
+            // something an Admin reaches back into.
             'account_status' => [
                 'sometimes', 'string',
                 Rule::in([
@@ -115,6 +119,7 @@ class UpdateStaffRequest extends FormRequest
     {
         return [
             'phone.unique' => 'An account already exists for this phone number.',
+            'is_supervisor.prohibited' => 'is_supervisor was replaced by management_level: admin or supervisor.',
             'employee_id.unique' => 'Another staff member at this facility already has this employee ID.',
         ];
     }

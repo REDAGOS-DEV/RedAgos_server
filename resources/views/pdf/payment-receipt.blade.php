@@ -21,6 +21,9 @@
     $request = $snapshot['request'] ?? [];
     $statement = $snapshot['statement'] ?? null;
     $payment = $snapshot['payment'] ?? [];
+    // Each part of a payment split across methods. One receipt lists them all.
+    $tenders = $snapshot['tenders'] ?? [];
+    $split = count($tenders) > 1;
     $lines = $snapshot['lines'] ?? [];
     $partial = ! empty($snapshot['is_partial']);
     $issuedAt = \Illuminate\Support\Carbon::parse($snapshot['issued_at'])->timezone(config('blood_center.timezone'));
@@ -224,6 +227,14 @@
                 <h3>Payment received</h3>
                 <table class="kv">
                     <tr><td class="k">Payment method</td><td class="v">{{ $payment['method_label'] ?? '' }}</td></tr>
+                    @if ($split)
+                        @foreach ($tenders as $tender)
+                            <tr>
+                                <td class="k">&nbsp;&nbsp;{{ $tender['method_label'] ?? '' }}</td>
+                                <td class="v">{{ $peso($tender['amount_paid'] ?? null) }}@if (! empty($tender['reference_number'])) &middot; Ref. {{ $tender['reference_number'] }}@endif</td>
+                            </tr>
+                        @endforeach
+                    @endif
                     <tr><td class="k">Amount received</td><td class="v">{{ $peso($snapshot['amount_paid'] ?? null) }}</td></tr>
                     @if (! empty($payment['amount_tendered']))
                         <tr><td class="k">Cash tendered</td><td class="v">{{ $peso($payment['amount_tendered']) }}</td></tr>
@@ -232,7 +243,9 @@
                     @if (! empty($payment['cash_session_number']))
                         <tr><td class="k">Counter shift</td><td class="v">{{ $payment['cash_session_number'] }}</td></tr>
                     @endif
-                    <tr><td class="k">Payment reference</td><td class="v">{{ $payment['reference_number'] ?? '—' }}</td></tr>
+                    @unless ($split)
+                        <tr><td class="k">Payment reference</td><td class="v">{{ $payment['reference_number'] ?? '—' }}</td></tr>
+                    @endunless
                     <tr><td class="k">Payment date</td><td class="v">{{ $paidAt->format('j M Y, g:i A') }}</td></tr>
                     <tr><td class="k">Received by</td><td class="v">{{ $snapshot['received_by'] ?? 'Confirmed by the payment provider' }}</td></tr>
                 </table>

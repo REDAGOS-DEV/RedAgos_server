@@ -61,7 +61,8 @@ class CheckStockThresholdsTest extends TestCase
         $this->centre = Facility::factory()->approved()->create();
         $this->officer = User::factory()->bloodCenterStaff($this->centre, StaffRole::InventoryControlOfficer)->create();
         $this->dispatcher = User::factory()->bloodCenterStaff($this->centre, StaffRole::DispatchCoordinator)->create();
-        $this->supervisor = User::factory()->bloodCenterStaff($this->centre)->create(['is_supervisor' => true]);
+        // The view-only Supervisor monitors stock, so hears about it.
+        $this->supervisor = User::factory()->bloodCenterSupervisor($this->centre)->create();
         $this->billing = User::factory()->bloodCenterStaff($this->centre, StaffRole::BillingClerk)->create();
 
         $this->oPositive = $this->bloodType('O+');

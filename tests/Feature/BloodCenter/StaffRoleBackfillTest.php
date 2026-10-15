@@ -7,14 +7,30 @@ use App\Enums\StaffRole;
 use App\Models\Facility;
 use App\Models\User;
 use App\Support\DepartmentPermissions;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 
 class StaffRoleBackfillTest extends TestCase
 {
     use LazilyRefreshDatabase;
+
+    /**
+     * Put back the `is_supervisor` column this backfill reads, as
+     * SupervisorBackfillTest does: management_level replaced it on 2026-10-15.
+     * Restored inside the test's transaction, so the rollback removes it.
+     */
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        Schema::table('users', function (Blueprint $table): void {
+            $table->boolean('is_supervisor')->default(false);
+        });
+    }
 
     /**
      * Drive the migration's backfill directly, as SupervisorBackfillTest does.
@@ -91,6 +107,9 @@ class StaffRoleBackfillTest extends TestCase
 
         // The split abilities count as held when their parent was.
         $parents = [
+            // Reading the stock sheet was inventory.create until a Supervisor
+            // needed to read it without booking stock in.
+            'inventory.stock_report' => 'inventory.create',
             'donations.collect' => 'donations.record',
             'donations.close' => 'donations.record',
             'lab.record_serology' => 'lab.record_result',
@@ -103,7 +122,10 @@ class StaffRoleBackfillTest extends TestCase
             $role = StaffRole::defaultFor(Department::from($department));
 
             foreach (DepartmentPermissions::forRole($role) as $ability) {
-                if (in_array($ability, ['reference.view', 'reports.view_own', 'inventory.release_quarantine', 'requests.record', 'corrections.request', 'corrections.approve'], true)) {
+                // Granted later by the project owner, not by this backfill:
+                // the stock minimums to Issuance's head, and the component
+                // catalogue to Processing's (2026-10-15).
+                if (in_array($ability, ['reference.view', 'reports.view_own', 'inventory.release_quarantine', 'requests.record', 'corrections.request', 'corrections.approve', 'inventory.thresholds', 'components.configure'], true)) {
                     continue;
                 }
 
@@ -130,7 +152,13 @@ class StaffRoleBackfillTest extends TestCase
     {
         $facility = Facility::factory()->approved()->create();
         $working = $this->legacyStaff($facility, 'testing', supervisor: true);
-        $management = User::factory()->bloodCenterSupervisor($facility)->create();
+        $management = User::factory()->bloodCenterStaff($facility)->create();
+
+        DB::table('users')->where('id', $management->id)->update([
+            'staff_role' => null,
+            'department' => null,
+            'is_supervisor' => true,
+        ]);
 
         $this->runBackfill();
 

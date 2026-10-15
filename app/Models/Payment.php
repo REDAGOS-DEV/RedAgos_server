@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use LogicException;
 
 /**
@@ -125,10 +125,14 @@ class Payment extends Model
 
     /**
      * Every receipt issued for this payment, voided ones included.
+     *
+     * Through payment_receipt_payments, because one receipt can cover every
+     * part of a payment split across methods.
      */
-    public function receipts(): HasMany
+    public function receipts(): BelongsToMany
     {
-        return $this->hasMany(PaymentReceipt::class)->orderBy('id');
+        return $this->belongsToMany(PaymentReceipt::class, 'payment_receipt_payments')
+            ->orderBy('payment_receipts.id');
     }
 
     /**

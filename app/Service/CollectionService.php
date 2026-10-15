@@ -2,7 +2,6 @@
 
 namespace App\Service;
 
-use App\Repository\EligibilityRepository;
 use App\Enums\AppointmentStatus;
 use App\Enums\BloodBagType;
 use App\Enums\DonationStatus;
@@ -17,6 +16,7 @@ use App\Notifications\DonorDeferred;
 use App\Repository\CollectionRepository;
 use App\Repository\DonorDeferralRepository;
 use App\Repository\DonorDirectoryRepository;
+use App\Repository\EligibilityRepository;
 use App\Support\OperationalDay;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\QueryException;
@@ -617,10 +617,9 @@ class CollectionService
             $this->eligibilityRepository->revokeQrTokens($locked->donor_id);
 
             $this->eligibilityRepository->invalidateCurrentScreenings($locked->donor_id);
-            
+
             // The visit is over from the counter's point of view.
             $this->closeAppointmentFor($locked, $facility->id);
-
 
             return $locked;
         });
@@ -865,7 +864,7 @@ class CollectionService
      * to know the donor was accepted before drawing. The vitals, the physical
      * examination and any reason for a deferral or rejection are the donor's
      * clinical record, and go only to a viewer holding donors.view_clinical:
-     * the screening physician, and a supervisor. A receptionist booking the
+     * the screening physician. A receptionist booking the
      * donor's next visit sees that a decision exists, never why.
      *
      * @return array<string, mixed>

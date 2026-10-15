@@ -8,6 +8,7 @@ use App\Enums\Department;
 use App\Enums\FacilityStatus;
 use App\Enums\FacilityTypeName;
 use App\Enums\HospitalRole;
+use App\Enums\ManagementLevel;
 use App\Enums\StaffPrivilege;
 use App\Enums\StaffRole;
 use App\Models\Facility;
@@ -28,7 +29,7 @@ use Illuminate\Validation\Rules\Password;
  * Add an account to a facility that already exists.
  *
  * Deliberately not routed through StaffService, which is the roster endpoint a
- * blood centre supervisor uses. That service resolves the facility from the
+ * blood centre's Admin uses. That service resolves the facility from the
  * authenticated caller and grants RoleName::BloodCenter unconditionally, so it
  * can neither serve a facility whose first account does not exist yet — the
  * chicken-and-egg this command is here to break — nor a hospital blood bank.
@@ -41,8 +42,8 @@ use Illuminate\Validation\Rules\Password;
  *
  * Rules are stated here rather than read off StoreStaffRequest for that same
  * reason. That request scopes employee_id uniqueness to the *caller's* facility
- * and requires a staff role of every non-supervisor, both of which are correct
- * for a blood centre roster and wrong for this.
+ * and requires a staff role of every account without a management level, both
+ * of which are correct for a blood centre roster and wrong for this.
  */
 class AddFacilityUser extends Command
 {
@@ -59,7 +60,7 @@ class AddFacilityUser extends Command
                             {--employee-id= : Badge number, unique within the facility}
                             {--role= : Staff role, e.g. medical_receptionist or lab_supervisor (blood centers only)}
                             {--hospital-role= : head, inventory_staff or requesting_staff (blood banks only; default head)}
-                            {--supervisor : Grant the management level; with --role, a working supervisor}
+                            {--level= : admin or supervisor (blood centers only); with --role, on top of the role}
                             {--privileges= : Comma-separated cap: read,write,update,delete (default: all four)}
                             {--primary : Also record this account as the facility contact}
                             {--password= : Leave unset to be prompted; an argument is visible in shell history}
@@ -100,8 +101,13 @@ class AddFacilityUser extends Command
 
         $this->promptForLevel($type);
 
-        $isSupervisor = (bool) $this->option('supervisor');
-        $role = $this->resolveRole($type, $isSupervisor);
+        $level = $this->resolveLevel($type);
+
+        if ($level === false) {
+            return self::FAILURE;
+        }
+
+        $role = $this->resolveRole($type, $level);
 
         if ($role === false) {
             return self::FAILURE;
@@ -151,18 +157,18 @@ class AddFacilityUser extends Command
             return self::FAILURE;
         }
 
-        $staff = $this->createAccount($facility, $type, $attributes, $role, $isSupervisor, $privileges, $hospitalRole);
+        $staff = $this->createAccount($facility, $type, $attributes, $role, $level, $privileges, $hospitalRole);
 
         $this->auditLogger->record($admin, 'staff.created', $staff, [
             'facility_id' => $facility->id,
             'staff_role' => $role?->value,
             'department' => $role?->department()->value,
-            'is_supervisor' => $isSupervisor,
+            'management_level' => $level?->value,
             'privileges' => $privileges,
             'source' => 'console:facility:add-user',
         ]);
 
-        $this->report($facility, $type, $staff, $role, $isSupervisor);
+        $this->report($facility, $type, $staff, $role, $level);
 
         return self::SUCCESS;
     }
@@ -222,25 +228,25 @@ class AddFacilityUser extends Command
     /**
      * Ask for a blood centre account's level when neither option was passed.
      *
-     * The level is a staff role or the management level, which are two options
+     * The answer is a staff role or a management level, which are two options
      * rather than one field, so optionOrAsk cannot cover it. The answer is
-     * written back onto the input so resolveRole judges a prompted run exactly
-     * as it would the equivalent flags. A --no-interaction run is left alone
-     * and refused there by name.
+     * written back onto the input so resolveLevel and resolveRole judge a
+     * prompted run exactly as they would the equivalent flags. A
+     * --no-interaction run is left alone and refused there by name.
      */
     private function promptForLevel(FacilityTypeName $type): void
     {
         if (! $type->acceptsDonorBookings()
             || ! $this->input->isInteractive()
-            || $this->option('supervisor')
+            || $this->optionOrNull('level') !== null
             || $this->optionOrNull('role') !== null) {
             return;
         }
 
         $answer = $this->choice('Role', self::levelChoices());
 
-        if ($answer === 'supervisor') {
-            $this->input->setOption('supervisor', true);
+        if (ManagementLevel::tryFrom($answer) !== null) {
+            $this->input->setOption('level', $answer);
         } else {
             $this->input->setOption('role', $answer);
         }
@@ -264,25 +270,57 @@ class AddFacilityUser extends Command
             }
         }
 
-        $choices['supervisor'] = 'Supervisor (management level, no role)';
+        $choices[ManagementLevel::Admin->value] = 'Blood Center Admin (staff accounts and settings, no role)';
+        $choices[ManagementLevel::Supervisor->value] = 'Supervisor (view-only monitoring, no role)';
 
         return $choices;
+    }
+
+    /**
+     * Read --level, or false after reporting why it cannot stand.
+     *
+     * A hospital blood bank has no management level: its Head, a hospital
+     * role, manages its staff.
+     */
+    private function resolveLevel(FacilityTypeName $type): ManagementLevel|false|null
+    {
+        $supplied = $this->optionOrNull('level');
+
+        if ($supplied === null) {
+            return null;
+        }
+
+        if (! $type->acceptsDonorBookings()) {
+            $this->error('A hospital blood bank has no management level. Its Head manages its staff: use --hospital-role=head.');
+
+            return false;
+        }
+
+        $level = ManagementLevel::tryFrom(Str::lower(trim($supplied)));
+
+        if ($level === null) {
+            $this->error('Unknown level. Use one of: '.implode(', ', ManagementLevel::values()).'.');
+
+            return false;
+        }
+
+        return $level;
     }
 
     /**
      * Settle the staff role, or report why the combination cannot stand.
      *
      * Returns false rather than null on a refusal, because null is itself a
-     * valid answer: a management-only supervisor and every blood bank account
-     * hold no staff role at all.
+     * valid answer: an Admin or Supervisor with no post, and every blood bank
+     * account, hold no staff role at all.
      */
-    private function resolveRole(FacilityTypeName $type, bool $isSupervisor): StaffRole|false|null
+    private function resolveRole(FacilityTypeName $type, ?ManagementLevel $level): StaffRole|false|null
     {
         $supplied = $this->optionOrNull('role');
 
         if (! $type->acceptsDonorBookings()) {
             if ($supplied !== null) {
-                $this->error('A hospital blood bank has no staff roles. Drop --role, and add --supervisor if the account is management.');
+                $this->error('A hospital blood bank has no staff roles. Drop --role, and use --hospital-role= instead.');
 
                 return false;
             }
@@ -291,11 +329,11 @@ class AddFacilityUser extends Command
         }
 
         if ($supplied === null) {
-            if ($isSupervisor) {
+            if ($level !== null) {
                 return null;
             }
 
-            $this->error('Choose a role with --role=, or grant the management level with --supervisor.');
+            $this->error('Choose a role with --role=, or a management level with --level=admin or --level=supervisor.');
             $this->listRoles();
 
             return false;
@@ -433,11 +471,11 @@ class AddFacilityUser extends Command
         FacilityTypeName $type,
         array $attributes,
         ?StaffRole $role,
-        bool $isSupervisor,
+        ?ManagementLevel $level,
         ?array $privileges = null,
         ?HospitalRole $hospitalRole = null
     ): User {
-        return DB::transaction(function () use ($facility, $type, $attributes, $role, $isSupervisor, $privileges, $hospitalRole): User {
+        return DB::transaction(function () use ($facility, $type, $attributes, $role, $level, $privileges, $hospitalRole): User {
             $staff = $this->bloodCenterRepository->createStaffUser([
                 'uuid' => (string) Str::uuid(),
                 'first_name' => $attributes['first_name'],
@@ -450,7 +488,7 @@ class AddFacilityUser extends Command
                 'password' => $attributes['password'],
                 'employee_id' => $attributes['employee_id'],
                 'position' => $attributes['position'],
-            ], $facility, $role, $isSupervisor, privileges: $privileges);
+            ], $facility, $role, $level, privileges: $privileges);
 
             // Verified on creation, with no link mailed: the operator at the
             // terminal is vouching for the account in person. This is the same
@@ -496,7 +534,7 @@ class AddFacilityUser extends Command
         FacilityTypeName $type,
         User $staff,
         ?StaffRole $role,
-        bool $isSupervisor
+        ?ManagementLevel $level
     ): void {
         $post = $role === null ? null : $role->label().' ('.$role->department()->label().')';
 
@@ -507,8 +545,8 @@ class AddFacilityUser extends Command
             ['Email', $staff->email],
             ['Username', $staff->username],
             ['Level', match (true) {
-                $isSupervisor && $post !== null => 'Supervisor — '.$post,
-                $isSupervisor => 'Supervisor',
+                $level !== null && $post !== null => $level->label().' — '.$post,
+                $level !== null => $level->label(),
                 default => $post ?? 'Staff',
             }],
             ['Facility contact', $this->option('primary') ? 'Yes' : 'No'],

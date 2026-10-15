@@ -129,7 +129,7 @@ class Facility extends Model
     /**
      * The account that speaks for this facility.
      *
-     * Created alongside the facility by a Super Admin and given the supervisor
+     * Created alongside the facility by a Super Admin and given the Admin
      * level, so it is the one account guaranteed to be able to staff the
      * portal. The column keeps its historical name from when facilities
      * self-registered; the meaning is unchanged.

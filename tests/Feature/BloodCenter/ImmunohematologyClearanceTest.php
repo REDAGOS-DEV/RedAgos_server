@@ -114,11 +114,12 @@ class ImmunohematologyClearanceTest extends TestCase
             ->assertJsonValidationErrors(['forward_group', 'reverse_group', 'antibody_screen']);
     }
 
-    public function test_a_cleared_typing_is_locked_even_for_a_supervisor(): void
+    public function test_a_cleared_typing_is_locked_even_for_the_admin(): void
     {
         $this->type()->assertCreated();
 
-        $this->type(['notes' => 'Second look'], User::factory()->bloodCenterSupervisor($this->facility)->create())
+        // The Center Admin, working as the Laboratory Supervisor.
+        $this->type(['notes' => 'Second look'], User::factory()->bloodCenterAdmin($this->facility, StaffRole::LabSupervisor)->create())
             ->assertStatus(409)
             ->assertJsonPath('code', 'results_cleared');
     }

@@ -73,7 +73,7 @@ class PaymentCorrectionTest extends TestCase
         $this->supervisor = User::factory()->bloodCenterStaff($this->centre, StaffRole::BillingSupervisor)->create();
         $this->clerk = User::factory()->bloodCenterStaff($this->centre, StaffRole::BillingClerk)->create();
         $this->issuance = User::factory()->bloodCenterStaff($this->centre, StaffRole::InventoryControlOfficer)->create();
-        $this->centerAdmin = User::factory()->bloodCenterSupervisor($this->centre)->create();
+        $this->centerAdmin = User::factory()->bloodCenterAdmin($this->centre)->create();
         $this->requester = User::factory()->bloodBankStaff($this->hospital)->create();
 
         $this->bloodType = BloodType::firstOrCreate(['code' => 'O+'], ['label' => 'O+']);
@@ -112,7 +112,7 @@ class PaymentCorrectionTest extends TestCase
         $this->assertDatabaseHas('audit_logs', ['action' => 'correction.applied', 'auditable_id' => (string) $this->payment->id]);
     }
 
-    public function test_a_clerk_cannot_approve_and_a_supervisors_own_request_goes_to_the_center_admin(): void
+    public function test_a_clerk_cannot_approve_and_the_billing_supervisors_own_correction_applies_at_once(): void
     {
         $id = $this->file($this->clerk, $this->payment, $this->change(amount: 1000))->assertCreated()->json('data.id');
 
@@ -125,15 +125,10 @@ class PaymentCorrectionTest extends TestCase
 
         $this->actingAs($this->supervisor)->postJson("/api/blood-center/corrections/{$id}/reject", ['note' => 'Not needed.'])->assertOk();
 
-        $mine = $this->file($this->supervisor, $this->payment, $this->change(amount: 900))->assertCreated()->json('data.id');
-
-        $peer = User::factory()->bloodCenterStaff($this->centre, StaffRole::BillingSupervisor)->create();
-
-        $this->actingAs($this->supervisor)->postJson("/api/blood-center/corrections/{$mine}/approve")
-            ->assertStatus(409)->assertJsonPath('code', 'self_approval');
-        $this->actingAs($peer)->postJson("/api/blood-center/corrections/{$mine}/approve")
-            ->assertForbidden()->assertJsonPath('code', 'not_the_approver');
-        $this->actingAs($this->centerAdmin)->postJson("/api/blood-center/corrections/{$mine}/approve")->assertOk();
+        // Billing's head needs no other approval for their own correction.
+        $this->file($this->supervisor, $this->payment, $this->change(amount: 900))
+            ->assertCreated()
+            ->assertJsonPath('data.status', 'approved');
 
         $this->assertSame('900.00', $this->payment->refresh()->amount_paid);
     }

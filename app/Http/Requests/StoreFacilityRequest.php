@@ -19,7 +19,7 @@ use Illuminate\Validation\Rules\Password;
  * applicant awaiting approval — into a flow that has neither.
  *
  * Nothing here can reach the approval trail, the facility type id, the role or
- * the supervisor flag. Those are derived server-side from the validated
+ * the management level. Those are derived server-side from the validated
  * facility_type and the authenticated administrator.
  */
 class StoreFacilityRequest extends FormRequest

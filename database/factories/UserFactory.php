@@ -5,6 +5,7 @@ namespace Database\Factories;
 use App\Enums\AccountStatus;
 use App\Enums\Department;
 use App\Enums\HospitalRole;
+use App\Enums\ManagementLevel;
 use App\Enums\RoleName;
 use App\Enums\StaffRole;
 use App\Models\DonorProfile;
@@ -163,27 +164,42 @@ class UserFactory extends Factory
             'facility_id' => $facility->id,
             'position' => 'Medical Technologist',
             'staff_role' => $role,
-            'is_supervisor' => false,
+            'management_level' => null,
         ])->withRole(RoleName::BloodCenter);
     }
 
     /**
-     * Create a blood-centre supervisor: the management level, holding every ability.
+     * Create a Blood Center Admin: staff accounts, roles, settings and
+     * escalated correction decisions, but no department work.
      *
-     * Passing a role (or a department, read as its default role) produces a
-     * working supervisor. Leaving it null produces a management-only one.
-     * Neither narrows what they may do — the role only records where they sit.
+     * Passing a role (or a department, read as its default role) produces an
+     * Admin who also does that role's work. Leaving it null produces one with
+     * no post, as a facility's primary account is.
+     */
+    public function bloodCenterAdmin(?Facility $facility = null, Department|StaffRole|null $post = null): static
+    {
+        return $this->managementLevel(ManagementLevel::Admin, 'Blood Center Admin', $facility, $post);
+    }
+
+    /**
+     * Create a view-only Supervisor: the dashboard, the reports and the
+     * monitoring pages, and nothing that records or decides.
      */
     public function bloodCenterSupervisor(?Facility $facility = null, Department|StaffRole|null $post = null): static
+    {
+        return $this->managementLevel(ManagementLevel::Supervisor, 'Blood Center Supervisor', $facility, $post);
+    }
+
+    private function managementLevel(ManagementLevel $level, string $position, ?Facility $facility, Department|StaffRole|null $post): static
     {
         $facility ??= Facility::factory()->approved()->create();
         $role = self::roleFor($post);
 
         return $this->state(fn (array $attributes): array => [
             'facility_id' => $facility->id,
-            'position' => 'Blood Center Supervisor',
+            'position' => $position,
             'staff_role' => $role,
-            'is_supervisor' => true,
+            'management_level' => $level,
         ])->withRole(RoleName::BloodCenter);
     }
 
@@ -200,7 +216,7 @@ class UserFactory extends Factory
             'staff_role' => null,
             'custom_role' => $role,
             'department' => $department,
-            'is_supervisor' => false,
+            'management_level' => null,
         ])->withRole(RoleName::BloodCenter);
     }
 
@@ -239,7 +255,7 @@ class UserFactory extends Factory
             'facility_id' => $facility->id,
             'position' => 'Medical Technologist',
             'staff_role' => null,
-            'is_supervisor' => false,
+            'management_level' => null,
             // The Head can do everything, as every hospital account could
             // before roles; narrow it with hospitalRole().
             'hospital_role' => HospitalRole::Head,

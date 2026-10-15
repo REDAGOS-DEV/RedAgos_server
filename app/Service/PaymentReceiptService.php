@@ -2,6 +2,8 @@
 
 namespace App\Service;
 
+use App\Enums\PaymentMethod;
+use App\Enums\PaymentStatus;
 use App\Models\BillingRevision;
 use App\Models\BloodRequest;
 use App\Models\Payment;
@@ -15,14 +17,18 @@ use App\Support\OperationalDay;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Response;
 
 /**
- * Payment Acknowledgement Receipts: one per confirmed payment, never for anything less.
+ * Payment Acknowledgement Receipts: one for each payment handed over, never for anything less.
  *
  * Issued in the same transaction that records the payment, cash or gateway,
  * and numbered AR-{facility}-{seq} from the issuing centre's receipt counter.
+ * A payment split across methods at the counter is one receipt that lists each
+ * part (project owner, 2026-10-15), not one receipt per method.
+ *
  * Everything the printed receipt shows is frozen in its snapshot, including
  * the balance before and after the payment, so a partial payment can never
  * read as settling the whole statement and a later change can never alter a
@@ -40,15 +46,21 @@ class PaymentReceiptService
     ) {}
 
     /**
-     * Issue the receipt for a payment just recorded.
+     * Issue the receipt for a payment just recorded, or one receipt for every part of a split.
      *
-     * Must run inside the transaction that recorded the payment, after the
+     * Must run inside the transaction that recorded the payments, after the
      * request and billing locks; the receipt number is taken last.
      *
-     * @param  int  $balanceBefore  What was outstanding immediately before this payment, in centavos.
+     * The snapshot's `payment` describes the whole of what was handed over:
+     * a split reads as "Cash + Card", with the cash part's tendered amount and
+     * change. `tenders` lists each part with its own method, amount and
+     * reference.
+     *
+     * @param  Payment|array<int, Payment>  $payments  In the order they were recorded.
+     * @param  int  $balanceBefore  What was outstanding immediately before them, in centavos.
      */
     public function issue(
-        Payment $payment,
+        Payment|array $payments,
         BloodRequest $request,
         ?BillingRevision $revision,
         int $balanceBefore,
@@ -56,16 +68,21 @@ class PaymentReceiptService
         ?string $payerName,
         ?PaymentReceipt $replaces = null
     ): PaymentReceipt {
+        $payments = is_array($payments) ? array_values($payments) : [$payments];
+        $first = $payments[0];
+        $cash = collect($payments)->first(fn (Payment $payment): bool => $payment->payment_method === PaymentMethod::Cash);
+        $split = count($payments) > 1;
+
         $facilityId = (int) $request->target_facility_id;
         $number = DocumentNumbering::format('AR', $facilityId, $this->sequences->next($facilityId, 'receipt'));
-        $paid = Money::toCentavos($payment->amount_paid);
+        $paid = array_sum(array_map(fn (Payment $payment): int => Money::toCentavos($payment->amount_paid), $payments));
         $balanceAfter = $balanceBefore - $paid;
         $issuedAt = now();
 
         $request->loadMissing(['requestingFacility', 'targetFacility']);
 
-        return PaymentReceipt::query()->create([
-            'payment_id' => $payment->id,
+        $receipt = PaymentReceipt::query()->create([
+            'payment_id' => $first->id,
             'issuing_facility_id' => $facilityId,
             'receipt_number' => $number,
             'replaces_receipt_id' => $replaces?->id,
@@ -110,22 +127,38 @@ class PaymentReceiptService
                 'balance_after' => Money::toDecimal($balanceAfter),
                 'is_partial' => $balanceAfter > 0,
                 'payment' => [
-                    'method' => $payment->payment_method->value,
-                    'method_label' => $payment->payment_method->label(),
-                    'reference_number' => $payment->reference_number,
+                    'method' => $split ? 'split' : $first->payment_method->value,
+                    'method_label' => implode(' + ', array_map(fn (Payment $payment): string => $payment->payment_method->label(), $payments)),
+                    // A split's references are on its parts, under tenders.
+                    'reference_number' => $split ? null : $first->reference_number,
                     // Card only: the cardholder's last name. Kept beside the
                     // reference and, like it, off the hospital's projection.
+                    'additional_information' => $split ? null : $first->additional_information,
+                    'source' => $first->source->value,
+                    'paid_at' => $first->payment_date?->toIso8601String(),
+                    // Cash at the counter: what was handed over, and the change
+                    // given back. A split has at most one cash part.
+                    'amount_tendered' => $cash?->amount_tendered,
+                    'change_given' => $cash?->change_given,
+                    'cash_session_number' => $first->cashSession?->session_number,
+                ],
+                'tenders' => array_map(fn (Payment $payment): array => [
+                    'payment_id' => $payment->id,
+                    'method' => $payment->payment_method->value,
+                    'method_label' => $payment->payment_method->label(),
+                    'amount_paid' => Money::toDecimal(Money::toCentavos($payment->amount_paid)),
+                    'reference_number' => $payment->reference_number,
                     'additional_information' => $payment->additional_information,
-                    'source' => $payment->source->value,
-                    'paid_at' => $payment->payment_date?->toIso8601String(),
-                    // Cash at the counter: what was handed over, and the change given back.
                     'amount_tendered' => $payment->amount_tendered,
                     'change_given' => $payment->change_given,
-                    'cash_session_number' => $payment->cashSession?->session_number,
-                ],
+                ], $payments),
                 'replaces_receipt_number' => $replaces?->receipt_number,
             ],
         ]);
+
+        $receipt->payments()->attach(array_map(fn (Payment $payment): int => $payment->id, $payments));
+
+        return $receipt;
     }
 
     /**
@@ -134,8 +167,9 @@ class PaymentReceiptService
      * The replacement keeps the balance the payment was made against and the
      * payer named on the original, shows the corrected amount, method and
      * reference, and names the receipt it replaces; the original stays on
-     * record, voided. A payment recorded before receipts existed has none to
-     * replace, and gets none now.
+     * record, voided. A split's receipt is reissued whole, every part still
+     * on it, with the corrected one as it now stands. A payment recorded before
+     * receipts existed has none to replace, and gets none now.
      *
      * Must run inside the transaction that applied the correction.
      */
@@ -153,8 +187,12 @@ class PaymentReceiptService
             'void_reason' => $reason,
         ])->save();
 
+        $payments = $this->stillReceived($current)
+            ->map(fn (Payment $payment): Payment => $payment->is($lockedPayment) ? $lockedPayment : $payment)
+            ->all();
+
         return $this->issue(
-            $lockedPayment,
+            $payments,
             $lockedRequest,
             $lockedPayment->revision,
             Money::toCentavos($current->snapshot['balance_before'] ?? '0'),
@@ -162,6 +200,66 @@ class PaymentReceiptService
             $current->snapshot['payer_name'] ?? null,
             $current
         );
+    }
+
+    /**
+     * Void the receipt of a payment being voided, and reissue it for any part of a split still standing.
+     *
+     * A split's receipt covers every part, so voiding one part must not leave
+     * the others without a receipt. They get a new one for what they still add
+     * up to, made against the same balance and naming the receipt it replaces.
+     *
+     * Must run inside the transaction that voids the payment, after the payment
+     * has been marked voided.
+     *
+     * @return array{0: PaymentReceipt|null, 1: PaymentReceipt|null} The receipt voided, and its replacement if there is one.
+     */
+    public function voidFor(Payment $lockedPayment, BloodRequest $lockedRequest, User $approver, string $reason): array
+    {
+        $current = $lockedPayment->receipts()->active()->first();
+
+        if ($current === null) {
+            return [null, null];
+        }
+
+        $current->forceFill([
+            'voided_at' => now(),
+            'voided_by' => $approver->id,
+            'void_reason' => 'Payment voided: '.mb_substr($reason, 0, 230),
+        ])->save();
+
+        $standing = $this->stillReceived($current)
+            ->reject(fn (Payment $payment): bool => $payment->is($lockedPayment))
+            ->values()
+            ->all();
+
+        if ($standing === []) {
+            return [$current, null];
+        }
+
+        return [$current, $this->issue(
+            $standing,
+            $lockedRequest,
+            $standing[0]->revision,
+            Money::toCentavos($current->snapshot['balance_before'] ?? '0'),
+            $approver,
+            $current->snapshot['payer_name'] ?? null,
+            $current
+        )];
+    }
+
+    /**
+     * The payments on a receipt that have not been voided, in the order they were recorded.
+     *
+     * @return Collection<int, Payment>
+     */
+    private function stillReceived(PaymentReceipt $receipt): Collection
+    {
+        return $receipt->payments()
+            ->with('cashSession')
+            ->get()
+            ->reject(fn (Payment $payment): bool => $payment->status === PaymentStatus::Voided)
+            ->values();
     }
 
     /**
@@ -212,6 +310,15 @@ class PaymentReceiptService
                 'change_given' => $snapshot['payment']['change_given'] ?? null,
                 'cash_session_number' => $snapshot['payment']['cash_session_number'] ?? null,
             ],
+            // Each part of a payment split across methods, without its
+            // reference, for the same reason as above. A receipt issued
+            // before receipts listed their parts has none.
+            'tenders' => array_map(fn (array $tender): array => [
+                'method_label' => $tender['method_label'] ?? null,
+                'amount_paid' => $tender['amount_paid'] ?? null,
+                'amount_tendered' => $tender['amount_tendered'] ?? null,
+                'change_given' => $tender['change_given'] ?? null,
+            ], $snapshot['tenders'] ?? []),
             // Empty on a receipt issued before receipts carried their lines.
             'lines' => $snapshot['lines'] ?? [],
         ];

@@ -37,7 +37,8 @@ class BloodCenterReceiptController extends Controller
      * The projection leaves the payment reference and a card payment's
      * additional information out, because the hospital reads it too; billing
      * staff here may read both, as the payments list shows them, so they are
-     * added beside it.
+     * added beside it. For a payment split across methods, each part's are in
+     * payment_parts.
      */
     public function show(Request $request, int $receipt): JsonResponse
     {
@@ -47,6 +48,12 @@ class BloodCenterReceiptController extends Controller
             'receipt' => $this->receipts->format($found),
             'payment_reference' => $found->snapshot['payment']['reference_number'] ?? null,
             'payment_additional_information' => $found->snapshot['payment']['additional_information'] ?? null,
+            'payment_parts' => array_map(fn (array $tender): array => [
+                'method_label' => $tender['method_label'] ?? null,
+                'amount_paid' => $tender['amount_paid'] ?? null,
+                'reference_number' => $tender['reference_number'] ?? null,
+                'additional_information' => $tender['additional_information'] ?? null,
+            ], $found->snapshot['tenders'] ?? []),
         ]);
     }
 

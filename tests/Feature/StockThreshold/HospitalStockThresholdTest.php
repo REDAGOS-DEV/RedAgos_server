@@ -150,7 +150,7 @@ class HospitalStockThresholdTest extends TestCase
 
     public function test_the_two_portals_are_closed_to_each_others_accounts(): void
     {
-        $centreStaff = User::factory()->bloodCenterStaff()->create(['is_supervisor' => true]);
+        $centreStaff = User::factory()->bloodCenterAdmin()->create();
 
         $this->actingAs($centreStaff)->getJson('/api/hospital/inventory/thresholds')->assertForbidden();
         $this->actingAs($this->staff)->getJson('/api/blood-center/inventory/thresholds')->assertForbidden();

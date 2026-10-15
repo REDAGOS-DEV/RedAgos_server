@@ -399,7 +399,6 @@ class InventoryIntakeTest extends TestCase
         $lab = User::factory()->bloodCenterStaff()->create([
             'facility_id' => $this->facilityId,
             'staff_role' => StaffRole::ComponentTechnologist,
-            'is_supervisor' => false,
         ]);
 
         $this->actingAs($lab)

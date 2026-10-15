@@ -43,7 +43,7 @@ class StockAlertNotifier
      *
      * A blood centre tells whoever can see its inventory: the ability, not a
      * department, so a custom role capped below `inventory.view` is correctly
-     * left out and a supervisor is correctly in. A hospital blood bank has no
+     * left out and the Admin and Supervisor, who both monitor stock, are in. A hospital blood bank has no
      * departments or abilities, so every account there does the same job and
      * every account hears.
      *

@@ -302,7 +302,7 @@ class FacilityManagementService
             'position' => $account->position,
             'account_status' => $account->account_status?->value,
             'email_verified' => $account->hasVerifiedEmail(),
-            'is_supervisor' => (bool) $account->is_supervisor,
+            'management_level' => $account->management_level?->value,
         ];
     }
 }

@@ -222,10 +222,15 @@ class DonorDirectoryTest extends TestCase
         $this->actingAs($lab)->getJson('/api/blood-center/donors')->assertForbidden();
     }
 
-    public function test_a_supervisor_may_browse_donors(): void
+    public function test_neither_management_level_browses_donors(): void
     {
-        $supervisor = User::factory()->bloodCenterSupervisor($this->facility)->create();
-
-        $this->actingAs($supervisor)->getJson('/api/blood-center/donors')->assertOk();
+        // Donor records are Collection's. The Admin and the Supervisor watch
+        // the centre's numbers, not its donors.
+        foreach ([
+            User::factory()->bloodCenterAdmin($this->facility)->create(),
+            User::factory()->bloodCenterSupervisor($this->facility)->create(),
+        ] as $manager) {
+            $this->actingAs($manager)->getJson('/api/blood-center/donors')->assertForbidden();
+        }
     }
 }

@@ -69,7 +69,7 @@ class CreateFacilityTest extends TestCase
         $primary = User::where('email', 'maria@redagos.test')->sole();
 
         $this->assertSame($facility->id, $primary->facility_id);
-        $this->assertTrue($primary->is_supervisor);
+        $this->assertTrue($primary->isCenterAdmin());
         $this->assertNull($primary->department);
         $this->assertTrue($primary->hasRole(RoleName::BloodCenter));
         $this->assertSame($primary->id, $facility->registration_contact_user_id);

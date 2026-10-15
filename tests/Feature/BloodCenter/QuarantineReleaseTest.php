@@ -25,7 +25,8 @@ use Tests\TestCase;
  * The quarantine lifecycle: booked in held back, released only on both clearance tokens.
  *
  * Every refusal here is enforced in the service, not the gate, so each is also
- * asserted against a supervisor, who holds every ability.
+ * asserted against the most privileged account that can reach the route: the
+ * Center Admin working as the Inventory Control Officer.
  */
 class QuarantineReleaseTest extends TestCase
 {
@@ -35,7 +36,7 @@ class QuarantineReleaseTest extends TestCase
 
     private User $officer;
 
-    private User $supervisor;
+    private User $admin;
 
     private Donation $donation;
 
@@ -45,7 +46,7 @@ class QuarantineReleaseTest extends TestCase
 
         $this->facility = Facility::factory()->approved()->create();
         $this->officer = User::factory()->bloodCenterStaff($this->facility, StaffRole::InventoryControlOfficer)->create();
-        $this->supervisor = User::factory()->bloodCenterSupervisor($this->facility)->create();
+        $this->admin = User::factory()->bloodCenterAdmin($this->facility, StaffRole::InventoryControlOfficer)->create();
 
         $this->donation = Donation::factory()->create([
             'facility_id' => $this->facility->id,
@@ -97,11 +98,11 @@ class QuarantineReleaseTest extends TestCase
         $this->assertDatabaseHas('audit_logs', ['action' => 'inventory.released_from_quarantine', 'actor_id' => $this->officer->id]);
     }
 
-    public function test_no_tokens_no_release_even_for_a_supervisor(): void
+    public function test_no_tokens_no_release_even_for_the_admin(): void
     {
         $this->held();
 
-        foreach ([$this->officer, $this->supervisor] as $actor) {
+        foreach ([$this->officer, $this->admin] as $actor) {
             $this->release($actor)->assertStatus(409)->assertJsonPath('code', 'tti_not_cleared');
         }
 
@@ -113,7 +114,7 @@ class QuarantineReleaseTest extends TestCase
         $this->held();
         $this->clear(ClearanceKind::Tti);
 
-        $this->release($this->supervisor)->assertStatus(409)->assertJsonPath('code', 'immunohematology_not_cleared');
+        $this->release($this->admin)->assertStatus(409)->assertJsonPath('code', 'immunohematology_not_cleared');
 
         $this->assertSame(['quarantined'], $this->statuses());
     }
@@ -124,7 +125,7 @@ class QuarantineReleaseTest extends TestCase
         $this->clear(ClearanceKind::Immunohematology);
         $this->donation->update(['status' => DonationStatus::Rejected]);
 
-        $this->release($this->supervisor)->assertStatus(409)->assertJsonPath('code', 'donation_rejected');
+        $this->release($this->admin)->assertStatus(409)->assertJsonPath('code', 'donation_rejected');
 
         // Discard is the only way out.
         $unit = BloodUnit::where('donation_id', $this->donation->id)->first();
@@ -184,7 +185,7 @@ class QuarantineReleaseTest extends TestCase
         $this->held(1);
         $unit = BloodUnit::where('donation_id', $this->donation->id)->first();
 
-        $this->actingAs($this->supervisor)
+        $this->actingAs($this->admin)
             ->patchJson("/api/blood-center/inventory/{$unit->id}", [
                 'storage_location' => 'Quarantine Fridge 2',
                 'expiry_date' => OperationalDay::today()->addDays(20)->toDateString(),
@@ -240,13 +241,13 @@ class QuarantineReleaseTest extends TestCase
 
         $token = DonationClearance::where('kind', 'tti')->sole();
         $token->revoked_at = now();
-        $token->revoked_by = $this->supervisor->id;
+        $token->revoked_by = $this->admin->id;
         $token->revoked_reason = 'Correction #1';
         $token->save();
 
         // Kept as history, but no longer in force.
         $this->assertSame(1, DonationClearance::where('kind', 'tti')->count());
-        $this->release($this->supervisor)->assertStatus(409)->assertJsonPath('code', 'tti_not_cleared');
+        $this->release($this->admin)->assertStatus(409)->assertJsonPath('code', 'tti_not_cleared');
 
         // Revocation is final: it cannot be undone or rewritten.
         $this->expectException(LogicException::class);
@@ -286,7 +287,7 @@ class QuarantineReleaseTest extends TestCase
         // which is the only way a token can go.
         DB::table('donation_clearances')->where('donation_id', $donation->id)->delete();
 
-        $this->actingAs($this->supervisor)
+        $this->actingAs($this->admin)
             ->postJson("/api/blood-center/blood-requests/{$request->id}/release")
             ->assertStatus(409)
             ->assertJsonPath('code', 'unit_not_cleared');

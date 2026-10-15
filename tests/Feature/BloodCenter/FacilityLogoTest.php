@@ -13,7 +13,7 @@ use Tests\TestCase;
 /**
  * A facility's own logo, for the reports it prints.
  *
- * A supervisor's setting, kept on the private disk, shown to the browser by an
+ * The Blood Center Admin's setting, kept on the private disk, shown to the browser by an
  * expiring signed link and to dompdf as inlined bytes.
  */
 class FacilityLogoTest extends TestCase
@@ -25,7 +25,7 @@ class FacilityLogoTest extends TestCase
 
     private Facility $facility;
 
-    private User $supervisor;
+    private User $admin;
 
     protected function setUp(): void
     {
@@ -34,7 +34,7 @@ class FacilityLogoTest extends TestCase
         Storage::fake('local');
 
         $this->facility = Facility::factory()->approved()->create();
-        $this->supervisor = User::factory()->bloodCenterSupervisor($this->facility)->create();
+        $this->admin = User::factory()->bloodCenterAdmin($this->facility)->create();
     }
 
     private function png(string $name = 'logo.png'): UploadedFile
@@ -42,9 +42,9 @@ class FacilityLogoTest extends TestCase
         return UploadedFile::fake()->createWithContent($name, base64_decode(self::PNG));
     }
 
-    public function test_a_supervisor_uploads_the_facility_logo(): void
+    public function test_an_admin_uploads_the_facility_logo(): void
     {
-        $url = $this->actingAs($this->supervisor)
+        $url = $this->actingAs($this->admin)
             ->post('/api/blood-center/facility/logo', ['logo' => $this->png()], ['Accept' => 'application/json'])
             ->assertOk()
             ->json('logo_url');
@@ -56,7 +56,7 @@ class FacilityLogoTest extends TestCase
         $this->assertStringContainsString('signature=', $url);
 
         $this->assertDatabaseHas('audit_logs', [
-            'actor_id' => $this->supervisor->id,
+            'actor_id' => $this->admin->id,
             'action' => 'center.logo_updated',
         ]);
     }
@@ -65,7 +65,7 @@ class FacilityLogoTest extends TestCase
     {
         Storage::fake('public');
 
-        $this->actingAs($this->supervisor)
+        $this->actingAs($this->admin)
             ->post('/api/blood-center/facility/logo', ['logo' => $this->png()], ['Accept' => 'application/json'])
             ->assertOk();
 
@@ -74,12 +74,12 @@ class FacilityLogoTest extends TestCase
 
     public function test_replacing_the_logo_deletes_the_old_file(): void
     {
-        $this->actingAs($this->supervisor)
+        $this->actingAs($this->admin)
             ->post('/api/blood-center/facility/logo', ['logo' => $this->png('first.png')], ['Accept' => 'application/json'])
             ->assertOk();
         $first = $this->facility->fresh()->logo_path;
 
-        $this->actingAs($this->supervisor)
+        $this->actingAs($this->admin)
             ->post('/api/blood-center/facility/logo', ['logo' => $this->png('second.png')], ['Accept' => 'application/json'])
             ->assertOk();
 
@@ -96,7 +96,7 @@ class FacilityLogoTest extends TestCase
         ];
 
         foreach ($refused as $file) {
-            $this->actingAs($this->supervisor)
+            $this->actingAs($this->admin)
                 ->post('/api/blood-center/facility/logo', ['logo' => $file], ['Accept' => 'application/json'])
                 ->assertStatus(422)
                 ->assertJsonValidationErrors('logo');
@@ -105,22 +105,25 @@ class FacilityLogoTest extends TestCase
         $this->assertNull($this->facility->fresh()->logo_path);
     }
 
-    public function test_only_a_supervisor_may_change_it(): void
+    public function test_only_the_admin_may_change_it(): void
     {
         $issuance = User::factory()->bloodCenterStaff($this->facility, Department::Issuance)->create();
+        $supervisor = User::factory()->bloodCenterSupervisor($this->facility)->create();
 
-        $this->actingAs($issuance)
-            ->post('/api/blood-center/facility/logo', ['logo' => $this->png()], ['Accept' => 'application/json'])
-            ->assertForbidden();
+        foreach ([$issuance, $supervisor] as $user) {
+            $this->actingAs($user)
+                ->post('/api/blood-center/facility/logo', ['logo' => $this->png()], ['Accept' => 'application/json'])
+                ->assertForbidden();
 
-        $this->actingAs($issuance)->deleteJson('/api/blood-center/facility/logo')->assertForbidden();
+            $this->actingAs($user)->deleteJson('/api/blood-center/facility/logo')->assertForbidden();
+        }
     }
 
-    public function test_a_supervisor_changes_only_their_own_facility(): void
+    public function test_an_admin_changes_only_their_own_facility(): void
     {
         $other = Facility::factory()->approved()->create();
 
-        $this->actingAs($this->supervisor)
+        $this->actingAs($this->admin)
             ->post('/api/blood-center/facility/logo', [
                 'logo' => $this->png(),
                 'facility_id' => $other->id,
@@ -133,12 +136,12 @@ class FacilityLogoTest extends TestCase
 
     public function test_removing_the_logo_deletes_the_file(): void
     {
-        $this->actingAs($this->supervisor)
+        $this->actingAs($this->admin)
             ->post('/api/blood-center/facility/logo', ['logo' => $this->png()], ['Accept' => 'application/json'])
             ->assertOk();
         $path = $this->facility->fresh()->logo_path;
 
-        $this->actingAs($this->supervisor)
+        $this->actingAs($this->admin)
             ->deleteJson('/api/blood-center/facility/logo')
             ->assertOk()
             ->assertJsonPath('logo_url', null);
@@ -149,7 +152,7 @@ class FacilityLogoTest extends TestCase
 
     public function test_the_signed_link_serves_the_logo_and_an_unsigned_one_does_not(): void
     {
-        $url = $this->actingAs($this->supervisor)
+        $url = $this->actingAs($this->admin)
             ->post('/api/blood-center/facility/logo', ['logo' => $this->png()], ['Accept' => 'application/json'])
             ->json('logo_url');
 
@@ -160,33 +163,36 @@ class FacilityLogoTest extends TestCase
 
     public function test_the_profile_carries_the_logo_link(): void
     {
-        $this->actingAs($this->supervisor)
+        $this->actingAs($this->admin)
             ->getJson('/api/blood-center/profile')
             ->assertOk()
             ->assertJsonPath('facility.logo_url', null);
 
-        $this->actingAs($this->supervisor)
+        $this->actingAs($this->admin)
             ->post('/api/blood-center/facility/logo', ['logo' => $this->png()], ['Accept' => 'application/json'])
             ->assertOk();
 
         $this->assertStringContainsString(
             'signature=',
-            (string) $this->actingAs($this->supervisor)->getJson('/api/blood-center/profile')->json('facility.logo_url')
+            (string) $this->actingAs($this->admin)->getJson('/api/blood-center/profile')->json('facility.logo_url')
         );
     }
 
     public function test_the_stock_report_pdf_prints_with_the_logo(): void
     {
-        $this->actingAs($this->supervisor)
+        $this->actingAs($this->admin)
             ->post('/api/blood-center/facility/logo', ['logo' => $this->png()], ['Accept' => 'application/json'])
             ->assertOk();
 
-        $this->actingAs($this->supervisor)
+        // The Admin sets the logo; Issuance prints the sheet that carries it.
+        $issuance = User::factory()->bloodCenterStaff($this->facility, Department::Issuance)->create();
+
+        $this->actingAs($issuance)
             ->getJson('/api/blood-center/inventory/stock-report')
             ->assertOk()
             ->assertJsonPath('facility.logo_url', fn (?string $url): bool => str_contains((string) $url, 'signature='));
 
-        $this->actingAs($this->supervisor)
+        $this->actingAs($issuance)
             ->get('/api/blood-center/inventory/stock-report/pdf')
             ->assertOk()
             ->assertHeader('content-type', 'application/pdf');

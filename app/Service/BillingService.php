@@ -516,7 +516,44 @@ class BillingService
      */
     public function recordPayment(User $actor, Billing $billing, array $payload): array
     {
-        return DocumentNumbering::transaction(function () use ($actor, $billing, $payload): array {
+        return $this->takeAtCounter($actor, $billing, [$payload], $payload['payer_name'] ?? null, split: false);
+    }
+
+    /**
+     * Record one payment at the counter split across methods, all or nothing, on one receipt.
+     *
+     * Asked for by the project owner on 2026-10-11: the payer hands over less
+     * cash than is due and pays the rest by card, GCash or bank transfer. Each
+     * part is its own payment and journal row, held to the balance the parts
+     * before it left. All the parts share one receipt that lists each of them,
+     * not a receipt per method (project owner, 2026-10-15), and one statement
+     * revision. They share one transaction: a part refused — a reference
+     * already used, an amount beyond what is left — refuses the lot, and the
+     * counter never has half a payment on record.
+     *
+     * @param  array{tenders: array<int, array<string, mixed>>, payer_name?: string|null}  $payload  Validated by RecordSplitPaymentRequest.
+     * @return array<string, mixed>
+     */
+    public function recordSplitPayment(User $actor, Billing $billing, array $payload): array
+    {
+        return $this->takeAtCounter($actor, $billing, array_values($payload['tenders']), $payload['payer_name'] ?? null, split: true);
+    }
+
+    /**
+     * Record what was handed over at the counter, in one or more parts, and issue its one receipt.
+     *
+     * A refusal of a split's part is keyed `tenders.N.field`, so the counter can
+     * point to the part it came from.
+     *
+     * Numbers are taken in the order every writer takes them: the statement
+     * revision, then the receipt, then a journal row for each part.
+     *
+     * @param  array<int, array<string, mixed>>  $tenders
+     * @return array<string, mixed>
+     */
+    private function takeAtCounter(User $actor, Billing $billing, array $tenders, ?string $payerName, bool $split): array
+    {
+        return DocumentNumbering::transaction(function () use ($actor, $billing, $tenders, $payerName, $split): array {
             // Worked out from the locked statement, not the one the caller
             // loaded: a correction approved a moment ago may have changed
             // what has been collected, and this must not put the old status back.
@@ -529,129 +566,95 @@ class BillingService
             $shift = $this->cashSessions->enabled() ? $this->cashSessions->lockOpenShiftOf($actor) : null;
 
             $balanceBefore = $this->outstandingFor($statement);
-            $paid = Money::toCentavos($payload['amount_paid']);
+            $left = $balanceBefore;
+            $parts = [];
 
-            if ($paid > $balanceBefore) {
-                throw ValidationException::withMessages([
-                    'amount_paid' => ['Only '.Money::toDecimal($balanceBefore).' is outstanding. Record that much; anything handed over beyond it is change.'],
-                ]);
-            }
+            foreach ($tenders as $index => $tender) {
+                $field = fn (string $name): string => $split ? "tenders.{$index}.{$name}" : $name;
+                $paid = Money::toCentavos($tender['amount_paid']);
 
-            $isCash = $payload['payment_method'] === PaymentMethod::Cash->value;
-            $tendered = $isCash ? Money::toCentavos($payload['amount_tendered'] ?? $payload['amount_paid']) : null;
+                if ($paid > $left) {
+                    throw ValidationException::withMessages([
+                        $field('amount_paid') => ['Only '.Money::toDecimal($left).' is outstanding. Record that much; anything handed over beyond it is change.'],
+                    ]);
+                }
 
-            if ($tendered !== null && $tendered < $paid) {
-                throw ValidationException::withMessages([
-                    'amount_tendered' => ['The cash handed over is less than the amount being recorded.'],
-                ]);
+                $isCash = $tender['payment_method'] === PaymentMethod::Cash->value;
+                $tendered = $isCash ? Money::toCentavos($tender['amount_tendered'] ?? $tender['amount_paid']) : null;
+
+                if ($tendered !== null && $tendered < $paid) {
+                    throw ValidationException::withMessages([
+                        $field('amount_tendered') => ['The cash handed over is less than the amount being recorded.'],
+                    ]);
+                }
+
+                $parts[] = ['tender' => $tender, 'paid' => $paid, 'tendered' => $tendered];
+                $left -= $paid;
             }
 
             [$revision] = $this->statements->issueOrReuse($request, $statement, $actor, 'payment');
 
-            $payment = Payment::query()->create([
+            $payments = array_map(fn (array $part): Payment => Payment::query()->create([
                 'billing_id' => $statement->id,
                 'billing_revision_id' => $revision->id,
                 'cash_session_id' => $shift?->id,
-                'amount_paid' => Money::toDecimal($paid),
-                'amount_tendered' => $tendered === null ? null : Money::toDecimal($tendered),
-                'change_given' => $tendered === null ? null : Money::toDecimal($tendered - $paid),
-                'payment_method' => $payload['payment_method'],
-                'reference_number' => $payload['reference_number'] ?? null,
-                'additional_information' => $payload['additional_information'] ?? null,
+                'amount_paid' => Money::toDecimal($part['paid']),
+                'amount_tendered' => $part['tendered'] === null ? null : Money::toDecimal($part['tendered']),
+                'change_given' => $part['tendered'] === null ? null : Money::toDecimal($part['tendered'] - $part['paid']),
+                'payment_method' => $part['tender']['payment_method'],
+                'reference_number' => $part['tender']['reference_number'] ?? null,
+                'additional_information' => $part['tender']['additional_information'] ?? null,
                 'status' => PaymentStatus::Completed,
                 'source' => PaymentSource::Manual,
                 'recorded_by' => $actor->id,
                 'payment_date' => now(),
-            ]);
+            ]), $parts);
 
             $collected = $this->applyCollected($statement);
 
-            $receipt = $this->receipts->issue(
-                $payment,
-                $request,
-                $revision,
-                $balanceBefore,
-                $actor,
-                $payload['payer_name'] ?? null
-            );
+            $receipt = $this->receipts->issue($payments, $request, $revision, $balanceBefore, $actor, $payerName);
 
-            $this->ledger->post(
-                $statement,
-                $request,
-                TransactionType::Payment,
-                TransactionChannel::Counter,
-                -$paid,
-                $actor,
-                payment: $payment,
-                receipt: $receipt,
-                revision: $revision,
-                cashSessionId: $shift?->id,
-                reference: $payment->reference_number,
-            );
+            foreach ($payments as $index => $payment) {
+                $paid = $parts[$index]['paid'];
+                $tendered = $parts[$index]['tendered'];
 
-            $this->auditLogger->record($actor, 'billing.payment_recorded', $statement, [
-                'payment_id' => $payment->id,
-                'amount_paid' => Money::toFloat($paid),
-                'payment_method' => $payment->payment_method->value,
-                'collected' => Money::toFloat($collected),
-                'status' => $statement->status->value,
-                'receipt_number' => $receipt->receipt_number,
-                'cash_session' => $shift?->session_number,
-                'change_given' => $tendered === null ? null : Money::toFloat($tendered - $paid),
-            ]);
+                $this->ledger->post(
+                    $statement,
+                    $request,
+                    TransactionType::Payment,
+                    TransactionChannel::Counter,
+                    -$paid,
+                    $actor,
+                    payment: $payment,
+                    receipt: $receipt,
+                    revision: $revision,
+                    cashSessionId: $shift?->id,
+                    reference: $payment->reference_number,
+                );
 
-            $change = $tendered === null ? 0 : $tendered - $paid;
-
-            return [
-                'message' => $change > 0 ? 'Payment recorded. Change due: '.Money::toDecimal($change).'.' : 'Payment recorded.',
-                'billing' => $this->format($statement->fresh()),
-                'receipt' => $this->receipts->format($receipt),
-                'change_given' => $tendered === null ? null : Money::toDecimal($change),
-            ];
-        });
-    }
-
-    /**
-     * Record one payment at the counter split across methods, all or nothing.
-     *
-     * Asked for by the project owner on 2026-10-11: the payer hands over less
-     * cash than is due and pays the rest by card, GCash or bank transfer. Each
-     * part is an ordinary payment with its own receipt and journal row,
-     * recorded in order by recordPayment(), so each is held to the balance the
-     * parts before it left. They share one transaction: a part refused — a
-     * reference already used, an amount beyond what is left — refuses the lot,
-     * and the counter never has half a payment on record.
-     *
-     * @param  array{tenders: array<int, array<string, mixed>>, payer_name?: string|null}  $payload  Validated by RecordSplitPaymentRequest.
-     * @return array<string, mixed>
-     */
-    public function recordSplitPayment(User $actor, Billing $billing, array $payload): array
-    {
-        return DocumentNumbering::transaction(function () use ($actor, $billing, $payload): array {
-            $parts = [];
-
-            foreach (array_values($payload['tenders']) as $index => $tender) {
-                try {
-                    $parts[] = $this->recordPayment($actor, $billing, [
-                        ...$tender,
-                        'payer_name' => $payload['payer_name'] ?? null,
-                    ]);
-                } catch (ValidationException $exception) {
-                    // Said against the part that was refused, so the counter can point to it.
-                    throw ValidationException::withMessages(collect($exception->errors())
-                        ->mapWithKeys(fn (array $messages, string $field): array => ["tenders.{$index}.{$field}" => $messages])
-                        ->all());
-                }
+                $this->auditLogger->record($actor, 'billing.payment_recorded', $statement, [
+                    'payment_id' => $payment->id,
+                    'amount_paid' => Money::toFloat($paid),
+                    'payment_method' => $payment->payment_method->value,
+                    'collected' => Money::toFloat($collected),
+                    'status' => $statement->status->value,
+                    'receipt_number' => $receipt->receipt_number,
+                    'split_parts' => $split ? count($payments) : null,
+                    'cash_session' => $shift?->session_number,
+                    'change_given' => $tendered === null ? null : Money::toFloat($tendered - $paid),
+                ]);
             }
 
-            $change = collect($parts)->pluck('change_given')->filter(fn (?string $value): bool => $value !== null)->first();
+            // Only cash gives change, and a split has at most one cash part.
+            $cash = collect($parts)->first(fn (array $part): bool => $part['tendered'] !== null);
+            $change = $cash === null ? null : $cash['tendered'] - $cash['paid'];
+            $recorded = $split ? 'Payment recorded in '.count($payments).' parts.' : 'Payment recorded.';
 
             return [
-                'message' => 'Payment recorded in '.count($parts).' parts.'
-                    .($change !== null && Money::toCentavos($change) > 0 ? ' Change due: '.$change.'.' : ''),
-                'billing' => end($parts)['billing'],
-                'receipts' => array_column($parts, 'receipt'),
-                'change_given' => $change,
+                'message' => $change > 0 ? $recorded.' Change due: '.Money::toDecimal($change).'.' : $recorded,
+                'billing' => $this->format($statement->fresh()),
+                'receipt' => $this->receipts->format($receipt),
+                'change_given' => $change === null ? null : Money::toDecimal($change),
             ];
         });
     }
@@ -922,10 +925,12 @@ class BillingService
      * and is never voided here.
      *
      * The payment stays on the ledger, marked voided with who decided and why,
-     * and stops counting as collected. Its receipt is voided. The statement is
-     * re-settled — which can reopen a balance, surfaced as outstanding if the
-     * units have already gone, as a correction does. The journal posts the
-     * reversal of the payment's own row, in the same shift when there is one.
+     * and stops counting as collected. Its receipt is voided; if that receipt
+     * also covered other parts of a split, those parts get a new receipt
+     * without it. The statement is re-settled — which can reopen a balance,
+     * surfaced as outstanding if the units have already gone, as a correction
+     * does. The journal posts the reversal of the payment's own row, in the
+     * same shift when there is one.
      *
      * Must be called inside a transaction that already holds the request, then
      * the billing row, then the payment — see lockForMutation(). Nothing here
@@ -955,13 +960,9 @@ class BillingService
             'void_reason' => mb_substr($reason, 0, 255),
         ])->save();
 
-        $receipt = $lockedPayment->receipts()->active()->first();
-
-        $receipt?->forceFill([
-            'voided_at' => now(),
-            'voided_by' => $approver->id,
-            'void_reason' => 'Payment voided: '.mb_substr($reason, 0, 230),
-        ])->save();
+        // Voided with the payment. The other parts of a split it covered get a
+        // receipt of their own, so they are not left without one.
+        [$receipt, $replacement] = $this->receipts->voidFor($lockedPayment, $lockedRequest, $approver, $reason);
 
         $this->applyCollected($lockedBilling);
 
@@ -995,6 +996,7 @@ class BillingService
             'status_to' => $lockedBilling->status->value,
             'request_status' => $lockedRequest->status->value,
             'receipt_number' => $receipt?->receipt_number,
+            'replacement_receipt_number' => $replacement?->receipt_number,
         ]);
     }
 

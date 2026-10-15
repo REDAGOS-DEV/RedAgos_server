@@ -447,22 +447,16 @@ class CollectionWorkflowTest extends TestCase
             ->assertStatus(409)
             ->assertJsonPath('code', 'correction_required');
 
-        $correction = $this->actingAs($this->physician)
+        // The physician is Collection's head, so their own correction needs
+        // no other approval: it is applied as it is filed.
+        $this->actingAs($this->physician)
             ->postJson("/api/blood-center/donations/{$id}/corrections", [
                 'subject' => 'screening',
                 'reason' => 'Typed 12.1 for 14.5.',
                 'changes' => ['outcome' => 'accepted', 'haemoglobin_g_dl' => 14.5],
             ])
             ->assertCreated()
-            ->json('data.id');
-
-        // The physician is Collection's approver, so their own request goes
-        // to the Center Admin.
-        $admin = User::factory()->bloodCenterSupervisor($this->facility)->create();
-
-        $this->actingAs($admin)
-            ->postJson("/api/blood-center/corrections/{$correction}/approve")
-            ->assertOk();
+            ->assertJsonPath('data.status', 'approved');
 
         $this->assertSame('14.5', (string) (float) DonationScreening::where('donation_id', $id)->value('haemoglobin_g_dl'));
 

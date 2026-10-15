@@ -3,6 +3,7 @@
 namespace App\Service;
 
 use App\Enums\Department;
+use App\Enums\ManagementLevel;
 use App\Enums\StaffRole;
 use App\Models\BloodRequest;
 use App\Models\User;
@@ -28,8 +29,10 @@ class BloodRequestNotifier
      * Addressed to whoever can act on it — the roles that decide on or
      * allocate against a request — rather than to a department, so an IT clerk
      * sitting in Issuance is not paged for a request they cannot touch.
-     * Supervisors are included because they hold every ability and may be the
-     * only account staffing a small centre out of hours.
+     * The Supervisor is included although they do not act on a request: they
+     * watch the centre's incoming requests, and a request waiting at a small
+     * centre out of hours should reach someone. The Blood Center Admin, who
+     * keeps the staff accounts and sees no requests, is not.
      */
     public function targetFacility(BloodRequest $request): void
     {
@@ -55,7 +58,7 @@ class BloodRequestNotifier
             ->where(function ($query) use ($roles, $departments): void {
                 $query->whereIn('staff_role', $roles)
                     ->orWhere(fn ($custom) => $custom->whereNotNull('custom_role')->whereIn('department', $departments))
-                    ->orWhere('is_supervisor', true);
+                    ->orWhere('management_level', ManagementLevel::Supervisor->value);
             })
             ->get();
 

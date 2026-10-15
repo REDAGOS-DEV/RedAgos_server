@@ -24,7 +24,7 @@ class BillingDocumentBrandingTest extends TestCase
 {
     use BuildsBillingFixtures, LazilyRefreshDatabase;
 
-    private User $centreSupervisor;
+    private User $centreAdmin;
 
     protected function setUp(): void
     {
@@ -34,7 +34,7 @@ class BillingDocumentBrandingTest extends TestCase
 
         $this->setUpBillingFixtures();
         $this->priceComponent(500);
-        $this->centreSupervisor = User::factory()->bloodCenterSupervisor($this->centre)->create();
+        $this->centreAdmin = User::factory()->bloodCenterAdmin($this->centre)->create();
     }
 
     public function test_a_statement_is_headed_by_the_issuing_centres_own_logo(): void
@@ -139,7 +139,7 @@ class BillingDocumentBrandingTest extends TestCase
 
     private function uploadLogo(UploadedFile $file): void
     {
-        $this->actingAs($this->centreSupervisor)
+        $this->actingAs($this->centreAdmin)
             ->post('/api/blood-center/facility/logo', ['logo' => $file], ['Accept' => 'application/json'])
             ->assertOk();
     }

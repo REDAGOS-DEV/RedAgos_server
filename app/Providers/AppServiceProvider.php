@@ -42,8 +42,8 @@ class AppServiceProvider extends ServiceProvider
      *
      * Registered as explicit gates rather than through Gate::before(), which
      * would return true ahead of every policy in the application and hand a
-     * supervisor ownership of every donor's appointment. A supervisor instead
-     * earns each ability by holding it in DepartmentPermissions.
+     * privileged account ownership of every donor's appointment. Every account
+     * instead earns each ability by holding it in DepartmentPermissions.
      */
     private function registerDepartmentGates(): void
     {

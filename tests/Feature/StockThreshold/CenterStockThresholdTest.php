@@ -32,7 +32,7 @@ class CenterStockThresholdTest extends TestCase
 
     private Facility $centre;
 
-    private User $supervisor;
+    private User $admin;
 
     private User $officer;
 
@@ -45,7 +45,7 @@ class CenterStockThresholdTest extends TestCase
         parent::setUp();
 
         $this->centre = Facility::factory()->approved()->create();
-        $this->supervisor = User::factory()->bloodCenterStaff($this->centre)->create(['is_supervisor' => true]);
+        $this->admin = User::factory()->bloodCenterAdmin($this->centre)->create();
         $this->officer = User::factory()->bloodCenterStaff($this->centre, StaffRole::InventoryControlOfficer)->create();
 
         $this->oPositive = $this->bloodType('O+');
@@ -179,13 +179,23 @@ class CenterStockThresholdTest extends TestCase
         $this->assertSame(12, $audit->context['minimum_units_after']);
     }
 
-    public function test_the_center_admin_can_set_a_threshold(): void
+    public function test_the_supervisor_reads_the_minimums_and_the_admin_sees_none(): void
     {
-        $this->actingAs($this->supervisor)
-            ->putJson('/api/blood-center/inventory/thresholds', ['thresholds' => [$this->payload('O+', $this->prbc, 7)]])
-            ->assertOk();
+        // The Supervisor monitors stock; setting the minimums is the Inventory
+        // Control Officer's alone. The Admin keeps staff accounts and sees no
+        // department pages.
+        $supervisor = User::factory()->bloodCenterSupervisor($this->centre)->create();
 
-        $this->assertDatabaseHas('stock_thresholds', ['facility_id' => $this->centre->id, 'minimum_units' => 7]);
+        $this->actingAs($supervisor)->getJson('/api/blood-center/inventory/thresholds')->assertOk();
+        $this->actingAs($this->admin)->getJson('/api/blood-center/inventory/thresholds')->assertForbidden();
+
+        foreach ([$this->admin, $supervisor] as $user) {
+            $this->actingAs($user)
+                ->putJson('/api/blood-center/inventory/thresholds', ['thresholds' => [$this->payload('O+', $this->prbc, 7)]])
+                ->assertForbidden();
+        }
+
+        $this->assertDatabaseCount('stock_thresholds', 0);
     }
 
     public function test_a_dispatch_coordinator_can_read_but_not_edit(): void

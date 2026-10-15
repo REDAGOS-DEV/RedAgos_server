@@ -3,7 +3,7 @@
 namespace App\Enums;
 
 /**
- * The Read / Write / Update / Delete privileges a supervisor ticks per staff member.
+ * The Read / Write / Update / Delete privileges the Blood Center Admin ticks per staff member.
  *
  * They cap a role rather than define it: a staff member holds only those of
  * their role's abilities whose kind is ticked. DepartmentPermissions::KIND

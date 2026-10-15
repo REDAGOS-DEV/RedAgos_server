@@ -4,6 +4,7 @@ namespace App\Service;
 
 use App\Enums\AccountStatus;
 use App\Enums\Department;
+use App\Enums\ManagementLevel;
 use App\Enums\RoleName;
 use App\Enums\StaffPrivilege;
 use App\Enums\StaffRole;
@@ -22,7 +23,7 @@ use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 /**
- * Roster management for one blood centre, performed by its supervisor.
+ * Roster management for one blood centre, performed by its Blood Center Admin.
  *
  * Every method resolves the facility from the authenticated caller and scopes
  * its queries to it. can:staff.manage says the caller may manage staff; it says
@@ -75,7 +76,7 @@ class StaffService
     public function create(User $actor, array $payload): array
     {
         $facility = $this->requireFacility($actor);
-        $isSupervisor = (bool) ($payload['is_supervisor'] ?? false);
+        $level = isset($payload['management_level']) ? ManagementLevel::from($payload['management_level']) : null;
         $role = isset($payload['staff_role']) ? StaffRole::from($payload['staff_role']) : null;
         $customRole = $role === null && filled($payload['custom_role'] ?? null) ? trim((string) $payload['custom_role']) : null;
         $department = $role?->department()
@@ -84,10 +85,10 @@ class StaffService
             ? array_values(array_unique($payload['staff_privileges']))
             : null;
 
-        $this->guardRoleAssigned($role, $customRole, $department, $isSupervisor);
+        $this->guardRoleAssigned($role, $customRole, $department, $level !== null);
 
         try {
-            $staff = DB::transaction(function () use ($facility, $payload, $role, $isSupervisor, $department, $customRole, $privileges): User {
+            $staff = DB::transaction(function () use ($facility, $payload, $role, $level, $department, $customRole, $privileges): User {
                 $created = $this->bloodCenterRepository->createStaffUser([
                     'uuid' => (string) Str::uuid(),
                     'first_name' => trim($payload['first_name']),
@@ -100,7 +101,7 @@ class StaffService
                     'account_status' => AccountStatus::PendingVerification,
                     'employee_id' => $payload['employee_id'] ?? null,
                     'position' => isset($payload['position']) ? trim((string) $payload['position']) : null,
-                ], $facility, $role, $isSupervisor, $department, $customRole, $privileges);
+                ], $facility, $role, $level, $department, $customRole, $privileges);
 
                 // The facility is necessarily approved — staff.manage sits behind
                 // facility.operational — so the role is granted immediately.
@@ -124,7 +125,7 @@ class StaffService
             'custom_role' => $customRole,
             'department' => $department?->value,
             'privileges' => $privileges,
-            'is_supervisor' => $isSupervisor,
+            'management_level' => $level?->value,
         ]);
 
         return [
@@ -149,21 +150,21 @@ class StaffService
             'role_label' => $staff->roleLabel(),
             'department' => $staff->department?->value,
             'privileges' => $this->privilegeValues($staff),
-            'is_supervisor' => $staff->is_supervisor,
+            'management_level' => $staff->management_level?->value,
             'account_status' => $staff->account_status?->value,
         ];
 
         try {
             $staff = DB::transaction(function () use ($facility, $staff, $payload): User {
                 // Serialise on the facility row before touching anything that
-                // could reduce the supervisor count. Two concurrent demotions
-                // would otherwise both read "two supervisors" and both proceed.
+                // could reduce the Admin count. Two concurrent demotions would
+                // otherwise both read "two Admins" and both proceed.
                 $this->bloodCenterRepository->lockFacility($facility->id);
 
                 $this->applyUpdate($staff, $payload);
                 $staff->save();
 
-                $this->guardSupervisorFloor($facility->id);
+                $this->guardAdminFloor($facility->id);
 
                 return $staff;
             });
@@ -203,7 +204,7 @@ class StaffService
 
             $staff->delete();
 
-            $this->guardSupervisorFloor($facility->id);
+            $this->guardAdminFloor($facility->id);
         });
 
         $staff->tokens()->delete();
@@ -296,8 +297,10 @@ class StaffService
             $staff->staff_privileges = array_values(array_unique($payload['staff_privileges']));
         }
 
-        if (array_key_exists('is_supervisor', $payload)) {
-            $staff->is_supervisor = (bool) $payload['is_supervisor'];
+        if (array_key_exists('management_level', $payload)) {
+            $staff->management_level = $payload['management_level'] === null
+                ? null
+                : ManagementLevel::from($payload['management_level']);
         }
 
         if (array_key_exists('account_status', $payload)) {
@@ -305,13 +308,13 @@ class StaffService
         }
 
         // Checked against the resulting state rather than the payload, because a
-        // partial update can clear a role, demote a supervisor, or do both in
-        // one request.
+        // partial update can clear a role, remove a level, or do both in one
+        // request.
         $this->guardRoleAssigned(
             $staff->staff_role,
             $staff->custom_role,
             $staff->staff_role?->department() ?? $staff->department,
-            $staff->is_supervisor
+            $staff->management_level !== null
         );
     }
 
@@ -344,13 +347,12 @@ class StaffService
             ]);
         }
 
-        if ($before['is_supervisor'] !== $staff->is_supervisor) {
-            $this->auditLogger->record(
-                $actor,
-                $staff->is_supervisor ? 'staff.supervisor_granted' : 'staff.supervisor_revoked',
-                $staff,
-                $context
-            );
+        if ($before['management_level'] !== $staff->management_level?->value) {
+            $this->auditLogger->record($actor, 'staff.management_level_changed', $staff, [
+                ...$context,
+                'from' => $before['management_level'],
+                'to' => $staff->management_level?->value,
+            ]);
         }
 
         if ($before['account_status'] !== $staff->account_status?->value) {
@@ -363,34 +365,35 @@ class StaffService
     }
 
     /**
-     * Refuse a change that would leave the facility with nobody able to manage it.
+     * Refuse a change that would leave the facility with nobody able to manage its staff.
      *
+     * Only an Admin counts: a view-only Supervisor cannot manage anyone.
      * Called after the write inside the transaction rather than before it: the
-     * cheapest correct way to ask "would this leave zero supervisors" is to
-     * make the change and count, letting the rollback undo it.
+     * cheapest correct way to ask "would this leave zero Admins" is to make
+     * the change and count, letting the rollback undo it.
      */
-    private function guardSupervisorFloor(int $facilityId): void
+    private function guardAdminFloor(int $facilityId): void
     {
-        if ($this->staffRepository->countActiveSupervisors($facilityId) > 0) {
+        if ($this->staffRepository->countActiveAdmins($facilityId) > 0) {
             return;
         }
 
         throw $this->refuse(
             409,
-            'last_supervisor',
-            'This facility would be left with no supervisor. Promote another staff member first.'
+            'last_admin',
+            'This facility would be left with no Blood Center Admin. Make another staff member an Admin first.'
         );
     }
 
     /**
-     * Refuse a non-supervisor who has been left without a role.
+     * Refuse an account with neither a role nor a management level.
      *
      * Such an account holds no abilities at all, so it can sign in and reach
      * nothing. That is the right fail-closed default for an account awaiting
-     * assignment, but it is not a state a supervisor should be able to create
-     * on purpose without noticing.
+     * assignment, but it is not a state an Admin should be able to create on
+     * purpose without noticing.
      */
-    private function guardRoleAssigned(?StaffRole $role, ?string $customRole, ?Department $department, bool $isSupervisor): void
+    private function guardRoleAssigned(?StaffRole $role, ?string $customRole, ?Department $department, bool $hasLevel): void
     {
         if ($role !== null) {
             return;
@@ -406,12 +409,12 @@ class StaffService
             return;
         }
 
-        if ($isSupervisor) {
+        if ($hasLevel) {
             return;
         }
 
         throw ValidationException::withMessages([
-            'staff_role' => ['Choose or type a role, or grant the supervisor level instead.'],
+            'staff_role' => ['Choose or type a role, or give them the Admin or Supervisor level instead.'],
         ]);
     }
 
@@ -518,7 +521,8 @@ class StaffService
             'custom_role' => $staff->custom_role,
             'role_label' => $staff->roleLabel(),
             'staff_privileges' => $this->privilegeValues($staff),
-            'is_supervisor' => (bool) $staff->is_supervisor,
+            'management_level' => $staff->management_level?->value,
+            'management_level_label' => $staff->management_level?->label(),
             'account_status' => $staff->account_status?->value,
             'email_verified' => $staff->hasVerifiedEmail(),
             'permissions' => $staff->abilities(),

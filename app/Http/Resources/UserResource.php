@@ -50,7 +50,10 @@ class UserResource extends JsonResource
                 fn ($privilege): string => $privilege->value,
                 DepartmentPermissions::privilegesOf($this->resource)
             ),
-            'is_supervisor' => (bool) $this->is_supervisor,
+            // admin, supervisor, or null. Not the Laboratory or Billing
+            // Supervisor, which are staff roles above.
+            'management_level' => $this->management_level?->value,
+            'management_level_label' => $this->management_level?->label(),
             'is_super_admin' => (bool) $this->is_super_admin,
             // The raw grant, separate from `permissions` below. An unrestricted
             // admin holds every privilege without any of them being stored, so

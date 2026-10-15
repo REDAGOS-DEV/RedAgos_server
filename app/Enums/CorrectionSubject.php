@@ -121,7 +121,8 @@ enum CorrectionSubject: string
      *
      * A department's custom role inherits the department's abilities, so the
      * ability alone would let it file a correction that belongs to a named
-     * post. A supervisor files any of them.
+     * post. No management level files on anyone's behalf: a level grants no
+     * write a correction could be filed against.
      *
      * @return array<int, StaffRole>|null
      */
@@ -150,7 +151,7 @@ enum CorrectionSubject: string
 
         $roles = $this->filingRoles();
 
-        if ($roles === null || $user->is_supervisor) {
+        if ($roles === null) {
             return true;
         }
 

@@ -39,9 +39,8 @@ use Illuminate\Validation\ValidationException;
  * less cash voided — and frozen on the shift beside what was counted, with
  * the difference. A difference must be explained.
  *
- * A shift is the cashier's own. The Billing Supervisor, or the centre's
- * supervisor, sees every shift at the centre and may close one a cashier left
- * open; nobody else may.
+ * A shift is the cashier's own. The Billing Supervisor sees every shift at the
+ * centre and may close one a cashier left open; nobody else may.
  *
  * Locking. A payment locks the request, the statement and then the shift; a
  * close locks only the shift. Neither waits on the other the wrong way round.
@@ -169,8 +168,8 @@ class CashSessionService
     /**
      * Close a shift with the drawer counted.
      *
-     * The caller's own, or — for the Billing Supervisor or the centre's
-     * supervisor — any shift at the centre a cashier left open. Refused while
+     * The caller's own, or — for the Billing Supervisor — any shift at the
+     * centre a cashier left open. Refused while
      * a GCash checkout opened in the shift is still open, or a void of one of
      * its payments is still awaiting a decision: either could still change
      * what the drawer should hold.
@@ -385,11 +384,14 @@ class CashSessionService
     }
 
     /**
-     * Whether a user oversees every cashier's shifts: the Billing Supervisor, or the centre's supervisor.
+     * Whether a user oversees every cashier's shifts: the Billing Supervisor.
+     *
+     * Not the Blood Center Admin, who does no department work, and not the
+     * view-only Supervisor, who can reach no shift at all.
      */
     public function mayOversee(User $staff): bool
     {
-        return (bool) $staff->is_supervisor || $staff->staff_role === StaffRole::BillingSupervisor;
+        return $staff->staff_role === StaffRole::BillingSupervisor;
     }
 
     /**

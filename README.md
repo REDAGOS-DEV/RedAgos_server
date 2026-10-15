@@ -144,11 +144,14 @@ Password: Password123
 
 The seeder refuses to run outside the `local` and `testing` environments, even with `--force`: it creates verified accounts that share a known password. Re-running it creates nothing new and never resets a password. Run it **before** `DemoInventorySeeder`, which attributes its records to the facility's first staff account and skips a facility with none.
 
-★ marks each department's **head**, who approves that department's correction requests. A head's own request is decided by the Center Admin.
+★ marks each department's **head**, who approves that department's correction requests. A head's own correction needs no other approval: it is applied as soon as it is sent.
+
+The two Management accounts hold a level rather than a role. The **Blood Center Admin** manages staff accounts, roles and privileges and the centre's logo, and sees the dashboard and reports; it opens no department page and handles no corrections. The **Supervisor** only watches: the dashboard, the reports and the view-only monitoring pages (stock, thresholds, the daily stock report, incoming requests and statements).
 
 | Department | Role | Name | Email | Lands on |
 |---|---|---|---|---|
-| Management | Center Admin | Teresa Aquino | `supervisor@redagos.test` | `/blood-center/dashboard` |
+| Management | Blood Center Admin | Eduardo Ramos | `center.admin@redagos.test` | `/blood-center/dashboard` |
+| Management | Supervisor (view only) | Teresa Aquino | `supervisor@redagos.test` | `/blood-center/dashboard` |
 | Donor/Collection | ★ Donor Screening Physician | Ramon Villanueva | `screening.physician@redagos.test` | `/blood-center/collection` |
 | Donor/Collection | Phlebotomist / Registered Nurse | Liza Bautista | `phlebotomist@redagos.test` | `/blood-center/collection` |
 | Donor/Collection | Apheresis Specialist | Marvin Castillo | `apheresis.specialist@redagos.test` | `/blood-center/collection` |
@@ -170,6 +173,8 @@ Try the correction flow with these accounts:
 - `it.data.clerk@` files a correction to a unit's storage location or expiry date, and `inventory.control.officer@` approves it.
 - `dispatch.coordinator@` files a correction to a dispatch record, and `inventory.control.officer@` approves it.
 - `billing.clerk@` files a correction to a recorded payment, and `billing.supervisor@` approves it.
+
+Component settings are split by department: `component.technologist@` adds components and sets their shelf life under Processing → Blood Components, and `billing.supervisor@` sets their prices under Billing → Component Prices.
 
 ## Running the API
 

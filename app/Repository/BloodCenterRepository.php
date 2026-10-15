@@ -3,6 +3,7 @@
 namespace App\Repository;
 
 use App\Enums\Department;
+use App\Enums\ManagementLevel;
 use App\Enums\StaffRole;
 use App\Models\BloodComponent;
 use App\Models\BloodType;
@@ -23,7 +24,7 @@ class BloodCenterRepository
      * Create a staff user attached to a facility.
      *
      * facility_id and everything that decides what the account may do — role,
-     * department, privileges, supervisor level — are assigned directly rather
+     * department, privileges, management level — are assigned directly rather
      * than filled, so no mass-assignment path may reach any of them. A
      * predefined role's department overrides the one passed, on save.
      *
@@ -34,7 +35,7 @@ class BloodCenterRepository
         array $attributes,
         Facility $facility,
         ?StaffRole $role = null,
-        bool $isSupervisor = false,
+        ?ManagementLevel $level = null,
         ?Department $department = null,
         ?string $customRole = null,
         ?array $privileges = null
@@ -47,7 +48,7 @@ class BloodCenterRepository
         $user->custom_role = $role === null ? $customRole : null;
         $user->department = $department;
         $user->staff_privileges = $privileges;
-        $user->is_supervisor = $isSupervisor;
+        $user->management_level = $level;
         $user->save();
 
         return $user;
