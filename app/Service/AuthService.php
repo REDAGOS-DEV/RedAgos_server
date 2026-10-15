@@ -39,7 +39,6 @@ class AuthService
         $this->guardAccountStatus($user);
         $this->guardEmailVerified($user);
         $requestedRole = $this->guardRequestedRole($user, $payload['role'] ?? null);
-        $this->guardFacilityInService($user);
 
         return [
             'user' => UserResource::make($user->load(['roles', 'donorProfile.bloodType', 'facility']))->resolve(),
@@ -246,26 +245,6 @@ class AuthService
         throw new HttpResponseException(response()->json([
             'message' => 'This account cannot sign in from this portal.',
             'code' => 'role_mismatch',
-        ], 403));
-    }
-
-    /**
-     * Refuse sign-in to the staff of a facility a Super Admin deactivated.
-     *
-     * Every endpoint behind facility.operational would refuse them anyway; this
-     * says why at the door instead of issuing a token that can reach nothing.
-     */
-    private function guardFacilityInService(User $user): void
-    {
-        $user->loadMissing('facility');
-
-        if ($user->facility?->status !== FacilityStatus::Inactive) {
-            return;
-        }
-
-        throw new HttpResponseException(response()->json([
-            'message' => FacilityStatus::Inactive->blockedMessage(),
-            'code' => FacilityStatus::Inactive->blockedCode(),
         ], 403));
     }
 

@@ -3,7 +3,6 @@
 namespace App\Service;
 
 use App\Enums\AccountStatus;
-use App\Enums\FacilityStatus;
 use App\Enums\FacilityTypeName;
 use App\Enums\HospitalRole;
 use App\Models\Facility;
@@ -17,7 +16,6 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
-use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 /**
  * Facility onboarding, performed by a Super Admin.
@@ -146,159 +144,6 @@ class FacilityManagementService
                 : $facility->name.' has been created. The primary account must verify its email address before signing in.',
             'data' => $this->format($facility),
         ];
-    }
-
-    /**
-     * Correct a facility's details.
-     *
-     * Only the columns the request allows, and only those that actually
-     * changed; the audit entry names the fields (not their values, which may
-     * carry contact details). A type that takes no donor bookings stays closed
-     * to them whatever is sent.
-     *
-     * @param  array<string, mixed>  $payload
-     * @return array<string, mixed>
-     */
-    public function update(User $admin, int $facilityId, array $payload): array
-    {
-        $facility = $this->findOrFail($facilityId);
-        $type = FacilityTypeName::tryFrom((string) $facility->loadMissing('facilityType')->facilityType?->name);
-
-        foreach (['name', 'doh_license_number', 'address', 'description', 'operating_hours'] as $field) {
-            if (array_key_exists($field, $payload)) {
-                $payload[$field] = $payload[$field] === null ? null : trim((string) $payload[$field]);
-            }
-        }
-
-        if ($type !== null && ! $type->acceptsDonorBookings()) {
-            unset($payload['is_accepting_donations']);
-        }
-
-        $facility->fill($payload);
-        $changed = array_keys($facility->getDirty());
-
-        if ($changed === []) {
-            return [
-                'message' => 'Nothing to change.',
-                'data' => $this->format($facility),
-            ];
-        }
-
-        try {
-            $facility->save();
-        } catch (QueryException $exception) {
-            $this->rethrowUniqueViolation($exception);
-
-            throw $exception;
-        }
-
-        $this->auditLogger->record($admin, 'facility.updated', $facility, [
-            'facility_id' => $facility->id,
-            'fields' => $changed,
-        ]);
-
-        return [
-            'message' => $facility->name.' has been updated.',
-            'data' => $this->format($facility->refresh()),
-        ];
-    }
-
-    /**
-     * Take a facility out of service.
-     *
-     * Only an active facility can be deactivated: the legacy pending and
-     * rejected records have their own decision routes. Every token its staff
-     * hold is revoked in the same transaction, so nobody keeps working on a
-     * facility that is closed; facility.operational would refuse them anyway,
-     * and sign-in now says why.
-     *
-     * @return array<string, mixed>
-     */
-    public function deactivate(User $admin, int $facilityId, string $reason): array
-    {
-        [$facility, $signedOut] = DB::transaction(function () use ($facilityId): array {
-            $facility = Facility::query()->whereKey($facilityId)->lockForUpdate()->first();
-
-            if (! $facility) {
-                throw new NotFoundHttpException('Facility not found.');
-            }
-
-            if ($facility->status !== FacilityStatus::Approved) {
-                throw ValidationException::withMessages([
-                    'facility' => ['Only an active facility can be deactivated.'],
-                ]);
-            }
-
-            $facility->status = FacilityStatus::Inactive;
-            $facility->save();
-
-            $staff = User::query()->where('facility_id', $facility->id)->get();
-            $signedOut = 0;
-
-            foreach ($staff as $member) {
-                $signedOut += $member->tokens()->delete();
-            }
-
-            return [$facility, $signedOut];
-        });
-
-        $this->auditLogger->record($admin, 'facility.deactivated', $facility, [
-            'facility_id' => $facility->id,
-            'reason' => trim($reason),
-            'sessions_ended' => $signedOut,
-        ]);
-
-        return [
-            'message' => $facility->name.' has been deactivated. Its staff have been signed out.',
-            'data' => $this->format($facility),
-        ];
-    }
-
-    /**
-     * Put a deactivated facility back in service.
-     *
-     * @return array<string, mixed>
-     */
-    public function reactivate(User $admin, int $facilityId): array
-    {
-        $facility = DB::transaction(function () use ($facilityId): Facility {
-            $facility = Facility::query()->whereKey($facilityId)->lockForUpdate()->first();
-
-            if (! $facility) {
-                throw new NotFoundHttpException('Facility not found.');
-            }
-
-            if ($facility->status !== FacilityStatus::Inactive) {
-                throw ValidationException::withMessages([
-                    'facility' => ['Only a deactivated facility can be reactivated.'],
-                ]);
-            }
-
-            $facility->status = FacilityStatus::Approved;
-            $facility->save();
-
-            return $facility;
-        });
-
-        $this->auditLogger->record($admin, 'facility.reactivated', $facility, [
-            'facility_id' => $facility->id,
-        ]);
-
-        return [
-            'message' => $facility->name.' is back in service.',
-            'data' => $this->format($facility),
-        ];
-    }
-
-    private function findOrFail(int $facilityId): Facility
-    {
-        $facility = Facility::query()->find($facilityId);
-
-        if (! $facility) {
-            throw new NotFoundHttpException('Facility not found.');
-        }
-
-        return $facility;
     }
 
     /**

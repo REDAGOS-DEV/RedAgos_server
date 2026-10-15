@@ -19,7 +19,6 @@ class AppointmentRepository
     {
         return Facility::query()
             ->acceptingDonations()
-            ->inService()
             ->whereHas('facilityType', fn ($query) => $query->where('name', 'blood_center'))
             ->orderBy('name')
             ->get();
@@ -32,7 +31,6 @@ class AppointmentRepository
     {
         return Facility::query()
             ->acceptingDonations()
-            ->inService()
             ->whereKey($facilityId)
             ->first();
     }
