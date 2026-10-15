@@ -2,10 +2,13 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\DeactivateFacilityRequest;
 use App\Http\Requests\ListFacilitiesRequest;
 use App\Http\Requests\StoreFacilityRequest;
+use App\Http\Requests\UpdateFacilityRequest;
 use App\Service\FacilityManagementService;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 
 /**
  * Facility onboarding for the Super Admin.
@@ -42,6 +45,36 @@ class FacilityManagementController extends Controller
         return response()->json(
             $this->facilityManagementService->create($request->user(), $request->validated()),
             201
+        );
+    }
+
+    /**
+     * Correct a facility's details.
+     */
+    public function update(UpdateFacilityRequest $request, int $facility): JsonResponse
+    {
+        return response()->json(
+            $this->facilityManagementService->update($request->user(), $facility, $request->validated())
+        );
+    }
+
+    /**
+     * Take a facility out of service and sign its staff out.
+     */
+    public function deactivate(DeactivateFacilityRequest $request, int $facility): JsonResponse
+    {
+        return response()->json(
+            $this->facilityManagementService->deactivate($request->user(), $facility, $request->validated('reason'))
+        );
+    }
+
+    /**
+     * Put a deactivated facility back in service.
+     */
+    public function reactivate(Request $request, int $facility): JsonResponse
+    {
+        return response()->json(
+            $this->facilityManagementService->reactivate($request->user(), $facility)
         );
     }
 }

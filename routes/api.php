@@ -1,5 +1,7 @@
 <?php
 
+use App\Http\Controllers\AdminAccountController;
+use App\Http\Controllers\AdminAuditLogController;
 use App\Http\Controllers\AdminPrivilegeController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\BloodCenterBillingController;
@@ -689,6 +691,14 @@ Route::middleware(['auth:sanctum', 'role:admin', 'throttle:60,1'])
         Route::post('/', [FacilityManagementController::class, 'store'])
             ->middleware('can:admin.facility.manage');
 
+        // Correcting a facility and taking it out of service (2026-10-15).
+        Route::patch('/{facility}', [FacilityManagementController::class, 'update'])
+            ->whereNumber('facility')->middleware('can:admin.facility.manage');
+        Route::post('/{facility}/deactivate', [FacilityManagementController::class, 'deactivate'])
+            ->whereNumber('facility')->middleware('can:admin.facility.manage');
+        Route::post('/{facility}/reactivate', [FacilityManagementController::class, 'reactivate'])
+            ->whereNumber('facility')->middleware('can:admin.facility.manage');
+
         // Legacy: facilities left in pending_approval by the removed public
         // registration flow. Their records are preserved rather than deleted,
         // so the Super Admin needs these to clear them by hand. Nothing created
@@ -962,6 +972,15 @@ Route::middleware(['auth:sanctum', 'role:admin', 'can:admin.donor_identity.verif
 // privileges exist either.
 Route::middleware(['auth:sanctum', 'role:admin', 'can:admin.accounts.manage', 'throttle:60,1'])
     ->get('admin/privileges', [AdminPrivilegeController::class, 'index']);
+
+// An admin's own account: changing their password (2026-10-15). Any admin,
+// whatever their privileges, may change their own.
+Route::middleware(['auth:sanctum', 'role:admin', 'throttle:10,1'])
+    ->post('admin/account/password', [AdminAccountController::class, 'updatePassword']);
+
+// The platform audit trail, read only (2026-10-15).
+Route::middleware(['auth:sanctum', 'role:admin', 'can:admin.audit.view', 'throttle:60,1'])
+    ->get('admin/audit-logs', [AdminAuditLogController::class, 'index']);
 
 // Creating a user is how an admin account comes into existence, so this group
 // is what admin.accounts.manage actually protects. A scoped admin reaching it

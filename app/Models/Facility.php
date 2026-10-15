@@ -148,6 +148,14 @@ class Facility extends Model
     }
 
     /**
+     * Leave out facilities a Super Admin has taken out of service.
+     */
+    public function scopeInService(Builder $query): Builder
+    {
+        return $query->where('status', '!=', FacilityStatus::Inactive);
+    }
+
+    /**
      * Limit the query to facilities cleared to act on real data.
      */
     public function scopeApproved(Builder $query): Builder
