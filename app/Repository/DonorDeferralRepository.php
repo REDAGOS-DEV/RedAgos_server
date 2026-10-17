@@ -95,8 +95,84 @@ class DonorDeferralRepository
             : new StandingDeferral(ScreeningOutcome::PermanentlyDeferred, $referral->created_at);
     }
 
+    /**
+     * Each donor's deferral as the Donors list reads it, for many donors at once.
+     *
+     * A standing deferral, chosen exactly as standingDeferralFor() chooses it.
+     * Failing that, a temporary deferral when it is the donor's most recent
+     * screening: nothing records when a temporary deferral ends, so it holds
+     * until the donor is screened again. That is the cautious reading — it
+     * keeps them out of an eligibility reminder they may not yet be fit for —
+     * and staff can still contact them one by one.
+     *
+     * Outcome and date only, like the counter's notice. Donors with neither
+     * are absent from the result.
+     *
+     * @param  array<int, int>  $donorIds
+     * @return array<int, StandingDeferral>
+     */
+    public function deferralsFor(array $donorIds): array
+    {
+        if ($donorIds === []) {
+            return [];
+        }
+
+        $screenings = DonationScreening::query()
+            ->join('donations', 'donations.id', '=', 'donation_screenings.donation_id')
+            ->whereIn('donations.donor_id', $donorIds)
+            ->whereNotNull('donation_screenings.outcome')
+            ->orderByDesc('donation_screenings.screened_at')
+            ->orderByDesc('donation_screenings.id')
+            ->get(['donations.donor_id', 'donation_screenings.outcome', 'donation_screenings.screened_at'])
+            ->groupBy('donor_id');
+
+        $referrals = CounsellingReferral::query()
+            ->whereIn('donor_id', $donorIds)
+            ->orderByDesc('created_at')
+            ->orderByDesc('id')
+            ->get(['donor_id', 'created_at'])
+            ->groupBy('donor_id');
+
+        $result = [];
+
+        foreach ($donorIds as $donorId) {
+            $mine = $screenings->get($donorId, collect());
+
+            $blocking = $mine->firstWhere('outcome', ScreeningOutcome::PermanentlyDeferred)
+                ?? $mine->firstWhere('outcome', ScreeningOutcome::IndefiniteDeferral);
+
+            $candidates = array_filter([
+                $blocking === null ? null : new StandingDeferral($blocking->outcome, $blocking->screened_at),
+                ($referral = $referrals->get($donorId)?->first()) === null
+                    ? null
+                    : new StandingDeferral(ScreeningOutcome::PermanentlyDeferred, $referral->created_at),
+            ]);
+
+            if ($candidates !== []) {
+                usort($candidates, fn (StandingDeferral $a, StandingDeferral $b): int => $this->severity($b->outcome) <=> $this->severity($a->outcome)
+                    ?: ($b->recordedAt?->getTimestamp() ?? 0) <=> ($a->recordedAt?->getTimestamp() ?? 0));
+
+                $result[$donorId] = $candidates[0];
+
+                continue;
+            }
+
+            $latest = $mine->first();
+
+            if ($latest?->outcome === ScreeningOutcome::TemporarilyDeferred) {
+                $result[$donorId] = new StandingDeferral($latest->outcome, $latest->screened_at);
+            }
+        }
+
+        return $result;
+    }
+
     private function severity(ScreeningOutcome $outcome): int
     {
-        return $outcome === ScreeningOutcome::PermanentlyDeferred ? 2 : 1;
+        return match ($outcome) {
+            ScreeningOutcome::PermanentlyDeferred => 2,
+            ScreeningOutcome::IndefiniteDeferral => 1,
+            default => 0,
+        };
     }
 }

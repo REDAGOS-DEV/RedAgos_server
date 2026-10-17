@@ -6,7 +6,10 @@ use App\Models\User;
 use App\Support\AdminPrivileges;
 use App\Support\DepartmentPermissions;
 use App\Support\HospitalPermissions;
+use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -25,6 +28,26 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         $this->registerDepartmentGates();
+        $this->registerCounterRateLimiters();
+    }
+
+    /**
+     * The Donation counter's own rate limits, each on its own counter.
+     *
+     * A plain `throttle:N,1` shares one per-user counter across every route
+     * that uses it. The walk-in search runs as staff type, so on that shared
+     * counter a busy minute of searching could refuse the onsite questionnaire
+     * a donor has just spent thirty questions answering. Named limiters keep
+     * the two budgets apart.
+     */
+    private function registerCounterRateLimiters(): void
+    {
+        $byStaff = static fn (Request $request): string => (string) ($request->user()?->id ?? $request->ip());
+
+        // Several requests per name typed, a few names per walk-in.
+        RateLimiter::for('counter-donor-search', static fn (Request $request): Limit => Limit::perMinute(120)->by($byStaff($request)));
+
+        RateLimiter::for('counter-questionnaire', static fn (Request $request): Limit => Limit::perMinute(30)->by($byStaff($request)));
     }
 
     /**

@@ -28,8 +28,12 @@ class BloodCenterRepository
      * than filled, so no mass-assignment path may reach any of them. A
      * predefined role's department overrides the one passed, on save.
      *
+     * The main role, any others (same department; User's saving hook keeps
+     * them there) and a custom role may all stand together.
+     *
      * @param  array<string, mixed>  $attributes
      * @param  array<int, string>|null  $privileges  Null means all four.
+     * @param  array<int, StaffRole>  $additionalRoles
      */
     public function createStaffUser(
         array $attributes,
@@ -38,14 +42,16 @@ class BloodCenterRepository
         ?ManagementLevel $level = null,
         ?Department $department = null,
         ?string $customRole = null,
-        ?array $privileges = null
+        ?array $privileges = null,
+        array $additionalRoles = []
     ): User {
         $user = new User;
 
         $user->fill($attributes);
         $user->facility_id = $facility->id;
         $user->staff_role = $role;
-        $user->custom_role = $role === null ? $customRole : null;
+        $user->additional_staff_roles = array_map(fn (StaffRole $r): string => $r->value, $additionalRoles) ?: null;
+        $user->custom_role = $customRole;
         $user->department = $department;
         $user->staff_privileges = $privileges;
         $user->management_level = $level;

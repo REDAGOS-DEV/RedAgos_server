@@ -9,6 +9,7 @@ use App\Models\DonationAppointment;
 use App\Models\DonorProfile;
 use App\Models\EligibilityQuestion;
 use App\Models\EligibilityScreening;
+use App\Models\Facility;
 use App\Models\User;
 use App\Repository\EligibilityRepository;
 use App\Support\AppointmentScreeningWindow;
@@ -42,6 +43,19 @@ class EligibilityService
 
         $this->guardScreeningWindowOpen($profile);
 
+        return $this->questionnaireFor($profile);
+    }
+
+    /**
+     * The current questionnaire as this donor is asked it, with its consent block.
+     *
+     * Shared by the donor's own form and the counter's onsite one, so a walk-in
+     * answering at the counter is asked exactly what the app would have asked.
+     *
+     * @return array<string, mixed>
+     */
+    public function questionnaireFor(DonorProfile $profile): array
+    {
         $version = $this->currentVersion();
         $questions = $this->guardVersionIsSeeded(
             $this->eligibilityRepository->questionsForVersion($version),
@@ -115,8 +129,14 @@ class EligibilityService
      */
     public function prefill(User $user): array
     {
-        $profile = $this->requireDonorProfile($user);
+        return $this->prefillFor($this->requireDonorProfile($user));
+    }
 
+    /**
+     * @return array<string, mixed>
+     */
+    public function prefillFor(DonorProfile $profile): array
+    {
         return [
             'blood_type' => $profile->bloodType?->code,
             'age' => $this->evaluator->ageFromBirthDate($profile->birth_date),
@@ -171,9 +191,74 @@ class EligibilityService
     public function submitScreening(User $user, array $payload, bool $force = false): array
     {
         $profile = $this->requireDonorProfile($user);
-        $version = $this->currentVersion();
 
         $appointment = $this->guardScreeningWindowOpen($profile);
+
+        $screening = $this->recordAnswers($user, $profile, $payload, $force, 'eligibility.screening.created', [
+            'appointment_id' => $appointment?->id,
+        ]);
+
+        $response = [
+            'screening_id' => $screening->id,
+            'screening_date' => $screening->screened_at->toDateString(),
+            'screening_valid_until' => $screening->valid_until->toDateString(),
+            'consented_on' => $screening->consented_at->toDateString(),
+            'notice' => 'Your questionnaire has been submitted. The blood centre will review your answers when you arrive.',
+        ];
+
+        // A complete, in-window questionnaire always mints a credential. What
+        // the answers say is the centre's to weigh, not this method's.
+        if ($user->hasVerifiedEmail()) {
+            $response = array_merge($response, $this->issueQrToken($user, $screening, $appointment));
+        }
+
+        return $response;
+    }
+
+    /**
+     * Record a questionnaire the donor answered on the counter's device.
+     *
+     * For the walk-in, who has no sign-in to answer it in the app, and for a
+     * booked donor who arrived without having answered. Held to every rule the
+     * app submission is held to except the screening window, which exists to
+     * stop a donor answering weeks ahead -- this donor is standing at the
+     * counter. No QR credential is minted: the donor is already here.
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    public function recordAtCounter(
+        User $staff,
+        Facility $facility,
+        DonorProfile $profile,
+        array $payload,
+        bool $force = false
+    ): EligibilityScreening {
+        return $this->recordAnswers($staff, $profile, $payload, $force, 'eligibility.screening.recorded_at_counter', [
+            'facility_id' => $facility->id,
+        ], $staff);
+    }
+
+    /**
+     * Validate a set of answers against the current questionnaire and store them.
+     *
+     * The one path both submissions take, so a questionnaire answered at the
+     * counter can never be held to a looser rule than one answered in the app.
+     * `$recordedBy` is the staff member whose device it was answered on; null
+     * means the donor answered in the app.
+     *
+     * @param  array<string, mixed>  $payload
+     * @param  array<string, mixed>  $auditContext
+     */
+    private function recordAnswers(
+        User $actor,
+        DonorProfile $profile,
+        array $payload,
+        bool $force,
+        string $auditAction,
+        array $auditContext,
+        ?User $recordedBy = null
+    ): EligibilityScreening {
+        $version = $this->currentVersion();
 
         if ((int) $payload['question_version'] !== $version) {
             throw new HttpResponseException(response()->json([
@@ -207,7 +292,7 @@ class EligibilityService
         $consentVersion = $payload['consent']['version'];
 
         $screening = DB::transaction(function () use (
-            $profile, $version, $payload, $answers, $questions, $weightKg, $consentVersion
+            $profile, $version, $payload, $answers, $questions, $weightKg, $consentVersion, $recordedBy
         ): EligibilityScreening {
             $screening = $this->eligibilityRepository->createScreening([
                 'donor_id' => $profile->donor_id,
@@ -232,37 +317,27 @@ class EligibilityService
                 'consented_at' => now(),
                 'consent_version' => $consentVersion,
                 'consent_text_hash' => $this->consentTextHash($consentVersion),
+                'recorded_by' => $recordedBy?->id,
             ]);
 
             $this->eligibilityRepository->storeAnswers($screening, $answers);
+
+            // The new answers supersede whatever an outstanding credential
+            // points at, or a later scan would pin the counter to the old ones.
             $this->eligibilityRepository->revokeQrTokens($profile->donor_id);
 
             return $screening;
         });
 
-        $this->auditLogger->record($user, 'eligibility.screening.created', $screening, [
+        $this->auditLogger->record($actor, $auditAction, $screening, [
             'question_version' => $version,
             'consent_version' => $consentVersion,
             'computed_result' => $screening->computed_result,
             'flagged_count' => count($this->evaluator->flaggedAnswers($questions, $answers)),
-            'appointment_id' => $appointment?->id,
+            ...$auditContext,
         ]);
 
-        $response = [
-            'screening_id' => $screening->id,
-            'screening_date' => $screening->screened_at->toDateString(),
-            'screening_valid_until' => $screening->valid_until->toDateString(),
-            'consented_on' => $screening->consented_at->toDateString(),
-            'notice' => 'Your questionnaire has been submitted. The blood centre will review your answers when you arrive.',
-        ];
-
-        // A complete, in-window questionnaire always mints a credential. What
-        // the answers say is the centre's to weigh, not this method's.
-        if ($user->hasVerifiedEmail()) {
-            $response = array_merge($response, $this->issueQrToken($user, $screening, $appointment));
-        }
-
-        return $response;
+        return $screening;
     }
 
     /**
@@ -274,7 +349,7 @@ class EligibilityService
     {
         $profile = $this->requireDonorProfile($user);
         $screening = $this->eligibilityRepository->latestScreening($profile->donor_id);
-        
+
         // Find out whether the donor recently gave blood.
         $lastDonationAt = $this->eligibilityRepository->lastBloodDrawnAt(
             $profile->donor_id

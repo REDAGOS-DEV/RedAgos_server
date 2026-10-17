@@ -42,11 +42,17 @@ class StoreStaffRequest extends FormRequest
         // A typed role that names a predefined one is that role, so the
         // roster never holds a custom "Laboratory Supervisor" beside the real
         // one with different abilities.
-        if ($this->filled('custom_role') && ! $this->filled('staff_role')) {
+        if ($this->filled('custom_role')) {
             $typed = StaffRole::fromTyped((string) $this->input('custom_role'));
 
-            if ($typed !== null) {
+            if ($typed !== null && ! $this->filled('staff_role')) {
                 $this->merge(['staff_role' => $typed->value, 'custom_role' => null]);
+            } elseif ($typed !== null) {
+                // Beside a main role it is one more of their roles.
+                $this->merge([
+                    'additional_staff_roles' => array_values(array_unique([...(array) $this->input('additional_staff_roles', []), $typed->value])),
+                    'custom_role' => null,
+                ]);
             }
         }
 
@@ -82,6 +88,10 @@ class StoreStaffRequest extends FormRequest
             // which a predefined role supplies itself.
             'department' => ['nullable', 'string', Rule::in(Department::values())],
             'staff_role' => ['nullable', 'string', Rule::in(StaffRole::values())],
+            // Their other roles, all in the main role's department (checked by
+            // StaffService, which names the role that does not fit).
+            'additional_staff_roles' => ['sometimes', 'nullable', 'array', 'max:10'],
+            'additional_staff_roles.*' => ['string', 'distinct', Rule::in(StaffRole::values())],
             'custom_role' => ['nullable', 'string', 'max:100'],
 
             // The Read / Write / Update / Delete cap. Omitted means all four.
@@ -113,7 +123,9 @@ class StoreStaffRequest extends FormRequest
                     return;
                 }
 
-                $role = StaffRole::tryFrom((string) $this->input('staff_role'));
+                // With several roles and no main one, the first is the main one.
+                $role = StaffRole::tryFrom((string) $this->input('staff_role'))
+                    ?? StaffRole::tryFrom((string) (((array) $this->input('additional_staff_roles', []))[0] ?? ''));
                 $department = Department::tryFrom((string) $this->input('department'));
 
                 if ($role === null && ! $this->filled('custom_role')) {

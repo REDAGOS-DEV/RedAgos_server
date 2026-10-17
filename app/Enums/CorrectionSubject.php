@@ -155,7 +155,11 @@ enum CorrectionSubject: string
             return true;
         }
 
-        return $user->staff_role !== null && in_array($user->staff_role, $roles, true);
+        // Any of the user's roles will do.
+        return array_intersect(
+            array_map(fn (StaffRole $role): string => $role->value, $user->staffRoles()),
+            array_map(fn (StaffRole $role): string => $role->value, $roles)
+        ) !== [];
     }
 
     /**

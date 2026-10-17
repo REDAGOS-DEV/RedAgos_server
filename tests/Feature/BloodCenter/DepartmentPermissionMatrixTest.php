@@ -242,7 +242,7 @@ class DepartmentPermissionMatrixTest extends TestCase
         foreach ([
             'inventory.view', 'inventory.stock_report', 'requests.view', 'billing.view',
             'corrections.request', 'corrections.approve',
-            'donations.register', 'donations.screen', 'donations.collect', 'lab.record_serology',
+            'donations.register', 'donations.screen', 'donations.collect', 'donations.record_paper', 'lab.record_serology',
             'lab.record_components', 'lab.update_status', 'inventory.create', 'inventory.update',
             'inventory.discard', 'inventory.thresholds', 'inventory.release_quarantine',
             'requests.approve', 'requests.release', 'billing.record_payment',
@@ -461,6 +461,43 @@ class DepartmentPermissionMatrixTest extends TestCase
         foreach (['donors.view_clinical', 'donors.view_questionnaire', 'donations.screen', 'lab.view'] as $clinical) {
             $this->assertNotContains($clinical, $abilities);
         }
+    }
+
+    /**
+     * A drive's paper records are typed by whoever brings the sheets home
+     * (project owner, 2026-10-17): every Collection role, the head included,
+     * and nobody outside the department.
+     */
+    public function test_every_collection_role_and_no_other_types_paper_records(): void
+    {
+        $this->assertEqualsCanonicalizing(
+            [
+                StaffRole::ScreeningPhysician,
+                StaffRole::Phlebotomist,
+                StaffRole::ApheresisSpecialist,
+                StaffRole::MedicalReceptionist,
+            ],
+            DepartmentPermissions::rolesHolding('donations.record_paper')
+        );
+    }
+
+    /**
+     * The Donation desk prints a booked donor's completed questionnaire and
+     * hands a walk-in the counter's device to answer it (project owner,
+     * 2026-10-16). Printing is not reviewing: the receptionist still lacks the
+     * physician's read, which is the one carrying the review markers.
+     */
+    public function test_the_desk_and_the_physician_print_and_take_the_questionnaire_and_nobody_else(): void
+    {
+        foreach (['donors.print_questionnaire', 'donors.record_questionnaire'] as $ability) {
+            $this->assertEqualsCanonicalizing(
+                [StaffRole::ScreeningPhysician, StaffRole::MedicalReceptionist],
+                DepartmentPermissions::rolesHolding($ability),
+                "Only the desk and the physician may hold [{$ability}]."
+            );
+        }
+
+        $this->assertNotContains('donors.view_questionnaire', DepartmentPermissions::forRole(StaffRole::MedicalReceptionist));
     }
 
     public function test_issuance_and_billing_hold_no_laboratory_ability(): void

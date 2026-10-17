@@ -23,6 +23,9 @@ class DonationScreening extends Model
         'donation_id',
         'facility_id',
         'recorded_by',
+        // The screening physician as a drive's paper record names them. Null
+        // at the counter, where the physician records it themselves.
+        'screened_by_name',
         'outcome',
         'deferral_reason',
 
@@ -47,6 +50,8 @@ class DonationScreening extends Model
         // donor profile and never used to pre-fill the laboratory's typing.
         'fingerprick_blood_type_id',
         'notes',
+        // The donor answered the printed DHQ instead of the onsite one.
+        'dhq_on_paper',
         'screened_at',
     ];
 
@@ -61,6 +66,7 @@ class DonationScreening extends Model
             'weight_kg' => 'integer',
             'temperature_c' => 'float',
             'haemoglobin_g_dl' => 'float',
+            'dhq_on_paper' => 'boolean',
         ];
     }
 
@@ -88,5 +94,18 @@ class DonationScreening extends Model
     public function recorder(): BelongsTo
     {
         return $this->belongsTo(User::class, 'recorded_by');
+    }
+
+    /**
+     * Who screened the donor: the name on a paper record, otherwise the staff
+     * member who recorded it at the counter, which is the same person there.
+     */
+    public function screenerName(): ?string
+    {
+        if (filled($this->screened_by_name)) {
+            return $this->screened_by_name;
+        }
+
+        return $this->recorder ? trim($this->recorder->first_name.' '.$this->recorder->last_name) : null;
     }
 }

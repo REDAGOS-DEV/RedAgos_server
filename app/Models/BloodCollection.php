@@ -22,6 +22,9 @@ class BloodCollection extends Model
         // facility; a unique index cannot reach through `donations`.
         'facility_id',
         'collected_by',
+        // The phlebotomist as a drive's paper record names them; collected_by
+        // is then the staff member who typed it. Null at the counter.
+        'phlebotomist_name',
         'collection_datetime',
         'blood_bag_type',
         'donation_barcode',
@@ -55,5 +58,18 @@ class BloodCollection extends Model
     public function collector(): BelongsTo
     {
         return $this->belongsTo(User::class, 'collected_by');
+    }
+
+    /**
+     * Who drew the bag: the name on a paper record, otherwise the staff member
+     * who recorded the collection at the chair.
+     */
+    public function phlebotomistName(): ?string
+    {
+        if (filled($this->phlebotomist_name)) {
+            return $this->phlebotomist_name;
+        }
+
+        return $this->collector ? trim($this->collector->first_name.' '.$this->collector->last_name) : null;
     }
 }

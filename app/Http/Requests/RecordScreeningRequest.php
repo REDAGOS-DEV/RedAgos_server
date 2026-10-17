@@ -29,6 +29,21 @@ class RecordScreeningRequest extends FormRequest
     public function rules(): array
     {
         return [
+            ...self::fieldRules($this),
+            'screened_at' => ['sometimes', 'date', 'before_or_equal:now'],
+        ];
+    }
+
+    /**
+     * The screening's own fields, shared with a drive's paper record
+     * (RecordPaperDonationRequest) so the two can never accept different
+     * values for the same box on the form.
+     *
+     * @return array<string, mixed>
+     */
+    public static function fieldRules(FormRequest $request): array
+    {
+        return [
             'outcome' => ['required', 'string', Rule::in(ScreeningOutcome::values())],
 
             // Required only when the donor is turned away: a deferral the donor
@@ -39,7 +54,7 @@ class RecordScreeningRequest extends FormRequest
             // the way a single-value compare would have let it.
             'deferral_reason' => [
                 Rule::requiredIf(fn (): bool => ScreeningOutcome::tryFrom(
-                    (string) $this->input('outcome')
+                    (string) $request->input('outcome')
                 )?->isDeferral() ?? false),
                 'nullable',
                 'string',
@@ -59,6 +74,10 @@ class RecordScreeningRequest extends FormRequest
 
             'notes' => ['sometimes', 'nullable', 'string', 'max:500'],
 
+            // The donor answered the printed DHQ rather than the onsite one,
+            // which is optional (project owner, 2026-10-17).
+            'dhq_on_paper' => ['sometimes', 'boolean'],
+
             // Section I-D. Free text because the form gives ruled blanks and
             // no document defines a vocabulary for any of them. All optional:
             // what a centre records varies, and a blank is more honest than a
@@ -71,7 +90,6 @@ class RecordScreeningRequest extends FormRequest
             'skin' => ['sometimes', 'nullable', 'string', 'max:255'],
             'heent' => ['sometimes', 'nullable', 'string', 'max:255'],
             'heart_and_lungs' => ['sometimes', 'nullable', 'string', 'max:255'],
-            'screened_at' => ['sometimes', 'date', 'before_or_equal:now'],
         ];
     }
 

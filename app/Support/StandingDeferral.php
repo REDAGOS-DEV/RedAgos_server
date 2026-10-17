@@ -8,6 +8,10 @@ use Illuminate\Support\Carbon;
 /**
  * A permanent or indefinite deferral standing on a donor's record.
  *
+ * The Donors list also uses it for a temporary deferral that is the donor's
+ * latest screening (DonorDeferralRepository::deferralsFor()); the counter's
+ * notice never receives one.
+ *
  * Read from two places — the counter's screening outcome and the laboratory's
  * counselling referral — and reported the same way, so the counter cannot
  * tell which one it came from. That is deliberate: "a laboratory result

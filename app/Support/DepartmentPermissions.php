@@ -67,6 +67,11 @@ final class DepartmentPermissions
         'donations.collect',
         'donations.close',
 
+        // Type in a remote drive's paper records once they come back (project
+        // owner, 2026-10-17). Every Collection role and the head may: whoever
+        // ran the drive brings the sheets home.
+        'donations.record_paper',
+
         // Correct their own collection box, on the physician's approval.
         'corrections.request',
     ];
@@ -116,6 +121,11 @@ final class DepartmentPermissions
             // different act from looking them up.
             'donors.view_questionnaire',
 
+            // The Donation counter's printed form and its onsite form for
+            // walk-ins; see the receptionist's entry below.
+            'donors.print_questionnaire',
+            'donors.record_questionnaire',
+
             'appointments.view',
             'appointments.verify',
             'donations.view',
@@ -124,6 +134,9 @@ final class DepartmentPermissions
             // counter may clear a donor.
             'donations.screen',
             'donations.close',
+
+            // A drive's paper records; see CHAIRSIDE.
+            'donations.record_paper',
 
             // Donor/Collection's correction approver; their own screening
             // corrections apply when filed (CorrectionService::request()).
@@ -145,6 +158,13 @@ final class DepartmentPermissions
             'appointments.view',
             'appointments.verify',
 
+            // Book an appointment for a donor who phones in, and cancel one
+            // (project owner, 2026-10-17). Removing a booking entered by
+            // mistake is its own, delete-kind ability, so the Delete privilege
+            // still caps it.
+            'appointments.manage',
+            'appointments.delete',
+
             // Donor-facing scheduling includes the mobile drives.
             'drives.view',
             'drives.manage',
@@ -154,6 +174,18 @@ final class DepartmentPermissions
             // Opens the visit's donation record at check-in.
             'donations.register',
             'donations.close',
+
+            // A drive's paper records; see CHAIRSIDE.
+            'donations.record_paper',
+
+            // The desk that scans a booked donor in prints their completed
+            // questionnaire to travel with them to the physician (project
+            // owner, 2026-10-16), and hands a walk-in the counter's device to
+            // answer it. The printed form carries the answers only: the review
+            // markers and the server's assessment stay behind
+            // donors.view_questionnaire, which the receptionist still lacks.
+            'donors.print_questionnaire',
+            'donors.record_questionnaire',
         ],
 
         // Processing. Blind: none of these roles holds donors.view_identity,
@@ -325,6 +357,7 @@ final class DepartmentPermissions
         'donors.view_clinical' => 'read',
         'donors.view_identity' => 'read',
         'donors.view_questionnaire' => 'read',
+        'donors.print_questionnaire' => 'read',
         'appointments.view' => 'read',
         'drives.view' => 'read',
         'donations.view' => 'read',
@@ -335,10 +368,13 @@ final class DepartmentPermissions
         'billing.view' => 'read',
 
         'donors.manage' => 'write',
+        'donors.record_questionnaire' => 'write',
         'drives.manage' => 'write',
+        'appointments.manage' => 'write',
         'donations.register' => 'write',
         'donations.screen' => 'write',
         'donations.collect' => 'write',
+        'donations.record_paper' => 'write',
         'lab.record_serology' => 'write',
         'lab.record_immunohematology' => 'write',
         'lab.record_components' => 'write',
@@ -370,6 +406,7 @@ final class DepartmentPermissions
 
         'donations.close' => 'delete',
         'inventory.discard' => 'delete',
+        'appointments.delete' => 'delete',
     ];
 
     /**
@@ -441,8 +478,9 @@ final class DepartmentPermissions
     /**
      * Resolve the abilities a user holds.
      *
-     * Their role's set — predefined, or their department's for a custom role
-     * — capped by their privileges, plus whatever their management level
+     * Their roles' sets combined — each predefined role's, plus their
+     * department's for a custom role — capped by their one set of privileges,
+     * plus whatever their management level
      * adds, uncapped. A user with neither a role nor a level holds nothing,
      * which is the intended fail-closed state for a staff account awaiting
      * assignment.
@@ -451,11 +489,18 @@ final class DepartmentPermissions
      */
     public static function for(User $user): array
     {
-        $abilities = match (true) {
-            $user->staff_role !== null => self::forRole($user->staff_role),
-            filled($user->custom_role) && $user->department !== null => self::forCustomRole($user->department),
-            default => [],
-        };
+        // Every role the account holds, combined: a person covering two posts
+        // in one department does both jobs (project owner, 2026-10-17). A
+        // custom role adds its department's set, less the named posts' own.
+        $abilities = [];
+
+        foreach ($user->staffRoles() as $role) {
+            $abilities = [...$abilities, ...self::forRole($role)];
+        }
+
+        if (filled($user->custom_role) && $user->department !== null) {
+            $abilities = [...$abilities, ...self::forCustomRole($user->department)];
+        }
 
         return array_values(array_unique([
             ...self::cap($abilities, self::privilegesOf($user)),

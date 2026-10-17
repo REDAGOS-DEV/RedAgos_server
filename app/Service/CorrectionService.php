@@ -124,12 +124,24 @@ class CorrectionService
                 fn (CorrectionSubject $subject): bool => $this->headsDepartmentOf($viewer, $subject)
             ));
 
+            // The approver roles this viewer holds. One person's roles are all
+            // in one department, so this is at most that department's head.
+            $headRoles = array_values(array_unique(array_map(
+                fn (CorrectionSubject $s): string => $s->department()->correctionApprover()->value,
+                $subjects
+            )));
+
             $query->where('requested_by', '!=', $viewer->id)
                 ->whereIn('subject', array_map(fn (CorrectionSubject $s): string => $s->value, $subjects))
-                // A peer head's own request is theirs to settle, not this viewer's.
-                ->whereHas('requester', fn ($q) => $q->where(fn ($inner) => $inner
-                    ->whereNull('staff_role')
-                    ->orWhere('staff_role', '!=', $viewer->staff_role?->value)));
+                // A peer head's own request is theirs to settle, not this
+                // viewer's, whichever of their roles makes them head.
+                ->whereHas('requester', function ($q) use ($headRoles): void {
+                    foreach ($headRoles as $role) {
+                        $q->where(fn ($inner) => $inner->whereNull('staff_role')->orWhere('staff_role', '!=', $role))
+                            ->where(fn ($inner) => $inner->whereNull('additional_staff_roles')
+                                ->orWhereJsonDoesntContain('additional_staff_roles', $role));
+                    }
+                });
         } else {
             $query->where('requested_by', $viewer->id);
         }
@@ -315,8 +327,8 @@ class CorrectionService
      */
     private function headsDepartmentOf(User $user, CorrectionSubject $subject): bool
     {
-        return $user->staff_role !== null
-            && $user->staff_role === $subject->department()->correctionApprover();
+        // Held as the main role or another of theirs.
+        return $user->hasStaffRole($subject->department()->correctionApprover());
     }
 
     /**
@@ -369,7 +381,8 @@ class CorrectionService
             return true;
         }
 
-        return $correction->requester?->staff_role !== $user->staff_role;
+        // A peer head: the requester holds the same approver role.
+        return ! ($correction->requester?->hasStaffRole($correction->subject->department()->correctionApprover()) ?? false);
     }
 
     private function guardMayDecide(User $user, CorrectionRequest $correction): void

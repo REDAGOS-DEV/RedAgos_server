@@ -18,6 +18,8 @@ class Donation extends Model
         'donor_id',
         'facility_id',
         'appointment_id',
+        // The drive's paper sheet it was typed from; null at the counter.
+        'paper_sheet_id',
         'donation_date',
         'status',
         'volume_ml',
@@ -53,6 +55,14 @@ class Donation extends Model
     public function appointment(): BelongsTo
     {
         return $this->belongsTo(DonationAppointment::class, 'appointment_id');
+    }
+
+    /**
+     * The drive's paper sheet this donation was typed from, if it was.
+     */
+    public function paperSheet(): BelongsTo
+    {
+        return $this->belongsTo(PaperDonationSheet::class, 'paper_sheet_id');
     }
 
     /**

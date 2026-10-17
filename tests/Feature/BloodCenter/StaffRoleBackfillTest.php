@@ -112,6 +112,8 @@ class StaffRoleBackfillTest extends TestCase
             'inventory.stock_report' => 'inventory.create',
             'donations.collect' => 'donations.record',
             'donations.close' => 'donations.record',
+            // A drive's paper record is a donation recorded after the fact.
+            'donations.record_paper' => 'donations.record',
             'lab.record_serology' => 'lab.record_result',
             'lab.record_immunohematology' => 'lab.record_result',
             // Identity was always part of what donors.view showed the counter.

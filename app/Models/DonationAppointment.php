@@ -19,6 +19,8 @@ class DonationAppointment extends Model
         'event_id',
         'appointment_datetime',
         'status',
+        'notes',
+        'booked_by',
     ];
 
     /**
@@ -49,6 +51,14 @@ class DonationAppointment extends Model
     public function mobileEvent(): BelongsTo
     {
         return $this->belongsTo(MobileEvent::class, 'event_id');
+    }
+
+    /**
+     * The staff member who booked it for the donor; null when the donor booked it.
+     */
+    public function bookedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'booked_by');
     }
 
     /**

@@ -57,6 +57,12 @@ class BloodRequestNotifier
             ->where('facility_id', $request->target_facility_id)
             ->where(function ($query) use ($roles, $departments): void {
                 $query->whereIn('staff_role', $roles)
+                    // Held as one of their other roles counts the same.
+                    ->orWhere(function ($additional) use ($roles): void {
+                        foreach ($roles as $role) {
+                            $additional->orWhereJsonContains('additional_staff_roles', $role);
+                        }
+                    })
                     ->orWhere(fn ($custom) => $custom->whereNotNull('custom_role')->whereIn('department', $departments))
                     ->orWhere('management_level', ManagementLevel::Supervisor->value);
             })

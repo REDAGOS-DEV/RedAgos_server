@@ -452,7 +452,7 @@ class PaymentCheckoutService
      */
     private function assertSupervisor(User $staff): void
     {
-        if ($staff->staff_role !== StaffRole::BillingSupervisor) {
+        if (! $staff->hasStaffRole(StaffRole::BillingSupervisor)) {
             throw $this->refuse(403, 'not_billing_supervisor', 'Only the Billing Supervisor can resolve a checkout.');
         }
     }

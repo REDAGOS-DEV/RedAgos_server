@@ -134,6 +134,10 @@ class CollectionService
             $appointment = $this->arriveIfScheduled($staff, $appointment->id, $facility->id) ?? $appointment;
         }
 
+        // The booking the donor made in the Donor Portal, shown to the desk in
+        // full: when it was made and, for a mobile drive, which one.
+        $appointment?->loadMissing('mobileEvent');
+
         $this->auditLogger->record($staff, 'collection.qr_verified', $donor, [
             'facility_id' => $facility->id,
             'appointment_id' => $appointment?->id,
@@ -362,43 +366,9 @@ class CollectionService
                 'facility_id' => $facility->id,
                 // The authenticated staff member, never a name from the request.
                 'recorded_by' => $staff->id,
-                'outcome' => $outcome,
-                // Asked of the outcome rather than compared to one value: all
-                // three deferrals carry a reason, and only an accepted donor
-                // has none.
-                'deferral_reason' => $outcome->permitsCollection() ? null : $deferralReason,
-
-                // Section I-D, asked in person before anything is measured.
-                'sleep' => $this->trimmedOrNull($payload['sleep'] ?? null),
-                'meal' => $this->trimmedOrNull($payload['meal'] ?? null),
-                // Deliberately not reconciled against the donor's own answer to
-                // questionnaire question 2. That was a claim made days earlier
-                // in the app; this is what the officer was told at the counter,
-                // and the two have to be able to disagree.
-                'meds' => $this->trimmedOrNull($payload['meds'] ?? null),
-                'allergies' => $this->trimmedOrNull($payload['allergies'] ?? null),
-
-                'systolic_bp' => $payload['systolic_bp'] ?? null,
-                'diastolic_bp' => $payload['diastolic_bp'] ?? null,
-                'pulse_bpm' => $payload['pulse_bpm'] ?? null,
-                'temperature_c' => $payload['temperature_c'] ?? null,
-                'weight_kg' => $payload['weight_kg'] ?? null,
-                'haemoglobin_g_dl' => $payload['haemoglobin_g_dl'] ?? null,
-
-                // Section II's fingerprick table. Stored here and nowhere
-                // else: a capillary slide typing is preliminary, so it never
-                // fills the donor profile and never pre-fills the laboratory's
-                // confirmatory typing. Only the Testing department's
-                // immunohematology result does either.
-                'fingerprick_blood_type_id' => $payload['fingerprick_blood_type_id'] ?? null,
-
-                // Section I-D, observed.
-                'general_appearance' => $this->trimmedOrNull($payload['general_appearance'] ?? null),
-                'skin' => $this->trimmedOrNull($payload['skin'] ?? null),
-                'heent' => $this->trimmedOrNull($payload['heent'] ?? null),
-                'heart_and_lungs' => $this->trimmedOrNull($payload['heart_and_lungs'] ?? null),
-
-                'notes' => isset($payload['notes']) ? trim((string) $payload['notes']) : null,
+                ...$this->screeningAttributes($payload, $outcome),
+                // A paper DHQ leaves no answers in RedAgos; this says one was used.
+                'dhq_on_paper' => (bool) ($payload['dhq_on_paper'] ?? false),
                 'screened_at' => $payload['screened_at'] ?? now(),
             ]);
 
@@ -446,6 +416,61 @@ class CollectionService
                 ? 'Screening recorded. The donor may proceed to collection.'
                 : 'Screening recorded. '.$outcome->label().'.',
             'data' => $this->formatDonation($this->reload($donation, $facility), $staff),
+        ];
+    }
+
+    /**
+     * The screening's own fields as the form records them, from a validated
+     * payload. Shared with a drive's paper record (PaperDonationService), so
+     * the counter and the paper write the same columns the same way.
+     *
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    public function screeningAttributes(array $payload, ScreeningOutcome $outcome): array
+    {
+        $deferralReason = isset($payload['deferral_reason'])
+            ? trim((string) $payload['deferral_reason'])
+            : null;
+
+        return [
+            'outcome' => $outcome,
+            // Asked of the outcome rather than compared to one value: all
+            // three deferrals carry a reason, and only an accepted donor
+            // has none.
+            'deferral_reason' => $outcome->permitsCollection() ? null : $deferralReason,
+
+            // Section I-D, asked in person before anything is measured.
+            'sleep' => $this->trimmedOrNull($payload['sleep'] ?? null),
+            'meal' => $this->trimmedOrNull($payload['meal'] ?? null),
+            // Deliberately not reconciled against the donor's own answer to
+            // questionnaire question 2. That was a claim made days earlier
+            // in the app; this is what the officer was told at the counter,
+            // and the two have to be able to disagree.
+            'meds' => $this->trimmedOrNull($payload['meds'] ?? null),
+            'allergies' => $this->trimmedOrNull($payload['allergies'] ?? null),
+
+            'systolic_bp' => $payload['systolic_bp'] ?? null,
+            'diastolic_bp' => $payload['diastolic_bp'] ?? null,
+            'pulse_bpm' => $payload['pulse_bpm'] ?? null,
+            'temperature_c' => $payload['temperature_c'] ?? null,
+            'weight_kg' => $payload['weight_kg'] ?? null,
+            'haemoglobin_g_dl' => $payload['haemoglobin_g_dl'] ?? null,
+
+            // Section II's fingerprick table. Stored here and nowhere
+            // else: a capillary slide typing is preliminary, so it never
+            // fills the donor profile and never pre-fills the laboratory's
+            // confirmatory typing. Only the Testing department's
+            // immunohematology result does either.
+            'fingerprick_blood_type_id' => $payload['fingerprick_blood_type_id'] ?? null,
+
+            // Section I-D, observed.
+            'general_appearance' => $this->trimmedOrNull($payload['general_appearance'] ?? null),
+            'skin' => $this->trimmedOrNull($payload['skin'] ?? null),
+            'heent' => $this->trimmedOrNull($payload['heent'] ?? null),
+            'heart_and_lungs' => $this->trimmedOrNull($payload['heart_and_lungs'] ?? null),
+
+            'notes' => isset($payload['notes']) ? trim((string) $payload['notes']) : null,
         ];
     }
 
@@ -627,8 +652,11 @@ class CollectionService
 
     /**
      * Turn a donation-barcode unique violation into the same error the request gives.
+     *
+     * Public for a drive's paper record (PaperDonationService), which writes
+     * the same box and races the same index.
      */
-    private function rethrowBarcodeTaken(QueryException $exception): void
+    public function rethrowBarcodeTaken(QueryException $exception, string $field = 'donation_barcode'): void
     {
         if (! in_array($exception->errorInfo[0] ?? null, ['23000', '23505'], true)
             || ! str_contains($exception->getMessage(), 'barcode')) {
@@ -636,7 +664,7 @@ class CollectionService
         }
 
         throw ValidationException::withMessages([
-            'donation_barcode' => ['This barcode is already recorded at this facility. Scan the sticker again.'],
+            $field => ['This barcode is already recorded at this facility. Scan the sticker again.'],
         ]);
     }
 
@@ -890,10 +918,9 @@ class CollectionService
                 ! $clinical => [
                     'outcome' => $screening->outcome?->value,
                     'outcome_label' => $screening->outcome?->label(),
+                    'dhq_on_paper' => (bool) $screening->dhq_on_paper,
                     'screened_at' => $screening->screened_at?->toISOString(),
-                    'recorded_by' => $screening->recorder
-                        ? trim($screening->recorder->first_name.' '.$screening->recorder->last_name)
-                        : null,
+                    'recorded_by' => $screening->screenerName(),
                     'restricted' => true,
                 ],
                 default => [
@@ -917,13 +944,12 @@ class CollectionService
                     'heent' => $screening->heent,
                     'heart_and_lungs' => $screening->heart_and_lungs,
                     'notes' => $screening->notes,
+                    'dhq_on_paper' => (bool) $screening->dhq_on_paper,
                     'screened_at' => $screening->screened_at?->toISOString(),
                     // The screening officer, resolved from the authenticated user
                     // who recorded it — this is what the form's signature line
-                    // stands for.
-                    'recorded_by' => $screening->recorder
-                        ? trim($screening->recorder->first_name.' '.$screening->recorder->last_name)
-                        : null,
+                    // stands for. A drive's paper record names them instead.
+                    'recorded_by' => $screening->screenerName(),
                     'restricted' => false,
                 ],
             },
@@ -960,9 +986,7 @@ class CollectionService
             'started_at' => $collection->started_at?->toISOString(),
             'ended_at' => $collection->ended_at?->toISOString(),
             'collected_at' => $collection->collection_datetime?->toISOString(),
-            'phlebotomist' => $collection->collector
-                ? trim($collection->collector->first_name.' '.$collection->collector->last_name)
-                : null,
+            'phlebotomist' => $collection->phlebotomistName(),
         ];
     }
 
@@ -983,6 +1007,14 @@ class CollectionService
                 ? $appointment->donation?->status?->value
                 : null,
             'event_id' => $appointment->event_id,
+            'booked_at' => $appointment->created_at?->toISOString(),
+            // Only when the caller loaded it, like the donation above.
+            'event' => $appointment->relationLoaded('mobileEvent') && $appointment->mobileEvent
+                ? [
+                    'name' => $appointment->mobileEvent->name,
+                    'location' => $appointment->mobileEvent->location,
+                ]
+                : null,
             'donor' => $appointment->donorProfile?->donor
                 ? $this->formatDonor($appointment->donorProfile->donor)
                 : null,

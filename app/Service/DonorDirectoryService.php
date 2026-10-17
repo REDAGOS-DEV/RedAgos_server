@@ -3,22 +3,28 @@
 namespace App\Service;
 
 use App\Enums\AccountStatus;
+use App\Enums\FacilityDonorStatus;
 use App\Enums\IdentityStatus;
 use App\Enums\RoleName;
 use App\Enums\ScreeningOutcome;
 use App\Models\Donation;
 use App\Models\Facility;
+use App\Models\FacilityDonor;
 use App\Models\User;
 use App\Repository\BloodCenterRepository;
 use App\Repository\DonorDeferralRepository;
 use App\Repository\DonorDirectoryRepository;
 use App\Support\AccountIdentity;
+use App\Support\DonorAvatar;
+use App\Support\DonorStanding;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Exceptions\HttpResponseException;
-use Illuminate\Support\Carbon;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
@@ -41,7 +47,9 @@ class DonorDirectoryService
         private readonly DonorDirectoryRepository $donorDirectoryRepository,
         private readonly BloodCenterRepository $bloodCenterRepository,
         private readonly AuditLogger $auditLogger,
-        private readonly DonorDeferralRepository $donorDeferralRepository
+        private readonly DonorDeferralRepository $donorDeferralRepository,
+        private readonly DonorStandingResolver $donorStandingResolver,
+        private readonly DonorQuestionnaireService $donorQuestionnaireService
     ) {}
 
     /**
@@ -62,9 +70,17 @@ class DonorDirectoryService
         $facility = $this->requireFacility($staff);
         $full = $staff->can('donors.view');
 
-        return $this->donorDirectoryRepository
-            ->browseForFacility($facility->id, $filters, $perPage)
-            ->through(fn (User $donor): array => $full ? $this->summarise($donor) : $this->contact($donor));
+        $page = $this->donorDirectoryRepository->browseForFacility($facility->id, $filters, $perPage);
+
+        // Counts, deferrals and this centre's records for the whole page in a
+        // fixed number of queries, rather than three more per row.
+        $donors = $page->getCollection();
+        $standings = $this->donorStandingResolver->forDonors($facility->id, $donors);
+        $records = $this->donorDirectoryRepository->facilityRecordsFor($facility->id, $donors->pluck('id')->all());
+
+        return $page->through(fn (User $donor): array => $full
+            ? $this->summarise($donor, $standings[$donor->id], $records[$donor->id] ?? null)
+            : $this->contact($donor, $standings[$donor->id], $records[$donor->id] ?? null));
     }
 
     /**
@@ -108,6 +124,12 @@ class DonorDirectoryService
             // be bled. Outcome and date only — never a reason, never which
             // department recorded it — so it is safe in either shape.
             'prior_deferral' => $this->donorDeferralRepository->standingDeferralFor($donor->id)?->toArray(),
+
+            // The same reference the scan carries, so a counter that found a
+            // walk-in by search knows whether a questionnaire is on file
+            // before it lets the physician accept them. Metadata only; the
+            // answers stay behind their own gated read.
+            'health_questionnaire' => $this->donorQuestionnaireService->referenceForDonor($donor->id),
         ];
     }
 
@@ -168,6 +190,16 @@ class DonorDirectoryService
                 'status_label' => $donation->status?->label(),
                 'volume_ml' => $donation->volume_ml,
 
+                // What the profile's history table lists: the bag's barcode,
+                // what Processing made of it, and where it was given.
+                'bag' => $donation->collection?->donation_barcode,
+                'components' => $donation->components
+                    ->map(fn ($line): ?string => $line->component?->code ?: $line->component?->name)
+                    ->filter()
+                    ->values()
+                    ->all(),
+                'center' => $donation->facility?->name,
+
                 // What the screening officer decided, and why. Without this a
                 // deferred visit reads as a bare "Rejected" with the reason
                 // recorded nowhere a colleague can find it — which is the whole
@@ -219,15 +251,19 @@ class DonorDirectoryService
      * optional — see the users.email migration for why inventing one is worse
      * than omitting it.
      *
+     * A drive's paper record registers its new donors through here too, under
+     * its own audit action, so the two paths can never write a donor
+     * differently.
+     *
      * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
      */
-    public function registerWalkIn(User $staff, array $payload): array
+    public function registerWalkIn(User $staff, array $payload, string $auditAction = 'donor.registered_at_counter'): array
     {
         $facility = $this->requireFacility($staff);
 
         try {
-            $donor = DB::transaction(function () use ($payload): User {
+            $donor = DB::transaction(function () use ($payload, $facility, $staff): User {
                 $user = new User;
 
                 $user->fill([
@@ -256,7 +292,21 @@ class DonorDirectoryService
                     'gender' => $payload['gender'] ?? null,
                     'birth_date' => $payload['birth_date'] ?? null,
                     'address' => isset($payload['address']) ? trim((string) $payload['address']) : null,
+                    'occupation' => isset($payload['occupation']) ? trim((string) $payload['occupation']) : null,
+                    // What the donor says, for a donation RedAgos has no
+                    // record of. A recorded draw always wins over it.
+                    'last_donation_date' => $payload['last_donation_date'] ?? null,
                     'valid_id_number' => trim($payload['valid_id_number']),
+                ]);
+
+                // This centre's own record: the donor is on its list from now,
+                // not from their first visit, and its staff may correct the
+                // contact details they typed until the donor claims the account.
+                $this->donorDirectoryRepository->saveFacilityRecord($facility->id, $user->id, [
+                    'registered_here' => true,
+                    'status' => $payload['status'] ?? FacilityDonorStatus::Active->value,
+                    'notes' => $this->cleanNotes($payload['notes'] ?? null),
+                    'updated_by' => $staff->id,
                 ]);
 
                 return $user;
@@ -273,7 +323,7 @@ class DonorDirectoryService
             $donor->sendEmailVerificationNotification();
         }
 
-        $this->auditLogger->record($staff, 'donor.registered_at_counter', $donor, [
+        $this->auditLogger->record($staff, $auditAction, $donor, [
             'facility_id' => $facility->id,
             'has_email' => $donor->hasEmailAddress(),
         ]);
@@ -285,21 +335,269 @@ class DonorDirectoryService
     }
 
     /**
+     * Correct a donor's details, and this centre's own status and notes.
+     *
+     * Only for a donor this centre has dealt with: correcting another centre's
+     * donor would be writing to a record it may not even read. Three groups of
+     * fields, three rules, because the donor shares this record with every
+     * centre and with their own portal:
+     *
+     *  - Name and birth date are what an administrator checked against the
+     *    donor's ID. Once the identity is verified they stay as verified.
+     *  - Email and phone sign the donor in. Staff may correct them only for a
+     *    donor this centre registered who has not yet claimed the account;
+     *    otherwise a typo fix could hand someone else the account through a
+     *    password reset. The donor changes their own from the portal.
+     *  - Everything else — sex, blood type, address, occupation and a declared
+     *    last donation — is the counter's to correct. The blood type
+     *    especially: the laboratory refuses a typing that contradicts the
+     *    profile and tells staff to have Collection correct it, which until
+     *    now had no route.
+     *
+     * Status and notes are this centre's alone (facility_donors).
+     *
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    public function update(User $staff, string $uuid, array $payload): array
+    {
+        $facility = $this->requireFacility($staff);
+        $donor = $this->ownDonor($facility, $uuid);
+        $profile = $donor->donorProfile;
+        $record = $this->donorDirectoryRepository->facilityRecord($facility->id, $donor->id);
+        $editable = $this->editable($donor, $record);
+
+        $userChanges = $this->changed($donor, $payload, ['first_name', 'last_name', 'email', 'phone']);
+        $profileChanges = $this->changed($profile, $payload, ['birth_date', 'gender', 'blood_type_id', 'address', 'occupation', 'last_donation_date']);
+
+        $locked = [];
+
+        foreach (['first_name', 'last_name', 'birth_date'] as $field) {
+            if (! $editable['identity'] && (array_key_exists($field, $userChanges) || array_key_exists($field, $profileChanges))) {
+                $locked[$field] = ['Verified against the donor\'s ID, so it cannot be changed here.'];
+            }
+        }
+
+        foreach (['email', 'phone'] as $field) {
+            if (! $editable['contact'] && array_key_exists($field, $userChanges)) {
+                $locked[$field] = ['The donor manages this from their own account.'];
+            }
+        }
+
+        if ($locked !== []) {
+            throw ValidationException::withMessages($locked);
+        }
+
+        $recordChanges = [];
+
+        if (array_key_exists('status', $payload) && $payload['status'] !== ($record?->status?->value ?? FacilityDonorStatus::Active->value)) {
+            $recordChanges['status'] = $payload['status'];
+        }
+
+        if (array_key_exists('notes', $payload) && $this->cleanNotes($payload['notes']) !== $record?->notes) {
+            $recordChanges['notes'] = $this->cleanNotes($payload['notes']);
+        }
+
+        $previousBloodType = $profile->bloodType?->code;
+        $emailChanged = array_key_exists('email', $userChanges);
+
+        try {
+            DB::transaction(function () use ($donor, $profile, $userChanges, $profileChanges, $recordChanges, $emailChanged, $facility, $staff): void {
+                if ($userChanges !== []) {
+                    $donor->fill($userChanges);
+
+                    // A new address has not been confirmed by anyone.
+                    if ($emailChanged) {
+                        $donor->email_verified_at = null;
+                    }
+
+                    $donor->save();
+                }
+
+                if ($profileChanges !== []) {
+                    $profile->fill($profileChanges)->save();
+                }
+
+                if ($recordChanges !== []) {
+                    $this->donorDirectoryRepository->saveFacilityRecord($facility->id, $donor->id, [
+                        ...$recordChanges,
+                        'updated_by' => $staff->id,
+                    ]);
+                }
+            });
+        } catch (QueryException $exception) {
+            $this->rethrowUniqueViolation($exception);
+
+            throw $exception;
+        }
+
+        $donor->refresh()->load('donorProfile.bloodType');
+
+        if ($emailChanged && $donor->hasEmailAddress()) {
+            $donor->sendEmailVerificationNotification();
+        }
+
+        $fields = array_keys([...$userChanges, ...$profileChanges, ...$recordChanges]);
+
+        if ($fields !== []) {
+            $this->auditLogger->record($staff, 'donor.updated', $donor, array_filter([
+                'facility_id' => $facility->id,
+                // Which fields, not their values: the audit trail must not
+                // become a second copy of the donor's personal data. The blood
+                // type is the exception, because a change to it is a clinical
+                // correction someone will need to trace.
+                'fields' => $fields,
+                'blood_type' => array_key_exists('blood_type_id', $profileChanges)
+                    ? ['from' => $previousBloodType, 'to' => $donor->donorProfile?->bloodType?->code]
+                    : null,
+            ]));
+        }
+
+        return [
+            'message' => $fields === [] ? 'Nothing to change.' : trim($donor->first_name.' '.$donor->last_name).'\'s record has been updated.',
+            'data' => $this->present($donor, $facility, true),
+        ];
+    }
+
+    /**
+     * Set a donor's photo, for staff to recognise them at the counter.
+     *
+     * The same column and private disk as the photo a donor uploads from their
+     * portal, under the same rule as their email: only for a donor this
+     * centre registered who has not claimed the account. After that the photo
+     * is the donor's own.
+     *
+     * @return array<string, mixed>
+     */
+    public function updatePhoto(User $staff, string $uuid, UploadedFile $photo): array
+    {
+        $facility = $this->requireFacility($staff);
+        $donor = $this->ownDonor($facility, $uuid);
+        $record = $this->donorDirectoryRepository->facilityRecord($facility->id, $donor->id);
+
+        if (! $this->editable($donor, $record)['photo']) {
+            throw ValidationException::withMessages([
+                'photo' => ['The donor manages their photo from their own account.'],
+            ]);
+        }
+
+        $profile = $donor->donorProfile;
+        $previous = $profile->profile_image_path;
+
+        $profile->profile_image_path = $photo->store('avatars', 'local');
+        $profile->save();
+
+        if ($previous && Storage::disk('local')->exists($previous)) {
+            Storage::disk('local')->delete($previous);
+        }
+
+        $this->auditLogger->record($staff, 'donor.photo_updated', $donor, ['facility_id' => $facility->id]);
+
+        return [
+            'message' => 'Photo saved.',
+            'photo_url' => DonorAvatar::urlFor($donor->fresh('donorProfile')),
+        ];
+    }
+
+    /**
+     * Which groups of a donor's fields this centre's staff may change.
+     *
+     * @return array{identity: bool, contact: bool, photo: bool}
+     */
+    private function editable(User $donor, ?FacilityDonor $record): array
+    {
+        // Registered at this counter, and never taken over by the donor: no
+        // password they chose, no address they confirmed.
+        $unclaimedHere = ($record?->registered_here ?? false)
+            && $donor->account_status === AccountStatus::PendingVerification
+            && ! $donor->hasVerifiedEmail();
+
+        return [
+            'identity' => $donor->donorProfile?->identity_status !== IdentityStatus::Verified,
+            'contact' => $unclaimedHere,
+            'photo' => $unclaimedHere,
+        ];
+    }
+
+    /**
+     * The submitted fields whose value differs from the model's.
+     *
+     * Dates compare as Y-m-d and ids as integers, so re-saving an untouched
+     * form changes nothing and audits nothing.
+     *
+     * @param  array<string, mixed>  $payload
+     * @param  array<int, string>  $fields
+     * @return array<string, mixed>
+     */
+    private function changed(Model $model, array $payload, array $fields): array
+    {
+        $changes = [];
+
+        foreach ($fields as $field) {
+            if (! array_key_exists($field, $payload)) {
+                continue;
+            }
+
+            $new = is_string($payload[$field]) ? trim($payload[$field]) : $payload[$field];
+            $new = $new === '' ? null : $new;
+            $current = $model->getAttribute($field);
+
+            $current = match (true) {
+                $current instanceof \DateTimeInterface => $current->format('Y-m-d'),
+                $current instanceof \BackedEnum => $current->value,
+                default => $current,
+            };
+
+            if ((string) $current !== (string) $new) {
+                $changes[$field] = $new;
+            }
+        }
+
+        return $changes;
+    }
+
+    private function cleanNotes(mixed $notes): ?string
+    {
+        $notes = is_string($notes) ? trim($notes) : null;
+
+        return $notes === '' ? null : $notes;
+    }
+
+    /**
+     * A donor this centre has dealt with, or a refusal.
+     */
+    private function ownDonor(Facility $facility, string $uuid): User
+    {
+        $donor = $this->donorDirectoryRepository->findDonor($uuid)
+            ?? throw $this->refuse(404, 'donor_not_found', 'No donor matches that identifier.');
+
+        if (! $this->donorDirectoryRepository->facilityHasRelationship($donor->id, $facility->id)) {
+            throw $this->refuse(
+                403,
+                'donor_not_at_facility',
+                'Only a centre this donor has visited or registered with can change their record.'
+            );
+        }
+
+        return $donor;
+    }
+
+    /**
      * Build the response for a donor, in the shape this facility may see.
      *
      * @return array<string, mixed>
      */
     private function present(User $donor, Facility $facility, bool $isOwn): array
     {
-        $summary = $this->donorDirectoryRepository->donationSummary($donor->id);
+        $standing = $this->donorStandingResolver->forDonor($facility->id, $donor);
 
         $payload = [
             ...$this->identity($donor),
             'scope' => $isOwn ? 'own_facility' : 'cross_facility',
             'donation_summary' => [
-                'total_donations' => $summary['total_donations'],
-                'last_donation_at' => $summary['last_donation_at'],
-                'next_eligible_date' => $this->nextEligibleDate($summary['last_donation_at']),
+                'total_donations' => $standing->totalDonations,
+                'last_donation_at' => $standing->lastDonationAt?->toDateString(),
+                'next_eligible_date' => $standing->nextEligibleDate?->toDateString(),
             ],
         ];
 
@@ -313,12 +611,29 @@ class DonorDirectoryService
         }
 
         $profile = $donor->donorProfile;
+        $record = $this->donorDirectoryRepository->facilityRecord($facility->id, $donor->id);
 
         return [
             ...$payload,
+            ...$standing->toArray(withDeferral: true),
             'restricted' => false,
             'address' => $profile?->address,
             'gender' => $profile?->gender,
+            'occupation' => $profile?->occupation,
+            'blood_type_id' => $profile?->blood_type_id,
+            'declared_last_donation_date' => $profile?->last_donation_date?->toDateString(),
+            'photo_url' => DonorAvatar::urlFor($donor),
+
+            // This centre's own record.
+            'status' => $this->statusOf($record),
+            'notes' => $record?->notes,
+            'registered_here' => $record?->registered_here ?? false,
+            'eligibility_reminded_at' => $record?->eligibility_reminded_at?->toISOString(),
+
+            // Whether the donor turned eligibility reminders off in their portal.
+            'accepts_eligibility_reminders' => $this->acceptsEligibilityReminders($donor),
+            'editable' => $this->editable($donor, $record),
+
             'valid_id_number' => $profile?->valid_id_number,
             // Status and type only. The document itself is reachable solely
             // through the authenticated route, which blood-centre staff are not
@@ -366,10 +681,8 @@ class DonorDirectoryService
      *
      * @return array<string, mixed>
      */
-    private function contact(User $donor): array
+    private function contact(User $donor, DonorStanding $standing, ?FacilityDonor $record): array
     {
-        $summary = $this->donorDirectoryRepository->donationSummary($donor->id);
-
         return [
             'uuid' => $donor->uuid,
             'donor_code' => 'DONOR-'.str_pad((string) $donor->id, 6, '0', STR_PAD_LEFT),
@@ -378,9 +691,8 @@ class DonorDirectoryService
             'last_name' => $donor->last_name,
             'phone' => $donor->phone,
             'email' => $donor->email,
-            'total_donations' => $summary['total_donations'],
-            'last_donation_at' => $summary['last_donation_at'],
-            'next_eligible_date' => $this->nextEligibleDate($summary['last_donation_at']),
+            ...$standing->toArray(withDeferral: false),
+            'status' => $this->statusOf($record),
             'contact_only' => true,
         ];
     }
@@ -390,33 +702,32 @@ class DonorDirectoryService
      *
      * @return array<string, mixed>
      */
-    private function summarise(User $donor): array
+    private function summarise(User $donor, DonorStanding $standing, ?FacilityDonor $record): array
     {
-        $summary = $this->donorDirectoryRepository->donationSummary($donor->id);
+        $profile = $donor->donorProfile;
 
         return [
             ...$this->identity($donor),
-            'total_donations' => $summary['total_donations'],
-            'last_donation_at' => $summary['last_donation_at'],
-            'next_eligible_date' => $this->nextEligibleDate($summary['last_donation_at']),
+            'gender' => $profile?->gender,
+            'address' => $profile?->address,
+            'occupation' => $profile?->occupation,
+            ...$standing->toArray(withDeferral: true),
+            'status' => $this->statusOf($record),
         ];
     }
 
-    /**
-     * The earliest date this donor may give whole blood again.
-     *
-     * Reads the same config the donor-side eligibility rules use, so the
-     * counter and the donor portal cannot disagree about the interval.
-     */
-    private function nextEligibleDate(?string $lastDonationAt): ?string
+    private function statusOf(?FacilityDonor $record): string
     {
-        if ($lastDonationAt === null) {
-            return null;
-        }
+        return ($record?->status ?? FacilityDonorStatus::Active)->value;
+    }
 
-        return Carbon::parse($lastDonationAt)
-            ->addDays((int) config('donation.interval_days'))
-            ->toDateString();
+    /**
+     * The donor's own switch for eligibility emails, on unless they turned it
+     * off. A counter-registered donor has never seen it, so has none stored.
+     */
+    private function acceptsEligibilityReminders(User $donor): bool
+    {
+        return ($donor->donorProfile?->notification_preferences['eligibility_renewal'] ?? true) !== false;
     }
 
     /**

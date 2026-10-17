@@ -41,6 +41,8 @@ class UserResource extends JsonResource
             'department' => $this->department?->value,
             'department_label' => $this->department?->label(),
             'staff_role' => $this->staff_role?->value,
+            // Every predefined role held, main first. staff_role is the main one.
+            'staff_roles' => array_map(fn ($role): string => $role->value, $this->resource->staffRoles()),
             'hospital_role' => $this->hospital_role?->value,
             'hospital_role_label' => $this->hospital_role?->label(),
             'staff_role_label' => $this->staff_role?->label(),

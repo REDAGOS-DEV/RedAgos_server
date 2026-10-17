@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Enums\FacilityDonorStatus;
 use App\Support\AccountIdentity;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Support\Str;
@@ -60,6 +61,15 @@ class StoreWalkInDonorRequest extends FormRequest
             'gender' => ['nullable', 'string', Rule::in(['male', 'female', 'other', 'prefer_not_to_say'])],
             'blood_type_id' => ['nullable', 'integer', 'exists:blood_types,id'],
             'address' => ['nullable', 'string', 'max:255'],
+            'occupation' => ['nullable', 'string', 'max:100'],
+
+            // A donation given before RedAgos knew them, as the donor recalls
+            // it. Only read when no draw is on record.
+            'last_donation_date' => ['nullable', 'date', 'before_or_equal:today'],
+
+            // This centre's own record of them.
+            'status' => ['nullable', 'string', Rule::in(FacilityDonorStatus::values())],
+            'notes' => ['nullable', 'string', 'max:2000'],
         ];
     }
 

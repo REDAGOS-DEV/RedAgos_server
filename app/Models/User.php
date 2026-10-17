@@ -71,6 +71,7 @@ class User extends Authenticatable implements MustVerifyEmail
             'account_status' => AccountStatus::class,
             'department' => Department::class,
             'staff_role' => StaffRole::class,
+            'additional_staff_roles' => 'array',
             'hospital_role' => HospitalRole::class,
             'staff_privileges' => 'array',
             'management_level' => ManagementLevel::class,
@@ -87,24 +88,95 @@ class User extends Authenticatable implements MustVerifyEmail
      * alongside it is overwritten on save so the two can never disagree. A
      * custom role keeps the department it was assigned, since nothing else
      * could supply one. An account with no role at all has no department.
+     *
+     * The additional roles are kept to the main role's department, without
+     * repeats and without the main role itself: one person's roles are all in
+     * one department (project owner, 2026-10-17). A list with no main role
+     * promotes its first entry, so an account never holds only "extra" roles.
+     * StaffService refuses a mismatch with a message first; this is the floor.
      */
     protected static function booted(): void
     {
         static::saving(function (User $user): void {
+            $additional = array_values(array_filter(array_map(
+                fn ($value): ?StaffRole => StaffRole::tryFrom((string) $value),
+                $user->additional_staff_roles ?? []
+            )));
+
+            if ($user->staff_role === null && $additional !== []) {
+                $user->staff_role = array_shift($additional);
+            }
+
             if ($user->staff_role !== null) {
                 $user->department = $user->staff_role->department();
             } elseif (blank($user->custom_role)) {
                 $user->department = null;
             }
+
+            $kept = [];
+
+            foreach ($additional as $role) {
+                if ($role !== $user->staff_role && $role->department() === $user->department && ! in_array($role->value, $kept, true)) {
+                    $kept[] = $role->value;
+                }
+            }
+
+            $user->additional_staff_roles = $kept === [] ? null : $kept;
         });
     }
 
     /**
-     * The role as the staff roster shows it: a predefined role's title, or the custom one typed.
+     * Every predefined role the account holds: the main one first.
+     *
+     * @return array<int, StaffRole>
+     */
+    public function staffRoles(): array
+    {
+        $roles = $this->staff_role !== null ? [$this->staff_role] : [];
+
+        foreach ($this->additional_staff_roles ?? [] as $value) {
+            $role = StaffRole::tryFrom((string) $value);
+
+            if ($role !== null && ! in_array($role, $roles, true)) {
+                $roles[] = $role;
+            }
+        }
+
+        return $roles;
+    }
+
+    /**
+     * Whether the account holds this predefined role, as its main role or another.
+     *
+     * Use this, never `staff_role ===`, wherever a role is a qualification:
+     * the department's correction approver, the Billing Supervisor.
+     */
+    public function hasStaffRole(StaffRole $role): bool
+    {
+        return in_array($role, $this->staffRoles(), true);
+    }
+
+    /**
+     * Every role as the staff roster shows it: the predefined titles, then the custom one typed.
+     *
+     * @return array<int, string>
+     */
+    public function roleLabels(): array
+    {
+        return [
+            ...array_map(fn (StaffRole $role): string => $role->label(), $this->staffRoles()),
+            ...(filled($this->custom_role) ? [$this->custom_role] : []),
+        ];
+    }
+
+    /**
+     * The roles on one line, e.g. "Medical Receptionist, Phlebotomist".
      */
     public function roleLabel(): ?string
     {
-        return $this->staff_role?->label() ?? (filled($this->custom_role) ? $this->custom_role : null);
+        $labels = $this->roleLabels();
+
+        return $labels === [] ? null : implode(', ', $labels);
     }
 
     public function roles(): BelongsToMany

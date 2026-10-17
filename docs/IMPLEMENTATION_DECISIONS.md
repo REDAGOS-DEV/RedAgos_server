@@ -1531,3 +1531,196 @@ So a hospital's `hospital_inventory.received` on the same bag is excluded. An op
 - A case-insensitive search across the unit id and storage location.
 
 **KNOWN LIMITATIONS:** Activity reads the audit trail, so it shows only what was audited per unit. The page refreshes once a minute while the tab is visible; it is not pushed.
+
+## Donor Management page
+
+**SOURCE:** The owner's mock-up of the Donors Record page (2026-10-16): a toolbar with search (name, phone, email or ID), a blood-group and a status filter, Export, Remind Eligible, Refresh and New Donor; a table with ID, donor, group, phone, last donation, total, eligibility, status and three row actions (view profile, edit, send email). Export drops the City column and keeps the address. Reminders are sent by the blood centre, not by RedAgos.
+
+**DECIDED BY:** Claude, building the mock-up on 2026-10-16; the owner has not yet ruled on the points below.
+
+**DECISION (a centre's own record):** New `facility_donors` (facility, donor, `status` active|inactive, `notes`, `registered_here`, `eligibility_reminded_at`). Status and notes are the centre's alone: donors are global, and "detailed records stay with the facility that created them", so they are not on `donor_profiles`. A donor with no row is active. A row also counts as a relationship, so a walk-in registered here is on the list and has an unrestricted profile from registration, not from their first visit.
+
+**DECISION (what a donation is):** `donationSummary()` now counts a donation once blood was given: the bag was drawn (a `blood_collections` row) or the donation is completed. Counting completed donations alone told a donor bled this morning they were eligible while the bag was still in the laboratory, which the eligibility reminder must never act on. The last donation falls back to the date the donor declared (`donor_profiles.last_donation_date`) when none is on record, and the next eligible date comes from `EligibilityRuleEvaluator`, the same reading the donor portal and the counter's interval check make. `DonorStanding` and `DonorStandingResolver` hold this, in a fixed number of queries per page.
+
+**DECISION (eligibility shown):** eligible, waiting (`From 26-Oct-2026`), or deferred. Deferred means a standing deferral (permanent or indefinite, chosen as the counter's notice chooses it), or a temporary deferral when it is the donor's latest screening. Nothing records when a temporary deferral ends, so it holds until the donor is screened again: the cautious reading, which keeps them out of a bulk reminder. The list carries the kind and date to holders of `donors.view`; the contact list learns only that the donor is deferred. Never the reason.
+
+**DECISION (editing):** `PATCH /donors/{uuid}` (`donors.manage`), only for a donor this centre has dealt with, only the fields sent, and audited by field name (with the blood type's from/to, since that is a clinical correction). Three rules, because the record is shared with every centre and the donor's portal:
+- Name and birth date are locked once an administrator has verified the donor's ID.
+- Email and phone sign the donor in, so staff may change them only for a donor this centre registered who has not claimed the account (still pending verification, email not verified). Otherwise a "correction" plus a password reset would hand someone the account. The same rule covers the photo.
+- Sex, blood type, address, occupation and a declared last donation are the counter's to correct. The laboratory already told staff to "have Collection correct the donor profile" on a type mismatch; this is the first route that can.
+The valid ID number is still required at registration and not editable: it is what stops a donor being registered twice. Blood group stays optional (the mock-up marks it required): the laboratory types a blank profile, and a guessed type would block the laboratory on a mismatch.
+
+**DECISION (export):** `GET /donors/export` (`donors.view`, audited with row count and filters) streams a CSV, not .xlsx, so no library is needed. It has a UTF-8 BOM so Excel reads accented names, phones written 0917 123 4567 so Excel keeps them as text, and an apostrophe before any cell starting with = + - @ (CSV injection). The photo is a Yes/No column, not a URL: a signed link expires in 30 minutes, and one that did not would put a donor's face one forwarded spreadsheet away from anyone. Same filters and sort as the page.
+
+**DECISION (reminders):** `GET` / `POST /donors/eligibility-reminders` (`donors.manage`). The GET counts and the POST sends, through one method, so the dialog's count is what is sent. A donor is reminded only if all of these hold: they are on the filtered list; active here; they have an email and an open account; they have not turned off `eligibility_renewal` in their portal; they are eligible today; and this centre has not reminded them in the last 7 days. The 7-day check is what stops a second click from mailing anyone twice.
+
+**DECISION (sent as the centre):** `DonorCenterEmail` is queued. The From name is the centre's, Reply-To is the centre's email, and the page carries the centre's name and contact details with no RedAgos branding. The From address stays `MAIL_FROM_ADDRESS`: the SMTP server relays only for the account it authenticates, and sending as the centre's own address would be spoofing it.
+
+**DECISION (one donor's email):** `POST /donors/{uuid}/email` with `thank_you` or `eligibility_reminder`. A thank-you needs a donation at this centre. A reminder is refused for a standing deferral, an inactive donor or one who turned reminders off; a temporary deferral is left to the staff member's judgement.
+
+**DECISION (templates):** `facility_email_templates`, edited in Settings → Blood Center by the Admin (`center.configure`), the same holder as the logo. They are plain text with `{placeholders}` and escaped when built, so a template cannot carry markup. A centre with no row sends the built-in default, and Restore default deletes the row. An unknown placeholder is sent as typed, and Settings warns about it.
+
+**DECISION (display only):** The tier badge (Bronze 1+, Silver 5+, Gold 10+, Platinum 25+) is the page's own and not stored. The table shows Address where the mock-up shows City, because RedAgos keeps one address line. IDs keep the existing `DONOR-000032` format, which the counter's lookup parses. The profile's donation history stays behind `donors.view_clinical` (the physician): it carries deferral reasons and results, so the receptionist sees a note and the standing deferral instead.
+
+**KNOWN LIMITATIONS:** Reminders need the queue worker (`php artisan queue:work`) to actually leave. A temporary deferral never expires on its own. Search by valid ID number matches the whole normalised number only.
+
+## Sidebar regrouping and the Donor/Collection dashboard
+
+**SOURCE:** The owner, 2026-10-16. The sidebar's "Main" group becomes **Overview**, with a Dashboard under it. "Donor / Collection" is split in two: **Donor** (Donor Management, Appointments) and **Collection** (Donations, Blood Donation Drive). Asked what "Dashboard" should be for Donor/Collection staff, the owner chose a dashboard of the department's own, with all four proposed sections: today at the counter, the donor pool, coming up, and the donation trend.
+
+**DECIDED BY:** The owner (grouping, the four sections); Claude (the details below).
+
+**DECISION (nav):** Purely client-side (`useBloodCenterNav.ts`). Every link keeps its `requires`. The centre-wide overview (`reports.view_all`) is now labelled **Center Dashboard**, so an Admin who also holds a counter role does not see two items called "Dashboard". The Donor/Collection department now owns two groups, and both go first for its staff.
+
+**DECISION (gate):** `GET /blood-center/collection/dashboard` uses `donations.view`. Every counter role holds it (receptionist, physician, phlebotomist, apheresis), and no role outside the department does, so no new ability was needed. The payload is counts only and never names a donor, because the collection chair, who has no access to donor records, reads it too.
+
+**DECISION (what each section counts):**
+- *Today*: this centre's appointments for the operational day, by status. Visits opened today are counted once, at the furthest step they reached: deferred at screening, collected (a bag drawn or the donation completed), in screening, registered, or closed another way.
+- *Donor pool*: every donor on the centre's Donors list, through `DonorStanding`, so "eligible" means the same as on the Donors list and in the reminder. Inactive donors count only as inactive. The blood-group split covers active donors who are eligible today. "New this week" means accounts created in the last 7 days.
+- *Coming up*: appointments still holding a slot, for each of the next 7 days from tomorrow (today has its own section), plus this centre's drives from today to +7 with their active registrations.
+- *Trend*: 30 operational days ending today, with donations (blood given) and screening deferrals per day, bucketed in the operational timezone.
+
+**DECISION (chart):** Stacked columns: donations at the baseline, deferrals above, a 2px surface gap between them, and a rounded top on whichever is on top. Colours are categorical slots 1 and 2 (blue #2a78d6 / #3987e5, orange #eb6834 / #d95926), checked for colour-blind separation and contrast on this app's light (#FFFFFF) and dark (#1E293B) surfaces. The chart has a legend, a hover and keyboard (arrow keys) tooltip per day, and a table view.
+
+**KNOWN LIMITATIONS:** The pool is recomputed on each load, about 0.6s for 1,204 donors on the dev database; a much larger centre may want it cached. "New this week" counts new RedAgos accounts, not a donor's first contact with this centre.
+
+## Several roles per staff member
+
+**SOURCE:** The project owner, 2026-10-17: "Add multiple/custom role in staff." Asked to choose, the owner picked **several roles per person**, **all in one department**, with **one set of privileges per person**.
+
+**DECIDED BY:** The owner (the three rules); Claude (the shape below).
+
+**DECISION (storage):** `users.staff_role` stays the **main** role. It decides the department and where the person lands after signing in, so every existing reader keeps working. The other listed roles go in the new JSON column `users.additional_staff_roles`. JSON rather than a pivot table: the list is short, it is read together with its user, and it is only ever queried as "who holds role X", which `whereJsonContains` answers on PostgreSQL and SQLite alike. User's saving hook keeps the list to the main role's department, removes repeats and the main role itself, and promotes the first entry when there is no main role.
+
+**DECISION (custom roles):** A typed custom role may now stand **beside** listed roles. Before, the two were exclusive. There is still at most one custom role per person: every custom role in a department holds the same abilities, so a second one would add only a label. A typed name that matches a listed role becomes that role: the main one when none is set, otherwise one of the others.
+
+**DECISION (abilities):** `DepartmentPermissions::for()` combines every role's set, plus the department's set when there is a custom role. It then caps the result with the person's single set of privileges and adds the management level, which stays uncapped.
+
+**DECISION (roles that qualify their holder):** These now ask `User::hasStaffRole()` instead of comparing `staff_role`, so a qualifying role counts whether it is the main one or not:
+- the department's correction approver: who decides, the review queue, and the peer-head rule;
+- which roles may file each correction;
+- the Billing Supervisor's checkout review and cash-shift oversight;
+- blood-request notifications;
+- the roster's role filter.
+
+The client mirrors this with `user.staff_roles`, in the correction dialog's "you are the head" check and the GCash dialog's supervisor buttons.
+
+**DECISION (one department):** `StaffService` refuses a role from another department with a message that names it. That includes a main-role change that would leave the other roles behind in the old department. The owner chose this rule so that, for example, a laboratory role that is blind to donor identity is never paired with a role that sees donor names.
+
+**API:** Staff create and update take `additional_staff_roles` (an array of StaffRole values) beside `staff_role` and `custom_role`. The roster and `/user` return:
+- `staff_roles`: every listed role, main first;
+- `additional_staff_roles` (roster only);
+- `role_labels`: every role's title, plus the custom role;
+- `role_label`: those titles joined with commas.
+
+An update that sends `staff_role` without `custom_role` still replaces the custom role, as it did before. The `staff.role_changed` audit now records both full role lists.
+
+## Appointments page and phone bookings
+
+**SOURCE:** The owner's mock-up of the Appointments page (2026-10-17). It is one table: ID, donor with blood group, date, slot, camp or centre, status and actions (check in, no-show, cancel, delete). The toolbar has a search, a date range, a status filter, Export, Refresh and New Appointment. The stat cards and the time-slot grid are removed. New Appointment is for a donor who phones the centre, so the staff member books for them. "Blood Drive = Camp": a camp is a mobile blood drive (`mobile_events`) this centre runs.
+
+**DECIDED BY:** The owner (the structure); Claude (the rules below).
+
+**DECISION (one set of booking rules):** Staff bookings go through `AppointmentService::bookOnBehalf()`, which uses the same guards as the portal:
+- the booking window (not in the past, not beyond 90 days);
+- the donation interval;
+- one active booking per donor;
+- slot capacity at the centre, or the drive's capacity at a camp.
+
+So the desk cannot make a booking the donor could not have made. Staff differ from the portal in three ways:
+- There is no email-verification gate, because a walk-in may have no email address.
+- A donor with a standing deferral, or a suspended or closed account, is refused.
+- The error messages say "This donor…" instead of "You…".
+
+The donor gets the portal's own confirmation (AppointmentScheduled).
+
+**DECISION (camps):** A camp booking takes the drive's date. Its time must be one of the slots inside the drive's hours (the centre's grid when the drive set none), and the drive must be one of this centre's upcoming drives. All slots share the drive's single capacity.
+
+**DECISION (who may do what):** Two new abilities, both held by the Medical Receptionist (and so by Collection custom roles):
+- `appointments.manage` (write) books and cancels.
+- `appointments.delete` (delete) removes a booking. It is a separate ability so the Delete privilege still caps it.
+
+Listing and export use `appointments.view`; check-in and no-show stay on `appointments.verify` (CollectionService). Each row carries `can` flags, so the page shows exactly the actions the server allows:
+- check in only on the appointment's day;
+- no-show from that day on;
+- cancel only while the booking is still scheduled.
+
+**DECISION (delete):** Only a booking that is scheduled, cancelled or no-show and has no donation recorded against it can be deleted. `donations.appointment_id` is set to null when its appointment is deleted, so deleting one with a visit would silently cut that link. That is why the mock-up's trash icon is disabled on such rows, with a tooltip. Before the row is removed, the audit log records what it was.
+
+**DECISION (display):** IDs are `APT-000123`, matching the `DONOR-000123` format. A completed booking reads **Collected** or **Deferred** from its donation, keeping the established staff wording, where the mock-up said "Completed". A centre booking reads "Main Center". The slot is the booked time plus the centre's slot length. Times are read as wall-clock time in the application's timezone, exactly as bookings are stored. New columns `notes` and `booked_by` record what the desk wrote down and who booked; both are null for portal bookings.
+
+**DECISION (finding the caller):** The form searches the centre's own Donors list. If nothing matches and the search is an exact donor ID, email or mobile number, it uses the counter's exact lookup instead. That way a donor who has only ever given elsewhere can still be booked, and the booking makes them this centre's donor.
+
+**REVISED (project owner, 2026-10-17):** Check-in is allowed from the appointment day onward, so a late arrival can still be checked in. It stays greyed out only for a day that has not come yet. Cancel is allowed for any scheduled booking. A scheduled row always shows its four actions, and one that does not apply yet is greyed out with the reason as its tooltip.
+
+**REVISED (project owner, 2026-10-17), the ✓:** On the Appointments list, ✓ now **marks the booking collected** (`POST /appointments/{id}/collected`, `appointments.verify`) instead of checking the donor in. It works on a scheduled or in-progress booking from its day onward, a late arrival included, and not for a day still to come. It closes the booking the same way recording a collection at the Donations counter does, but it writes **no donation**. The bag, the donor's history and their next eligible date still come from recording the visit at the counter, which can be done against the booking afterwards: the counter accepts a completed booking and leaves it completed. QR check-in stays at the counter. A booking marked collected is kept and cannot be deleted.
+
+**REVISED (project owner, 2026-10-17), wording:** "Drive", not "Camp". The page, the booking form, the export column (`DriveCenter`) and the API (`drive` on a row, `drives` in the options, `drive_id` in audit context) all say drive, which is also what the rest of RedAgos calls a mobile blood drive.
+
+**REVISED (project owner, 2026-10-17), the centre's name:** A booking at the centre itself shows the facility's own name instead of "Main Center". This applies to the list's Drive / Center column, the export and the booking form ("<centre name> (default) - search drive…", "Use <centre name>").
+
+## Donations list, and a visit in progress
+
+**SOURCE:** The owner, 2026-10-17. The Donation counter refused a donor ("already has a donation in progress", #1203) while Donor Management called the same donor eligible, and no screen listed the open visit. The owner asked for a Donations list with the structure and behaviour of Donor Management.
+
+**DECIDED BY:** The owner (the list); Claude (the rules below).
+
+**DECISION (in progress):** `DonorStanding` gains `in_progress`: a visit is open at this centre with no blood drawn yet (registered, or being screened). It comes after a standing deferral and before the waiting period. Once the bag is drawn the donor is waiting, as before. Each place that reads the standing handles it:
+- Donor Management shows "Visit in progress".
+- The bulk reminder skips the donor (counted as `in_progress`), and a single reminder email is refused.
+- The Donor/Collection dashboard pool counts it on its own "In a visit now" tile.
+
+The open visit is found for a whole page of donors in one query (`openVisitsBeforeDraw`).
+
+**DECISION (the list):** `GET /blood-center/donation-records` and `/export` (`donations.view`, which every counter role holds) list every visit opened at this centre, newest first. Filters: search (donor name, phone or ID, `DON-000123`, or a bag barcode), status (or `open`), blood group, and a date range. Each row shows the donation ID, donor, group, date and time, bag and volume, appointment (`APT-` code or Walk-in) with its drive, and status. What each viewer is told follows the counter's own rules:
+- the donor's name only with `donors.view_identity`;
+- a deferral's reason, and the "Rejected after testing" label, only with `donors.view_clinical`;
+- otherwise a closed visit reads "Deferred" (screening) or "Closed".
+
+**DECISION (closing a visit left open):** The list closes an open visit through the counter's own `PATCH donations/{id}/status` (rejected, with an optional reason; `donations.close`). It does not use a new route, so the rule stays in one place.
+
+**DECISION (navigation):** Collection now reads Donations (the list), Donation Counter (the existing `/blood-center/donation`), and Blood Donation Drive.
+
+## The onsite DHQ is optional (paper form)
+
+**SOURCE:** The project owner, 2026-10-17: the onsite health questionnaire is optional, because the desk can hand the donor a printed copy to answer.
+
+**DECISION:** The server never required a questionnaire before screening; only the Donation page did, by disabling "Accepted — continue". With no questionnaire on file, the page now offers a tick box instead: **"The donor answered the paper DHQ"**. Accepting needs either the onsite questionnaire or that tick. The tick is saved on the screening as `donation_screenings.dhq_on_paper` (sent as `dhq_on_paper` with the screening, false by default), so a donor accepted with no questionnaire in RedAgos is never mistaken for one who was not asked. The flag comes back with the screening on the counter and on the Donations list. Deferring never waits on a questionnaire, as before. The notices now say the donor can answer it "onsite here, or on the paper form".
+
+## Paper records from drives
+
+**SOURCE:** The project owner, 2026-10-17. A drive in a remote area has no connection. The physician and the phlebotomist work on paper, and the sheets and bags come back days later. Nothing let staff record those donations, so their bags could not reach Testing and the donors' eligibility and history stayed wrong.
+
+**DECIDED BY:** The owner chose the shape: a batch per sheet, the full record (screening and collection), new donors registered inline, every Collection role and the head, the clinicians' names typed as written, and no date limit. Claude decided the rules below.
+
+**CAPSTONE NOTE:** The paper requires a web-only platform with no offline transactions (`CAPSTONE_CONTEXT.md` line 17). This is entry after the fact, through the same online system, not offline synchronisation.
+
+**DECISION (a sheet):** `paper_donation_sheets` holds one stack of paper: a drive planned in RedAgos (`mobile_event_id`) or one named as the paper names it, the day it was held (any past day, never a future one), when it started, the names most rows carry, and whether donors are emailed. A RedAgos drive fixes the day to its own `event_date`. An empty sheet may be removed.
+
+**DECISION (a row is an ordinary donation):** `POST paper-sheets/{sheet}/donations` writes the donation, its screening and its collection in one transaction. It is dated on the drive's day: `donation_date` is the paper's screening time, or the drive's start. Every other time must fall on that day in the operational timezone. So the bag reaches Testing like a counter one, and the donor's interval, standing and history run from the day they gave. `donations.paper_sheet_id` marks the record. The Donations list shows `source: paper`, the sheet's code, and the sheet's drive for a walk-in. The CSV gains a Source column.
+
+**DECISION (the names):** `donation_screenings.screened_by_name` and `blood_collections.phlebotomist_name` hold the names as written. `recorded_by` and `collected_by` stay the staff member who typed the record, their meaning everywhere else. `DonationScreening::screenerName()` and `BloodCollection::phlebotomistName()` prefer the paper's name, and every place that showed the screener or phlebotomist reads them. The Donations list's `paper_sheet.entered_by` names the typist.
+
+**DECISION (one ability):** `donations.record_paper` (write) is held by the Medical Receptionist, the Screening Physician (Collection's head), the Phlebotomist and the Apheresis Specialist. One person types the whole record, so one ability covers what the counter splits across three. Registering a donor named on the paper goes through `POST paper-sheets/donors`, the counter's own walk-in registration under this ability (`donors.manage` is the desk's alone), audited `donor.registered_from_paper`.
+
+**DECISION (what the record holds):**
+- The DHQ is always marked `dhq_on_paper`.
+- A deferral rejects the donation with its reason.
+- "Draw not completed" rejects it with no bag.
+- "Bag will not reach the laboratory" (lost or broken, or an old record) records the bag and then closes the donation with its reason. The draw counts for the donor, and nothing waits in Testing for it.
+- A booking the donor held for that drive is linked and closed.
+- The counter's after-draw effects are dated: only a questionnaire answered on or before the donation is retired, and the QR is revoked only if one was.
+- `DonationRecorded` or `DonorDeferred` is sent only if the sheet says to email donors.
+
+**DECISION (guards):**
+- A donor appears once per sheet (409 `already_on_sheet`).
+- A draw closer than `donation.interval_days` to another of the donor's draws, on either side and at any centre, is refused with 409 `interval_conflict` and the other date. It saves when resent with `confirm_interval`, because the paper may genuinely show it. This catches the wrong donor and the same row typed twice.
+- The counter's one-open-visit rule does not apply, because a paper record is not a live visit.
+
+**DECISION (taking a record back):** `DELETE paper-sheets/{sheet}/donations/{donation}` (also `donations.close`, the delete privilege) is allowed only to the person who typed the record or the Collection head. It also needs a reason. It is refused once any department has acted on the donation: a test section or result, components, a unit, a clearance, a referral, or a correction request. The rows are deleted rather than closed, because a closed donation with a bag still counts as a draw. A booking it closed returns to Scheduled. `paper.donation_removed` keeps what was removed and why.
+
+**KNOWN LIMITATIONS:**
+- The paper names cannot be changed through a correction request. The screening and collection fields can, as at the counter.
+- A booking the donor holds later, inside the new interval, is not cancelled.
+- A questionnaire retired by a record that is then taken back stays retired.
+- A bag too old to process must be rejected by Processing, unless it was entered as not reaching the laboratory.

@@ -391,7 +391,7 @@ class CashSessionService
      */
     public function mayOversee(User $staff): bool
     {
-        return $staff->staff_role === StaffRole::BillingSupervisor;
+        return $staff->hasStaffRole(StaffRole::BillingSupervisor);
     }
 
     /**

@@ -33,11 +33,17 @@ class UpdateStaffRequest extends FormRequest
         // A typed role that names a predefined one is that role, so the
         // roster never holds a custom "Laboratory Supervisor" beside the real
         // one with different abilities.
-        if ($this->filled('custom_role') && ! $this->filled('staff_role')) {
+        if ($this->filled('custom_role')) {
             $typed = StaffRole::fromTyped((string) $this->input('custom_role'));
 
-            if ($typed !== null) {
+            if ($typed !== null && ! $this->filled('staff_role')) {
                 $this->merge(['staff_role' => $typed->value, 'custom_role' => null]);
+            } elseif ($typed !== null) {
+                // Beside a main role it is one more of their roles.
+                $this->merge([
+                    'additional_staff_roles' => array_values(array_unique([...(array) $this->input('additional_staff_roles', []), $typed->value])),
+                    'custom_role' => null,
+                ]);
             }
         }
 
@@ -74,6 +80,8 @@ class UpdateStaffRequest extends FormRequest
             // which is the only place both values are known.
             'department' => ['sometimes', 'nullable', 'string', Rule::in(Department::values())],
             'staff_role' => ['sometimes', 'nullable', 'string', Rule::in(StaffRole::values())],
+            'additional_staff_roles' => ['sometimes', 'nullable', 'array', 'max:10'],
+            'additional_staff_roles.*' => ['string', 'distinct', Rule::in(StaffRole::values())],
             'custom_role' => ['sometimes', 'nullable', 'string', 'max:100'],
             'staff_privileges' => ['sometimes', 'array', 'min:1'],
             'staff_privileges.*' => ['string', 'distinct', Rule::in(StaffPrivilege::values())],

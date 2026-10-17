@@ -47,7 +47,10 @@ class StaffRepository
             )
             ->when(
                 isset($filters['staff_role']),
-                fn (Builder $query): Builder => $query->where('staff_role', $filters['staff_role'])
+                // As the main role or any other they hold.
+                fn (Builder $query): Builder => $query->where(fn (Builder $q): Builder => $q
+                    ->where('staff_role', $filters['staff_role'])
+                    ->orWhereJsonContains('additional_staff_roles', $filters['staff_role']))
             )
             ->when(
                 isset($filters['account_status']),

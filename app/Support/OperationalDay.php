@@ -94,6 +94,19 @@ final class OperationalDay
     }
 
     /**
+     * An operational date at a wall-clock time, as an instant in the
+     * application's timezone — the way the counter's now() is stored.
+     *
+     * For a record dated after the fact: a drive's paper gives the day and the
+     * clock time, both as the centre reads them.
+     */
+    public static function moment(string $date, string $time): CarbonImmutable
+    {
+        return CarbonImmutable::parse($date.' '.$time, self::timezone())
+            ->setTimezone((string) config('app.timezone', 'UTC'));
+    }
+
+    /**
      * The configured operational timezone.
      */
     private static function timezone(): string

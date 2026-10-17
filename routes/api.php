@@ -2,18 +2,24 @@
 
 use App\Http\Controllers\AdminPrivilegeController;
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\BloodCenterAppointmentController;
 use App\Http\Controllers\BloodCenterBillingController;
 use App\Http\Controllers\BloodCenterBillingTransactionController;
 use App\Http\Controllers\BloodCenterCheckoutController;
 use App\Http\Controllers\BloodCenterCollectionController;
+use App\Http\Controllers\BloodCenterCollectionDashboardController;
 use App\Http\Controllers\BloodCenterComponentController;
 use App\Http\Controllers\BloodCenterComponentPriceController;
 use App\Http\Controllers\BloodCenterCorrectionController;
+use App\Http\Controllers\BloodCenterDonationRecordController;
 use App\Http\Controllers\BloodCenterDonorController;
+use App\Http\Controllers\BloodCenterDonorQuestionnaireController;
 use App\Http\Controllers\BloodCenterDriveController;
+use App\Http\Controllers\BloodCenterEmailTemplateController;
 use App\Http\Controllers\BloodCenterFacilityController;
 use App\Http\Controllers\BloodCenterInventoryController;
 use App\Http\Controllers\BloodCenterLaboratoryController;
+use App\Http\Controllers\BloodCenterPaperDonationController;
 use App\Http\Controllers\BloodCenterPosController;
 use App\Http\Controllers\BloodCenterProfileController;
 use App\Http\Controllers\BloodCenterReceiptController;
@@ -233,6 +239,15 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
 
         Route::delete('/facility/logo', [BloodCenterFacilityController::class, 'removeLogo'])
             ->middleware('can:center.configure');
+
+        // The wording of the thank-you and eligibility-reminder emails the
+        // Donors page sends. The Admin's, like the logo: the centre speaks in
+        // one voice, whoever at the counter clicks Send.
+        Route::prefix('facility/email-templates')->middleware('can:center.configure')->group(function (): void {
+            Route::get('/', [BloodCenterEmailTemplateController::class, 'index']);
+            Route::put('/{template}', [BloodCenterEmailTemplateController::class, 'update']);
+            Route::delete('/{template}', [BloodCenterEmailTemplateController::class, 'destroy']);
+        });
 
         Route::get('/inventory', [BloodCenterInventoryController::class, 'index'])
             ->middleware('can:inventory.view');
@@ -547,8 +562,33 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             Route::post('/', [BloodCenterDonorController::class, 'store'])
                 ->middleware('can:donors.manage');
 
+            // The whole filtered list with birth dates and addresses: the full
+            // record, so donors.view, and audited by the service.
+            Route::get('/export', [BloodCenterDonorController::class, 'export'])
+                ->middleware(['can:donors.view', 'throttle:10,1']);
+
+            // GET counts who would be reminded; POST sends. The service is the
+            // one place that decides who qualifies, so the two always agree,
+            // and its seven-day cooldown per donor is what stops a second
+            // click mailing anyone twice; the throttle only bounds the cost.
+            Route::get('/eligibility-reminders', [BloodCenterDonorController::class, 'remindersPreview'])
+                ->middleware('can:donors.manage');
+            Route::post('/eligibility-reminders', [BloodCenterDonorController::class, 'sendReminders'])
+                ->middleware(['can:donors.manage', 'throttle:10,1']);
+
             Route::get('/{uuid}', [BloodCenterDonorController::class, 'show'])
                 ->middleware('can:donors.view')->whereUuid('uuid');
+
+            // Which fields may change depends on the donor (see
+            // DonorDirectoryService::update()), so the service decides that.
+            Route::patch('/{uuid}', [BloodCenterDonorController::class, 'update'])
+                ->middleware('can:donors.manage')->whereUuid('uuid');
+
+            Route::post('/{uuid}/photo', [BloodCenterDonorController::class, 'photo'])
+                ->middleware(['can:donors.manage', 'throttle:20,1'])->whereUuid('uuid');
+
+            Route::post('/{uuid}/email', [BloodCenterDonorController::class, 'email'])
+                ->middleware(['can:donors.manage', 'throttle:30,1'])->whereUuid('uuid');
 
             // The donor's clinical record: deferral reasons and final results.
             Route::get('/{uuid}/history', [BloodCenterDonorController::class, 'history'])
@@ -560,6 +600,19 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             // presented at.
             Route::get('/{uuid}/health-questionnaire', [BloodCenterDonorController::class, 'healthQuestionnaire'])
                 ->middleware(['can:donors.view_questionnaire', 'throttle:60,1'])->whereUuid('uuid');
+
+            // The Donation counter's two other uses of it. The desk prints the
+            // completed form, without the review markers, to travel with the
+            // donor; and a walk-in, who has no sign-in, answers it onsite on
+            // the counter's device. Same presentation gate as the read.
+            Route::get('/{uuid}/health-questionnaire/print', [BloodCenterDonorQuestionnaireController::class, 'print'])
+                ->middleware(['can:donors.print_questionnaire', 'throttle:60,1'])->whereUuid('uuid');
+
+            Route::get('/{uuid}/health-questionnaire/form', [BloodCenterDonorQuestionnaireController::class, 'form'])
+                ->middleware('can:donors.record_questionnaire')->whereUuid('uuid');
+
+            Route::post('/{uuid}/health-questionnaire', [BloodCenterDonorQuestionnaireController::class, 'store'])
+                ->middleware(['can:donors.record_questionnaire', 'throttle:counter-questionnaire'])->whereUuid('uuid');
         });
 
         // Mobile drives. The donor-facing GET /blood-drives is a read-only view
@@ -572,17 +625,82 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
                 ->middleware('can:drives.manage');
         });
 
+        // The Donor/Collection dashboard. donations.view, which every role at
+        // the counter holds and nothing outside it: counts only, no names.
+        Route::get('/collection/dashboard', [BloodCenterCollectionDashboardController::class, 'show'])
+            ->middleware('can:donations.view');
+
         Route::get('/collection/queue', [BloodCenterCollectionController::class, 'queue'])
             ->middleware('can:appointments.view');
 
         Route::post('/collection/verify-qr', [BloodCenterCollectionController::class, 'verifyQr'])
             ->middleware(['can:appointments.verify', 'throttle:60,1']);
 
+        // Walk-ins, by name, email or phone, searched as staff type. A POST so
+        // a donor's name never sits in a URL or an access log; names reach only
+        // this centre's own donors (CounterDonorSearchService). Its own named
+        // limiter (AppServiceProvider), so typing never spends the budget the
+        // onsite questionnaire submits against.
+        Route::post('/collection/donor-search', [BloodCenterCollectionController::class, 'searchDonors'])
+            ->middleware(['can:appointments.verify', 'throttle:counter-donor-search']);
+
         Route::post('/appointments/{appointment}/check-in', [BloodCenterCollectionController::class, 'checkIn'])
             ->middleware('can:appointments.verify')->whereNumber('appointment');
 
         Route::post('/appointments/{appointment}/no-show', [BloodCenterCollectionController::class, 'noShow'])
             ->middleware('can:appointments.verify')->whereNumber('appointment');
+
+        // The Appointments page (project owner, 2026-10-17): every booking at
+        // the centre and its drives, and the desk booking a donor who phones.
+        // A drive is a mobile blood drive (MobileEvent). Booking follows the portal's rules
+        // (AppointmentService), so the desk cannot make a booking the donor
+        // could not.
+        Route::get('/appointments', [BloodCenterAppointmentController::class, 'index'])
+            ->middleware('can:appointments.view');
+        Route::get('/appointments/export', [BloodCenterAppointmentController::class, 'export'])
+            ->middleware(['can:appointments.view', 'throttle:30,1']);
+        Route::get('/appointments/options', [BloodCenterAppointmentController::class, 'options'])
+            ->middleware('can:appointments.manage');
+        Route::post('/appointments', [BloodCenterAppointmentController::class, 'store'])
+            ->middleware(['can:appointments.manage', 'throttle:60,1']);
+        // The ✓: mark collected. The same hands as check-in and no-show.
+        Route::post('/appointments/{appointment}/collected', [BloodCenterAppointmentController::class, 'collected'])
+            ->middleware('can:appointments.verify')->whereNumber('appointment');
+        Route::post('/appointments/{appointment}/cancel', [BloodCenterAppointmentController::class, 'cancel'])
+            ->middleware('can:appointments.manage')->whereNumber('appointment');
+        Route::delete('/appointments/{appointment}', [BloodCenterAppointmentController::class, 'destroy'])
+            ->middleware('can:appointments.delete')->whereNumber('appointment');
+
+        // The Donations list (project owner, 2026-10-17): every visit opened
+        // at the counter, built like Donor Management. donations.view, which
+        // every counter role holds; a visit left open is closed through
+        // PATCH donations/{donation}/status, as the counter's Cancel visit is.
+        Route::get('/donation-records', [BloodCenterDonationRecordController::class, 'index'])
+            ->middleware('can:donations.view');
+        Route::get('/donation-records/export', [BloodCenterDonationRecordController::class, 'export'])
+            ->middleware(['can:donations.view', 'throttle:30,1']);
+
+        // A drive's paper records, typed in after the drive (project owner,
+        // 2026-10-17). One ability for the whole record, held by every
+        // Collection role: whoever ran the drive brings the sheets home. The
+        // donor search and lookup are the counter's own routes. Registering a
+        // new donor has its own route here because donors.manage is the
+        // desk's alone; it is the counter's registration behind it.
+        Route::prefix('paper-sheets')->middleware('can:donations.record_paper')->group(function (): void {
+            Route::get('/', [BloodCenterPaperDonationController::class, 'index']);
+            Route::get('/options', [BloodCenterPaperDonationController::class, 'options']);
+            Route::post('/', [BloodCenterPaperDonationController::class, 'store']);
+            Route::post('/donors', [BloodCenterPaperDonationController::class, 'storeDonor']);
+            Route::get('/{sheet}', [BloodCenterPaperDonationController::class, 'show'])
+                ->whereNumber('sheet');
+            Route::delete('/{sheet}', [BloodCenterPaperDonationController::class, 'destroy'])
+                ->middleware('can:donations.close')->whereNumber('sheet');
+            Route::post('/{sheet}/donations', [BloodCenterPaperDonationController::class, 'storeDonation'])
+                ->whereNumber('sheet');
+            // Taking a record back is a delete, so the Delete privilege caps it.
+            Route::delete('/{sheet}/donations/{donation}', [BloodCenterPaperDonationController::class, 'destroyDonation'])
+                ->middleware('can:donations.close')->whereNumber(['sheet', 'donation']);
+        });
 
         Route::prefix('donations')->group(function (): void {
             Route::get('/', [BloodCenterCollectionController::class, 'index'])
