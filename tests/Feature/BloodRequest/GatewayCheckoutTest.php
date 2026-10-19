@@ -70,6 +70,28 @@ class GatewayCheckoutTest extends TestCase
         $this->assertNotSame('Maria Santos', DB::table('payment_attempts')->value('payer_name'), 'The payer name is encrypted at rest.');
     }
 
+    public function test_the_checkouts_expiry_is_read_in_the_apps_timezone(): void
+    {
+        // Xendit's expiry is UTC. Stored unconverted, a Manila app reads it
+        // eight hours early and stops watching a checkout that is still open.
+        date_default_timezone_set('Asia/Manila');
+        config(['app.timezone' => 'Asia/Manila']);
+
+        try {
+            $this->freezeSecond();
+            $request = $this->allocatedRequest(1);
+
+            $this->actingAs($this->billingClerk)
+                ->postJson("/api/blood-center/billings/{$request->id}/checkout", ['payer_name' => 'Maria Santos'])
+                ->assertCreated()
+                ->assertJsonPath('attempt.expires_at', now()->addMinutes(30)->toIso8601String());
+
+            $this->assertTrue(PaymentAttempt::query()->sole()->expires_at->equalTo(now()->addMinutes(30)));
+        } finally {
+            date_default_timezone_set('UTC');
+        }
+    }
+
     public function test_the_amount_cannot_be_sent_by_the_caller(): void
     {
         $request = $this->allocatedRequest(1);

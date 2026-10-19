@@ -384,7 +384,11 @@ class PaymentCheckoutService
             'provider_session_id' => $sessionId,
             'provider_payment_request_id' => is_string($session['payment_request_id'] ?? null) ? $session['payment_request_id'] : null,
             'checkout_url' => $checkoutUrl,
-            'expires_at' => isset($session['expires_at']) ? Carbon::parse((string) $session['expires_at']) : now()->addMinutes($ttl),
+            // Xendit answers in UTC; the column holds the app's wall clock, so
+            // an unconverted value reads eight hours early in Manila.
+            'expires_at' => isset($session['expires_at'])
+                ? Carbon::parse((string) $session['expires_at'])->setTimezone(config('app.timezone'))
+                : now()->addMinutes($ttl),
             'next_verification_at' => now()->addMinutes(5),
         ])->save();
 
