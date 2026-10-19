@@ -3,8 +3,11 @@
 namespace App\Repository;
 
 use App\Enums\AllocationStatus;
+use App\Enums\BloodRequestStatus;
+use App\Enums\UrgencyLevel;
 use App\Models\BloodRequest;
 use App\Models\Facility;
+use App\Support\OperationalDay;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
 
@@ -96,7 +99,7 @@ class BloodRequestRepository
      */
     public function paginateRaisedBy(int $facilityId, array $filters, int $perPage): LengthAwarePaginator
     {
-        return $this->filtered($filters)
+        return $this->filtered($filters, 'targetFacility')
             ->raisedBy($facilityId)
             ->with(self::PROJECTION_RELATIONS)
             ->withCount($this->coverageCounts())
@@ -106,20 +109,32 @@ class BloodRequestRepository
     }
 
     /**
-     * List requests addressed to one facility, emergencies first.
+     * List requests addressed to one facility, in queue order (see inQueueOrder()).
      *
      * @param  array<string, mixed>  $filters
      * @return LengthAwarePaginator<int, BloodRequest>
      */
     public function paginateAddressedTo(int $facilityId, array $filters, int $perPage): LengthAwarePaginator
     {
-        return $this->filtered($filters)
-            ->addressedTo($facilityId)
-            ->with(self::PROJECTION_RELATIONS)
-            ->withCount($this->coverageCounts())
-            ->triaged()
+        return $this->addressedToQuery($facilityId, $filters)
             ->paginate($perPage)
             ->withQueryString();
+    }
+
+    /**
+     * The same rows as paginateAddressedTo(), unpaged, for the queue's CSV.
+     *
+     * @param  array<string, mixed>  $filters
+     * @return Builder<BloodRequest>
+     */
+    public function addressedToQuery(int $facilityId, array $filters): Builder
+    {
+        return $this->inQueueOrder(
+            $this->filtered($filters, 'requestingFacility')
+                ->addressedTo($facilityId)
+                ->with(self::PROJECTION_RELATIONS)
+                ->withCount($this->coverageCounts())
+        );
     }
 
     /**
@@ -284,10 +299,14 @@ class BloodRequestRepository
     /**
      * Apply the listing filters both sides share.
      *
+     * `$counterparty` is the relation naming the facility on the other side
+     * of the exchange, whose name the search also matches: the hospital that
+     * asked, for the centre's queue; the centre asked, for a hospital's list.
+     *
      * @param  array<string, mixed>  $filters
      * @return Builder<BloodRequest>
      */
-    private function filtered(array $filters): Builder
+    private function filtered(array $filters, ?string $counterparty = null): Builder
     {
         return BloodRequest::query()
             ->when(
@@ -326,9 +345,22 @@ class BloodRequestRepository
                     fn (Builder $items): Builder => $items->where('component_id', $filters['component_id'])
                 )
             )
+            // The reference, the patient's name, or the other facility's name,
+            // in any case: the list's one search box (project owner,
+            // 2026-10-19, "Search patient / hospital").
             ->when(
-                isset($filters['search']),
-                fn (Builder $query): Builder => $query->where('reference_number', 'like', '%'.$filters['search'].'%')
+                filled($filters['search'] ?? null),
+                fn (Builder $query): Builder => $this->applySearch($query, (string) $filters['search'], $counterparty)
+            )
+            // When it was asked for, by operational day. request_date is an
+            // instant, so the bounds are the day's first and last instants.
+            ->when(
+                isset($filters['from']),
+                fn (Builder $query): Builder => $query->where('request_date', '>=', OperationalDay::boundsFor($filters['from'])[0])
+            )
+            ->when(
+                isset($filters['to']),
+                fn (Builder $query): Builder => $query->where('request_date', '<=', OperationalDay::boundsFor($filters['to'])[1])
             )
             // The dispatch queue: requests with stock held but not yet sent.
             // Expressed as a filter rather than left to the client, which could
@@ -339,6 +371,11 @@ class BloodRequestRepository
                     'allocations',
                     fn (Builder $allocations): Builder => $allocations->where('status', AllocationStatus::Allocated->value)
                 )
+            )
+            // Only requests still being worked: not closed, not finished.
+            ->when(
+                isset($filters['open']) && $filters['open'],
+                fn (Builder $query): Builder => $query->open()
             )
             // Requests with units dispatched that the hospital has not yet
             // confirmed arrived.
@@ -351,5 +388,60 @@ class BloodRequestRepository
                         ->whereNull('received_at')
                 )
             );
+    }
+
+    /**
+     * Match a reference number, a patient's name, or the other facility's name.
+     *
+     * Lower-cased on both sides, so "st luke" finds "St Luke Blood Bank" on
+     * Postgres as well as SQLite.
+     *
+     * @param  Builder<BloodRequest>  $query
+     * @return Builder<BloodRequest>
+     */
+    private function applySearch(Builder $query, string $term, ?string $counterparty): Builder
+    {
+        $like = '%'.mb_strtolower(trim($term)).'%';
+
+        return $query->where(fn (Builder $inner): Builder => $inner
+            ->whereRaw('LOWER(reference_number) LIKE ?', [$like])
+            ->orWhereRaw('LOWER(patient_surname) LIKE ?', [$like])
+            ->orWhereRaw('LOWER(patient_first_name) LIKE ?', [$like])
+            ->orWhereRaw("LOWER(patient_first_name || ' ' || patient_surname) LIKE ?", [$like])
+            ->when($counterparty !== null, fn (Builder $q): Builder => $q->orWhereHas(
+                $counterparty,
+                fn (Builder $facility): Builder => $facility->whereRaw('LOWER(name) LIKE ?', [$like])
+            )));
+    }
+
+    /**
+     * The centre's queue order: requests still being worked first, those
+     * emergencies first and then the oldest; then the finished ones, newest
+     * first (project owner, 2026-10-19).
+     *
+     * Before, every request was triaged alike, so a fulfilled emergency from
+     * last month sat above today's routine requests.
+     *
+     * @param  Builder<BloodRequest>  $query
+     * @return Builder<BloodRequest>
+     */
+    private function inQueueOrder(Builder $query): Builder
+    {
+        $open = array_values(array_map(
+            fn (BloodRequestStatus $status): string => $status->value,
+            array_filter(BloodRequestStatus::cases(), fn (BloodRequestStatus $status): bool => ! $status->isTerminal())
+        ));
+        $placeholders = implode(', ', array_fill(0, count($open), '?'));
+        $isOpen = "(status IN ({$placeholders}) AND closed_at IS NULL)";
+
+        return $query
+            ->orderByRaw("CASE WHEN {$isOpen} THEN 0 ELSE 1 END", $open)
+            ->orderByRaw("CASE WHEN {$isOpen} AND urgency_level = ? THEN 0 ELSE 1 END", [...$open, UrgencyLevel::Emergency->value])
+            // The open ones oldest first. A finished request gets NULL here and
+            // ties, which only ever happens among finished ones, so where a
+            // database puts NULLs does not matter: the next key decides.
+            ->orderByRaw("CASE WHEN {$isOpen} THEN request_date END ASC", $open)
+            ->orderByDesc('request_date')
+            ->orderByDesc('id');
     }
 }

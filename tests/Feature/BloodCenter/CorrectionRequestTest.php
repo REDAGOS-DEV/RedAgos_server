@@ -294,7 +294,9 @@ class CorrectionRequestTest extends TestCase
     public function test_a_reactive_result_can_never_be_corrected(): void
     {
         $technologist = $this->staff(StaffRole::SerologyTechnologist);
-        $this->recordSerology($technologist, ['hiv' => 'reactive', 'confirm_reactive' => true])->assertCreated();
+
+        // Saved by the supervisor, so verified as it is saved.
+        $this->recordSerology($this->staff(StaffRole::LabSupervisor), ['hiv' => 'reactive', 'confirm_reactive' => true])->assertCreated();
 
         $this->ask($technologist, 'serology', $this->panel(['hbsag' => 'reactive', 'confirm_reactive' => true]))
             ->assertStatus(409)

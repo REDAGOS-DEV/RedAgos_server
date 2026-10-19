@@ -75,25 +75,28 @@ class BloodRequestNotifier
      * Tell the requesting hospital what became of its request.
      *
      * The hospital user who submitted it hears first. A walk-in has no such
-     * user — the hospital confirmed it by phone — so the hospital's own
+     * user — a watcher brought it to the centre — so the hospital's own
      * accounts are told instead, because the request is still theirs.
      */
-    public function requester(BloodRequest $request, string $outcome): void
+    /**
+     * @param  array<string, mixed>  $context  what the outcome needs to be told in words (closed_short: component, quantity, note)
+     */
+    public function requester(BloodRequest $request, string $outcome, array $context = []): void
     {
         $request->loadMissing('requester');
 
         Notification::send(
             $request->requester ? collect([$request->requester]) : $this->hospitalAccounts($request),
-            new BloodRequestDecided($request, $outcome)
+            new BloodRequestDecided($request, $outcome, $context)
         );
     }
 
     /**
      * Tell the hospital that a blood centre has recorded a request on its behalf.
      *
-     * The hospital confirmed it on the phone; this is the written trace of that
-     * call reaching the system, so the hospital can see and track the request
-     * it vouched for.
+     * A watcher brought it to the centre instead of the hospital blood bank;
+     * this tells the hospital it exists, so it can see and track a request
+     * that is still its own.
      */
     public function walkInRecorded(BloodRequest $request): void
     {

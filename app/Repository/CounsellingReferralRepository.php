@@ -33,7 +33,9 @@ class CounsellingReferralRepository
                 'donorProfile.donor',
                 'donation.collection',
                 'donation.serology.recorder',
+                'donation.serology.verifier',
                 'updater',
+                'contactRequester',
             ])
             ->where('facility_id', $facilityId)
             ->when(
@@ -78,7 +80,9 @@ class CounsellingReferralRepository
                 'donorProfile.donor',
                 'donation.collection',
                 'donation.serology.recorder',
+                'donation.serology.verifier',
                 'updater',
+                'contactRequester',
             ])
             ->where('id', $referralId)
             ->where('facility_id', $facilityId)

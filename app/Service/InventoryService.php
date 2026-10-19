@@ -52,6 +52,11 @@ class InventoryService
     private const INTAKE_DONATION_STATUS = DonationStatus::Completed;
 
     /**
+     * How many past days the summary's trend covers, before today.
+     */
+    private const TREND_DAYS = 7;
+
+    /**
      * The audit actions that make up a centre's inventory activity, and what
      * each one is called on the page.
      *
@@ -199,12 +204,18 @@ class InventoryService
         $facilityId = $this->requireFacilityId($user);
         $today = OperationalDay::todayAsDate();
         [$dayStart, $dayEnd] = OperationalDay::boundsFor();
+        $totals = $this->inventoryRepository->summaryCounts($facilityId);
+        $nearExpiry = $this->inventoryRepository->nearExpiryCounts($facilityId, $today);
 
         return [
-            'totals' => $this->inventoryRepository->summaryCounts($facilityId),
+            'totals' => $totals,
             'by_blood_type' => $this->inventoryRepository->countsByBloodType($facilityId),
+            // Each type's shelf split into fresh, expiring, held and not yet
+            // cleared, for the Issuance dashboard's type cards.
+            'stock_by_blood_type' => $this->inventoryRepository->stockByBloodType($facilityId, $today),
             'by_component' => $this->inventoryRepository->countsByComponent($facilityId),
-            'near_expiry' => $this->inventoryRepository->nearExpiryCounts($facilityId, $today),
+            'near_expiry' => $nearExpiry,
+            'trend' => $this->trend($facilityId, $totals, $nearExpiry),
             // Units that left this centre for a request today.
             'issued_today' => $this->inventoryRepository->issuedCountBetween($facilityId, $dayStart, $dayEnd),
             // Units that joined issuable stock this week, out of quarantine.
@@ -214,6 +225,43 @@ class InventoryService
             'storage_locations' => $this->storageLocations($facilityId),
             'as_of' => OperationalDay::today()->toIso8601String(),
         ];
+    }
+
+    /**
+     * The four headline levels at the close of each of the last seven
+     * operational days, then today, oldest first.
+     *
+     * The past days are rebuilt from timestamps (see levelsAt()). Today is the
+     * live count the dashboard's cards already show, so a sparkline always
+     * ends on the number beside it.
+     *
+     * @param  array<string, int>  $totals
+     * @param  array<string, int>  $nearExpiry
+     * @return array<int, array{date: string, available: int, expiring_soon: int, reserved: int, quarantined: int}>
+     */
+    private function trend(int $facilityId, array $totals, array $nearExpiry): array
+    {
+        $today = OperationalDay::today()->startOfDay();
+        $points = [];
+
+        foreach (range(self::TREND_DAYS, 1) as $daysAgo) {
+            $date = $today->subDays($daysAgo)->toDateString();
+
+            $points[] = [
+                'date' => $date,
+                ...$this->inventoryRepository->levelsAt($facilityId, OperationalDay::boundsFor($date)[1], $date),
+            ];
+        }
+
+        $points[] = [
+            'date' => $today->toDateString(),
+            'available' => $totals[BloodUnitStatus::Available->value] ?? 0,
+            'expiring_soon' => $nearExpiry['within_7_days'] ?? 0,
+            'reserved' => $totals[BloodUnitStatus::Reserved->value] ?? 0,
+            'quarantined' => $totals[BloodUnitStatus::Quarantined->value] ?? 0,
+        ];
+
+        return $points;
     }
 
     /**

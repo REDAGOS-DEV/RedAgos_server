@@ -278,9 +278,16 @@ class DonationToInventoryChainTest extends TestCase
                 'confirm_reactive' => true,
             ])
             ->assertCreated()
+            ->assertJsonPath('data.status', 'collected')
+            ->assertJsonPath('data.serology.awaiting_verification', true);
+
+        // The Laboratory Supervisor checks it against the bench and verifies.
+        $this->actingAs(User::factory()->bloodCenterStaff($this->facility, StaffRole::LabSupervisor)->create())
+            ->postJson("/api/blood-center/laboratory/donations/{$donationId}/serology/verify")
+            ->assertOk()
             ->assertJsonPath('data.status', 'rejected');
 
-        // Cannot be cleared: a reactive panel rejects it on the spot...
+        // Cannot be cleared: a verified reactive panel rejects it...
         $this->actingAs($this->processing)
             ->patchJson("/api/blood-center/laboratory/donations/{$donationId}/status", ['status' => 'completed'])
             ->assertStatus(409)

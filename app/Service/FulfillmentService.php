@@ -12,6 +12,7 @@ use App\Models\User;
 use App\Repository\BloodRequestRepository;
 use App\Repository\InventoryRepository;
 use App\Support\CorrectionValues;
+use App\Support\DocumentNumbering;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Facades\DB;
@@ -65,7 +66,9 @@ class FulfillmentService
     {
         $facilityId = $this->requireFacilityId($user);
 
-        $result = DB::transaction(function () use ($user, $requestId, $facilityId, $allocationIds, $handedTo): array {
+        // A subsidised request may issue a Statement of Account revision as it
+        // goes (below), so the transaction retries on a document-number collision.
+        $result = DocumentNumbering::transaction(function () use ($user, $requestId, $facilityId, $allocationIds, $handedTo): array {
             $request = $this->bloodRequestRepository->lockAddressedTo($requestId, $facilityId)
                 ?? throw $this->refuse(404, 'request_not_found', 'Blood request not found.');
 
@@ -75,6 +78,10 @@ class FulfillmentService
             // and already settled, so this passes — but it is the real check,
             // and it starts refusing the moment a component carries a price.
             $this->billingService->assertClearsRelease($request);
+
+            // Units reserved after the subsidy are the hospital's too: its
+            // Statement of Account is brought up to what is going out.
+            $this->billingService->restateSubsidisedStatement($request, $user);
 
             $holds = $request->allocations()
                 ->where('status', AllocationStatus::Allocated)

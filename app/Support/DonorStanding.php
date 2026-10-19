@@ -99,7 +99,13 @@ final class DonorStanding
             'eligibility' => $this->eligibility(),
             'open_visit_id' => $this->openVisitId,
             'deferral' => $withDeferral && $this->deferral !== null
-                ? [...$this->deferral->toArray(), 'kind' => $this->deferralKind()]
+                ? [
+                    ...$this->deferral->toArray(),
+                    'kind' => $this->deferralKind(),
+                    // A temporary deferral recorded by hand says when it ends;
+                    // one from a screening holds until the next screening.
+                    'ends_on' => $this->deferral->endsOn?->toDateString(),
+                ]
                 : null,
         ];
     }

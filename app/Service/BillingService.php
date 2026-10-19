@@ -345,11 +345,17 @@ class BillingService
      * statement with a checkout open could be paid while it is being waived;
      * both are refused.
      *
+     * The request still goes on the hospital's Statement of Account (project
+     * owner, 2026-10-19): a revision is issued as part of the subsidy, its
+     * lines at the centre's prices less the government subsidy, nothing
+     * payable. Issuance applies it at the point of issue in a centre with no
+     * billing staff, so nobody else would issue that statement.
+     *
      * @return array<string, mixed>
      */
     public function applySubsidy(User $actor, Billing $billing, ?string $reason = null): array
     {
-        return DB::transaction(function () use ($actor, $billing, $reason): array {
+        return DocumentNumbering::transaction(function () use ($actor, $billing, $reason): array {
             // The statement the caller loaded may be out of date by now. Every
             // check and every figure below reads the locked row instead.
             [$request, $statement] = $this->lockForMutation((int) $billing->request_id, (int) $actor->facility_id);
@@ -399,20 +405,26 @@ class BillingService
                 note: $reason ?? 'Covered by the government subsidy.'
             );
 
+            // The hospital's Statement of Account, as subsidised.
+            [$revision] = $this->statements->issueOrReuse($request, $statement, $actor, 'statement');
+
             $this->auditLogger->record($actor, 'billing.subsidised', $statement, array_filter([
                 'request_id' => $statement->request_id,
                 // The figure that was waived, kept because the statement no longer
                 // carries it and a subsidy nobody can size cannot be reported on.
                 'amount_waived' => Money::toFloat($charged),
                 'already_collected' => Money::toFloat($collected),
+                'statement_revision_id' => $revision->id,
                 'reason' => $reason,
             ], fn ($value): bool => $value !== null));
 
             return [
-                'message' => $collected > 0
+                'message' => ($collected > 0
                     ? 'Statement covered by the government subsidy. Payments already recorded are unchanged.'
-                    : 'Statement covered by the government subsidy.',
+                    : 'Statement covered by the government subsidy.')
+                    ." It is on the hospital's Statement of Account {$revision->document_number}.",
                 'billing' => $this->format($statement->fresh()),
+                'statement' => $this->statements->format($revision),
             ];
         });
     }
@@ -450,6 +462,29 @@ class BillingService
                 'billing_unsettled',
                 'Blood units cannot be released until payment for this request is confirmed.'
             );
+        }
+    }
+
+    /**
+     * Bring a subsidised request's Statement of Account up to the units it holds.
+     *
+     * The subsidy closes the statement to re-pricing, but units reserved after
+     * it still go on the hospital's Statement of Account (project owner,
+     * 2026-10-19). The latest revision is reused while it still matches, so a
+     * release that changes nothing consumes no number.
+     *
+     * Must run inside a transaction that already holds the request lock, as
+     * the releasing one does; the statement is locked here, request then billing.
+     */
+    public function restateSubsidisedStatement(BloodRequest $lockedRequest, User $actor): void
+    {
+        $billing = Billing::query()
+            ->where('request_id', $lockedRequest->id)
+            ->lockForUpdate()
+            ->first();
+
+        if ($billing?->status === BillingStatus::Subsidised) {
+            $this->statements->issueOrReuse($lockedRequest, $billing, $actor, 'statement');
         }
     }
 

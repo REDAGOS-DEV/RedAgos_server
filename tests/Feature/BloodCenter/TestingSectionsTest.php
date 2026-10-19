@@ -42,6 +42,8 @@ class TestingSectionsTest extends TestCase
 
     private User $processing;
 
+    private User $supervisor;
+
     private User $donor;
 
     private BloodType $bloodType;
@@ -58,6 +60,7 @@ class TestingSectionsTest extends TestCase
         $this->testing = User::factory()->bloodCenterStaff($this->facility, StaffRole::SerologyTechnologist)->create();
         $this->typist = User::factory()->bloodCenterStaff($this->facility, StaffRole::SerologyTechnologist)->create();
         $this->processing = User::factory()->bloodCenterStaff($this->facility, StaffRole::ComponentTechnologist)->create();
+        $this->supervisor = User::factory()->bloodCenterStaff($this->facility, StaffRole::LabSupervisor)->create();
 
         $this->donor = User::factory()->donor()->create();
         $this->bloodType = $this->donor->donorProfile->bloodType;
@@ -95,9 +98,14 @@ class TestingSectionsTest extends TestCase
         );
     }
 
+    /**
+     * A reactive panel that takes effect as it is saved: recorded by the
+     * Laboratory Supervisor, who verifies as they save. A technologist's
+     * reactive panel waits for verification (SerologyVerificationTest).
+     */
     private function reactive(string $marker = 'hbsag'): TestResponse
     {
-        return $this->serology([$marker => 'reactive', 'confirm_reactive' => true]);
+        return $this->serology([$marker => 'reactive', 'confirm_reactive' => true], $this->supervisor);
     }
 
     // --- Two sections, either order ----------------------------------------
@@ -239,23 +247,14 @@ class TestingSectionsTest extends TestCase
         $this->assertSame($this->facility->id, (int) $referral->facility_id);
     }
 
-    public function test_the_donor_is_asked_to_get_in_touch_without_being_told_why(): void
+    public function test_a_reactive_result_sends_the_donor_nothing_by_itself(): void
     {
         $this->reactive('hcv')->assertCreated();
 
-        Notification::assertSentTo($this->donor, DonorContactRequested::class, function (DonorContactRequested $notification): bool {
-            $this->assertSame(['database'], $notification->via($this->donor));
-
-            $text = strtolower(json_encode($notification->toDatabase($this->donor)));
-
-            foreach (['hcv', 'hepatitis', 'reactive', 'result', 'deferred', 'infection'] as $word) {
-                $this->assertStringNotContainsString($word, $text, "The notice must not say '{$word}'.");
-            }
-
-            return true;
-        });
-
-        // DonorDeferred prints the recorded reason, so it is never used here.
+        // The contact request is sent by hand from the referral list
+        // (SerologyVerificationTest). DonorDeferred prints the recorded
+        // reason, so it is never used here at all.
+        Notification::assertNotSentTo($this->donor, DonorContactRequested::class);
         Notification::assertNotSentTo($this->donor, DonorDeferred::class);
     }
 
@@ -275,6 +274,7 @@ class TestingSectionsTest extends TestCase
     public function test_testing_rejects_automatically_without_holding_the_status_ability(): void
     {
         $this->assertFalse($this->testing->can('lab.update_status'));
+        $this->assertFalse($this->supervisor->can('lab.update_status'));
 
         $this->reactive()->assertCreated();
 

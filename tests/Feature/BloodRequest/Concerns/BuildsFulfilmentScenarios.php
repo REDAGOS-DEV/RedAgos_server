@@ -198,7 +198,7 @@ trait BuildsFulfilmentScenarios
     }
 
     /**
-     * A complete walk-in payload the hospital has confirmed.
+     * A complete walk-in payload, as the counter sends it.
      *
      * @param  array<string, mixed>  $overrides
      * @return array<string, mixed>
@@ -228,14 +228,6 @@ trait BuildsFulfilmentScenarios
                 'contact' => '09171234567',
                 'id_type' => 'philsys',
                 'id_number' => '1234-5678-9012',
-            ],
-            'verification' => [
-                'confirmed' => true,
-                'verifier_name' => 'Ana Lim',
-                'verifier_position' => 'Blood Bank Medical Technologist',
-                'verifier_contact' => '(082) 222-1234',
-                'verified_at' => now()->subMinutes(5)->toIso8601String(),
-                'notes' => 'Confirmed the patient is admitted and the physician signed the request.',
             ],
         ], $overrides);
     }

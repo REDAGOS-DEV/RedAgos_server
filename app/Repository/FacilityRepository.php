@@ -12,6 +12,7 @@ use App\Models\Role;
 use App\Models\User;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\QueryException;
 
 /**
  * Persistence for administrator-created facility accounts.
@@ -45,7 +46,13 @@ class FacilityRepository
      */
     public function createApprovedFacility(array $attributes, FacilityTypeName $type, User $admin): Facility
     {
-        $facility = new Facility;
+        // A hospital a blood centre already named on a walk-in becomes this
+        // facility rather than a second record of the same name, so its walk-in
+        // requests are the new facility's from the start (project owner,
+        // 2026-10-19).
+        $facility = $type === FacilityTypeName::BloodBank
+            ? $this->findUnregisteredBloodBank((string) ($attributes['name'] ?? '')) ?? new Facility
+            : new Facility;
 
         $facility->fill($attributes);
         $facility->facility_type_id = $this->typeId($type);
@@ -99,6 +106,77 @@ class FacilityRepository
     }
 
     /**
+     * The hospital blood bank a walk-in's typed name means: a registered one
+     * of that name first, then one a centre already named, ignoring case and
+     * spacing, so two counters typing the same hospital share one record.
+     */
+    public function findWalkInHospitalByName(string $name): ?Facility
+    {
+        $key = $this->nameKey($name);
+
+        if ($key === '') {
+            return null;
+        }
+
+        return Facility::query()
+            ->whereHas('facilityType', fn (Builder $query): Builder => $query->where('name', FacilityTypeName::BloodBank->value))
+            ->whereIn('status', [FacilityStatus::Approved->value, FacilityStatus::Unregistered->value])
+            ->whereRaw('LOWER(name) = ?', [$key])
+            ->orderByRaw('CASE WHEN status = ? THEN 0 ELSE 1 END', [FacilityStatus::Approved->value])
+            ->first();
+    }
+
+    /**
+     * An unregistered hospital blood bank of this name, ignoring case and spacing.
+     */
+    public function findUnregisteredBloodBank(string $name): ?Facility
+    {
+        $key = $this->nameKey($name);
+
+        if ($key === '') {
+            return null;
+        }
+
+        return Facility::query()
+            ->whereHas('facilityType', fn (Builder $query): Builder => $query->where('name', FacilityTypeName::BloodBank->value))
+            ->where('status', FacilityStatus::Unregistered->value)
+            ->whereRaw('LOWER(name) = ?', [$key])
+            ->first();
+    }
+
+    /**
+     * Record a hospital not on RedAgos by the name a walk-in gave it.
+     *
+     * Nothing else is known, so nothing else is kept: no address, no accounts,
+     * no approval. If another counter created the same name a moment ago, its
+     * record is the one returned.
+     */
+    public function createUnregisteredBloodBank(string $name): Facility
+    {
+        $clean = preg_replace('/\s+/', ' ', trim($name)) ?? trim($name);
+
+        try {
+            $facility = new Facility;
+            $facility->name = $clean;
+            $facility->facility_type_id = $this->typeId(FacilityTypeName::BloodBank);
+            $facility->status = FacilityStatus::Unregistered;
+            $facility->save();
+
+            return $facility;
+        } catch (QueryException $exception) {
+            return $this->findUnregisteredBloodBank($clean) ?? throw $exception;
+        }
+    }
+
+    /**
+     * A name as compared: trimmed, single-spaced, lower-cased.
+     */
+    private function nameKey(string $name): string
+    {
+        return mb_strtolower(preg_replace('/\s+/', ' ', trim($name)) ?? trim($name));
+    }
+
+    /**
      * Attach a role without disturbing roles the user already holds.
      */
     public function attachRole(User $user, RoleName $role): void
@@ -129,6 +207,12 @@ class FacilityRepository
     {
         return Facility::query()
             ->with(['facilityType', 'primaryAccount', 'approver'])
+            // A hospital known only from a walk-in is not a facility anyone
+            // manages; it is listed only when asked for by its status.
+            ->when(
+                ($filters['status'] ?? null) !== FacilityStatus::Unregistered->value,
+                fn (Builder $query): Builder => $query->where('status', '!=', FacilityStatus::Unregistered->value)
+            )
             ->when(
                 $filters['status'] ?? null,
                 fn (Builder $query, string $status): Builder => $query->where('status', $status)

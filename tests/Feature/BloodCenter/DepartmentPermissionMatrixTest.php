@@ -365,17 +365,44 @@ class DepartmentPermissionMatrixTest extends TestCase
         $this->assertNotContains('inventory.create', $billing->abilities());
     }
 
-    public function test_processing_may_read_inventory_but_not_write_it(): void
+    /**
+     * Project owner, 2026-10-19: Processing hands units over and never works
+     * on stock, so neither its roles nor a custom Processing role read
+     * inventory, as Testing does not.
+     */
+    public function test_processing_cannot_read_or_write_inventory(): void
     {
+        $this->assertNotContains('inventory.view', DepartmentPermissions::forDepartment(Department::Processing));
+
         $facility = Facility::factory()->approved()->create();
         $staff = User::factory()->bloodCenterStaff($facility, StaffRole::ComponentTechnologist)->create();
 
         $this->actingAs($staff)
             ->getJson('/api/blood-center/inventory')
-            ->assertOk();
+            ->assertForbidden();
+
+        $this->actingAs($staff)
+            ->getJson('/api/blood-center/inventory/thresholds')
+            ->assertForbidden();
 
         $this->actingAs($staff)
             ->postJson('/api/blood-center/inventory', [])
+            ->assertForbidden();
+    }
+
+    /**
+     * Project owner, 2026-10-18: Testing works on drawn donations, never on
+     * stock, so neither its roles nor a custom Testing role read inventory.
+     */
+    public function test_testing_cannot_read_inventory(): void
+    {
+        $this->assertNotContains('inventory.view', DepartmentPermissions::forDepartment(Department::Testing));
+
+        $facility = Facility::factory()->approved()->create();
+        $supervisor = User::factory()->bloodCenterStaff($facility, StaffRole::LabSupervisor)->create();
+
+        $this->actingAs($supervisor)
+            ->getJson('/api/blood-center/inventory/thresholds')
             ->assertForbidden();
     }
 
@@ -421,6 +448,17 @@ class DepartmentPermissionMatrixTest extends TestCase
     public function test_only_the_lab_supervisor_holds_the_counselling_referral_list(): void
     {
         $this->assertSame([StaffRole::LabSupervisor], DepartmentPermissions::rolesHolding('lab.referrals'));
+    }
+
+    /**
+     * A technologist's reactive result waits for a second person (project
+     * owner, 2026-10-18). That person is the supervisor's named post: no other
+     * role and no custom Testing role holds it.
+     */
+    public function test_only_the_lab_supervisor_verifies_a_reactive_result(): void
+    {
+        $this->assertSame([StaffRole::LabSupervisor], DepartmentPermissions::rolesHolding('lab.verify_serology'));
+        $this->assertNotContains('lab.verify_serology', DepartmentPermissions::forCustomRole(Department::Testing));
     }
 
     /**

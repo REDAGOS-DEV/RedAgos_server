@@ -206,9 +206,9 @@ A visit that cannot go ahead can be closed by the Receptionist, the Physician or
 |---|---|
 | **Log in as** | **Serology / Molecular Medical Technologist** or **Laboratory Supervisor** (Testing page) |
 | **Actions** | Records the five-marker panel: **HIV, HBsAg, HCV, Syphilis, Malaria**, each reactive or non-reactive. All five are required. |
-| **Status changes** | **All non-reactive:** the **TTI clearance token** is issued at once. **Both tokens in while the donation is still `collected`:** donation → **`tested`**. **Any marker reactive:** in the same transaction the donation is **`rejected`**, any bags already booked stay locked in quarantine, the donor is permanently deferred, and a **counselling referral** is opened. |
-| **Approvals** | A reactive panel only saves with an explicit `confirm_reactive`. A reactive result **can never be changed, deleted or corrected**. Which marker was reactive is visible only to the Testing department and the referral list. |
-| **Hands off to** | Step 12 if cleared. If reactive, the **Laboratory Supervisor** alone works the referral list (`pending` → `contacted` → `referred` → `closed`; a step may be skipped; closing needs a note). The bags can only be discarded. |
+| **Status changes** | **All non-reactive:** the **TTI clearance token** is issued at once. **Both tokens in while the donation is still `collected`:** donation → **`tested`**. **Any marker reactive:** saved by a technologist, the panel **waits for the Laboratory Supervisor's verification** and sets nothing off; the missing TTI token keeps the bags in quarantine. Once verified (or when the supervisor saves it themselves), in the same transaction the donation is **`rejected`**, any bags already booked stay locked in quarantine, the donor is permanently deferred, and a **counselling referral** is opened. |
+| **Approvals** | A reactive panel only saves with an explicit `confirm_reactive`. A technologist's reactive panel is **verified or returned for re-entry by the Laboratory Supervisor** (`lab.verify_serology`); returning it deletes it. A verified reactive result **can never be changed, deleted or corrected**. Which marker was reactive is visible only to the Testing department and the referral list. |
+| **Hands off to** | Step 12 if cleared. If reactive and verified, the **Laboratory Supervisor** alone works the referral list: sends the donor a **contact request** by hand (email if they have one, and in the app; it names no result), then `pending` → `contacted` → `referred` → `closed` (a step may be skipped; closing needs a note). The bags can only be discarded. |
 
 ### Step 9. Processing: declare components and print base labels
 
@@ -260,7 +260,7 @@ The final label shows the verified blood type (large), component, volume, expiry
 
 | | |
 |---|---|
-| **Log in as** | Anyone with `inventory.view`: **ICO**, **Dispatch Coordinator**, **IT Data Entry Clerk**, **Component Technologist**, **Laboratory Supervisor**, **Center Admin**. Setting minimums takes `inventory.thresholds`: the **ICO** or the **Center Admin**. |
+| **Log in as** | Anyone with `inventory.view`: **ICO**, **Dispatch Coordinator**, **IT Data Entry Clerk**, **Component Technologist**, **Center Admin**. Setting minimums takes `inventory.thresholds`: the **ICO** or the **Center Admin**. |
 | **Actions** | **Blood Inventory:** stock in first-expiry-first-out order, near-expiry counts. **Stock Thresholds:** a **minimum per blood type and component**; everyone with inventory access sees stock against it. **Daily Stock Report** (ICO): the signed PDF stock sheet. **Discard** (ICO): expired or damaged bags. **IT Data Entry Clerk:** audits records against scanned barcodes and files corrections; cannot change anything directly. |
 | **Status changes** | The nightly sweep (00:30, Asia/Manila) moves `available` bags past their date to **`expired`**; an expired bag can then be `discarded`. A stock is `ok` at or above its minimum, `low` below it, `critical` when empty under a minimum. A **red banner** shows on the inventory pages, and **one low-stock notification per low episode** goes to every account holding `inventory.view`. |
 | **Approvals** | The **ICO edits a unit's storage location and expiry directly**. Everyone else files a correction for the ICO. |
@@ -392,14 +392,14 @@ A saved record is never overwritten. The person whose role wrote it files a **co
 | Issuance | Inventory Control Officer | A unit's details (storage location, expiry), dispatch records |
 | Billing | Billing Supervisor | A recorded payment |
 
-- A **reactive serology result can never be corrected.**
+- A **verified reactive serology result can never be corrected.** One still waiting for verification is verified or returned instead (`verification_pending`). An approved correction to reactive is verified by its approver.
 - A **cleared** result can be corrected only while none of the donation's bags has left quarantine (`units_released`).
 - A correction **never changes where a unit or allocation stands in the workflow**. It cannot move a bag and it cannot assert receipt.
 - Who may *file* an Issuance or Billing correction is decided by the post: unit details by the IT Data Entry Clerk, dispatch records by the Dispatch Coordinator or ICO, payments by the Billing Clerk or Supervisor, and any of them by the Center Admin.
 
 ### 5.2 Hard rules (enforced in code; the Center Admin is bound too)
 
-1. A reactive serology result can never be changed, deleted or corrected.
+1. A verified reactive serology result can never be changed, deleted or corrected.
 2. A unit leaves quarantine only with **both** clearance tokens, from a donation that was not rejected.
 3. Clearance tokens are never edited or deleted; one is only ever revoked, once, by an approved correction.
 4. Editing a unit never moves it out of quarantine.
@@ -462,7 +462,7 @@ These are recorded in the decision log; they are listed here so nobody assumes o
 - **Quality control before dispatch** is not a step. The fulfillment screen tracks `allocated → released → received` only.
 - **Refunds are settled outside RedAgos.** A counter payment can be voided only on the day it was taken (or, with cash shifts on, while its shift is open); after that, money handed back is not recorded here.
 - **Cash shifts are off** while one billing staff member runs the counter, so there is no float, drawer count or Z report until they are turned on.
-- **A mis-keyed reactive result cannot be undone in the app.**
+- **A mis-keyed reactive result cannot be undone in the app once verified.** A technologist's is caught by the supervisor's verification; the supervisor's own entry takes effect as it is saved.
 - **There is no MOA or partner relationship** between a hospital and a center in the schema; a request may be addressed to any approved center.
 - **The handover half of the DOH request form** (type of crossmatching, donors provided, received-by and extracted-by signatures) is printed blank and filled in on paper.
 - **A permanent or indefinite deferral gates nothing.** It is shown as a banner and the physician decides.

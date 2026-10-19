@@ -2,6 +2,7 @@
 
 namespace App\Service;
 
+use App\Enums\FacilityStatus;
 use App\Enums\LineFulfilmentStatus;
 use App\Models\BloodRequest;
 use App\Models\BloodRequestItem;
@@ -168,6 +169,9 @@ class BloodRequestProjector
                     'component' => [
                         'id' => $item->component_id,
                         'name' => $item->component?->name,
+                        // The code printed on its bag label (PRBC, FFP, PC),
+                        // for a list too narrow for the full name.
+                        'code' => $item->component?->labelCode(),
                     ],
                     'quantity' => $item->quantity,
                     'indication_code' => $item->indication_code?->value,
@@ -275,7 +279,7 @@ class BloodRequestProjector
     }
 
     /**
-     * Project the representative and phone verification of a walk-in.
+     * Project the representative of a walk-in, and its phone verification where it has one.
      *
      * @return array<string, mixed>|null
      */
@@ -312,7 +316,9 @@ class BloodRequestProjector
             'attending_physician' => $walkIn->attending_physician,
             'patient_ward' => $walkIn->patient_ward,
             'patient_record_number' => $walkIn->patient_record_number,
-            'verification' => [
+            // Only walk-ins recorded before 2026-10-19 carry the hospital's
+            // phone confirmation; the step was removed that day.
+            'verification' => $walkIn->verifier_name === null ? null : [
                 'method' => 'phone',
                 'verifier_name' => $walkIn->verifier_name,
                 'verifier_position' => $walkIn->verifier_position,
@@ -380,6 +386,9 @@ class BloodRequestProjector
             'id' => $facility->id,
             'name' => $facility->name,
             'address' => $facility->address,
+            // False for a hospital known only from a walk-in, which has no
+            // accounts to notify or to follow the request.
+            'is_registered' => $facility->status !== FacilityStatus::Unregistered,
         ] : null;
     }
 }

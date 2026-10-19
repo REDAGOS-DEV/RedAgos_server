@@ -35,6 +35,7 @@ class LaboratoryRepository
         'immunohematology.bloodType',
         'immunohematology.recorder',
         'serology.recorder',
+        'serology.verifier',
         'collection',
         'screening.fingerprickBloodType',
         'components.component',
@@ -46,8 +47,9 @@ class LaboratoryRepository
      *
      * `stage=testing` is the Testing department's queue: every drawn donation
      * still waiting on a section — plus any passed under the old
-     * single-result screen that has no itemised panel yet. Without a stage it
-     * is the queue Processing has always worked.
+     * single-result screen that has no itemised panel yet. `stage=processing`
+     * is Component Processing's: what still has no breakdown. Without a stage
+     * it is every donation the laboratory has not completed or rejected.
      *
      * @param  array<string, mixed>  $filters
      * @return LengthAwarePaginator<int, Donation>
@@ -74,6 +76,16 @@ class LaboratoryRepository
                     'serology' => $this->awaitingClearance($q, [ClearanceKind::Tti]),
                     'immunohematology' => $this->awaitingClearance($q, [ClearanceKind::Immunohematology]),
                     'testing' => $this->awaitingClearance($q, ClearanceKind::cases()),
+                    // Component Processing's bench (project owner, 2026-10-19):
+                    // drawn donations with no breakdown yet. One with its
+                    // breakdown waits on the Processed list, where it is
+                    // handed over to Issuance.
+                    'processing' => $q
+                        ->whereIn('status', [
+                            DonationStatus::Collected->value,
+                            DonationStatus::Tested->value,
+                        ])
+                        ->whereDoesntHave('components'),
                     // The laboratory's own queue by default: everything handed
                     // over by collection and not yet completed or rejected.
                     default => $q->whereIn('status', [

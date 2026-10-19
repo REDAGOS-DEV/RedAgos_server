@@ -41,7 +41,7 @@ class WalkInRequestTest extends TestCase
         $this->buildScenario();
     }
 
-    public function test_issuance_records_a_confirmed_walk_in_as_the_hospitals_pending_request(): void
+    public function test_issuance_records_a_walk_in_as_the_hospitals_pending_request(): void
     {
         $response = $this->actingAs($this->issuance)
             ->postJson('/api/blood-center/blood-requests/walk-in', $this->walkInPayload())
@@ -56,15 +56,15 @@ class WalkInRequestTest extends TestCase
             ->assertJsonPath('request.patient.full_name', 'DELA CRUZ, Juan Santos')
             ->assertJsonPath('request.walk_in.representative.name', 'Pedro Dela Cruz')
             ->assertJsonPath('request.walk_in.representative.relationship', 'Son')
-            ->assertJsonPath('request.walk_in.verification.verifier_name', 'Ana Lim')
-            ->assertJsonPath('request.walk_in.verification.method', 'phone')
+            // No phone confirmation is taken (project owner, 2026-10-19).
+            ->assertJsonPath('request.walk_in.verification', null)
             ->assertJsonPath('request.walk_in.attending_physician', 'Dr. Maria Reyes');
 
         $request = BloodRequest::query()->findOrFail($response->json('request.id'));
 
         $this->assertNull($request->requested_by, 'Nobody at the hospital submitted it.');
         $this->assertSame($this->issuance->id, $request->recorded_by);
-        $this->assertSame($this->issuance->id, $request->walkIn->verification_recorded_by);
+        $this->assertNull($request->walkIn->verification_recorded_by);
         $this->assertSame(3, $request->items()->count());
     }
 
@@ -97,7 +97,7 @@ class WalkInRequestTest extends TestCase
             ->assertJsonPath('request.totals.required', 5)
             ->assertJsonPath('request.totals.awaiting', 5)
             ->assertJsonPath('request.walk_in.representative.name', 'Pedro Dela Cruz')
-            ->assertJsonPath('request.walk_in.verification.verifier_name', 'Ana Lim');
+            ->assertJsonPath('request.walk_in.verification', null);
     }
 
     public function test_a_walk_in_takes_the_next_number_in_the_hospitals_own_sequence(): void
@@ -161,44 +161,68 @@ class WalkInRequestTest extends TestCase
             ->assertJsonPath('open_by_source.blood_bank_portal', 1);
     }
 
-    public function test_nothing_is_recorded_unless_the_hospital_confirmed(): void
+    public function test_a_walk_in_is_recorded_without_a_phone_confirmation(): void
+    {
+        // The confirmation step was removed (project owner, 2026-10-19): a
+        // walk-in needs the hospital, the patient, the blood type and the
+        // watcher, and nothing from a call.
+        $this->actingAs($this->issuance)
+            ->postJson('/api/blood-center/blood-requests/walk-in', $this->walkInPayload())
+            ->assertCreated();
+
+        $walkIn = BloodRequestWalkIn::query()->sole();
+
+        $this->assertNull($walkIn->verifier_name);
+        $this->assertNull($walkIn->verified_at);
+        $this->assertNull($walkIn->verification_recorded_by);
+    }
+
+    public function test_the_hospital_patient_and_blood_type_are_still_required(): void
     {
         $this->actingAs($this->issuance)
             ->postJson('/api/blood-center/blood-requests/walk-in', $this->walkInPayload([
-                'verification' => ['confirmed' => false],
+                'hospital_id' => null,
+                'patient_surname' => null,
+                'patient_first_name' => null,
+                'blood_type_id' => null,
             ]))
             ->assertUnprocessable()
-            ->assertJsonValidationErrors('verification.confirmed');
+            ->assertJsonValidationErrors(['hospital_id', 'patient_surname', 'patient_first_name', 'blood_type_id']);
 
         $this->assertDatabaseCount('blood_requests', 0);
-        $this->assertDatabaseCount('blood_request_walk_ins', 0);
     }
 
-    public function test_the_person_who_confirmed_it_must_be_named(): void
+    public function test_the_reference_on_the_watchers_paperwork_is_optional(): void
     {
         $payload = $this->walkInPayload();
-        unset($payload['verification']['verifier_name'], $payload['verification']['verifier_position'], $payload['verification']['verified_at']);
+        unset($payload['presented_reference']);
 
         $this->actingAs($this->issuance)
             ->postJson('/api/blood-center/blood-requests/walk-in', $payload)
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors([
-                'verification.verifier_name',
-                'verification.verifier_position',
-                'verification.verified_at',
-            ]);
-
-        $this->assertDatabaseCount('blood_requests', 0);
+            ->assertCreated()
+            ->assertJsonPath('request.walk_in.presented_reference', null);
     }
 
-    public function test_a_confirmation_dated_in_the_future_is_refused(): void
+    public function test_a_walk_in_recorded_with_a_confirmation_still_shows_it(): void
     {
+        $response = $this->actingAs($this->issuance)
+            ->postJson('/api/blood-center/blood-requests/walk-in', $this->walkInPayload())
+            ->assertCreated();
+
+        // As a walk-in recorded before the step was removed would carry it.
+        BloodRequestWalkIn::query()->sole()->update([
+            'verifier_name' => 'Ana Lim',
+            'verifier_position' => 'Blood Bank Medical Technologist',
+            'verifier_contact' => '(082) 222-1234',
+            'verified_at' => now()->subDay(),
+            'verification_recorded_by' => $this->issuance->id,
+        ]);
+
         $this->actingAs($this->issuance)
-            ->postJson('/api/blood-center/blood-requests/walk-in', $this->walkInPayload([
-                'verification' => ['verified_at' => now()->addHour()->toIso8601String()],
-            ]))
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors('verification.verified_at');
+            ->getJson('/api/blood-center/blood-requests/'.$response->json('request.id'))
+            ->assertOk()
+            ->assertJsonPath('request.walk_in.verification.verifier_name', 'Ana Lim')
+            ->assertJsonPath('request.walk_in.verification.method', 'phone');
     }
 
     public function test_the_watcher_must_be_recorded(): void

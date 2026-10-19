@@ -444,7 +444,9 @@ class CorrectionService
             CorrectionSubject::Screening => $this->collectionService->recordScreening($requester, $donationId, $changes, correcting: true),
             CorrectionSubject::Collection => $this->collectionService->correctCollection($requester, $donationId, $changes),
             CorrectionSubject::Immunohematology => $this->laboratoryService->recordImmunohematology($requester, $donationId, $changes, correcting: true),
-            CorrectionSubject::Serology => $this->laboratoryService->recordSerology($requester, $donationId, $changes, correcting: true),
+            // The approval is the second person: a corrected reactive panel
+            // takes effect as it is applied, verified by the approver.
+            CorrectionSubject::Serology => $this->laboratoryService->recordSerology($requester, $donationId, $changes, correcting: true, verifier: $approver),
             CorrectionSubject::Components => $this->laboratoryService->declareComponents($requester, $donationId, $changes, correcting: true),
         };
 
@@ -664,6 +666,14 @@ class CorrectionService
         if ($subject === CorrectionSubject::Serology) {
             $serology = DonationSerology::query()->where('donation_id', $donation->id)->first();
 
+            if ($serology?->isAwaitingVerification()) {
+                throw $this->refuse(
+                    409,
+                    'verification_pending',
+                    'This reactive result is waiting for the Laboratory Supervisor, who verifies it or returns it for re-entry.'
+                );
+            }
+
             if ($serology?->isReactive()) {
                 throw $this->refuse(
                     409,
@@ -673,6 +683,19 @@ class CorrectionService
             }
         }
 
+        // A breakdown is fixed once the unit is handed over or rejected
+        // (project owner, 2026-10-19): declareComponents would refuse it, so
+        // the correction is refused when filed rather than left pending for
+        // an approval that cannot apply. The Processed list mirrors this.
+        if ($subject === CorrectionSubject::Components
+            && ! in_array($donation->status, [DonationStatus::Collected, DonationStatus::Tested], true)) {
+            throw $this->refuse(
+                409,
+                'not_correctable',
+                'This unit has been handed over or rejected, so its component breakdown is fixed.'
+            );
+        }
+
         $kind = $this->clearanceKind($subject);
 
         // A cleared result may still be corrected while every bag is in
@@ -680,12 +703,7 @@ class CorrectionService
         // bag has been released, the result is what put it on the shelf.
         if ($kind !== null && $this->clearanceRepository->has($donation->id, $kind)) {
             $released = $donation->bloodUnits()
-                ->whereIn('status', [
-                    BloodUnitStatus::Available->value,
-                    BloodUnitStatus::Reserved->value,
-                    BloodUnitStatus::Issued->value,
-                    BloodUnitStatus::Expired->value,
-                ])
+                ->whereIn('status', BloodUnitStatus::leftQuarantineValues())
                 ->exists();
 
             if ($released) {

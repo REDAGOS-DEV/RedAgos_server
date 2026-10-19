@@ -11,6 +11,7 @@ use App\Http\Controllers\BloodCenterCollectionDashboardController;
 use App\Http\Controllers\BloodCenterComponentController;
 use App\Http\Controllers\BloodCenterComponentPriceController;
 use App\Http\Controllers\BloodCenterCorrectionController;
+use App\Http\Controllers\BloodCenterDeferralController;
 use App\Http\Controllers\BloodCenterDonationRecordController;
 use App\Http\Controllers\BloodCenterDonorController;
 use App\Http\Controllers\BloodCenterDonorQuestionnaireController;
@@ -21,11 +22,13 @@ use App\Http\Controllers\BloodCenterInventoryController;
 use App\Http\Controllers\BloodCenterLaboratoryController;
 use App\Http\Controllers\BloodCenterPaperDonationController;
 use App\Http\Controllers\BloodCenterPosController;
+use App\Http\Controllers\BloodCenterProcessedDonationController;
 use App\Http\Controllers\BloodCenterProfileController;
 use App\Http\Controllers\BloodCenterReceiptController;
 use App\Http\Controllers\BloodCenterReferenceController;
 use App\Http\Controllers\BloodCenterReferralController;
 use App\Http\Controllers\BloodCenterRequestController;
+use App\Http\Controllers\BloodCenterSerologyResultController;
 use App\Http\Controllers\BloodCenterStaffController;
 use App\Http\Controllers\BloodCenterStatementController;
 use App\Http\Controllers\BloodCenterWalkInController;
@@ -284,8 +287,8 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         // The Daily Blood Stock Inventory. Declared before /inventory/{unit}
         // for the same reason as the two above. Issuance prepares and signs
         // it, so it carries its own ability rather than the shared
-        // inventory.view every laboratory department also holds: Issuance's
-        // head, and the Supervisor who monitors the centre.
+        // inventory.view: Issuance's head, and the Supervisor who monitors
+        // the centre.
         Route::get('/inventory/stock-report', [BloodCenterInventoryController::class, 'stockReport'])
             ->middleware('can:inventory.stock_report');
 
@@ -334,6 +337,11 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             Route::get('/summary', [BloodCenterRequestController::class, 'summary'])
                 ->middleware('can:requests.view');
 
+            // The list as CSV (project owner, 2026-10-19), with its filters.
+            // Audited in the service, since a request names its patient.
+            Route::get('/export', [BloodCenterRequestController::class, 'export'])
+                ->middleware(['can:requests.view', 'throttle:30,1']);
+
             // Walk-in Patient Transfusion requests: a watcher who came to the
             // centre instead of the hospital blood bank. Issuance phones the
             // hospital and records the request only once it is confirmed.
@@ -369,6 +377,18 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             // able to reject a hospital's request.
             Route::post('/{bloodRequest}/allocate', [BloodCenterRequestController::class, 'allocate'])
                 ->middleware('can:requests.process')
+                ->whereNumber('bloodRequest');
+
+            // The units staff may pick for it (project owner, 2026-10-19):
+            // reserving is choosing bags from the shelf, so the same ability.
+            Route::get('/{bloodRequest}/units', [BloodCenterRequestController::class, 'units'])
+                ->middleware('can:requests.process')
+                ->whereNumber('bloodRequest');
+
+            // What the watcher takes to the next blood centre when this one
+            // cannot supply everything (project owner, 2026-10-19).
+            Route::get('/{bloodRequest}/referral-slip', [BloodCenterRequestController::class, 'referralSlip'])
+                ->middleware('can:requests.view')
                 ->whereNumber('bloodRequest');
 
             Route::post('/{bloodRequest}/reject', [BloodCenterRequestController::class, 'reject'])
@@ -434,11 +454,12 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
                 ->middleware('can:billing.record_payment')
                 ->whereNumber('bloodRequest');
 
-            // Waiving a charge settles a statement, so it sits behind the same
-            // ability as taking money for one: both decide that nothing more
-            // is owed, and both release blood.
+            // Waiving a charge settles a statement. Its own ability, so the
+            // Issuance staff who release blood can apply it at the point of
+            // issue in a centre with no billing staff (project owner,
+            // 2026-10-19), without being able to take money.
             Route::post('/{bloodRequest}/subsidy', [BloodCenterBillingController::class, 'storeSubsidy'])
-                ->middleware('can:billing.record_payment')
+                ->middleware('can:billing.subsidise')
                 ->whereNumber('bloodRequest');
 
             // Statements of Account: frozen revisions of the statement. Reading
@@ -615,6 +636,20 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
                 ->middleware(['can:donors.record_questionnaire', 'throttle:counter-questionnaire'])->whereUuid('uuid');
         });
 
+        // The Deferrals page (project owner, 2026-10-18): deferrals recorded
+        // on a donor by hand, outside a visit's screening. The list carries
+        // the reasons, so donors.view_clinical; recording and lifting are the
+        // physician's, as deferring at screening is. Every other screen hears
+        // of these through DonorDeferralRepository, never from here.
+        Route::prefix('deferrals')->group(function (): void {
+            Route::get('/', [BloodCenterDeferralController::class, 'index'])
+                ->middleware('can:donors.view_clinical');
+            Route::post('/', [BloodCenterDeferralController::class, 'store'])
+                ->middleware(['can:donors.defer', 'throttle:30,1']);
+            Route::post('/{deferral}/lift', [BloodCenterDeferralController::class, 'lift'])
+                ->middleware(['can:donors.defer', 'throttle:30,1'])->whereNumber('deferral');
+        });
+
         // Mobile drives. The donor-facing GET /blood-drives is a read-only view
         // over the same rows; this is the only place they are written.
         Route::prefix('drives')->group(function (): void {
@@ -747,20 +782,54 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             Route::post('/donations/{donation}/serology', [BloodCenterLaboratoryController::class, 'recordSerology'])
                 ->middleware('can:lab.record_serology')->whereNumber('donation');
 
+            // The second person on a reactive result (project owner,
+            // 2026-10-18): a technologist's reactive panel sets nothing off
+            // until the Laboratory Supervisor verifies it, or returns it for
+            // re-entry.
+            Route::post('/donations/{donation}/serology/verify', [BloodCenterLaboratoryController::class, 'verifySerology'])
+                ->middleware('can:lab.verify_serology')->whereNumber('donation');
+            Route::post('/donations/{donation}/serology/return', [BloodCenterLaboratoryController::class, 'returnSerology'])
+                ->middleware('can:lab.verify_serology')->whereNumber('donation');
+
+            // TTI Testing's results list (project owner, 2026-10-18): every
+            // panel recorded here, marker by marker. The readings go to whoever
+            // may record them, so the recording ability gates the list.
+            Route::get('/serology-results', [BloodCenterSerologyResultController::class, 'index'])
+                ->middleware(['can:lab.record_serology', 'throttle:60,1']);
+            Route::get('/serology-results/export', [BloodCenterSerologyResultController::class, 'export'])
+                ->middleware(['can:lab.record_serology', 'throttle:30,1']);
+
             // Its own ability rather than lab.record_serology: this is the one
             // list that names which marker each donor was reactive for, and
             // the technologists recording markers are blind to identity.
             Route::get('/referrals', [BloodCenterReferralController::class, 'index'])
                 ->middleware(['can:lab.referrals', 'throttle:60,1']);
 
+            // The sidebar's badge: a count only, so not audited like the list.
+            Route::get('/referrals/summary', [BloodCenterReferralController::class, 'summary'])
+                ->middleware('can:lab.referrals');
+
             Route::patch('/referrals/{referral}', [BloodCenterReferralController::class, 'update'])
                 ->middleware('can:lab.referrals')->whereNumber('referral');
+
+            // The mail icon: ask the donor to get in touch, by hand, once the
+            // result is verified (project owner, 2026-10-18).
+            Route::post('/referrals/{referral}/contact-request', [BloodCenterReferralController::class, 'requestContact'])
+                ->middleware(['can:lab.referrals', 'throttle:30,1'])->whereNumber('referral');
 
             Route::post('/donations/{donation}/components', [BloodCenterLaboratoryController::class, 'declareComponents'])
                 ->middleware('can:lab.record_components')->whereNumber('donation');
 
             Route::patch('/donations/{donation}/status', [BloodCenterLaboratoryController::class, 'updateStatus'])
                 ->middleware('can:lab.update_status')->whereNumber('donation');
+
+            // Processing's Processed list (project owner, 2026-10-19): every
+            // donation with a recorded breakdown. Its hand-over to Issuance is
+            // made from there, through the status route above.
+            Route::get('/processed', [BloodCenterProcessedDonationController::class, 'index'])
+                ->middleware(['can:lab.record_components', 'throttle:60,1']);
+            Route::get('/processed/export', [BloodCenterProcessedDonationController::class, 'export'])
+                ->middleware(['can:lab.record_components', 'throttle:30,1']);
         });
 
         // Correction requests. A saved record is changed only this way: its

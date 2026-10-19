@@ -392,7 +392,7 @@ class InventoryIntakeTest extends TestCase
 
     /**
      * inventory.create, not inventory.view: this is a worklist for the people
-     * who book stock in. Processing holds inventory.view but never books in.
+     * who book stock in. Processing hands units over but never books in.
      */
     public function test_a_department_that_cannot_record_stock_cannot_read_the_queue(): void
     {

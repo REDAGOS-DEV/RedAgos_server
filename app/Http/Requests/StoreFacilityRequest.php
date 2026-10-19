@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Enums\FacilityStatus;
 use App\Enums\FacilityTypeName;
 use App\Repository\FacilityRepository;
 use App\Support\AccountIdentity;
@@ -130,7 +131,12 @@ class StoreFacilityRequest extends FormRequest
                 // facilities carries unique(facility_type_id, name), so this is
                 // scoped the same way rather than made globally unique: a blood
                 // bank and a blood centre may legitimately share a name.
-                Rule::unique('facilities', 'name')->where('facility_type_id', $this->scopedTypeId()),
+                // A hospital a walk-in named is not a facility yet: creating it
+                // properly upgrades that record (FacilityRepository), so it
+                // does not count as the name being taken.
+                Rule::unique('facilities', 'name')
+                    ->where('facility_type_id', $this->scopedTypeId())
+                    ->where(fn ($query) => $query->where('status', '!=', FacilityStatus::Unregistered->value)),
             ],
 
             'doh_license_number' => ['required', 'string', 'max:50', 'unique:facilities,doh_license_number'],

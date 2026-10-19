@@ -18,10 +18,13 @@ use LogicException;
  * shown to the Testing department and on its referral list, and nowhere else:
  * not in rejection reasons, not in audit context, not to the donor.
  *
- * A reactive panel is immutable. It has already rejected the donation,
- * deferred the donor and referred them, so the model refuses to change or
- * delete it whoever asks — the service guards are the first line, this is the
- * last.
+ * A reactive panel takes effect only once verified (project owner,
+ * 2026-10-18): saved by a technologist it waits for the Laboratory
+ * Supervisor, who checks it against the bench record and verifies it or
+ * returns it for re-entry. Until then it has set nothing off, so it may be
+ * deleted (returned). Once verified it has rejected the donation, deferred
+ * the donor and referred them, so the model refuses to change or delete it
+ * whoever asks — the service guards are the first line, this is the last.
  */
 class DonationSerology extends Model
 {
@@ -36,6 +39,8 @@ class DonationSerology extends Model
         'malaria',
         'recorded_by',
         'recorded_at',
+        'verified_by',
+        'verified_at',
     ];
 
     protected function casts(): array
@@ -47,20 +52,21 @@ class DonationSerology extends Model
             'syphilis' => MarkerResult::class,
             'malaria' => MarkerResult::class,
             'recorded_at' => 'datetime',
+            'verified_at' => 'datetime',
         ];
     }
 
     protected static function booted(): void
     {
         static::updating(function (DonationSerology $serology): void {
-            if ($serology->wasReactive()) {
-                throw new LogicException('A reactive serology result cannot be changed.');
+            if ($serology->wasVerifiedReactive()) {
+                throw new LogicException('A verified reactive serology result cannot be changed.');
             }
         });
 
         static::deleting(function (DonationSerology $serology): void {
-            if ($serology->wasReactive()) {
-                throw new LogicException('A reactive serology result cannot be deleted.');
+            if ($serology->wasVerifiedReactive()) {
+                throw new LogicException('A verified reactive serology result cannot be deleted.');
             }
         });
     }
@@ -88,11 +94,36 @@ class DonationSerology extends Model
     }
 
     /**
+     * Whether the panel as stored was reactive and had been verified: the
+     * state in which it has already acted, and may no longer change.
+     */
+    public function wasVerifiedReactive(): bool
+    {
+        return $this->wasReactive() && $this->getOriginal('verified_at') !== null;
+    }
+
+    /**
+     * Whether this is a reactive panel still waiting for verification.
+     */
+    public function isAwaitingVerification(): bool
+    {
+        return $this->isReactive() && $this->verified_at === null;
+    }
+
+    /**
      * The form's "Screened by": the staff member who saved this section.
      */
     public function recorder(): BelongsTo
     {
         return $this->belongsTo(User::class, 'recorded_by');
+    }
+
+    /**
+     * The Laboratory Supervisor who verified a reactive panel.
+     */
+    public function verifier(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'verified_by');
     }
 
     /**

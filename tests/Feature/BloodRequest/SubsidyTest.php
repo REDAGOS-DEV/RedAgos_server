@@ -6,7 +6,9 @@ use App\Enums\AllocationStatus;
 use App\Enums\BillingStatus;
 use App\Enums\BloodUnitStatus;
 use App\Enums\Department;
+use App\Enums\StaffRole;
 use App\Models\Billing;
+use App\Models\BillingRevision;
 use App\Models\BloodComponent;
 use App\Models\BloodRequest;
 use App\Models\BloodType;
@@ -203,12 +205,99 @@ class SubsidyTest extends TestCase
         $this->assertDatabaseCount('payments', 0);
     }
 
-    public function test_inventory_staff_cannot_apply_the_subsidy(): void
+    // --- At the point of issue (project owner, 2026-10-19) ---------------------
+    // A subsidised centre may have no billing staff, so Issuance applies the
+    // subsidy as it issues, and the request still goes on the hospital's
+    // Statement of Account.
+
+    public function test_issuance_applies_the_subsidy_and_the_hospital_gets_a_statement_of_account(): void
     {
         $request = $this->reservedRequest();
 
         $this->actingAs($this->inventoryStaff)
+            ->postJson("/api/blood-center/billings/{$request->id}/subsidy", ['reason' => 'DOH-subsidised centre'])
+            ->assertOk()
+            ->assertJsonPath('billing.status', BillingStatus::Subsidised->value)
+            ->assertJsonPath('billing.clears_release', true)
+            ->assertJsonPath('statement.billing_status', BillingStatus::Subsidised->value)
+            ->assertJsonPath('statement.total_amount', '1070.00')
+            ->assertJsonPath('statement.amount_due', '0.00')
+            ->assertJsonPath('statement.bill_to.facility', $this->hospital->name)
+            ->assertJsonPath('statement.lines.0.component_name', 'Packed RBC');
+
+        $this->actingAs($this->inventoryStaff)
+            ->postJson("/api/blood-center/blood-requests/{$request->id}/release")
+            ->assertOk();
+
+        // The release changed nothing on it, so it took no second number.
+        $this->assertSame(1, BillingRevision::query()->count());
+
+        $this->actingAs(User::factory()->bloodBankStaff($this->hospital)->create())
+            ->getJson("/api/hospital/blood-requests/{$request->id}/billing")
+            ->assertOk()
+            ->assertJsonPath('billing.status', BillingStatus::Subsidised->value)
+            ->assertJsonCount(1, 'statements')
+            ->assertJsonPath('statements.0.billing_status_label', 'Government Subsidised')
+            ->assertJsonPath('statements.0.amount_due', '0.00');
+    }
+
+    public function test_units_reserved_after_the_subsidy_reach_the_statement_when_they_are_released(): void
+    {
+        $request = $this->reservedRequest(units: 2, quantity: 2, allocate: 1);
+
+        $this->actingAs($this->inventoryStaff)
             ->postJson("/api/blood-center/billings/{$request->id}/subsidy")
+            ->assertOk()
+            ->assertJsonPath('statement.lines.0.quantity', 1);
+
+        $this->actingAs($this->inventoryStaff)
+            ->postJson("/api/blood-center/blood-requests/{$request->id}/allocate")
+            ->assertOk();
+
+        $this->actingAs($this->inventoryStaff)
+            ->postJson("/api/blood-center/blood-requests/{$request->id}/release")
+            ->assertOk();
+
+        $latest = BillingRevision::query()->with('items')->orderByDesc('revision_number')->firstOrFail();
+
+        $this->assertSame(2, $latest->revision_number);
+        $this->assertSame(BillingStatus::Subsidised, $latest->billing_status);
+        $this->assertSame(2, (int) $latest->items->sum('quantity'));
+        $this->assertSame('2140.00', $latest->total_amount);
+        $this->assertSame('0.00', $latest->amount_due);
+    }
+
+    public function test_the_dispatch_coordinator_may_apply_it_too(): void
+    {
+        $request = $this->reservedRequest();
+
+        $this->actingAs(User::factory()->bloodCenterStaff($this->centre, StaffRole::DispatchCoordinator)->create())
+            ->postJson("/api/blood-center/billings/{$request->id}/subsidy")
+            ->assertOk();
+    }
+
+    public function test_only_staff_who_release_or_bill_may_apply_it(): void
+    {
+        $request = $this->reservedRequest();
+
+        foreach ([StaffRole::ItDataClerk, Department::Collection, Department::Testing] as $post) {
+            $this->actingAs(User::factory()->bloodCenterStaff($this->centre, $post)->create())
+                ->postJson("/api/blood-center/billings/{$request->id}/subsidy")
+                ->assertForbidden();
+        }
+
+        $this->assertSame(BillingStatus::Unpaid, $request->billing()->firstOrFail()->status);
+    }
+
+    public function test_issuance_still_cannot_take_money(): void
+    {
+        $request = $this->reservedRequest();
+
+        $this->actingAs($this->inventoryStaff)
+            ->postJson("/api/blood-center/billings/{$request->id}/payments", [
+                'amount' => 1070,
+                'payment_method' => 'cash',
+            ])
             ->assertForbidden();
     }
 

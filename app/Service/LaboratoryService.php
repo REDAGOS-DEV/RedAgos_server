@@ -6,6 +6,7 @@ use App\Enums\ClearanceKind;
 use App\Enums\DonationStatus;
 use App\Enums\MarkerResult;
 use App\Enums\SerologyMarker;
+use App\Enums\StaffRole;
 use App\Enums\TestResult;
 use App\Models\CounsellingReferral;
 use App\Models\Donation;
@@ -13,14 +14,18 @@ use App\Models\DonationComponent;
 use App\Models\DonationSerology;
 use App\Models\Facility;
 use App\Models\User;
-use App\Notifications\DonorContactRequested;
+use App\Notifications\SerologyVerificationRequested;
 use App\Repository\ClearanceRepository;
 use App\Repository\LaboratoryRepository;
 use App\Support\BagNumbers;
+use App\Support\DepartmentPermissions;
 use App\Support\DonorBlinding;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Notification;
+use Throwable;
 
 /**
  * Testing and Processing: what was found, what it yielded, and whether it may be issued.
@@ -54,7 +59,6 @@ class LaboratoryService
     public function __construct(
         private readonly LaboratoryRepository $laboratoryRepository,
         private readonly AuditLogger $auditLogger,
-        private readonly DonorNotifier $donorNotifier,
         private readonly ClearanceRepository $clearanceRepository
     ) {}
 
@@ -171,15 +175,22 @@ class LaboratoryService
     /**
      * Record the five-marker serology panel a medical technologist reported.
      *
-     * A reactive marker is final and sets off everything the donor agreed to in
-     * Section I-C, in the same transaction: the donation is rejected, the donor
-     * is permanently deferred and referred for counselling. After the commit
-     * the donor is asked — without being told why — to contact the centre.
+     * A verified reactive marker is final and sets off everything the donor
+     * agreed to in Section I-C, in the same transaction: the donation is
+     * rejected, the donor is permanently deferred and referred for
+     * counselling. The donor is asked to get in touch by hand, from the
+     * referral list (CounsellingReferralService::requestContact()).
+     *
+     * A reactive panel is verified as it is saved only by the Laboratory
+     * Supervisor (lab.verify_serology), or by a correction's approval, whose
+     * approver is passed as $verifier. Saved by anyone else it waits, having
+     * set nothing off, for verifySerology() or returnSerology() (project
+     * owner, 2026-10-18): one mis-click must not defer a donor at every centre.
      *
      * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
      */
-    public function recordSerology(User $staff, int $donationId, array $payload, bool $correcting = false): array
+    public function recordSerology(User $staff, int $donationId, array $payload, bool $correcting = false, ?User $verifier = null): array
     {
         $facility = $this->requireFacility($staff);
 
@@ -190,8 +201,10 @@ class LaboratoryService
         }
 
         $reactive = in_array(MarkerResult::Reactive, $readings, true);
+        $verifiedBy = $reactive ? ($verifier ?? ($staff->can('lab.verify_serology') ? $staff : null)) : null;
+        $awaiting = $reactive && $verifiedBy === null;
 
-        [$donation, $amended, $settled, $referral] = DB::transaction(function () use ($staff, $facility, $donationId, $readings, $reactive, $correcting): array {
+        [$donation, $amended, $settled, $referral] = DB::transaction(function () use ($staff, $facility, $donationId, $readings, $reactive, $correcting, $verifiedBy, $awaiting): array {
             $locked = $this->lockOrFail($donationId, $facility);
 
             $this->guardResultsWritable($locked, ClearanceKind::Tti);
@@ -211,7 +224,15 @@ class LaboratoryService
                 ...$readings,
                 'recorded_by' => $staff->id,
                 'recorded_at' => now(),
+                'verified_by' => $verifiedBy?->id,
+                'verified_at' => $verifiedBy === null ? null : now(),
             ]);
+
+            // Saved and nothing more: no clearance, no rejection, no referral.
+            // The missing TTI clearance keeps the unit's bags in quarantine.
+            if ($awaiting) {
+                return [$locked, $amended, ['result' => null, 'adopted' => false], null];
+            }
 
             if ($reactive) {
                 return [$locked, $amended, ['result' => TestResult::Reactive->value, 'adopted' => false], $this->rejectForReactive($locked, $staff, $facility)];
@@ -230,37 +251,100 @@ class LaboratoryService
         $this->auditLogger->record($staff, 'laboratory.serology_recorded', $donation, [
             'facility_id' => $facility->id,
             'outcome' => $reactive ? MarkerResult::Reactive->value : MarkerResult::NonReactive->value,
+            'awaiting_verification' => $awaiting,
             'amended' => $amended,
             'result' => $settled['result'],
         ]);
 
         if ($referral !== null) {
-            $this->auditLogger->record($staff, 'laboratory.donation_rejected', $donation, [
-                'facility_id' => $facility->id,
-                'automatic' => true,
-                'cause' => 'reactive_serology',
-            ]);
+            $this->recordReactiveTookEffect($staff, $donation, $facility, $referral);
+        }
 
-            $this->auditLogger->record($staff, 'referral.opened', $referral, [
-                'facility_id' => $facility->id,
-                'donation_id' => $donation->id,
-            ]);
-
-            $this->donorNotifier->send(
-                $donation,
-                fn (User $donor): DonorContactRequested => new DonorContactRequested($donation),
-                'contact request'
-            );
+        if ($awaiting) {
+            $this->askForVerification($donation, $facility, $staff);
         }
 
         $this->recordAdoption($staff, $donation, $facility, $settled);
 
         return [
             'message' => match (true) {
-                $referral !== null => 'Serology recorded. The donation has been rejected, the donor permanently deferred and referred for counselling.',
+                $awaiting => 'Serology saved as reactive. It takes effect only when the Laboratory Supervisor verifies it against the bench record. Until then the donation is not rejected, the donor is not deferred and the unit stays in quarantine.',
+                $referral !== null => 'Serology recorded. The donation has been rejected, the donor permanently deferred and referred for counselling. Send the donor a contact request from Counselling referrals.',
                 $settled['result'] === TestResult::Passed->value => 'Serology recorded. Both sections are cleared; its units may leave quarantine.',
                 default => 'Serology recorded and cleared.',
             },
+            'data' => $this->format($this->findOrFail($donationId, $facility), $staff),
+        ];
+    }
+
+    /**
+     * Verify a reactive panel a technologist saved, so that it takes effect.
+     *
+     * The Laboratory Supervisor has checked the reading against the bench
+     * record. Everything recordSerology() held back now happens, in one
+     * transaction: the donation is rejected, the donor permanently deferred
+     * and referred for counselling.
+     *
+     * @return array<string, mixed>
+     */
+    public function verifySerology(User $staff, int $donationId): array
+    {
+        $facility = $this->requireFacility($staff);
+
+        [$donation, $referral] = DB::transaction(function () use ($staff, $facility, $donationId): array {
+            $locked = $this->lockOrFail($donationId, $facility);
+            $serology = $this->awaitingVerificationOrFail($locked);
+
+            $serology->verified_by = $staff->id;
+            $serology->verified_at = now();
+            $serology->save();
+
+            return [$locked, $this->rejectForReactive($locked, $staff, $facility)];
+        });
+
+        $this->auditLogger->record($staff, 'laboratory.serology_verified', $donation, [
+            'facility_id' => $facility->id,
+        ]);
+
+        $this->recordReactiveTookEffect($staff, $donation, $facility, $referral);
+
+        return [
+            'message' => 'Verified. The donation has been rejected, the donor permanently deferred and referred for counselling. Send the donor a contact request from Counselling referrals.',
+            'data' => $this->format($this->findOrFail($donationId, $facility), $staff),
+        ];
+    }
+
+    /**
+     * Return a reactive panel awaiting verification for re-entry.
+     *
+     * The reading did not match the bench record. Nothing had happened on it,
+     * so it is deleted: the unit goes back to the testing queue with no panel,
+     * and whoever re-enters it starts afresh. The audit trail keeps that it
+     * happened and who saved it, never which marker it named.
+     *
+     * @return array<string, mixed>
+     */
+    public function returnSerology(User $staff, int $donationId): array
+    {
+        $facility = $this->requireFacility($staff);
+
+        [$donation, $recordedBy] = DB::transaction(function () use ($facility, $donationId): array {
+            $locked = $this->lockOrFail($donationId, $facility);
+            $serology = $this->awaitingVerificationOrFail($locked);
+            $recordedBy = $serology->recorded_by;
+
+            $serology->delete();
+
+            return [$locked, $recordedBy];
+        });
+
+        $this->auditLogger->record($staff, 'laboratory.serology_returned', $donation, [
+            'facility_id' => $facility->id,
+            'recorded_by' => $recordedBy,
+        ]);
+
+        return [
+            'message' => 'Returned for re-entry. The panel is cleared and the unit is back in the testing queue.',
             'data' => $this->format($this->findOrFail($donationId, $facility), $staff),
         ];
     }
@@ -456,11 +540,89 @@ class LaboratoryService
             ]);
         }
 
-        $locked->status = DonationStatus::Rejected;
-        $locked->rejection_reason = self::REACTIVE_REJECTION_REASON;
-        $locked->save();
+        // A donation Processing rejected while the result waited for
+        // verification keeps its own reason; the donor is deferred either way.
+        if ($locked->status !== DonationStatus::Rejected) {
+            $locked->status = DonationStatus::Rejected;
+            $locked->rejection_reason = self::REACTIVE_REJECTION_REASON;
+            $locked->save();
+        }
 
         return $this->laboratoryRepository->openReferral($locked, $facility->id);
+    }
+
+    /**
+     * The panel on this donation that is waiting for verification, or 409.
+     */
+    private function awaitingVerificationOrFail(Donation $locked): DonationSerology
+    {
+        $serology = $this->laboratoryRepository->serologyFor($locked->id);
+
+        if ($serology === null || ! $serology->isAwaitingVerification()) {
+            throw $this->refuse(
+                409,
+                'nothing_to_verify',
+                'This donation has no reactive serology result waiting for verification.'
+            );
+        }
+
+        return $serology;
+    }
+
+    /**
+     * Audit what a reactive result set off once it took effect.
+     */
+    private function recordReactiveTookEffect(User $staff, Donation $donation, Facility $facility, CounsellingReferral $referral): void
+    {
+        $this->auditLogger->record($staff, 'laboratory.donation_rejected', $donation, [
+            'facility_id' => $facility->id,
+            'automatic' => true,
+            'cause' => 'reactive_serology',
+        ]);
+
+        $this->auditLogger->record($staff, 'referral.opened', $referral, [
+            'facility_id' => $facility->id,
+            'donation_id' => $donation->id,
+        ]);
+    }
+
+    /**
+     * Tell whoever may verify that a reactive result is waiting.
+     *
+     * After the commit, and never fatal: the result is saved and listed under
+     * Awaiting verification whether or not the notice gets through.
+     */
+    private function askForVerification(Donation $donation, Facility $facility, User $recorder): void
+    {
+        $roles = array_map(
+            fn (StaffRole $role): string => $role->value,
+            DepartmentPermissions::rolesHolding('lab.verify_serology')
+        );
+
+        try {
+            $recipients = User::query()
+                ->where('facility_id', $facility->id)
+                ->whereKeyNot($recorder->id)
+                ->where(function ($query) use ($roles): void {
+                    $query->whereIn('staff_role', $roles);
+
+                    foreach ($roles as $role) {
+                        $query->orWhereJsonContains('additional_staff_roles', $role);
+                    }
+                })
+                ->get();
+
+            Notification::send($recipients, new SerologyVerificationRequested(
+                $donation,
+                $donation->collection()->value('donation_barcode'),
+                $this->staffName($recorder) ?? 'a technologist'
+            ));
+        } catch (Throwable $exception) {
+            Log::warning('Could not notify the verifiers of a reactive serology result.', [
+                'donation_id' => $donation->id,
+                'exception' => $exception->getMessage(),
+            ]);
+        }
     }
 
     /**
@@ -657,7 +819,7 @@ class LaboratoryService
             : $donation->immunohematology()->with(['bloodType', 'recorder'])->first();
         $serology = $donation->relationLoaded('serology')
             ? $donation->serology
-            : $donation->serology()->with('recorder')->first();
+            : $donation->serology()->with(['recorder', 'verifier'])->first();
         $collection = $donation->relationLoaded('collection') ? $donation->collection : $donation->collection()->first();
         $screening = $donation->relationLoaded('screening')
             ? $donation->screening
@@ -764,18 +926,36 @@ class LaboratoryService
      * know which infection a donor carries. The readings go to whoever may
      * record them — Testing — and to nobody else.
      *
+     * Public for TTI Testing's results list (SerologyResultService), whose
+     * rows must say exactly what this section says.
+     *
      * @return array<string, mixed>
      */
-    private function formatSerology(DonationSerology $serology, User $staff): array
+    public function formatSerology(DonationSerology $serology, User $staff): array
     {
         $reactive = $serology->isReactive();
+        $awaiting = $serology->isAwaitingVerification();
+        $testing = $staff->can('lab.record_serology');
 
         return [
-            'outcome' => $reactive ? MarkerResult::Reactive->value : MarkerResult::NonReactive->value,
-            'outcome_label' => $reactive ? MarkerResult::Reactive->label() : MarkerResult::NonReactive->label(),
+            // An unverified reactive reading has set nothing off. Outside
+            // Testing it is not yet a reactive result, only a wait.
+            'outcome' => match (true) {
+                $awaiting && ! $testing => 'awaiting_verification',
+                $reactive => MarkerResult::Reactive->value,
+                default => MarkerResult::NonReactive->value,
+            },
+            'outcome_label' => match (true) {
+                $awaiting && ! $testing => 'Awaiting verification',
+                $reactive => MarkerResult::Reactive->label(),
+                default => MarkerResult::NonReactive->label(),
+            },
+            'awaiting_verification' => $awaiting,
             'recorded_by' => $this->staffName($serology->recorder),
             'recorded_at' => $serology->recorded_at?->toISOString(),
-            'markers' => $staff->can('lab.record_serology')
+            'verified_by' => $this->staffName($serology->verifier),
+            'verified_at' => $serology->verified_at?->toISOString(),
+            'markers' => $testing
                 ? array_map(fn (SerologyMarker $marker): array => [
                     'marker' => $marker->value,
                     'label' => $marker->label(),
@@ -787,9 +967,12 @@ class LaboratoryService
     }
 
     /**
+     * Public for Processing's Processed list (ProcessedDonationService), whose
+     * rows must say exactly what the bench says.
+     *
      * @return array<string, bool>
      */
-    private function formatClearances(Donation $donation): array
+    public function formatClearances(Donation $donation): array
     {
         $issued = ($donation->relationLoaded('clearances') ? $donation->clearances : $donation->clearances()->get())
             ->map(fn ($clearance): string => $clearance->kind->value)

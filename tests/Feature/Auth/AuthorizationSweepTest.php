@@ -111,8 +111,16 @@ class AuthorizationSweepTest extends TestCase
             'centre notifications' => ['get', '/api/blood-center/notifications'],
             'testing immunohematology' => ['post', '/api/blood-center/laboratory/donations/1/immunohematology'],
             'testing serology' => ['post', '/api/blood-center/laboratory/donations/1/serology'],
+            'testing serology results' => ['get', '/api/blood-center/laboratory/serology-results'],
+            'testing serology results export' => ['get', '/api/blood-center/laboratory/serology-results/export'],
             'testing referral list' => ['get', '/api/blood-center/laboratory/referrals'],
             'testing referral update' => ['patch', '/api/blood-center/laboratory/referrals/1'],
+            'testing referral contact request' => ['post', '/api/blood-center/laboratory/referrals/1/contact-request'],
+            'testing referral summary' => ['get', '/api/blood-center/laboratory/referrals/summary'],
+            'testing verify serology' => ['post', '/api/blood-center/laboratory/donations/1/serology/verify'],
+            'testing return serology' => ['post', '/api/blood-center/laboratory/donations/1/serology/return'],
+            'processed list' => ['get', '/api/blood-center/laboratory/processed'],
+            'processed list export' => ['get', '/api/blood-center/laboratory/processed/export'],
             'daily stock report' => ['get', '/api/blood-center/inventory/stock-report'],
             'daily stock report pdf' => ['get', '/api/blood-center/inventory/stock-report/pdf'],
             'component shelf lives' => ['get', '/api/blood-center/blood-components'],
@@ -146,6 +154,9 @@ class AuthorizationSweepTest extends TestCase
             'print questionnaire' => ['get', '/api/blood-center/donors/00000000-0000-4000-8000-000000000000/health-questionnaire/print'],
             'onsite questionnaire form' => ['get', '/api/blood-center/donors/00000000-0000-4000-8000-000000000000/health-questionnaire/form'],
             'record onsite questionnaire' => ['post', '/api/blood-center/donors/00000000-0000-4000-8000-000000000000/health-questionnaire'],
+            'deferral list' => ['get', '/api/blood-center/deferrals'],
+            'record deferral' => ['post', '/api/blood-center/deferrals'],
+            'lift deferral' => ['post', '/api/blood-center/deferrals/1/lift'],
         ];
     }
 
@@ -256,7 +267,15 @@ class AuthorizationSweepTest extends TestCase
             'remove paper donation' => ['delete', '/api/blood-center/paper-sheets/1/donations/1', 'donations.record_paper'],
             'record immunohematology' => ['post', '/api/blood-center/laboratory/donations/1/immunohematology', 'lab.record_immunohematology'],
             'record serology' => ['post', '/api/blood-center/laboratory/donations/1/serology', 'lab.record_serology'],
+            'serology results' => ['get', '/api/blood-center/laboratory/serology-results', 'lab.record_serology'],
+            'serology results export' => ['get', '/api/blood-center/laboratory/serology-results/export', 'lab.record_serology'],
             'referral list' => ['get', '/api/blood-center/laboratory/referrals', 'lab.referrals'],
+            'referral contact request' => ['post', '/api/blood-center/laboratory/referrals/1/contact-request', 'lab.referrals'],
+            'referral summary' => ['get', '/api/blood-center/laboratory/referrals/summary', 'lab.referrals'],
+            'verify serology' => ['post', '/api/blood-center/laboratory/donations/1/serology/verify', 'lab.verify_serology'],
+            'return serology' => ['post', '/api/blood-center/laboratory/donations/1/serology/return', 'lab.verify_serology'],
+            'processed list' => ['get', '/api/blood-center/laboratory/processed', 'lab.record_components'],
+            'processed list export' => ['get', '/api/blood-center/laboratory/processed/export', 'lab.record_components'],
             'staff roles catalogue' => ['get', '/api/blood-center/staff/roles', 'staff.manage'],
             'release from quarantine' => ['post', '/api/blood-center/inventory/quarantine/1/release', 'inventory.release_quarantine'],
             'correction list' => ['get', '/api/blood-center/corrections', 'corrections.request'],
@@ -274,6 +293,9 @@ class AuthorizationSweepTest extends TestCase
             'print questionnaire' => ['get', '/api/blood-center/donors/00000000-0000-4000-8000-000000000000/health-questionnaire/print', 'donors.print_questionnaire'],
             'onsite questionnaire form' => ['get', '/api/blood-center/donors/00000000-0000-4000-8000-000000000000/health-questionnaire/form', 'donors.record_questionnaire'],
             'record onsite questionnaire' => ['post', '/api/blood-center/donors/00000000-0000-4000-8000-000000000000/health-questionnaire', 'donors.record_questionnaire'],
+            'deferral list' => ['get', '/api/blood-center/deferrals', 'donors.view_clinical'],
+            'record deferral' => ['post', '/api/blood-center/deferrals', 'donors.defer'],
+            'lift deferral' => ['post', '/api/blood-center/deferrals/1/lift', 'donors.defer'],
         ];
     }
 

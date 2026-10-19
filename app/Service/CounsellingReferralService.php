@@ -4,12 +4,18 @@ namespace App\Service;
 
 use App\Enums\ReferralStatus;
 use App\Enums\SerologyMarker;
+use App\Mail\DonorCenterEmail;
 use App\Models\CounsellingReferral;
+use App\Models\Donation;
 use App\Models\Facility;
 use App\Models\User;
+use App\Notifications\DonorContactRequested;
 use App\Repository\CounsellingReferralRepository;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
+use Throwable;
 
 /**
  * The Testing department's follow-up of donors whose serology came back reactive.
@@ -22,6 +28,11 @@ use Illuminate\Support\Facades\DB;
  * This is the only surface that names which marker a donor was reactive for,
  * which is why it has its own ability (`lab.referrals`) and why every read of
  * the list is audited.
+ *
+ * The donor is asked to contact the centre from here, by hand
+ * (requestContact()), like a Donor Management email: once the Laboratory
+ * Supervisor has verified the result, not by itself the moment a reading is
+ * saved (project owner, 2026-10-18).
  */
 class CounsellingReferralService
 {
@@ -29,6 +40,79 @@ class CounsellingReferralService
         private readonly CounsellingReferralRepository $counsellingReferralRepository,
         private readonly AuditLogger $auditLogger
     ) {}
+
+    /**
+     * Ask the donor to contact the centre: by email when they have an
+     * address, and always in the app.
+     *
+     * The wording is fixed, not a Settings template. Section I-C promises the
+     * donor that no result is issued to them, so it names no test, result,
+     * infection or deferral, only that the centre would like to talk about
+     * their donation; a template anyone could edit could say more. It goes
+     * out as the centre (DonorCenterEmail), and replies reach the centre.
+     *
+     * The email is queued first: if that fails, nothing has been sent or
+     * stamped and the staff member may simply try again.
+     *
+     * @return array<string, mixed>
+     */
+    public function requestContact(User $staff, int $referralId): array
+    {
+        $facility = $this->requireFacility($staff);
+
+        $referral = $this->counsellingReferralRepository->findReferral($referralId, $facility->id)
+            ?? throw $this->refuse(404, 'referral_not_found', 'That referral was not found at your facility.');
+
+        if (! $referral->status->isOpen()) {
+            throw $this->refuse(409, 'referral_closed', 'This referral is closed and can no longer be changed.');
+        }
+
+        $donor = $referral->donorProfile?->donor
+            ?? throw $this->refuse(422, 'donor_missing', 'This referral has no donor account to contact.');
+
+        $donation = $referral->donation;
+        $byEmail = $donor->hasEmailAddress();
+
+        if ($byEmail) {
+            try {
+                Mail::to($donor->email, trim($donor->first_name.' '.$donor->last_name))
+                    ->queue($this->contactEmail($facility, $donor, $donation));
+            } catch (Throwable $exception) {
+                Log::warning('Could not queue a contact request email.', [
+                    'referral_id' => $referral->id,
+                    'exception' => $exception->getMessage(),
+                ]);
+
+                throw $this->refuse(503, 'email_not_sent', 'The email could not be sent. Please try again in a moment.');
+            }
+        }
+
+        try {
+            $donor->notify(new DonorContactRequested($donation));
+        } catch (Throwable $exception) {
+            Log::warning('Could not send the in-app contact request.', [
+                'referral_id' => $referral->id,
+                'exception' => $exception->getMessage(),
+            ]);
+        }
+
+        $referral->forceFill([
+            'contact_requested_at' => now(),
+            'contact_requested_by' => $staff->id,
+        ])->save();
+
+        $this->auditLogger->record($staff, 'referral.contact_requested', $referral, [
+            'facility_id' => $facility->id,
+            'by_email' => $byEmail,
+        ]);
+
+        return [
+            'message' => $byEmail
+                ? "Contact request sent to {$donor->first_name} by email and in the app."
+                : "{$donor->first_name} has no email address, so the contact request was sent in the app only.",
+            'data' => $this->format($this->counsellingReferralRepository->findReferral($referralId, $facility->id)),
+        ];
+    }
 
     /**
      * Page this facility's referrals.
@@ -54,6 +138,21 @@ class CounsellingReferralService
             ...$page->toArray(),
             'pending_count' => $this->counsellingReferralRepository->pendingCount($facility->id),
         ];
+    }
+
+    /**
+     * How many referrals nobody has acted on yet, for the sidebar's badge.
+     *
+     * Not audited, unlike list(): a count names no donor and no marker, and
+     * the sidebar asks on every page.
+     *
+     * @return array{pending_count: int}
+     */
+    public function summary(User $staff): array
+    {
+        $facility = $this->requireFacility($staff);
+
+        return ['pending_count' => $this->counsellingReferralRepository->pendingCount($facility->id)];
     }
 
     /**
@@ -135,6 +234,12 @@ class CounsellingReferralService
             'contacted_at' => $referral->contacted_at?->toISOString(),
             'referred_at' => $referral->referred_at?->toISOString(),
             'closed_at' => $referral->closed_at?->toISOString(),
+            // When the donor was last asked to get in touch, and by whom: no
+            // one for a request sent by itself before they were sent by hand.
+            'contact_requested_at' => $referral->contact_requested_at?->toISOString(),
+            'contact_requested_by' => $referral->contactRequester
+                ? trim($referral->contactRequester->first_name.' '.$referral->contactRequester->last_name)
+                : null,
             'note' => $referral->note,
             'updated_by' => $referral->updater
                 ? trim($referral->updater->first_name.' '.$referral->updater->last_name)
@@ -162,7 +267,33 @@ class CounsellingReferralService
                 ? trim($serology->recorder->first_name.' '.$serology->recorder->last_name)
                 : null,
             'screened_at' => $serology?->recorded_at?->toISOString(),
+            'verified_by' => $serology?->verifier
+                ? trim($serology->verifier->first_name.' '.$serology->verifier->last_name)
+                : null,
+            'verified_at' => $serology?->verified_at?->toISOString(),
         ];
+    }
+
+    /**
+     * The contact request email, in the centre's name.
+     */
+    private function contactEmail(Facility $facility, User $donor, ?Donation $donation): DonorCenterEmail
+    {
+        $when = $donation?->donation_date ? ' on '.$donation->donation_date->format('j F Y') : '';
+        $call = filled($facility->phone) ? 'Please call us on '.$facility->phone.' or reply to this email' : 'Please reply to this email or call us';
+
+        return new DonorCenterEmail(
+            centerName: $facility->name,
+            centerEmail: $facility->email,
+            centerPhone: $facility->phone,
+            centerAddress: $facility->address,
+            subjectLine: 'Please contact '.$facility->name,
+            paragraphs: [
+                'Dear '.$donor->first_name.',',
+                'Thank you for donating blood at '.$facility->name.$when.'.',
+                'Our staff would like to speak with you about your donation. '.$call.' at your earliest convenience.',
+            ],
+        );
     }
 
     /**

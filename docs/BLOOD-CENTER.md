@@ -59,7 +59,7 @@ What each role may do is fixed in code (`app/Support/DepartmentPermissions.php`)
 | Role | May | May not |
 |---|---|---|
 | Medical Receptionist | Register donors, verify ID, check in arrivals, open the visit's donation, schedule drives | Read the health questionnaire, vitals, deferral reasons or lab results |
-| Donor Screening Physician | Read the questionnaire and full donor history (with final lab results, read-only); record the screening; accept or defer | Record lab results |
+| Donor Screening Physician | Read the questionnaire and full donor history (with final lab results, read-only); record the screening; accept or defer; record a deferral outside a visit and lift it (Deferrals page) | Record lab results |
 | Phlebotomist / Registered Nurse | Record the collection box (bag, donation barcode sticker, times, volume) | Alter the questionnaire or screening; clear a deferred donor |
 | Apheresis Specialist | Everything a phlebotomist records | Same as phlebotomist |
 
@@ -73,11 +73,15 @@ The Donor Screening Physician is this department's **correction approver**.
 
 | Role | May | May not |
 |---|---|---|
-| Component Laboratory Medical Technologist | Record the component breakdown; print base labels; complete or reject the donation | See who the donor is |
+| Component Laboratory Medical Technologist | Record the component breakdown; print base labels; complete or reject the donation | See who the donor is; read inventory or stock thresholds |
 | Processing Laboratory Assistant | Record the component breakdown; print base labels | Complete or reject; see who the donor is |
 
 - Each bag is numbered from the donation's **barcode sticker** plus its component, e.g. `1234567-PRBC`, `1234567-FFP`, `1234567-PRBC-2`.
 - The base label shows the bag number, component, volume and "QUARANTINE — NOT FOR ISSUE". It shows **no blood type and no clearance**.
+
+- **Component Processing** (`/blood-center/laboratory`) holds what still has no breakdown. A unit that cannot be separated is rejected there.
+- The **Processed** list (`GET /blood-center/laboratory/processed`, plus `/export` as CSV, both `lab.record_components`) shows every unit with a recorded breakdown: its bags, both clearances, who processed it, and whether it is awaiting hand-over, handed over (with how many bags Issuance has booked in) or rejected. The **hand-over to Issuance**, and any rejection of a processed unit, is made from its Actions. Only the Component Laboratory Medical Technologist is offered either.
+- A saved breakdown is shown read-only on Component Processing and **corrected on the Processed list**, until the unit is handed over or rejected. The pen edits the bags and files the correction with its reason. The Component Technologist approves or rejects it in the same dialog, and their own correction applies as it is sent.
 
 Processing does **not** wait for test results: completing a donation hands its bags to Issuance, which books them into **quarantine**. The Component Technologist is this department's correction approver.
 
@@ -90,12 +94,15 @@ Processing does **not** wait for test results: completing a donation hands its b
 | Role | May | May not |
 |---|---|---|
 | Serology / Molecular Medical Technologist | Record the typing (forward and reverse ABO grouping, Rh, antibody screen) and the serology panel | See who the donor is; undo a reactive result |
-| Laboratory Supervisor | The same; approve Testing corrections; work the counselling referral list | Delete or change a reactive result |
+| Laboratory Supervisor | The same; verify or return a technologist's reactive result; approve Testing corrections; work the counselling referral list and send contact requests | Delete or change a verified reactive result |
 
 - A typing is **cleared** when forward and reverse grouping agree and the antibody screen is negative; otherwise it is saved but *held*.
 - Saving a non-reactive panel issues the unit's **TTI clearance** at once.
-- A **reactive** marker acts the moment it is saved: the donation is rejected, the donor permanently deferred and referred for counselling, and any bags already booked in stay locked in quarantine.
+- A **reactive** panel saved by a technologist **waits for the Laboratory Supervisor**, who checks it against the bench record and verifies it or returns it for re-entry. Until then nothing happens: the donation is not rejected, the donor is not deferred, and the missing TTI clearance keeps the bags in quarantine. The supervisor is told in the app (no donor, no marker).
+- Once **verified** (or saved by the supervisor, or applied by an approved correction), the reactive result acts: the donation is rejected, the donor permanently deferred and referred for counselling, and any bags already booked in stay locked in quarantine.
+- The donor is asked to get in touch **by hand**, from the mail icon on the referral: an email in the centre's name if they have an address, and an in-app notice. The wording is fixed and names no test, result or infection.
 - Which marker was reactive is visible only to this department; the referral list, which names the donor, only to the Laboratory Supervisor.
+- The **Serology results** list (`GET /blood-center/laboratory/serology-results`, plus `/export` as CSV, both `lab.record_serology`) shows every panel recorded at the centre, marker by marker. Its Edit files a correction; a row that can no longer be corrected (reactive, donation rejected, a bag out of quarantine, a correction already pending) opens read-only. The donor is blinded as on every laboratory screen, and a blind technologist cannot search by name.
 
 The Laboratory Supervisor is this department's correction approver.
 
@@ -181,7 +188,7 @@ ISSUANCE     both clearances ─► Inventory Control Officer releases & final-l
 
 These are enforced in the services and models, not by permissions, so the Center Admin is bound by them too:
 
-1. A reactive serology result can never be changed, deleted or corrected.
+1. A verified reactive serology result can never be changed, deleted or corrected.
 2. A unit leaves quarantine only when both clearance tokens exist and its donation was not rejected.
 3. Clearance tokens are never edited or deleted. One is only ever revoked — once, and kept as history — when an approved correction replaces the result it stood on.
 4. An edit to a unit never moves it out of quarantine.

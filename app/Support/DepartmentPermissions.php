@@ -84,6 +84,10 @@ final class DepartmentPermissions
         'billing.create',
         'billing.record_payment',
 
+        // Meet a statement from the government subsidy. Issuance holds it
+        // too (below), for a centre with nobody at the billing desk.
+        'billing.subsidise',
+
         // Read-only: billing is raised against a fulfilled request, so it
         // must read the request it is billing for.
         'requests.view',
@@ -134,6 +138,11 @@ final class DepartmentPermissions
             // counter may clear a donor.
             'donations.screen',
             'donations.close',
+
+            // Defer a donor outside a visit, and lift that deferral, on the
+            // Deferrals page (project owner, 2026-10-18). The same authority
+            // as deferring at screening.
+            'donors.defer',
 
             // A drive's paper records; see CHAIRSIDE.
             'donations.record_paper',
@@ -209,9 +218,11 @@ final class DepartmentPermissions
             'corrections.request',
             'corrections.approve',
 
-            // Read-only: processing hands units downstream, but inventory
-            // records belong to Issuance.
-            'inventory.view',
+            // No inventory.view (project owner, 2026-10-19): Processing hands
+            // units over and never works on stock, so Blood Inventory and
+            // Stock Thresholds are not its pages, and it gets no low-stock
+            // alerts. The Processed list says how many bags Issuance has
+            // booked in.
         ],
 
         // Declares the bags and their volumes but cannot complete: the final
@@ -247,11 +258,19 @@ final class DepartmentPermissions
             'lab.referrals',
             'donors.view_identity',
 
+            // The second person on a reactive result (project owner,
+            // 2026-10-18): a technologist's reactive panel sets nothing off
+            // until the supervisor checks it against the bench record and
+            // verifies it, or returns it for re-entry.
+            'lab.verify_serology',
+
             // Testing's correction approver.
             'corrections.request',
             'corrections.approve',
 
-            'inventory.view',
+            // No inventory.view (project owner, 2026-10-18): Testing works on
+            // drawn donations, never on stock, so Blood Inventory and Stock
+            // Thresholds are not its pages, and it gets no low-stock alerts.
         ],
 
         // Issuance.
@@ -289,6 +308,13 @@ final class DepartmentPermissions
             // so release needs to read billing status without altering it.
             'billing.view',
 
+            // Meet the statement from the government subsidy at the point of
+            // issue (project owner, 2026-10-19): a subsidised centre may have
+            // no billing staff, and the units still need clearing to go. It
+            // takes no money, and the request still goes on the hospital's
+            // Statement of Account.
+            'billing.subsidise',
+
             // Issuance's correction approver. Edits a unit directly (above),
             // and their own dispatch corrections apply when filed.
             'corrections.request',
@@ -308,6 +334,10 @@ final class DepartmentPermissions
             'requests.record',
 
             'billing.view',
+
+            // Releases too, so may clear a statement by the subsidy, as the
+            // Inventory Control Officer may (project owner, 2026-10-19).
+            'billing.subsidise',
 
             // Correct a dispatch record, on the Inventory Control Officer's
             // approval.
@@ -369,6 +399,7 @@ final class DepartmentPermissions
 
         'donors.manage' => 'write',
         'donors.record_questionnaire' => 'write',
+        'donors.defer' => 'write',
         'drives.manage' => 'write',
         'appointments.manage' => 'write',
         'donations.register' => 'write',
@@ -392,6 +423,7 @@ final class DepartmentPermissions
         'appointments.verify' => 'update',
         'lab.update_status' => 'update',
         'lab.referrals' => 'update',
+        'lab.verify_serology' => 'update',
         'inventory.update' => 'update',
         'inventory.thresholds' => 'update',
         'inventory.release_quarantine' => 'update',
@@ -402,6 +434,10 @@ final class DepartmentPermissions
         'billing.prices' => 'update',
         'requests.approve' => 'update',
         'requests.release' => 'update',
+
+        // Decides that the government meets a statement: a settlement, not a
+        // new record.
+        'billing.subsidise' => 'update',
         'corrections.approve' => 'update',
 
         'donations.close' => 'delete',
@@ -598,8 +634,8 @@ final class DepartmentPermissions
      * Abilities that belong to a named post rather than to a department.
      *
      * Approving is the named approver role's responsibility
-     * (Department::correctionApprover()), and auditing a unit is the IT
-     * clerk's. The stock minimums, the component catalogue with its shelf
+     * (Department::correctionApprover()), as is verifying a reactive serology
+     * result, and auditing a unit is the IT clerk's. The stock minimums, the component catalogue with its shelf
      * lives, and the prices are each kept by their department's head. A typed
      * role never inherits any of them.
      *
@@ -607,6 +643,7 @@ final class DepartmentPermissions
      */
     private const NAMED_POST_ONLY = [
         'corrections.approve',
+        'lab.verify_serology',
         'inventory.audit',
         'inventory.thresholds',
         'components.configure',

@@ -5,17 +5,20 @@ namespace App\Repository;
 use App\Enums\ScreeningOutcome;
 use App\Models\CounsellingReferral;
 use App\Models\DonationScreening;
+use App\Models\DonorDeferral;
 use App\Support\StandingDeferral;
 use Illuminate\Database\Eloquent\Builder;
 
 /**
  * The one place that answers "does this donor have a deferral with no end?".
  *
- * Two records can say so. The counter's screening officer can permanently or
- * indefinitely defer a donor, and a reactive serology result permanently
- * defers them — recorded as the counselling referral the laboratory opens.
- * There is no separate deferrals table: each source is already the record of
- * the decision, and a copy would be one more thing that could disagree.
+ * Three records can say so. The counter's screening officer can permanently
+ * or indefinitely defer a donor; a reactive serology result permanently
+ * defers them — recorded as the counselling referral the laboratory opens;
+ * and staff can record a deferral by hand on the Deferrals page
+ * (`donor_deferrals`, which alone can be lifted). Each source is the record
+ * of its own decision and none is copied into another, so they cannot
+ * disagree.
  *
  * Deliberately not limited to one facility. A donor permanently deferred at
  * one centre is permanently deferred, and the counter that has never met them
@@ -34,6 +37,7 @@ class DonorDeferralRepository
         $candidates = array_filter([
             $this->fromScreening($donorId),
             $this->fromLaboratory($donorId),
+            $this->fromManual($donorId),
         ]);
 
         if ($candidates === []) {
@@ -96,14 +100,40 @@ class DonorDeferralRepository
     }
 
     /**
+     * The most severe, then most recent, blocking deferral staff recorded by
+     * hand and have not lifted.
+     */
+    private function fromManual(int $donorId): ?StandingDeferral
+    {
+        $deferrals = DonorDeferral::query()
+            ->where('donor_id', $donorId)
+            ->whereIn('outcome', [
+                ScreeningOutcome::PermanentlyDeferred->value,
+                ScreeningOutcome::IndefiniteDeferral->value,
+            ])
+            ->inForce()
+            ->latest('deferred_on')
+            ->latest('id')
+            ->get(['id', 'outcome', 'deferred_on']);
+
+        $deferral = $deferrals->firstWhere('outcome', ScreeningOutcome::PermanentlyDeferred)
+            ?? $deferrals->first();
+
+        return $deferral === null
+            ? null
+            : new StandingDeferral($deferral->outcome, $deferral->deferred_on);
+    }
+
+    /**
      * Each donor's deferral as the Donors list reads it, for many donors at once.
      *
      * A standing deferral, chosen exactly as standingDeferralFor() chooses it.
+     * Failing that, a temporary deferral recorded by hand, until its end date.
      * Failing that, a temporary deferral when it is the donor's most recent
-     * screening: nothing records when a temporary deferral ends, so it holds
-     * until the donor is screened again. That is the cautious reading — it
-     * keeps them out of an eligibility reminder they may not yet be fit for —
-     * and staff can still contact them one by one.
+     * screening: a screening records no end, so it holds until the donor is
+     * screened again. That is the cautious reading — it keeps them out of an
+     * eligibility reminder they may not yet be fit for — and staff can still
+     * contact them one by one.
      *
      * Outcome and date only, like the counter's notice. Donors with neither
      * are absent from the result.
@@ -133,19 +163,32 @@ class DonorDeferralRepository
             ->get(['donor_id', 'created_at'])
             ->groupBy('donor_id');
 
+        $manual = DonorDeferral::query()
+            ->whereIn('donor_id', $donorIds)
+            ->inForce()
+            ->orderByDesc('deferred_on')
+            ->orderByDesc('id')
+            ->get(['donor_id', 'outcome', 'deferred_on', 'ends_on'])
+            ->groupBy('donor_id');
+
         $result = [];
 
         foreach ($donorIds as $donorId) {
             $mine = $screenings->get($donorId, collect());
+            $myManual = $manual->get($donorId, collect());
 
             $blocking = $mine->firstWhere('outcome', ScreeningOutcome::PermanentlyDeferred)
                 ?? $mine->firstWhere('outcome', ScreeningOutcome::IndefiniteDeferral);
+
+            $manualBlocking = $myManual->firstWhere('outcome', ScreeningOutcome::PermanentlyDeferred)
+                ?? $myManual->firstWhere('outcome', ScreeningOutcome::IndefiniteDeferral);
 
             $candidates = array_filter([
                 $blocking === null ? null : new StandingDeferral($blocking->outcome, $blocking->screened_at),
                 ($referral = $referrals->get($donorId)?->first()) === null
                     ? null
                     : new StandingDeferral(ScreeningOutcome::PermanentlyDeferred, $referral->created_at),
+                $manualBlocking === null ? null : new StandingDeferral($manualBlocking->outcome, $manualBlocking->deferred_on),
             ]);
 
             if ($candidates !== []) {
@@ -153,6 +196,16 @@ class DonorDeferralRepository
                     ?: ($b->recordedAt?->getTimestamp() ?? 0) <=> ($a->recordedAt?->getTimestamp() ?? 0));
 
                 $result[$donorId] = $candidates[0];
+
+                continue;
+            }
+
+            // A temporary deferral recorded by hand holds until its end date,
+            // whatever the last screening said.
+            $manualTemporary = $myManual->firstWhere('outcome', ScreeningOutcome::TemporarilyDeferred);
+
+            if ($manualTemporary !== null) {
+                $result[$donorId] = new StandingDeferral($manualTemporary->outcome, $manualTemporary->deferred_on, $manualTemporary->ends_on);
 
                 continue;
             }

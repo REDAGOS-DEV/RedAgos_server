@@ -64,6 +64,26 @@ class BloodCenterLaboratoryController extends Controller
     }
 
     /**
+     * Verify a reactive panel awaiting verification, so that it takes effect.
+     */
+    public function verifySerology(Request $request, int $donation): JsonResponse
+    {
+        return response()->json(
+            $this->laboratoryService->verifySerology($request->user(), $donation)
+        );
+    }
+
+    /**
+     * Return a reactive panel awaiting verification for re-entry.
+     */
+    public function returnSerology(Request $request, int $donation): JsonResponse
+    {
+        return response()->json(
+            $this->laboratoryService->returnSerology($request->user(), $donation)
+        );
+    }
+
+    /**
      * Declare which components the donation was separated into.
      */
     public function declareComponents(DeclareComponentsRequest $request, int $donation): JsonResponse

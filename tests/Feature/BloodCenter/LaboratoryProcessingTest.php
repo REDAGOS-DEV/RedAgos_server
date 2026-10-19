@@ -88,6 +88,15 @@ class LaboratoryProcessingTest extends TestCase
     /**
      * @param  array<string, mixed>  $overrides
      */
+    /**
+     * The Laboratory Supervisor verifies the technologist's reactive panel.
+     */
+    private function verifySerology(): TestResponse
+    {
+        return $this->actingAs(User::factory()->bloodCenterStaff($this->facility, StaffRole::LabSupervisor)->create())
+            ->postJson("/api/blood-center/laboratory/donations/{$this->donation->id}/serology/verify");
+    }
+
     private function recordSerology(array $overrides = []): TestResponse
     {
         return $this->actingAs($this->testing)->postJson(
@@ -302,6 +311,7 @@ class LaboratoryProcessingTest extends TestCase
         $profile->update(['blood_type_id' => null]);
 
         $this->recordSerology(['hbsag' => 'reactive', 'confirm_reactive' => true])->assertCreated();
+        $this->verifySerology()->assertOk();
 
         $this->assertNull($profile->fresh()->blood_type_id);
 
@@ -337,6 +347,7 @@ class LaboratoryProcessingTest extends TestCase
         $this->declareComponents()->assertCreated();
         $this->recordImmunohematology()->assertCreated();
         $this->recordSerology(['hiv' => 'reactive', 'confirm_reactive' => true])->assertCreated();
+        $this->verifySerology()->assertOk();
 
         // The rule the whole department exists for. A reactive panel rejects
         // the donation outright, so there is nothing left to clear.

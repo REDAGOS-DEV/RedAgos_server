@@ -923,7 +923,7 @@ no shelf life configured shows a total, flagged "Shelf life not configured".
 Counts expiring today or tomorrow are boxed.
 
 **DECISION (who prepares it):** Issuance, by `inventory.create` (supervisors
-by `all()`), not the `inventory.view` every laboratory department holds. The
+by `all()`), not the `inventory.view` Processing also holds. The
 "BY:" line is the signed-in user's name and recorded position. Each PDF
 download is audited (`inventory.stock_report_downloaded`).
 
@@ -1724,3 +1724,342 @@ The open visit is found for a whole page of donors in one query (`openVisitsBefo
 - A booking the donor holds later, inside the new interval, is not cancelled.
 - A questionnaire retired by a record that is then taken back stays retired.
 - A bag too old to process must be rejected by Processing, unless it was entered as not reaching the laboratory.
+
+## Deferrals page
+
+**SOURCE:** The project owner, 2026-10-18, with a mock-up: a Deferrals page under Donor listing deferrals (ID, donor, type, reason, from, until, status) with Lift, and a New Deferral dialog (donor, type, reason, from, until).
+
+**DECIDED BY:** The owner chose the page and its columns. Claude followed the owner's own plan (the deferrals guide of 2026-10-17) for the table and the third source, and decided the rest below.
+
+**DECISION (a table, at last):** This supersedes "the deferral is derived, not tabled" above for deferrals recorded by hand, which can be lifted. `donor_deferrals` holds the donor, the recording centre, the outcome (a `ScreeningOutcome` deferral value), the reason, `deferred_on`, `ends_on` (temporary only) and the lift (`lifted_at`, `lifted_by`, `lift_reason`). A lifted row is kept, never deleted. Screening and laboratory deferrals are unchanged and still derived.
+
+**DECISION (the third source):** `DonorDeferralRepository` reads `donor_deferrals` beside the screening outcome and the referral, only rows in force (not lifted, `ends_on` today or later, on the operational day). `standingDeferralFor()` adds a blocking one to its candidates. `deferralsFor()` does the same. Failing a blocking deferral, a temporary one recorded by hand counts until its `ends_on`, ahead of the latest-screening rule. So the Donors list pill, the profile, the export, the reminders, the desk's booking refusal and the counter's prior-deferral notice all hear of it with no other change. The Donors list's `deferral` gains `ends_on`. The counter's notice keeps its three keys.
+
+**DECISION (who):** `donors.defer` (write) is held by the Screening Physician alone, the same authority as deferring at screening. The list (`GET /blood-center/deferrals`) needs `donors.view_clinical`, because it carries reasons. `POST /blood-center/deferrals` records and `POST /blood-center/deferrals/{id}/lift` lifts, both `donors.defer`. A centre may defer only a donor it has dealt with (the usual `facilityHasRelationship()`), and lists and lifts only its own records (404 otherwise). Another centre still sees the standing deferral, without the reason.
+
+**DECISION (rules):** From defaults to today and cannot be in the future. A temporary deferral needs an Until date on or after both today and From. For a permanent or indefinite one, Until is dropped rather than refused, as the form says. Lifting needs a reason. An expired temporary deferral cannot be lifted, and neither can a lifted one (422). Status is derived: active, expired (temporary, past its last day) or lifted. IDs read DEF-000123. The audit trail records `donor.deferred` with the outcome and `donor.deferral_lifted`, never the reason text.
+
+**DECISION (the form's reasons):** The mock-up's Reason is a picker. The client offers common reasons plus "Other", which asks for the reason in words. The server stores the text either way, so the list can change without a migration.
+
+**KNOWN LIMITATIONS:**
+- Lifting a deferral recorded by hand does not clear a screening or laboratory deferral. Those are separate records and have no lift.
+- The page lists only deferrals recorded by hand. Screening deferrals stay on the donor's profile history.
+- A temporary deferral does not refuse a desk booking, as a temporary screening deferral never has. The donor is told nothing by email.
+
+## Testing does not read inventory
+
+**SOURCE:** The project owner, 2026-10-18: remove the Issuance group (Blood Inventory, Stock Thresholds) from the Testing department's sidebar.
+
+**DECISION:** The Laboratory Supervisor no longer holds `inventory.view`, so no Testing role holds it and neither does a custom Testing role. The sidebar hides both links through `can()`, and the routes refuse them. Low-stock alerts follow `inventory.view`, so Testing no longer receives them. Processing keeps the read.
+
+## Serology results list
+
+**SOURCE:** The project owner, 2026-10-18, with a mock-up: a test list in the Testing department (ID, bag, donor, HIV, HBsAg, HCV, VDRL, Malaria, overall, tested, Edit), with search, a result filter, Export and Refresh, and an edit dialog (the five markers, test date, tested by, storage location, remarks).
+
+**DECIDED BY:** The owner chose the list and its columns. Claude decided the rest below.
+
+**DECISION (where):** A "Serology results" tab on the Testing page, beside the testing queue, shown to `lab.record_serology` holders only. `GET /blood-center/laboratory/serology-results` lists this centre's recorded panels, newest first, and `/export` streams the same rows as CSV. Both need `lab.record_serology`, because the per-marker readings go only to whoever may record them (`LaboratoryService::formatSerology`, now public and shared). Recording stays on the queue: an untested unit is not on the list.
+
+**DECISION (the mock-up's words):** Readings say Non-reactive and Reactive, as the recording form and the DOH form do, not Pass and Fail. The syphilis column is "Syphilis" (the marker's label). The ID column is the donation code (DON-000123): the panel has no number of its own worth showing. Overall is Reactive when any marker is.
+
+**DECISION (Edit is a correction):** A saved panel is never saved over, so Edit opens the panel's readings and files a correction through the usual dialog, carrying the same body as the queue's Serology card (`confirm_reactive` once a marker turns reactive, confirmed in the dialog). Each row carries `locked` (`reactive`, `rejected` or `units_released`, in CorrectionService's order), `correction_pending`, and `can.correct`, so the list never offers an Edit the correction route would refuse. `BloodUnitStatus::leftQuarantineValues()` is now the one list of "out of quarantine" statuses that both use. The mock-up's Test date and Tested by are shown, not edited: they are the record's own stamp. Its Storage location belongs to Stock Intake, and its Remarks are the correction's reason.
+
+**DECISION (blinding):** The donor follows `DonorBlinding`: a technologist sees the blood type on file (the column reads Group), the Laboratory Supervisor sees the name. Search covers the bag barcode (partial) and the DON- code; the donor's name and DONOR- code only for a holder of `donors.view_identity`. Otherwise a name search that narrowed the list to one reactive panel would say whose it was. The CSV follows the same blinding. Each export is audited as `laboratory.serology_exported` with the row count and filters, never a marker.
+
+**KNOWN LIMITATIONS:**
+- There is no matching list for the immunohematology typing yet.
+- The correction dialog still prints the raw field names and values (`non_reactive`, `confirm reactive`), as it does from the queue.
+
+## Reactive results wait for verification
+
+**SOURCE:** The project owner, 2026-10-18. Claude pointed out that one mistaken click on Reactive rejected the donation, deferred the donor at every centre and notified them, with no undo. The owner chose a second-person check before a reactive result takes effect. They also asked that the donor be contacted "just like how donor management list notif works (mail icon)".
+
+**DECIDED BY:** The owner chose the check and the mail icon. Claude decided the rest below.
+
+**DECISION (held until verified):** A reactive panel saved by anyone without `lab.verify_serology` is stored with `verified_at` null and sets nothing off. There is no rejection, no referral (so no deferral), no clearance and nothing to the donor; the missing TTI token keeps the bags in quarantine. The Laboratory Supervisor (`lab.verify_serology`, kind update, named post only) checks it against the bench record. `POST /laboratory/donations/{id}/serology/verify` then sets it off exactly as before. `POST /laboratory/donations/{id}/serology/return` deletes it for re-entry, audited as `laboratory.serology_returned` with who saved it and never the marker. Holders are told in the app (`SerologyVerificationRequested`: donation code, bag and who saved it, never the donor or marker). Existing reactive panels were backfilled as verified by their recorder.
+
+**DECISION (who verifies as they save):** The supervisor's own reactive panel is verified as it is saved, following the precedent that a head's own correction needs no other approval (2026-10-15). An approved correction to reactive is verified by its approver, since the approval is the second person. A held panel cannot be corrected (`verification_pending`). Only a verified reactive panel is immutable, in the model as in the services.
+
+**DECISION (who sees what):** Testing sees a held panel as Reactive with `awaiting_verification`. Outside Testing (Processing) it reads `awaiting_verification`, "Awaiting verification", so an unverified reading is not reported as a result. The results list gains an "Awaiting verification" filter, `locked: awaiting_verification` and `can.verify`. The Testing page shows the count on the Serology results tab for the supervisor, a held notice on the unit, and a "Serology awaiting verification" chip in the queue. A technologist's confirmation now says that saving sends it to the supervisor.
+
+**DECISION (the mail icon):** The donor is no longer contacted automatically. On an open referral, the supervisor's mail icon (`POST /laboratory/referrals/{id}/contact-request`, `lab.referrals`) queues an email in the centre's name (`DonorCenterEmail`) when the donor has an address, and always sends the in-app `DonorContactRequested`. It stamps `contact_requested_at` / `_by` and audits `referral.contact_requested`. The wording is fixed, not a Settings template: Section I-C promises no result is issued, so it says only that the centre would like to speak about the donation. The email is queued first; if that fails nothing is sent or stamped. It may be sent again. Existing referrals were stamped as contacted when they opened, which is when the automatic notice went out.
+
+**SUPERSEDES:** "In-app only" for the contact request (an email can be read by whoever shares the inbox). The owner now asks for it to work like Donor Management's emails. The email names nothing sensitive.
+
+**KNOWN LIMITATIONS:**
+- The supervisor's own entry has no second check.
+- A returned panel gives the technologist no reason in the app; the supervisor tells them.
+- A centre with no Laboratory Supervisor account cannot verify anything. Held results wait, and their bags stay in quarantine.
+
+## Serology Results and Counselling Referrals pages
+
+**SOURCE:** The project owner, 2026-10-18: move the results and the referrals off the Testing page's tabs into the sidebar, each as its own page.
+
+**DECISION:** `/blood-center/serology-results` (`lab.record_serology`) and `/blood-center/counselling-referrals` (`lab.referrals`) are now pages, listed in the sidebar's Testing group after the two testing queues. The Testing page is the queue alone. It links to Counselling Referrals from a rejected unit, and to the waiting results from a held one. A Serology Results row's "Open the unit" opens `/blood-center/testing?test=serology&donation={id}`. This supersedes "where" in "Serology results list".
+
+**DECISION (counts):** The tab badges moved to the sidebar. Serology Results counts reactive results awaiting verification for `lab.verify_serology`. Counselling Referrals counts pending referrals from `GET /laboratory/referrals/summary` (`lab.referrals`), which is not audited because it is a count only. The list itself stays audited on every read. A page that changes either count bumps a shared `blood-center-badge-refresh` state, and the sidebar reloads its counts without a page reload.
+
+**DECISION (old links):** The supervisor's notification now opens `/blood-center/serology-results?outcome=awaiting_verification`. A notification sent earlier still links to `/blood-center/testing?tab=results…`, so the Testing page redirects `?tab=results` and `?tab=referrals` to the new pages.
+
+## Serology corrections on Serology Results
+
+**SOURCE:** The project owner, 2026-10-18. Once a panel was input and saved on the testing queue, its card still offered "Request correction", which opened a popup. Instead, a saved panel should only be viewed or edited in Serology Results, and the Laboratory Supervisor should approve it there.
+
+**DECISION (testing queue):** A saved serology panel is shown read-only on the unit card, with "View or edit in Serology Results" (`/blood-center/serology-results?donation={id}`, which opens that panel). The card no longer files a correction. Immunohematology typing is unchanged, because it has no results page: its saved typing still files a correction from the card.
+
+**DECISION (one dialog):** On Serology Results, Edit files the correction from the same dialog, with the reason ("What was entered wrongly, and why") required there. The separate correction popup is gone from this page. The supervisor's own correction applies as it is sent, as before, and the button says "Apply correction".
+
+**DECISION (deciding it there):** Each results row carries its pending serology correction: `correction` with id, requester, time, reason, the proposed readings (markers only), and `can_decide` (corrections.approve plus `CorrectionService::mayDecide()`). For the supervisor the row reads Review. The dialog lists what would change (before → after), the reason and who asked, and offers Approve or Reject. Reject needs a note. A correction that turns a marker reactive must be confirmed against the bench record before approval, since the approval is its verification. Both decisions use the existing `/corrections/{id}/approve|reject` routes, so the Corrections page still shows and decides them too. The results filter gains "Correction pending" (`outcome=correction_pending`). For the supervisor, the sidebar's Serology Results badge counts these as well as the results awaiting verification.
+
+**DECISION (Actions, project owner 2026-10-18):** The dialog's "Open the unit" link is gone: a panel is viewed and edited on Serology Results itself. Each row's Actions are icon buttons:
+- an eye to view;
+- a pen to edit, disabled with the reason as its tooltip when the panel cannot be corrected, and saved only once the supervisor approves;
+- for the supervisor, a highlighted shield to review a result awaiting verification or a correction awaiting their decision.
+
+Opened from View, the dialog offers Edit or Review when the row allows it. Every column but the donor's has a fixed width, so the panel narrowing (the sidebar opening, for one) used to squeeze names to a letter a line. Now the marker chips switch to NR/R below a 1340px container, and the ID column drops below 1120px. Below about 920px of table, it scrolls sideways rather than crush a name.
+
+## Processed list and the hand-over
+
+**SOURCE:** The project owner, 2026-10-19: "Add a Processed list in the Processing department just like testing list and in the Actions put there the Hand over to issuance instead in component processing tab."
+
+**DECIDED BY:** The owner chose the list and moving the hand-over into its Actions. Claude decided the rest below.
+
+**DECISION (where):** A **Processed** page (`/blood-center/processed`, `lab.record_components`) in the sidebar's Processing group, after Component Processing. `GET /blood-center/laboratory/processed` lists this centre's donations with a recorded component breakdown, newest breakdown first, and `/export` streams the same rows as CSV, audited as `laboratory.processed_exported` (row count and filters). Both need `lab.record_components`, as Component Processing does, so the Processing Laboratory Assistant reads the list too. The rows are built by `ProcessedDonationService` (+ `ProcessedDonationRepository`). Clearances come from `LaboratoryService::formatClearances`, now public and shared.
+
+**DECISION (the columns):** ID (DON- code), bag barcode and bag type, Group (the blood type on file; Processing is blind, see `DonorBlinding`), the breakdown ("2 × Packed RBC, FFP" with the bag count and total volume), Testing (the TTI and ABO/Rh clearances, never a reading), Processed (when the breakdown in force was recorded and by whom), Hand-over (Awaiting hand-over, Handed over with how many bags Issuance has booked in, or Rejected with the reason), and Actions. A filter on the hand-over state, search by barcode, bag number (`1234567-PRBC`) or DON- code, Export and Refresh, as on Serology Results. A name search is refused to a viewer without `donors.view_identity`, as there.
+
+**DECISION (the hand-over moved):** The "Hand-over to Issuance" card is gone from Component Processing. Each Processed row's Actions are an eye to view, a labelled **Hand over** button and a reject icon. Hand over and reject each confirm in one dialog, and a rejection needs its reason. Both go through the existing `PATCH /laboratory/donations/{id}/status`, so the guards are unchanged: completion still needs only the breakdown, never a test result. Each row carries `can.hand_over` and `can.reject`: true only for an unfinished donation (collected or tested) and a viewer holding `lab.update_status`. The assistant therefore sees both disabled. The dialog warns when a correction to the breakdown is pending, because once handed over the breakdown is fixed (`declareComponents` refuses a completed donation) and the correction can no longer be applied. The hand-over is not blocked for it.
+
+**DECISION (Component Processing's queue):** Its default view (`stage=processing`) is now only drawn donations with no breakdown yet: a processed unit leaves the queue for the Processed list. Without a stage the queue is unchanged. After a breakdown is recorded, the bench shows "Next: hand-over to Issuance" with a link to `/blood-center/processed?donation={id}`, which opens that unit's hand-over. The list's view dialog links back to `/blood-center/laboratory?donation={id}`, so a breakdown is still corrected, and its base labels reprinted, on the bench. The "Cleared" chip now reads "Handed over".
+
+**DECISION (rejecting before processing):** A unit that cannot be separated (clotted, leaking) never gets a breakdown, so it would never reach the Processed list. Component Processing therefore keeps "Reject this unit" for a unit with no breakdown yet, under "Cannot be processed?". Once a breakdown is recorded, rejection is on the Processed list only.
+
+**DECISION (the Components column, project owner 2026-10-19):** Full component names wrapped mid-word and made rows several lines tall in a narrow panel, so the breakdown is shown as one chip per component, by the code printed on its bag label (`BloodComponent::labelCode()`: PRBC, FFP, PC, CRYO, WB...), with ×2 for a second bag of it. Each row's bags carry that `code`. A chip's tooltip is the full name, the dialog lists every bag by name, and the CSV keeps full names. Group is 72px. Below a 1120px panel the ID column drops and the two clearances stack, which keeps the breakdown at 150px or more. Below that the table scrolls sideways rather than squeeze it.
+
+**DECISION (count):** The sidebar's Processed badge counts units awaiting hand-over, for `lab.update_status` holders only, read from the list's `total` (`status=awaiting_handover&per_page=1`). The list is not audited on read, only on export. Recording a breakdown, handing over and rejecting bump `blood-center-badge-refresh`.
+
+## Processing does not read inventory
+
+**SOURCE:** The project owner, 2026-10-19: remove the Issuance label and the pages under it from the Processing department's sidebar, "since it is a processing department".
+
+**DECISION:** The Component Laboratory Medical Technologist no longer holds `inventory.view`, so no Processing role holds it and neither does a custom Processing role. This matches "Testing does not read inventory" and supersedes its "Processing keeps the read". The sidebar hides the Issuance group (Blood Inventory, Stock Thresholds) through `can()`, and the routes refuse them. Low-stock alerts follow `inventory.view`, so Processing no longer receives them. What Processing needs from downstream is on the Processed list, which says how many of a handed-over unit's bags Issuance has booked in. A completed unit on Component Processing now links there instead of to Blood Inventory.
+
+## Breakdown corrections on the Processed list
+
+**SOURCE:** The project owner, 2026-10-19: "revise the request correction in processing just like the testing department do". The model is "Serology corrections on Serology Results".
+
+**DECISION (Component Processing):** A saved breakdown is shown read-only on the bench, with its bag numbers and the Phase 1 labels. It links to "View or edit on the Processed list" (`/blood-center/processed?donation={id}&open=edit`), which opens that unit on its review, its edit or its view, in that order of what the row allows. The bench no longer files a correction, and the `CorrectionRequestDialog` popup is gone from it. Its form records a first breakdown only. The "Next: hand-over to Issuance" card is gone as well (project owner, same day), which supersedes that part of "Processed list and the hand-over". The Processing card's link is the bench's one way to the list, and "Cannot be processed?" shows only while there is no breakdown.
+
+**DECISION (one dialog):** On the Processed list, a pen in each row's Actions edits the bags in the dialog: component, volume, add or remove a bag. The correction is filed from there with "What was entered wrongly, and why" required, through the usual `POST /donations/{id}/corrections` (`subject: components`), carrying the body recording sends. The Component Laboratory Medical Technologist, Processing's correction approver, has their own correction applied as it is sent ("Apply correction"). The assistant's waits for them ("Request correction"). The pen is disabled, with the reason as its tooltip, when the row cannot be corrected.
+
+**DECISION (deciding it there):** Each row carries its pending breakdown correction: `correction` with id, requester, time, reason, the proposed bags named, and `can_decide` (corrections.approve plus `CorrectionService::mayDecide()`). For the technologist, the row's pen becomes a highlighted shield. The review shows the saved bags beside the proposed ones, the reason and who asked, and offers Approve or Reject; Reject needs a note. Both decisions use the existing `/corrections/{id}/approve|reject` routes, so the Corrections page still shows and decides them too. The filter gains "Correction pending" (`status=correction_pending`). The hand-over's pending-correction warning now offers "Review the correction" to the technologist.
+
+**DECISION (fixed after hand-over):** `CorrectionService::guardCorrectable` now refuses a breakdown correction once the donation is handed over or rejected (`not_correctable`). Before, it was filed and then failed at approval, because `declareComponents` refuses a completed donation. Each row's `locked` (`handed_over`, `rejected`) and `can.correct` mirror this, so the list never offers an Edit the route would refuse. A correction still pending when its unit is handed over can no longer be approved, only rejected. The hand-over dialog warns about this, and it does not block.
+
+## Issuance dashboard from the owner's mock-up
+
+**SOURCE:** The project owner, 2026-10-19: a screenshot of a dashboard ("Total Available Units 2,725 ↑ +12% vs last week", a Blood Inventory card per type with a segmented bar, Incoming Requests, Ready for Release, Stock by Blood Group) and "copy this dashboard UI structure". The same day the sidebar's Overview entry for this page was renamed from Issuance to Dashboard.
+
+**DECIDED BY:** The owner chose the layout. Claude decided the data behind it and the colours, below.
+
+**DECISION (the week's trend):** `GET /blood-center/inventory/summary` gains `trend`: eight points, the close of each of the last seven operational days and then today, each with `available`, `expiring_soon`, `reserved` and `quarantined`. There are no snapshots to read, so a past day is rebuilt from timestamps (`InventoryRepository::levelsAt`). A unit counts from `created_at` (booked in) until it was issued (a released allocation's `released_at`), discarded or expired. Before its `released_at` it is quarantined. One with no release stamp that has left quarantine went straight into stock (the demo seeder's units), so it counts as released on arrival. Once released it is reserved while an allocation was open (`allocated_at` up to `released_at` or `cancelled_at`), and available otherwise. `expiring_soon` uses the same seven-day window as `near_expiry`, measured from that day. Direct-distribution bags were never a centre's stock and are left out. Today's point is the live count, so a sparkline always ends on the number beside it. The headline cards compare today with the first point ("vs. last week"), as a percentage, or in units when last week had none.
+
+**DECISION (the shelf by type):** The summary gains `stock_by_blood_type`: per type, `available`, `expiring_soon` (the part of available dated within seven days), `reserved` and `quarantined`. `by_blood_type` is unchanged, since other pages read it. Each type card's headline is its available units, so the eight add up to Total Available Units. Its bar and counts split the shelf into Available (more than seven days left), Expiring, Reserved and In quarantine.
+
+**DECISION (what the mock-up showed that is not used):**
+- **Low Stock** is not a count of units. A card instead names its threshold state (None available, Component empty, Below critical), and the low-stock banner stays above the panel.
+- **Issued** and **Discarded** are units that have left, not stock, so they are not drawn on the shelf.
+- The mock-up's "Dispatched" and "Received" are not request statuses. The table shows the real ones, in the hospital portal's tones.
+- The release note keeps "Units go out only after payment is confirmed". The release gate checks the billing statement and nothing else, so "or upon receipt of required documents" would not be true.
+- "Stock by component" and the separate expiry rows are gone. Expired units awaiting discard are named on the Expiring Soon card.
+
+**DECISION (requests):** `GET /blood-center/blood-requests` accepts `open=1` (the `open()` scope: not terminal, not closed). The dashboard lists the first five open requests in the queue's own order (emergencies first, then the oldest), behind `requests.view`. "View pending releases" and the Reserved card link to Fulfillment only for `requests.release`.
+
+**DECISION (colour):** The four shelf parts are categorical slots validated together for colour-blind separation on the light (#FFFFFF) and charcoal (#171A1F) surfaces: teal, amber, pink, blue. Each headline card wears its part's colour on a 3px edge, its icon and its sparkline. The mock-up's maroon is not in the app's palette, so links and buttons stay the app's blue, and the column chart wears the Available colour with its value on each cap. `DepartmentDashboard.vue`, the shell only this page used, is removed.
+
+## Issuance does not browse Billing
+
+**SOURCE:** The project owner, 2026-10-19: "remove the billing label and under it in issuance department".
+
+**DECISION:** The sidebar's Billing group is hidden from Issuance staff (`hiddenFrom: ['issuance']` on the group in `useBloodCenterNav.ts`). That also takes it out of the ⌘F search and the profile menu, which read the same list. An Admin or Supervisor is never hidden from it. Unlike "Processing does not read inventory", the ability stays: the Inventory Control Officer and the Dispatch Coordinator keep `billing.view`, read-only, because Fulfillment reads each request's statement (`GET /billings/{id}`) to say whether it is cleared for release. The server's release gate is unchanged. Fulfillment's "Go to Billing" link on an uncleared request now shows only to `billing.record_payment` holders, who can take the payment. Issuance sees the notice without it.
+
+## Incoming Requests list from the owner's mock-up
+
+**SOURCE:** The project owner, 2026-10-19: a screenshot of a "Requests & Issue" list (search patient / hospital, two dates, a status, Updated time, Export, Refresh, New Request; columns ID, Date, Hospital / Requester, Patient with blood type, Component, Units, Priority, Status and eye, check, cross, pencil and Issue actions; a pager) and "revise the request list into this".
+
+**DECIDED BY:** The owner chose the layout. Claude decided the rest below.
+
+**DECISION (server):**
+- `GET /blood-center/blood-requests` searches the reference number, the patient's name and the other facility's name, in any case. The centre searches the requesting hospital and a hospital searches the centre. The search allows 100 characters.
+- It takes `from` and `to` as operational dates on `request_date`.
+- The centre's queue is ordered with requests still being worked first (emergencies first, then the oldest), then finished ones newest first. Before, a fulfilled emergency from weeks ago sat above today's routine requests.
+- `GET /blood-center/blood-requests/export` streams the same rows as CSV (`requests.view`, throttled), audited as `blood_requests.exported` with the row count and filters, since a request names its patient.
+- A request item's `component` now carries `code`, the bag-label code (`BloodComponent::labelCode()`).
+
+**DECISION (the page, `bloodrequests.vue`):**
+- The page is one panel built like the Donations list: search, `DateRangeFilter`, a status select (with "Open"), Updated, Export, Refresh and New Request (the walk-in dialog, `requests.record`), then the table and a 25-row pager.
+- The Units column reads issued of requested, with what is reserved under it.
+- Component shows one chip per component by its code, with the full name as the tooltip, as on the Processed list.
+- Priority and status use the list pages' dot badges.
+
+**DECISION (the row actions):**
+- **Eye** (and the reference itself) opens the existing review drawer.
+- **Check** approves and reserves. It shows while the request is open and still needs units, behind `requests.process`.
+- **Cross** rejects. It shows while the request is open and nothing is held or sent (the server refuses otherwise), behind `requests.approve`.
+- The mock-up's **pencil** became the request form PDF, because the centre does not edit a hospital's request.
+- **Issue** links to Request Fulfillment once units are reserved, and is shown disabled ("Approve and reserve units first") before then, behind `requests.release`.
+
+**DECISION (what the mock-up left out):**
+- The summary cards duplicated the Issuance dashboard and were removed.
+- The emergency banner was removed. Open emergencies sort to the top with a red-dot Emergency badge instead.
+- The source, hospital, blood type and component filters were removed.
+- The row quick look and print were removed.
+- The "Recent Request Activity" feed, which was built from the page's own rows, was removed.
+- The old "Requested" and "Needed by" date filters were never sent to the server and are gone; the new date range is.
+
+**DECISION (the review opens in the middle, project owner 2026-10-19):** "instead of popuping it in side put in the middle like how the donor management views a profile".
+- The review is now a centred dialog built like Donor Management's profile: a header, a summary (reference, priority and status badges, hospital, date, source and purpose, and a Request form button), a grid of facts, then titled sections for walk-in confirmation, the patient transfusion share, inventory availability, fulfilment and history. The actions sit in a footer.
+- It sits under the approve and reject confirmations (z-index 90 against 100), and Escape closes it unless one of those is open.
+- The four hospital fields the API never sends (Department, Doctor, Contact Number, Email) are gone. "Doctor" had been showing the hospital's address, which now has its own label. The patient's age and sex are shown.
+- The footer offers Approve & Reserve only while units are still needed, and Issue (to Request Fulfillment, for `requests.release`) once all of it is held. Reject is offered only while nothing is held or sent. Before, the footer offered a reservation the server would refuse.
+
+**DECISION (patient requests and replenishment apart, project owner 2026-10-19):** "separate the inventory replenishment request from the patient req".
+- The list has two tabs, Patient Requests (`request_purpose=patient_transfusion`: walk-ins and Patient Transfusion Request shares among them) and Inventory Replenishment (`replenishment`: weekly orders among them). The filter is the existing server-side `request_purpose`, so paging, totals and the export follow the tab.
+- Each tab shows how many of its requests are still open, from the summary's new `open_by_purpose`.
+- The tab is kept in the address as `?type=patient|replenishment`.
+- On the replenishment tab the Patient column becomes Blood Type, and New Request (the walk-in dialog, always a patient's) is not offered.
+
+## Walk-ins without the hospital's phone confirmation
+
+**SOURCE:** The project owner, 2026-10-19: "make the reference on the watcher's paperwork optional only the hospital, first and last name and blood type is mandatory", then "Also the hospital confirmation step remove it".
+
+**DECISION (step one):** The walk-in form's first step requires the patient's hospital blood bank, surname, first name and blood type. "Not known yet" is gone from the blood type. The reference on the watcher's paperwork is marked optional. The existing-request check needs all four; it no longer accepts the reference in place of the names. The server already required these four when a walk-in is saved, unless it continues a Patient Transfusion Request, which supplies them.
+
+**DECISION (no phone confirmation):** This supersedes the rule that a walk-in is recorded only once the hospital blood bank confirms it by phone.
+- The form's "Hospital confirmation" step is removed, so the form runs Patient → Request & watcher → Review.
+- `POST /blood-center/blood-requests/walk-in` no longer takes or requires `verification`.
+- Migration `2026_10_19_000001` makes `verifier_name`, `verifier_position`, `verifier_contact`, `verified_at` and `verification_recorded_by` on `blood_request_walk_ins` nullable. It was run on the dev database.
+- A walk-in's history note reads "Brought in by a watcher at {centre} for {hospital}." instead of naming who confirmed it.
+- Walk-ins recorded before keep their confirmation. The projection sends `walk_in.verification` only when there is one, and null otherwise.
+- `WalkInDetailsCard` and the hospital portal's pages (track requests, the transfusion request's "Own stock checked", the progress label) say "confirmed by phone" only where it was.
+
+## Staff pick the units to reserve
+
+**SOURCE:** The project owner, 2026-10-19: "instead of that, a staff can manually select unit in inventory referring to a request", in place of the system choosing the units on Approve & Reserve.
+
+**DECISION (server):**
+- `GET /blood-center/blood-requests/{id}/units` (`requests.process`) lists, per line, the units it may take: this centre's, available, in date, held for nobody, of the line's own blood type and component, first-expiring first. It shows at most 100 per line, each with id, expiry, days left, storage location and volume, and the line's `allocatable`.
+- `POST …/allocate` accepts `unit_ids`. The server locks and holds exactly those, each filed against the line of its own blood type and component with room left on it. The whole pick is refused with a 422 naming each unit it cannot take (`unit_ids.N`: not in this centre's stock, no longer available, not a blood type and component this request asks for, or more of a component than still needed), and nothing is held.
+- Without `unit_ids` the oldest-dated walk is unchanged, so other callers and the tests keep it.
+- Everything after the hold is the same either way: status, billing sync, audit, history and the requester's notification.
+
+**DECISION (the page):** Approve & Reserve, on the row and in the review, opens `UnitPickerDialog` in place of the old confirmation.
+- One section per component lists its units (the first 8, then "Show all"), with a check box each, capped at what the line still needs.
+- "Select oldest first" ticks the top of the list for staff to check.
+- A refusal is shown against the unit it names. The list reloads, keeping the picks still on offer.
+
+## Bag labels print as a waybill
+
+**SOURCE:** The project owner, 2026-10-19: "modify print bag label into like waybill like in shoppe not A4".
+
+**DECISION:**
+- Both bag labels, the Phase 1 base label (quarantine) and the Phase 2 final label (released), print on a 100 × 150 mm page, the 4 × 6 in thermal label couriers print waybills on. Before, they printed 100 × 100 mm.
+- The page size is a named `@page bag-label` on the shared `BagLabelSheet.vue`, so no other print the app makes is affected.
+- The layout follows a courier waybill: one bordered box in black and white for a thermal printer, with a solid header strip (RedAgos, the centre, BLOOD UNIT or BASE LABEL), ruled sections, and a footer with the release and print dates.
+- **Final label:** a QR of the unit number beside it in large type; the blood type in a large cell beside product, volume and expiry (the expiry inverted); the testing clearances.
+- **Base label:** the QUARANTINE — NOT FOR ISSUE banner, the QR and bag number, and the product. It still never shows a blood type, clearance or expiry.
+- The QR is drawn as an SVG from `qrcode`'s synchronous `create()`, so it is on the page before the print dialog opens.
+- It encodes only the unit or bag number. There is still no 1-D barcode, so it cannot be confused with the donation's pre-printed sticker.
+
+**DECISION (find a bag by number, project owner 2026-10-19):** "A search or scan box for each component. Type or scan a bag number … and it jumps to that unit and ticks it."
+- Each line of `UnitPickerDialog` has a box. Typing narrows the line's list (past the first 8) to units whose number contains it, in any case.
+- Enter, which a barcode scanner sends after the code, ticks the match and clears the box for the next scan. The row scrolls into view.
+- A bare donation sticker finds that donation's bag of the line's component: `24234242` in Packed RBC finds `24234242-PRBC`, then `-PRBC-2` for a second bag.
+- A bag of another component on the same request is ticked in its own line, and the note says so.
+- A full line, a bag already picked, or a number that is no issuable unit of this type and component each get a note in words. "No issuable unit" can mean reserved, expired, in quarantine, or another blood type.
+- The first box that can take a bag is focused when the picker opens.
+
+## When a centre cannot supply everything: notice and referral slip
+
+**SOURCE:** The project owner, 2026-10-19, asking for the two gaps Claude had named: nothing to hand the watcher, and the hospital not told when a centre closes a remainder.
+
+**DECISION (the hospital is told):**
+- When a blood centre closes the rest of a component as unavailable (`POST …/items/{item}/close`), the requesting hospital gets a `BloodRequestDecided` notice with the new outcome `closed_short`.
+- It goes to the user who submitted the request, or to every hospital account for a walk-in, in-app as the other outcomes are.
+- Title: "Part of a blood request cannot be supplied". Tone: warning.
+- The description names how many units of which component, carries the centre's note, and says the units are unallocated again and to ask another facility.
+- The context (component, quantity, note) is read before the close, which takes the line's allocatable to nothing.
+
+**DECISION (the referral slip):**
+- `GET /blood-center/blood-requests/{id}/referral-slip` (`requests.view`) returns what the watcher carries. A request that is not part of a Patient Transfusion Request is refused with 409 `no_patient_request`.
+- The slip carries the PTR reference, the hospital, the patient (name, age, sex), the blood type, the issuing centre, the request it came from, and per component the units still unallocated, from `TransfusionRequestResolver`.
+- The PTR is loaded whole, because the listing's relation carries only its stub columns.
+- Each slip is audited as `request.referral_slip_printed` by reference only, since it leaves the building with the patient's name.
+- In the review, the Patient Transfusion Request section offers "Referral slip for the watcher" once one of this centre's lines is closed. It prints only when something is still needed.
+- `ReferralSlipSheet.vue` prints it as a 100 × 150 mm waybill like the bag labels, with a QR of the PTR reference. The next centre can scan that QR into "Reference on the watcher's paperwork" to find the request and add its share.
+
+## Walk-ins for hospitals not on RedAgos
+
+**SOURCE:** The project owner, 2026-10-19, asked what happens when the patient's hospital is not registered, and chose "option 1 but no address yet": record the walk-in against the hospital by name.
+
+**DECISION:**
+- A walk-in's hospital is either chosen from the list (`hospital_id`) or typed (`hospital_name`). Each is required without the other, on the walk-in and on the duplicate lookup. Only the name is asked for: no address, phone or licence.
+- A typed name is kept as a facility with the new status `unregistered`. It is a blood bank with that name and nothing else, and no accounts.
+  - The name is trimmed and its spaces collapsed.
+  - It matches an existing hospital ignoring capitals, a registered one first. A registered hospital's name typed by hand is that hospital, and the same unregistered name typed at another centre is the same record, so a watcher's continuation finds the request.
+  - The duplicate lookup never creates one; only recording the walk-in does.
+- Because it is an ordinary facility row, the Patient Transfusion Request is numbered in its sequence, and continuations, shares and the referral slip all work unchanged. Notices to it go nowhere, since it has no users.
+- The walk-in form lists unregistered hospitals that earlier walk-ins named, marked "(not on RedAgos)" (`registered: false` in the form reference). The projector sends `requesting_facility.is_registered`.
+- `FacilityStatus::Unregistered` is blocked like the old pending and rejected states (`facility_unregistered`). Unregistered hospitals are left out of the administrator's facility list unless it is filtered for that status. The facility name's uniqueness check ignores them.
+- When an administrator creates a blood bank of the same name (any capitals), the unregistered record is upgraded in place to approved, with the administrator's details. Its walk-in requests are the real hospital's from the start, and no duplicate record is left behind.
+
+**DECISION (client):**
+- The hospital select ends with "Not in the list — type its name…", which opens a Hospital name field.
+- The dialog warns that the hospital will not be notified and cannot follow the request, and that the watcher takes the units and, if needed, a referral slip. The review step shows the name with "· not on RedAgos".
+- Incoming Requests marks such a request "Not on RedAgos" in the list and the review. Closing a line as unavailable says "The hospital is not on RedAgos, so let the watcher know." instead of "The hospital has been told."
+
+## Dashboard and Blood Inventory take the sidebar's navy in dark mode
+
+**SOURCE:** The project owner, 2026-10-19, with a dark-mode screenshot of the Issuance dashboard: "fix the UI them to match the sidebar same as the blood inventory".
+
+**DECISION:**
+- In dark mode, the Issuance dashboard (`storage.vue`) and Blood Inventory (`inventory.vue`) no longer re-point the app's `--rb-*` surface, border and text tokens at a charcoal palette (page #0F1115, surface #171A1F). They inherit the app's own navy instead: page #0F172A, the sidebar's colour, with surface #1E293B and border #334155.
+- This reverses the charcoal set on 2026-10-16 for these two pages.
+- Each page still lifts only its own accents in dark mode: the status greens, ambers and reds, the shelf-part colours, and the inventory's softer row divider (#263345).
+- The four shelf-part colours (#199e70, #c98500, #d55181, #3987e5) pass the palette checks on #1E293B as they did on #171A1F.
+- Light mode is unchanged. Stock Thresholds keeps the charcoal palette until the owner asks.
+
+## The dashboard's headline cards carry no colour
+
+**SOURCE:** The project owner, 2026-10-19, of the Issuance dashboard's four headline cards: "this looks ai generated fix it donot add any color to the container card".
+
+**DECISION:**
+- The four headline cards (Total Available, Expiring Soon, Reserved, In Quarantine) are neutral containers. Each had worn its shelf part's colour in four places, and all four are removed:
+  - a 3px left edge
+  - a tinted round icon well
+  - a tinted wash under the sparkline
+  - the week-change text
+- The icon now sits in a neutral bordered square, as on Blood Inventory's cards. The week change reads in the text inks.
+- A part's colour remains only on the sparkline's 2px line, which ties the card to the same colour in the shelf legend below.
+- This supersedes, for these cards, the "each headline card wears its part's colour on a 3px edge, its icon and its sparkline" in "Issuance dashboard from the owner's mock-up".
+
+## Issuance applies the government subsidy at the point of issue
+
+**SOURCE:** The project owner, 2026-10-19: "since SNBC doesn't have staff in billing for now since they are subsidize by government in issue a blood let a issuance staff can apply subsidy it a request but it is still put in a statement of account of a hospital".
+
+**DECISION (who):**
+- Applying the government subsidy (`POST /blood-center/billings/{request}/subsidy`) moves from `billing.record_payment` to its own ability, `billing.subsidise` (kind: update).
+- It is held by the Billing desk (clerk and supervisor, as before) and by the two Issuance roles that release blood: the Inventory Control Officer and the Dispatch Coordinator. The IT Data Clerk and every other department are refused.
+- Issuance still cannot take money: payments, checkouts and receipts stay `billing.record_payment`.
+
+**DECISION (what):**
+- The subsidy itself is unchanged: the whole charge is waived, the statement becomes Government Subsidised, release is cleared, nothing is collected, and the waived figure is journalled and audited.
+- It now also issues the hospital's Statement of Account in the same transaction, a revision with reason `statement`.
+  - Its lines are at the centre's prices, less "Government subsidy", with ₱0.00 payable. It is addressed to the requesting hospital, which reads it under its request's billing like any other SOA.
+  - The response carries it as `statement`, and the audit row carries its id.
+- Units reserved after the subsidy go on the statement too. Release now brings a subsidised request's SOA up to the units it holds: the latest revision is reused while it matches, and a new one is issued if units were added. Release therefore runs in `DocumentNumbering::transaction`.
+
+**DECISION (client):**
+- On Request Fulfillment, a request whose statement blocks release shows "Apply government subsidy" in its payment notice for whoever holds `billing.subsidise`. "Go to Billing" stays for whoever takes payments.
+- The confirmation states the amount, that nothing is collected, and that the request still goes on the hospital's Statement of Account. It takes an optional reason, and warns if money was already received.
+- The dashboard's release note now reads "Units go out once paid or met by the government subsidy."
