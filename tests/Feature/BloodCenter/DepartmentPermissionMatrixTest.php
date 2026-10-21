@@ -16,7 +16,7 @@ class DepartmentPermissionMatrixTest extends TestCase
 {
     use LazilyRefreshDatabase;
 
-    private const MANAGEMENT = ['staff.manage', 'center.configure', 'reports.view_all'];
+    private const MANAGEMENT = ['staff.manage', 'center.configure', 'reports.view_all', 'audit.view'];
 
     public function test_every_declared_ability_is_registered_as_a_gate(): void
     {
@@ -92,7 +92,7 @@ class DepartmentPermissionMatrixTest extends TestCase
     public function test_every_ability_a_role_can_hold_has_a_privilege_kind(): void
     {
         foreach (DepartmentPermissions::all() as $ability) {
-            if (in_array($ability, ['staff.manage', 'center.configure', 'reports.view_all'], true)) {
+            if (in_array($ability, self::MANAGEMENT, true)) {
                 continue;
             }
 
@@ -230,13 +230,14 @@ class DepartmentPermissionMatrixTest extends TestCase
         $abilities = $admin->abilities();
 
         // Project owner, 2026-10-15: no Issuance or Billing pages, and no
-        // corrections, for the Admin.
+        // corrections, for the Admin. The Audit Log was added 2026-10-21.
         $this->assertEqualsCanonicalizing([
             'reference.view',
             'reports.view_own',
             'reports.view_all',
             'staff.manage',
             'center.configure',
+            'audit.view',
         ], $abilities);
 
         foreach ([

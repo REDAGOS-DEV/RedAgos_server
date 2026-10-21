@@ -207,4 +207,4 @@ RedAgos does **not** perform physical screening, laboratory testing, component s
 
 ## Access and UI Principle
 
-The **Center Admin** receives the overall Blood Center view. Every other staff member receives the pages their **role and privileges** allow — each role lands on its own home page (a custom role on its department's), and the sidebar shows only what its abilities reach. The server re-checks every ability on every request; the client's navigation is presentation only.
+The **Center Admin** receives the overall Blood Center view. Every other staff member receives the pages their **role and privileges** allow — each role lands on its own home page (a custom role on its department's), and the sidebar shows only what its abilities reach. The server re-checks every ability on every request; the client's navigation is presentation only. The Center Admin also reads the **Audit Log** (`audit.view`): sign-ins, refused sign-ins and what the centre's staff recorded, changed, viewed or exported, with donors shown only by their code.

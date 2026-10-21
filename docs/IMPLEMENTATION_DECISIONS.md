@@ -2063,3 +2063,28 @@ Opened from View, the dialog offers Edit or Review when the row allows it. Every
 - On Request Fulfillment, a request whose statement blocks release shows "Apply government subsidy" in its payment notice for whoever holds `billing.subsidise`. "Go to Billing" stays for whoever takes payments.
 - The confirmation states the amount, that nothing is collected, and that the request still goes on the hospital's Statement of Account. It takes an optional reason, and warns if money was already received.
 - The dashboard's release note now reads "Units go out once paid or met by the government subsidy."
+
+## Audit Log for the Blood Center Admin
+
+**SOURCE:** The project owner, 2026-10-21, from a mock-up: "in center admin add a Audit log". The owner chose three of the options put to them: record sign-ins (including refused ones), filter by module and by kind of action, and give access to the Admin only.
+
+**DECISION (who):**
+- A new management ability, `audit.view`, is held by the Blood Center Admin alone. No staff role and not the Supervisor.
+- The page is `/blood-center/audit-log` under Management, read through `GET /blood-center/audit-log`. Read-only: nothing on the page writes to the trail, and opening it is not itself recorded.
+
+**DECISION (what is shown):**
+- A centre's log holds its own staff's rows (soft-deleted colleagues included) and the rows nobody signed in wrote that are filed under it: the expiry sweep, the low-stock alert, a payment webhook, a refused sign-in on one of its accounts.
+  - A hospital's, a donor's or the Super Admin's row is never shown, even when its context names the centre.
+- `audit_logs.facility_id` (migration `2026_10_21_000001`) holds which facility a row belongs to: the actor's facility, else the context's `facility_id`, else (nobody signed in) the subject's own. `AuditLogger` fills it, and the migration backfilled older rows the same way.
+  - Why a column: a JSON key compares as text on PostgreSQL and as its stored type on SQLite, so a filter on the context would pass the tests and miss on the real database.
+- `App\Support\AuditActions` names every action: module, kind (the coloured chip) and a short label. `AuditActionsTest` fails on a literal action missing from it. An unlisted action still renders, from its own key.
+- The Admin holds no department page, so a row says who did what to which record, never what the record holds:
+  - a donor is shown by their `DONOR-` code, never their name;
+  - Details are built from a short list of context keys (references, counts, a staff change's before and after), never outcomes, results, reasons or amounts;
+  - a counselling referral is shown by its own number, not its donation's, because only a reactive donation is referred.
+
+**DECISION (sign-ins):**
+- `auth.signed_in` and `auth.signed_out` (with `all_devices` for sign out everywhere) are recorded for every account.
+- `auth.sign_in_failed` is recorded with no actor and the account as subject. The reason is a code: `wrong_password`, `account_suspended`, `account_deactivated`, `email_not_verified`, `role_mismatch` or `facility_not_activated`.
+  - The address and password typed are never written.
+  - An address that matches no account records nothing: it belongs to no facility.

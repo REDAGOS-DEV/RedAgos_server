@@ -12,8 +12,8 @@ namespace App\Enums;
  * department's work:
  *
  *  - Admin: staff accounts, roles and privileges, and the centre's own
- *    settings, with the dashboard and the reports. No department pages and no
- *    corrections.
+ *    settings, with the dashboard, the reports and the audit log. No
+ *    department pages and no corrections.
  *  - Supervisor: the dashboard, the reports and the view-only monitoring
  *    pages, across every department. Records, approves and releases nothing.
  *
@@ -51,7 +51,7 @@ enum ManagementLevel: string
     public function description(): string
     {
         return match ($this) {
-            self::Admin => 'Creates staff accounts, assigns roles and privileges, and sets the centre\'s logo. Sees the dashboard and reports. No department pages and no corrections.',
+            self::Admin => 'Creates staff accounts, assigns roles and privileges, and sets the centre\'s logo. Sees the dashboard, the reports and the audit log. No department pages and no corrections.',
             self::Supervisor => 'Sees the dashboard, the reports and every department\'s monitoring pages: stock, thresholds, the daily stock report, incoming requests and statements. Cannot record, approve, release or manage anyone.',
         };
     }

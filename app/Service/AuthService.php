@@ -17,7 +17,8 @@ use Laravel\Sanctum\PersonalAccessToken;
 class AuthService
 {
     public function __construct(
-        private readonly AuthRepository $authRepository
+        private readonly AuthRepository $authRepository,
+        private readonly AuditLogger $auditLogger
     ) {}
 
     /**
@@ -31,14 +32,34 @@ class AuthService
         $user = $this->authRepository->findByEmail(Str::lower(trim($payload['email'])));
 
         if (! $user || ! Hash::check($payload['password'], $user->password)) {
+            // An address that matches no account belongs to no facility, so
+            // only a wrong password on a real account is recorded.
+            if ($user) {
+                $this->recordFailedSignIn($user, 'wrong_password');
+            }
+
             throw ValidationException::withMessages([
                 'email' => ['The provided credentials are incorrect.'],
             ]);
         }
 
-        $this->guardAccountStatus($user);
-        $this->guardEmailVerified($user);
-        $requestedRole = $this->guardRequestedRole($user, $payload['role'] ?? null);
+        try {
+            $this->guardAccountStatus($user);
+            $this->guardEmailVerified($user);
+            $requestedRole = $this->guardRequestedRole($user, $payload['role'] ?? null);
+        } catch (HttpResponseException $refused) {
+            // The right password on an account that may not sign in (a
+            // deactivated colleague, the wrong portal) is the attempt an
+            // Admin most wants to see.
+            $body = json_decode((string) $refused->getResponse()->getContent(), true);
+            $this->recordFailedSignIn($user, is_array($body) && is_string($body['code'] ?? null) ? $body['code'] : 'refused');
+
+            throw $refused;
+        }
+
+        $this->auditLogger->record($user, 'auth.signed_in', $user, array_filter([
+            'portal' => $requestedRole?->value,
+        ]));
 
         return [
             'user' => UserResource::make($user->load(['roles', 'donorProfile.bloodType', 'facility']))->resolve(),
@@ -61,6 +82,8 @@ class AuthService
         if ($token instanceof PersonalAccessToken) {
             $this->authRepository->revokeToken($token);
         }
+
+        $this->auditLogger->record($user, 'auth.signed_out', $user);
     }
 
     /**
@@ -69,6 +92,8 @@ class AuthService
     public function logoutFromAllDevices(User $user): void
     {
         $this->authRepository->revokeAllTokens($user);
+
+        $this->auditLogger->record($user, 'auth.signed_out', $user, ['all_devices' => true]);
     }
 
     /**
@@ -176,6 +201,22 @@ class AuthService
         }
 
         $user->sendEmailVerificationNotification();
+    }
+
+    /**
+     * Record a refused sign-in against the account it was made on.
+     *
+     * No actor: nobody is signed in, and whoever typed the password may not be
+     * the account's owner. The account is the subject, and its facility files
+     * the row where its Admin will see it. The reason is a code; the address
+     * and the password typed are never written.
+     */
+    private function recordFailedSignIn(User $user, string $reason): void
+    {
+        $this->auditLogger->record(null, 'auth.sign_in_failed', $user, array_filter([
+            'facility_id' => $user->facility_id,
+            'reason' => $reason,
+        ], fn (mixed $value): bool => $value !== null));
     }
 
     /**

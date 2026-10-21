@@ -3,6 +3,7 @@
 use App\Http\Controllers\AdminPrivilegeController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\BloodCenterAppointmentController;
+use App\Http\Controllers\BloodCenterAuditLogController;
 use App\Http\Controllers\BloodCenterBillingController;
 use App\Http\Controllers\BloodCenterBillingTransactionController;
 use App\Http\Controllers\BloodCenterCheckoutController;
@@ -882,6 +883,11 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             Route::delete('/{uuid}', [BloodCenterStaffController::class, 'destroy'])->whereUuid('uuid');
             Route::post('/{uuid}/restore', [BloodCenterStaffController::class, 'restore'])->whereUuid('uuid');
         });
+
+        // What the centre's staff did, from the audit trail. The Admin's
+        // alone; read-only, and the trail itself is never edited from here.
+        Route::get('/audit-log', [BloodCenterAuditLogController::class, 'index'])
+            ->middleware('can:audit.view');
     });
 
 // Admin — facility management. This is the only place a blood centre or a

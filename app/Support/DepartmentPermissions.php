@@ -479,7 +479,8 @@ final class DepartmentPermissions
 
     /**
      * What the Blood Center Admin holds: the overview, the staff accounts and
-     * their roles, and the centre's own settings (its logo). Nothing else.
+     * their roles, the centre's own settings (its logo), and the Audit Log of
+     * what the centre's staff did (project owner, 2026-10-21). Nothing else.
      *
      * The department monitoring pages are the Supervisor's, and corrections
      * are the departments' own: a head's correction to their own record
@@ -493,6 +494,7 @@ final class DepartmentPermissions
         ...self::OVERVIEW,
         'staff.manage',
         'center.configure',
+        'audit.view',
     ];
 
     /**
@@ -509,6 +511,7 @@ final class DepartmentPermissions
         'staff.manage',
         'center.configure',
         'reports.view_all',
+        'audit.view',
     ];
 
     /**

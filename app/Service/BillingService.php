@@ -790,6 +790,9 @@ class BillingService
             ])->save();
 
             $this->auditLogger->record(null, 'billing.payment_confirmed', $statement, [
+                // A webhook has no signed-in actor to file it under, and a
+                // statement carries no facility of its own: the centre billing.
+                'facility_id' => (int) $request->target_facility_id,
                 'payment_id' => $payment->id,
                 'payment_attempt_id' => $locked->id,
                 'amount_paid' => Money::toFloat($locked->amount_centavos),
