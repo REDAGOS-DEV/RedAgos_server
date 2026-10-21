@@ -2088,3 +2088,51 @@ Opened from View, the dialog offers Edit or Review when the row allows it. Every
 - `auth.sign_in_failed` is recorded with no actor and the account as subject. The reason is a code: `wrong_password`, `account_suspended`, `account_deactivated`, `email_not_verified`, `role_mismatch` or `facility_not_activated`.
   - The address and password typed are never written.
   - An address that matches no account records nothing: it belongs to no facility.
+
+## One sign-in page, by email or username
+
+**SOURCE:** The project owner, 2026-10-21: put the Donor, Blood Center and Hospital Blood Bank sign-ins on one page and drop the DOH License Number field; "also a user can use its username to signin". The owner chose to keep administrators on their own sign-in page.
+
+**DECISION (the DOH licence):**
+- Nothing changes on the server. `LoginRequest` never read the licence the facility pages sent, so the field checked nothing.
+- `facilities.doh_license_number` stays. It is still required at onboarding and printed on receipts, statements and the DOH forms.
+
+**DECISION (no role named):**
+- The single page sends no `role`. `AuthService::guardUnifiedSignIn()` then refuses two kinds of account, after the password, account status and verification checks as before:
+  - an account holding `admin`, even alongside another role: `admin_sign_in_required`. The administrator page still sends `role: admin`.
+  - an account holding no role: `facility_not_activated` for a legacy applicant whose facility is pending or rejected, otherwise `no_portal_access`. Before this, such an account was handed a token that could reach nothing.
+- An account with exactly one role has it recorded as the sign-in's `portal` and in its token name, as when a page names the role. An account with several records neither.
+- Both new codes are recorded as `auth.sign_in_failed` reasons, and the Audit Log words them.
+- `role` is still accepted, with every alias, from the pages that send it.
+
+**DECISION (username):**
+- `POST /login` takes `login`, an email address or a username. `email` is still accepted from the pages that send it, and `login` wins when both are sent.
+- `AuthRepository::findByLogin()` tries the address first (lower-cased, as stored), then a donor code (see below), then the username exactly as stored.
+  - Exactly, because the unique index on `users.username` is case-sensitive on PostgreSQL, so a case-blind match could find two accounts.
+  - Address first, so a username that happens to equal somebody's address can never stand in for that person's account.
+- An unknown username gets the same answer as a wrong password, filed under whichever field was sent.
+- Password reset stays by email address: the link has to go to an inbox.
+
+## Counter-issued sign-in for walk-in donors
+
+**SOURCE:** The project owner, 2026-10-21: when collection staff register a walk-in donor who is not in RedAgos yet, staff give the donor a credential (username or email and a default password), so the donor skips registering in the app and signs in directly. The owner chose a password generated for each donor, the donor code as the sign-in name, no email link at the counter, a temporary password that never expires, and kept the rule that online booking needs a confirmed address.
+
+**DECISION (the slip):**
+- `POST /blood-center/donors/{uuid}/sign-in` (`donors.manage`, the Medical Receptionist) returns the donor code, the email if any, and a temporary password. `DonorDirectoryService::issueSignIn()`.
+  - Ten characters from an alphabet with no look-alikes (no 0/O/o, 1/l/I), at least one capital, small letter and digit, from `random_int()` (`AccountIdentity::temporaryPassword()`).
+  - The password is in this response only. The audit row, `donor.sign_in_issued`, records `reissued` and never the password.
+- Only for a donor of this centre (`ownDonor()`) whose account can sign in and whose address is not confirmed. A donor with a confirmed address resets their own password by email (`sign_in_managed_by_donor`): a desk that could replace it could take over any self-registered account.
+- Issuing again replaces the password and ends every session. This covers a lost slip, and a claimed donor with no address who forgot their password.
+- The donor record carries `sign_in`: `issued_at`, `claimed`, `can_issue`.
+
+**DECISION (signing in):**
+- The donor code (`DONOR-000015`, in any case) is a sign-in name, and only ever names an account holding the donor role.
+- `users.sign_in_issued_at` (set on the first slip, never cleared) lets the account past the email check at sign-in: staff checked the donor's ID in person, and the donor may have no address.
+- `users.password_change_required` is true while the slip's password is in use. `EnsurePasswordChanged`, on the whole api group, refuses everything but `GET /user`, `POST /donors/password` and sign-out with `password_change_required`. `UserResource` carries it as `temporary_sign_in`, so the client can open the "set your password" screen. The key avoids the word "password", which `SensitiveDataExposureTest` refuses in any donor payload.
+- The temporary password never expires.
+- Setting a password (`POST /donors/password`) refuses the temporary one again, clears the flag, makes the account active and ends every other session (`AuthRepository::claimCounterAccount()`). Active is also what stops the desk editing the donor's contact details.
+
+**DECISION (email):**
+- No verification link is mailed when the counter registers a donor (or a paper record does), or when staff correct a donor's address. Staff typed it, and a link mailed to a mistyped address would let its owner confirm it and reset the password. The donor confirms it from the portal after signing in.
+- A password reset link goes only to a confirmed address. The reply is the same either way.
+- Online booking still needs a confirmed address (`AppointmentService::guardEmailVerified()`).

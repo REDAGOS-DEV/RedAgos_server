@@ -84,4 +84,56 @@ final class AccountIdentity
     {
         return Str::before($email, '@').'-'.Str::lower(Str::random(6));
     }
+
+    /**
+     * The donor code printed on a donor's card, e.g. DONOR-000015.
+     */
+    public static function donorCode(int $donorId): string
+    {
+        return 'DONOR-'.str_pad((string) $donorId, 6, '0', STR_PAD_LEFT);
+    }
+
+    /**
+     * The donor id a donor code names, or null if the text is not one.
+     *
+     * The same pattern the counter searches with (DonorDirectoryRepository), so
+     * "donor-000015" and "DONOR-15" both read as donor 15.
+     */
+    public static function donorIdFromCode(string $code): ?int
+    {
+        return preg_match('/^DONOR-(\d{1,10})$/i', trim($code), $match) === 1
+            ? (int) $match[1]
+            : null;
+    }
+
+    /**
+     * A temporary password for the counter's sign-in slip.
+     *
+     * Read off paper and typed on a phone, so ten characters from an alphabet
+     * with no look-alikes (no 0/O/o, 1/l/I), and at least one capital, one
+     * small letter and one digit. random_int() is cryptographically secure.
+     */
+    public static function temporaryPassword(): string
+    {
+        $upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+        $lower = 'abcdefghijkmnpqrstuvwxyz';
+        $digits = '23456789';
+        $all = $upper.$lower.$digits;
+
+        $pick = fn (string $from): string => $from[random_int(0, strlen($from) - 1)];
+
+        $characters = [$pick($upper), $pick($lower), $pick($digits)];
+
+        while (count($characters) < 10) {
+            $characters[] = $pick($all);
+        }
+
+        // Shuffled with random_int too: shuffle() is not cryptographically secure.
+        for ($i = count($characters) - 1; $i > 0; $i--) {
+            $j = random_int(0, $i);
+            [$characters[$i], $characters[$j]] = [$characters[$j], $characters[$i]];
+        }
+
+        return implode('', $characters);
+    }
 }

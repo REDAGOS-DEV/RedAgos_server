@@ -86,6 +86,16 @@ class BloodCenterDonorController extends Controller
     }
 
     /**
+     * Issue the donor a sign-in slip with a temporary password.
+     */
+    public function issueSignIn(Request $request, string $uuid): JsonResponse
+    {
+        return response()->json(
+            $this->donorDirectoryService->issueSignIn($request->user(), $uuid)
+        );
+    }
+
+    /**
      * Correct a donor's record, and this centre's status and notes for them.
      */
     public function update(UpdateDonorRecordRequest $request, string $uuid): JsonResponse

@@ -609,6 +609,11 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             Route::post('/{uuid}/photo', [BloodCenterDonorController::class, 'photo'])
                 ->middleware(['can:donors.manage', 'throttle:20,1'])->whereUuid('uuid');
 
+            // The counter's sign-in slip: donor code and a temporary password,
+            // for a donor with no confirmed address. Issuing again replaces it.
+            Route::post('/{uuid}/sign-in', [BloodCenterDonorController::class, 'issueSignIn'])
+                ->middleware(['can:donors.manage', 'throttle:20,1'])->whereUuid('uuid');
+
             Route::post('/{uuid}/email', [BloodCenterDonorController::class, 'email'])
                 ->middleware(['can:donors.manage', 'throttle:30,1'])->whereUuid('uuid');
 

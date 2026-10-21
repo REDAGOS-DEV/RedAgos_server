@@ -476,9 +476,23 @@ class DonorService
             ]);
         }
 
+        // Signed in with the counter's temporary password. It is printed on a
+        // slip, so it is replaced, never kept under a new name.
+        $claiming = $user->password_change_required;
+
+        if ($claiming && Hash::check($payload['password'], $user->password)) {
+            throw ValidationException::withMessages([
+                'password' => ['Choose a password different from the temporary one.'],
+            ]);
+        }
+
         $this->donorRepository->updateUser($user, [
             'password' => Hash::make($payload['password']),
         ]);
+
+        if ($claiming) {
+            $this->authRepository->claimCounterAccount($user, $user->currentAccessToken());
+        }
 
         return [
             'message' => 'Password updated successfully.',

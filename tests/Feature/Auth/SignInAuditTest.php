@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Auth;
 
+use App\Enums\RoleName;
 use App\Enums\StaffRole;
 use App\Models\AuditLog;
 use App\Models\Facility;
@@ -55,6 +56,22 @@ class SignInAuditTest extends TestCase
         $this->assertStringNotContainsString('chair@example.com', json_encode($row->context));
     }
 
+    public function test_a_wrong_password_by_username_is_recorded_without_the_username(): void
+    {
+        $facility = Facility::factory()->approved()->create();
+        $staff = User::factory()->bloodCenterStaff($facility, StaffRole::Phlebotomist)->create([
+            'username' => 'chair-q7w2er',
+            'password' => 'Password123',
+        ]);
+
+        $this->postJson('/api/login', ['login' => 'chair-q7w2er', 'password' => 'Guess-1'])->assertUnprocessable();
+
+        $row = AuditLog::query()->where('action', 'auth.sign_in_failed')->sole();
+
+        $this->assertSame((string) $staff->id, $row->auditable_id);
+        $this->assertSame(['facility_id' => $facility->id, 'reason' => 'wrong_password'], $row->context);
+    }
+
     public function test_an_address_that_matches_no_account_records_nothing(): void
     {
         $this->postJson('/api/login', ['email' => 'nobody@example.com', 'password' => 'Password123'])->assertUnprocessable();
@@ -91,6 +108,47 @@ class SignInAuditTest extends TestCase
             ->assertForbidden();
 
         $this->assertSame('role_mismatch', AuditLog::query()->where('action', 'auth.sign_in_failed')->sole()->context['reason']);
+    }
+
+    public function test_the_single_sign_in_page_records_the_portal_the_account_belongs_to(): void
+    {
+        $staff = User::factory()->bloodCenterStaff(null, StaffRole::Phlebotomist)->create([
+            'email' => 'chair@example.com',
+            'password' => 'Password123',
+        ]);
+
+        $this->postJson('/api/login', ['email' => 'chair@example.com', 'password' => 'Password123'])->assertOk();
+
+        $this->assertSame('blood_center', AuditLog::query()->where('action', 'auth.signed_in')->sole()->context['portal']);
+        $this->assertSame('blood_center-token', $staff->tokens()->sole()->name);
+    }
+
+    public function test_an_account_with_several_roles_records_no_portal(): void
+    {
+        $user = User::factory()->donor()->withRole(RoleName::BloodBank)->create([
+            'email' => 'both@example.com',
+            'password' => 'Password123',
+        ]);
+
+        $this->postJson('/api/login', ['email' => 'both@example.com', 'password' => 'Password123'])->assertOk();
+
+        $this->assertArrayNotHasKey('portal', AuditLog::query()->where('action', 'auth.signed_in')->sole()->context ?? []);
+        $this->assertSame('api-token', $user->tokens()->sole()->name);
+    }
+
+    public function test_the_single_sign_in_page_records_why_it_refused(): void
+    {
+        User::factory()->withRole(RoleName::Admin)->create(['email' => 'admin@example.com', 'password' => 'Password123']);
+        User::factory()->create(['email' => 'nobody@example.com', 'password' => 'Password123']);
+
+        $this->postJson('/api/login', ['email' => 'admin@example.com', 'password' => 'Password123'])->assertForbidden();
+        $this->postJson('/api/login', ['email' => 'nobody@example.com', 'password' => 'Password123'])->assertForbidden();
+
+        $this->assertEqualsCanonicalizing(
+            ['admin_sign_in_required', 'no_portal_access'],
+            AuditLog::query()->where('action', 'auth.sign_in_failed')->get()->pluck('context.reason')->all()
+        );
+        $this->assertDatabaseMissing('audit_logs', ['action' => 'auth.signed_in']);
     }
 
     public function test_signing_out_is_recorded(): void

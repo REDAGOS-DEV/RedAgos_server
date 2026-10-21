@@ -67,6 +67,10 @@ class User extends Authenticatable implements MustVerifyEmail
         return [
             'email_verified_at' => 'datetime',
             'activated_at' => 'datetime',
+            // Neither is fillable: both are written with forceFill() by the
+            // counter's sign-in slip and the donor's own password change.
+            'sign_in_issued_at' => 'datetime',
+            'password_change_required' => 'boolean',
             'terms_accepted_at' => 'datetime',
             'account_status' => AccountStatus::class,
             'department' => Department::class,

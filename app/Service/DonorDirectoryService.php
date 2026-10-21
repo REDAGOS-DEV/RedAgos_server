@@ -11,6 +11,7 @@ use App\Models\Donation;
 use App\Models\Facility;
 use App\Models\FacilityDonor;
 use App\Models\User;
+use App\Repository\AuthRepository;
 use App\Repository\BloodCenterRepository;
 use App\Repository\DonorDeferralRepository;
 use App\Repository\DonorDirectoryRepository;
@@ -46,6 +47,7 @@ class DonorDirectoryService
     public function __construct(
         private readonly DonorDirectoryRepository $donorDirectoryRepository,
         private readonly BloodCenterRepository $bloodCenterRepository,
+        private readonly AuthRepository $authRepository,
         private readonly AuditLogger $auditLogger,
         private readonly DonorDeferralRepository $donorDeferralRepository,
         private readonly DonorStandingResolver $donorStandingResolver,
@@ -317,11 +319,11 @@ class DonorDirectoryService
             throw $exception;
         }
 
-        // Only if they gave one. sendEmailVerificationNotification() is a no-op
-        // for an email-less account, but the intent is clearer stated here.
-        if ($donor->hasEmailAddress()) {
-            $donor->sendEmailVerificationNotification();
-        }
+        // No verification link (project owner, 2026-10-21). Staff typed the
+        // address, and a link mailed to a mistyped one would let its owner
+        // confirm it and reset the password. The donor signs in with the
+        // counter's slip (issueSignIn()) and confirms the address from the
+        // portal, where only they can ask for the link.
 
         $this->auditLogger->record($staff, $auditAction, $donor, [
             'facility_id' => $facility->id,
@@ -331,6 +333,62 @@ class DonorDirectoryService
         return [
             'message' => $donor->first_name.' has been registered.',
             'data' => $this->present($donor->fresh(['donorProfile.bloodType']), $facility, true),
+        ];
+    }
+
+    /**
+     * Issue the donor a sign-in slip: their donor code (and address, if any)
+     * and a temporary password, so they sign in to the app without
+     * registering (project owner, 2026-10-21).
+     *
+     * Staff hold the donor's ID in front of them, which is why sign-in does not
+     * then wait for an address to be confirmed (AuthService). Only for a donor
+     * with no confirmed address: one with an address signs in and resets their
+     * own password with it, and a desk that could replace that password could
+     * take over any self-registered account.
+     *
+     * Issuing again replaces the last password and ends every session, so a
+     * lost slip, or a claimed donor without an address who forgot their
+     * password, is handled the same way. The password appears in this response
+     * only; the audit row records that it was issued, never what it was.
+     *
+     * @return array<string, mixed>
+     */
+    public function issueSignIn(User $staff, string $uuid): array
+    {
+        $facility = $this->requireFacility($staff);
+        $donor = $this->ownDonor($facility, $uuid);
+
+        if (! $donor->account_status->canAuthenticate()) {
+            throw $this->refuse(409, 'account_not_active', 'This donor account is suspended or deactivated, so it cannot be given a sign-in.');
+        }
+
+        if ($donor->hasVerifiedEmail()) {
+            throw $this->refuse(
+                409,
+                'sign_in_managed_by_donor',
+                'This donor signs in with their own email address. If they forgot their password, they can reset it from the sign-in page.'
+            );
+        }
+
+        $reissued = $donor->sign_in_issued_at !== null;
+        $password = AccountIdentity::temporaryPassword();
+
+        $this->authRepository->issueTemporaryPassword($donor, $password);
+
+        $this->auditLogger->record($staff, 'donor.sign_in_issued', $donor, [
+            'facility_id' => $facility->id,
+            'reissued' => $reissued,
+        ]);
+
+        return [
+            'message' => 'Give '.$donor->first_name.' the sign-in slip. The temporary password is shown only once.',
+            'data' => [
+                'donor_code' => AccountIdentity::donorCode($donor->id),
+                'email' => $donor->email,
+                'temporary_password' => $password,
+                'reissued' => $reissued,
+            ],
         ];
     }
 
@@ -431,11 +489,10 @@ class DonorDirectoryService
             throw $exception;
         }
 
+        // A corrected address is left unconfirmed and no link is mailed, for
+        // the same reason as at registration: the donor confirms it from the
+        // portal.
         $donor->refresh()->load('donorProfile.bloodType');
-
-        if ($emailChanged && $donor->hasEmailAddress()) {
-            $donor->sendEmailVerificationNotification();
-        }
 
         $fields = array_keys([...$userChanges, ...$profileChanges, ...$recordChanges]);
 
@@ -642,9 +699,27 @@ class DonorDirectoryService
             'identity_status' => ($profile?->identity_status ?? IdentityStatus::Unsubmitted)->value,
             'account_status' => $donor->account_status?->value,
             'email_verified' => $donor->hasVerifiedEmail(),
+            'sign_in' => $this->signInState($donor),
             'donations_at_this_facility' => $this->donorDirectoryRepository
                 ->donationsAtFacility($donor->id, $facility->id)
                 ->count(),
+        ];
+    }
+
+    /**
+     * Where the counter's sign-in slip stands, for the desk.
+     *
+     * Claimed means the donor has signed in and replaced the temporary
+     * password. can_issue mirrors issueSignIn()'s own refusals.
+     *
+     * @return array{issued_at: string|null, claimed: bool, can_issue: bool}
+     */
+    private function signInState(User $donor): array
+    {
+        return [
+            'issued_at' => $donor->sign_in_issued_at?->toISOString(),
+            'claimed' => $donor->sign_in_issued_at !== null && ! $donor->password_change_required,
+            'can_issue' => $donor->account_status->canAuthenticate() && ! $donor->hasVerifiedEmail(),
         ];
     }
 

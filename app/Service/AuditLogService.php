@@ -334,6 +334,8 @@ class AuditLogService
             'email_not_verified' => 'email not verified',
             'role_mismatch' => 'wrong portal',
             'facility_not_activated' => 'facility not activated',
+            'admin_sign_in_required' => 'admin used the main sign-in',
+            'no_portal_access' => 'no portal access',
             default => 'refused',
         };
     }

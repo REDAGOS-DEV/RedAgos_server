@@ -150,6 +150,24 @@ class AuditLogTest extends TestCase
             ->assertJsonPath('data.0.details', 'Sign-in refused · Arjun Mehta · wrong password');
     }
 
+    public function test_an_account_with_no_role_refused_on_the_single_page_says_why(): void
+    {
+        User::factory()->create([
+            'facility_id' => $this->facility->id,
+            'first_name' => 'Lito',
+            'last_name' => 'Cruz',
+            'email' => 'lito@example.com',
+            'password' => 'Password123',
+        ]);
+
+        $this->postJson('/api/login', ['email' => 'lito@example.com', 'password' => 'Password123'])->assertForbidden();
+
+        $this->actingAs($this->admin)->getJson('/api/blood-center/audit-log')
+            ->assertOk()
+            ->assertJsonPath('total', 1)
+            ->assertJsonPath('data.0.details', 'Sign-in refused · Lito Cruz · no portal access');
+    }
+
     public function test_an_unknown_filter_is_refused(): void
     {
         $this->actingAs($this->admin)->getJson('/api/blood-center/audit-log?module=everything')

@@ -29,7 +29,11 @@ class AuthService
      */
     public function login(array $payload): array
     {
-        $user = $this->authRepository->findByEmail(Str::lower(trim($payload['email'])));
+        // `login` (an address or a username) from the single sign-in page,
+        // `email` from the pages that still send it. The refusal is filed
+        // under whichever field was sent, so the form can mark it.
+        $field = filled($payload['login'] ?? null) ? 'login' : 'email';
+        $user = $this->authRepository->findByLogin(trim((string) $payload[$field]));
 
         if (! $user || ! Hash::check($payload['password'], $user->password)) {
             // An address that matches no account belongs to no facility, so
@@ -39,7 +43,7 @@ class AuthService
             }
 
             throw ValidationException::withMessages([
-                'email' => ['The provided credentials are incorrect.'],
+                $field => ['The provided credentials are incorrect.'],
             ]);
         }
 
@@ -99,11 +103,21 @@ class AuthService
     /**
      * Send a password reset link without revealing whether the address is registered.
      *
+     * Only to a confirmed address. A counter-registered donor's address was
+     * typed by staff, and a reset link mailed to a mistyped one would hand the
+     * account to whoever owns it. Such a donor confirms it from the portal, or
+     * asks the counter for a new sign-in slip. The reply is the same either
+     * way, so it still reveals nothing.
+     *
      * @return array<string, string>
      */
     public function sendPasswordResetLink(string $email): array
     {
-        Password::sendResetLink(['email' => Str::lower(trim($email))]);
+        $normalized = Str::lower(trim($email));
+
+        if ($this->authRepository->findByEmail($normalized)?->hasVerifiedEmail()) {
+            Password::sendResetLink(['email' => $normalized]);
+        }
 
         return [
             'message' => 'If this email is registered, a password reset link has been sent.',
@@ -126,7 +140,8 @@ class AuthService
                 'token' => $payload['token'],
             ],
             function (User $user, string $password): void {
-                $user->forceFill(['password' => $password])->save();
+                // A password the donor chose replaces any the counter issued.
+                $user->forceFill(['password' => $password, 'password_change_required' => false])->save();
                 $this->authRepository->revokeAllTokens($user);
             }
         );
@@ -243,10 +258,15 @@ class AuthService
      * the first booking attempt, so an unverified account has no business
      * holding a token at all. The `code` lets the client offer a resend
      * instead of showing the generic credentials error.
+     *
+     * A donor given a sign-in slip at the counter is let through without one:
+     * staff checked their ID in person, which proves more than a link in an
+     * inbox, and the donor may have no address at all. They confirm it from
+     * the portal later, which online booking still asks for.
      */
     private function guardEmailVerified(User $user): void
     {
-        if ($user->hasVerifiedEmail()) {
+        if ($user->hasVerifiedEmail() || $user->sign_in_issued_at !== null) {
             return;
         }
 
@@ -258,13 +278,17 @@ class AuthService
 
     /**
      * Ensure the user actually holds the role their sign-in form claimed.
+     *
+     * The single sign-in page names no role, so an empty one is checked by
+     * guardUnifiedSignIn() rather than waved through. The administrator page
+     * still names `admin`.
      */
     private function guardRequestedRole(User $user, ?string $requestedRole): ?RoleName
     {
         $role = RoleName::normalize($requestedRole);
 
         if ($role === null) {
-            return null;
+            return $this->guardUnifiedSignIn($user);
         }
 
         if ($user->hasRole($role)) {
@@ -277,16 +301,56 @@ class AuthService
         // nothing to resubmit any more, so the refusal says so plainly rather
         // than issuing a roleless token that can reach nothing.
         if ($this->isUnapprovedOrganisationApplicant($user, $role)) {
-            throw new HttpResponseException(response()->json([
-                'message' => 'This facility account has not been activated yet. Please contact the RedAgos administrator.',
-                'code' => 'facility_not_activated',
-            ], 403));
+            throw $this->facilityNotActivated();
         }
 
         throw new HttpResponseException(response()->json([
             'message' => 'This account cannot sign in from this portal.',
             'code' => 'role_mismatch',
         ], 403));
+    }
+
+    /**
+     * Admit a sign-in from the single sign-in page, which names no role.
+     *
+     * Donors, blood-centre staff and hospital blood banks all sign in there,
+     * and the client sends each to their own dashboard by the roles on the
+     * account. Two kinds of account are turned away:
+     *
+     *  - Administrators. They sign in only at the administrator page, which no
+     *    public page links to (project owner, 2026-10-21). That includes an
+     *    administrator who also holds another role: once signed in there, the
+     *    client lets them open their other portal.
+     *  - Accounts with no role at all, which would otherwise be handed a token
+     *    that can reach nothing.
+     *
+     * Returns the account's role when it holds exactly one, so the audit row
+     * and the token name say which portal it signed in to, as they do when a
+     * page names it. An account with several has no single answer.
+     */
+    private function guardUnifiedSignIn(User $user): ?RoleName
+    {
+        if ($user->hasRole(RoleName::Admin)) {
+            throw new HttpResponseException(response()->json([
+                'message' => 'Administrators sign in from the administrator sign-in page.',
+                'code' => 'admin_sign_in_required',
+            ], 403));
+        }
+
+        if ($user->roles->isEmpty()) {
+            if ($this->hasUnactivatedFacility($user)) {
+                throw $this->facilityNotActivated();
+            }
+
+            throw new HttpResponseException(response()->json([
+                'message' => 'This account has no access to RedAgos yet. Please contact the RedAgos administrator.',
+                'code' => 'no_portal_access',
+            ], 403));
+        }
+
+        return $user->roles->count() === 1
+            ? RoleName::tryFrom($user->roles->first()->name)
+            : null;
     }
 
     /**
@@ -302,11 +366,28 @@ class AuthService
             return false;
         }
 
+        return $this->hasUnactivatedFacility($user);
+    }
+
+    /**
+     * Whether the account's facility is still pending or was rejected: the
+     * legacy applicants, who hold no role until an administrator resolves them.
+     */
+    private function hasUnactivatedFacility(User $user): bool
+    {
         return $user->facility !== null && in_array(
             $user->facility->status,
             [FacilityStatus::PendingApproval, FacilityStatus::Rejected],
             true
         );
+    }
+
+    private function facilityNotActivated(): HttpResponseException
+    {
+        return new HttpResponseException(response()->json([
+            'message' => 'This facility account has not been activated yet. Please contact the RedAgos administrator.',
+            'code' => 'facility_not_activated',
+        ], 403));
     }
 
     /**

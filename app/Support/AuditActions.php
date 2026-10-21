@@ -115,6 +115,7 @@ final class AuditActions
         'donor.identity_rejected' => ['donors', 'reject', 'Rejected a donor\'s ID'],
         'donor.blood_type_verified' => ['donors', 'approve', 'Confirmed a donor\'s blood type'],
         'donor.qr_code.issued' => ['donors', 'create', 'Issued a check-in QR code'],
+        'donor.sign_in_issued' => ['donors', 'create', 'Issued a sign-in slip'],
         'donor.emailed' => ['donors', 'send', 'Emailed a donor'],
         'donors.eligibility_reminders_sent' => ['donors', 'send', 'Sent eligibility reminders'],
         'donors.exported' => ['donors', 'export', 'Exported the donor list'],

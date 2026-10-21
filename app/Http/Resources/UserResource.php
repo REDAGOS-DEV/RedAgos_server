@@ -32,6 +32,12 @@ class UserResource extends JsonResource
             'username' => $this->username,
             'account_status' => $this->account_status?->value,
             'email_verified' => $this->hasVerifiedEmail(),
+            // Signed in with a temporary password from the counter's slip: the
+            // client sends them to set their own, and every other endpoint
+            // refuses until they do (EnsurePasswordChanged). Named without the
+            // word "password": SensitiveDataExposureTest refuses any payload
+            // that carries it, and that blunt check is worth keeping.
+            'temporary_sign_in' => (bool) $this->password_change_required,
             'activated_at' => $this->activated_at?->toISOString(),
             'roles' => $this->whenLoaded(
                 'roles',
