@@ -46,7 +46,7 @@ class StaffManagementTest extends TestCase
             'last_name' => 'Guerra',
             'email' => 'maria.guerra@example.com',
             'phone' => '09171234567',
-            'position' => 'Medical Technologist',
+            'credentials' => 'RMT',
             'staff_role' => StaffRole::SerologyTechnologist->value,
             'password' => 'Password123',
             'password_confirmation' => 'Password123',
@@ -93,7 +93,7 @@ class StaffManagementTest extends TestCase
                 'staff_role' => null,
                 'custom_role' => 'Quality Assurance Officer',
                 'department' => Department::Issuance->value,
-                'position' => 'RMT',
+                'credentials' => 'RN',
                 'staff_privileges' => ['read', 'update'],
             ]))
             ->assertCreated()

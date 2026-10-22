@@ -6,6 +6,7 @@ use App\Enums\Department;
 use App\Enums\DonationStatus;
 use App\Enums\StaffRole;
 use App\Enums\TestResult;
+use App\Models\BloodCollection;
 use App\Models\BloodComponent;
 use App\Models\BloodType;
 use App\Models\Donation;
@@ -13,6 +14,7 @@ use App\Models\DonationClearance;
 use App\Models\DonationComponent;
 use App\Models\DonationTestResult;
 use App\Models\Facility;
+use App\Models\FacilityBloodComponent;
 use App\Models\User;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Testing\TestResponse;
@@ -72,6 +74,25 @@ class LaboratoryProcessingTest extends TestCase
             'donor_id' => $profile->donor_id,
             'status' => DonationStatus::Collected,
         ]);
+
+        // What the final labels need: a sticker to number the bags from and a
+        // shelf life to print an expiry from.
+        BloodCollection::where('donation_id', $this->donation->id)->update(['donation_barcode' => '1234567']);
+        FacilityBloodComponent::create([
+            'facility_id' => $this->facility->id,
+            'component_id' => $this->component->id,
+            'shelf_life_days' => 35,
+        ]);
+    }
+
+    /**
+     * Processing prints the final labels, which the hand-over requires (project owner, 2026-10-22).
+     */
+    private function printLabels(): TestResponse
+    {
+        return $this->actingAs($this->processing)->postJson(
+            "/api/blood-center/laboratory/donations/{$this->donation->id}/labels"
+        );
     }
 
     /**
@@ -335,6 +356,13 @@ class LaboratoryProcessingTest extends TestCase
         $this->recordPassingTests();
         $this->declareComponents()->assertCreated();
 
+        // The bags leave Processing labelled, never before.
+        $this->complete()
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'labels_not_printed');
+
+        $this->printLabels()->assertOk();
+
         $this->complete()
             ->assertOk()
             ->assertJsonPath('data.status', 'completed');
@@ -378,8 +406,8 @@ class LaboratoryProcessingTest extends TestCase
         $this->legacyResult(TestResult::Inconclusive);
         $this->declareComponents()->assertCreated();
 
-        // Completing only hands the bags over. Nothing clears them.
-        $this->complete()->assertOk();
+        // Nothing clears it, so its bags never leave Processing.
+        $this->complete()->assertStatus(409)->assertJsonPath('code', 'tti_not_cleared');
 
         $this->assertSame(0, DonationClearance::where('donation_id', $this->donation->id)->count());
     }
@@ -388,16 +416,18 @@ class LaboratoryProcessingTest extends TestCase
     {
         $this->legacyResult(TestResult::Passed);
         $this->declareComponents()->assertCreated();
-        $this->complete()->assertOk();
 
         // Every unit issued from now on has a reading for all five markers.
+        $this->complete()->assertStatus(409)->assertJsonPath('code', 'tti_not_cleared');
         $this->assertSame(0, DonationClearance::where('donation_id', $this->donation->id)->count());
 
         $this->recordPassingTests();
 
         $this->assertSame(2, DonationClearance::where('donation_id', $this->donation->id)->count());
 
-        // Already completed, so it stays completed rather than stepping back.
+        $this->printLabels()->assertOk();
+        $this->complete()->assertOk();
+
         $this->assertSame(DonationStatus::Completed, $this->donation->fresh()->status);
     }
 
@@ -415,16 +445,45 @@ class LaboratoryProcessingTest extends TestCase
         $this->assertContains($this->donation->id, $ids);
     }
 
-    public function test_processing_completes_without_waiting_for_results_but_clears_nothing(): void
+    public function test_processing_keeps_the_bags_until_testing_clears_them(): void
     {
         // Plasma has to be frozen within hours; the serology run may take a
-        // day. Completing hands the bags to Issuance, who book them in
-        // quarantined — it no longer says anything about safety.
+        // day. Processing separates without waiting, but the bags stay in its
+        // quarantine until both sections clear and they are labelled
+        // (project owner, 2026-10-22).
         $this->declareComponents()->assertCreated();
 
-        $this->complete()->assertOk()->assertJsonPath('data.status', 'completed');
+        $this->complete()->assertStatus(409)->assertJsonPath('code', 'tti_not_cleared');
+        $this->printLabels()->assertStatus(409)->assertJsonPath('code', 'tti_not_cleared');
 
-        $this->assertSame(0, DonationClearance::where('donation_id', $this->donation->id)->count());
+        $this->recordSerology()->assertCreated();
+
+        $this->complete()->assertStatus(409)->assertJsonPath('code', 'immunohematology_not_cleared');
+
+        $this->assertSame(DonationStatus::Collected, $this->donation->fresh()->status);
+        $this->assertNull($this->donation->fresh()->labelled_at);
+    }
+
+    public function test_a_correction_before_the_hand_over_means_printing_the_labels_again(): void
+    {
+        $this->recordPassingTests();
+        $this->declareComponents()->assertCreated();
+        $this->printLabels()->assertOk();
+
+        // The technologist's own breakdown correction applies at once.
+        $this->actingAs($this->processing)
+            ->postJson("/api/blood-center/donations/{$this->donation->id}/corrections", [
+                'subject' => 'components',
+                'reason' => 'The bag was 240 mL, not 250.',
+                'changes' => ['components' => [['component_id' => $this->component->id, 'volume_ml' => 240]]],
+            ])
+            ->assertSuccessful();
+
+        $this->assertNull($this->donation->fresh()->labelled_at);
+        $this->complete()->assertStatus(409)->assertJsonPath('code', 'labels_not_printed');
+
+        $this->printLabels()->assertOk()->assertJsonPath('units.0.volume_ml', 240);
+        $this->complete()->assertOk();
     }
 
     public function test_each_department_clears_only_its_own_section(): void
@@ -460,11 +519,11 @@ class LaboratoryProcessingTest extends TestCase
     {
         $this->declareComponents()->assertCreated();
 
-        // The two branches no longer join at completion: they join at the
-        // quarantine release, which needs both tokens.
-        $this->complete()->assertOk();
+        // The two branches join at the hand-over, which needs both tokens
+        // and the final labels.
+        $this->complete()->assertStatus(409);
 
-        $this->assertSame(DonationStatus::Completed, $this->donation->fresh()->status);
+        $this->assertSame(DonationStatus::Collected, $this->donation->fresh()->status);
         $this->assertSame(0, DonationClearance::where('donation_id', $this->donation->id)->count());
     }
 

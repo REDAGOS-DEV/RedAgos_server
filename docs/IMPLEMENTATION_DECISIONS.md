@@ -995,6 +995,8 @@ Donor directory projections by role: `donors.view_contact` alone (Recruitment) g
 
 ## Quarantine lifecycle
 
+> **PARTLY SUPERSEDED (2026-10-22)** by "Release step removed" below: Issuance no longer books bags into quarantine, and the release endpoint and `inventory.release_quarantine` are gone. The clearance tokens below still stand: Processing's final labels and Stock Intake both require them.
+
 **DECISION (Branch B, implemented):** Processing no longer waits for test results — plasma must be frozen within hours of the draw. `completed` now means *processed*: components declared, bags handed to Issuance. Units are booked in `quarantined` (new `BloodUnitStatus`, migration `2026_09_28_100001`), and leave quarantine only through `POST /inventory/quarantine/{donation}/release` (`inventory.release_quarantine`, the Inventory Control Officer), which requires:
 
 - both **clearance tokens** (`donation_clearances`: kinds `tti` and `immunohematology`, at most one in force per donation and kind; never deleted, and never edited except to be revoked once by an approved correction — the model refuses anything else);
@@ -2136,3 +2138,55 @@ Opened from View, the dialog offers Edit or Review when the row allows it. Every
 - No verification link is mailed when the counter registers a donor (or a paper record does), or when staff correct a donor's address. Staff typed it, and a link mailed to a mistyped address would let its owner confirm it and reset the password. The donor confirms it from the portal after signing in.
 - A password reset link goes only to a confirmed address. The reply is the same either way.
 - Online booking still needs a confirmed address (`AppointmentService::guardEmailVerified()`).
+
+## Release step removed
+
+**SOURCE:** The project owner, 2026-10-22, on Stock Intake's Release tab: "remove it". Since final labels moved to Processing the same day, the hand-over requires both clearances and the final labels. Nothing new could reach quarantine at Issuance. The dev database had no quarantined unit and no unlabelled hand-over with bags still to book.
+
+**DECISION:**
+- `POST /inventory/quarantine/{donation}/release`, `InventoryService::releaseFromQuarantine()`, `InventoryRepository::lockQuarantinedUnits()` and the `inventory.release_quarantine` ability are removed. So is the unit's `quarantine` state block, which only the release panel read.
+- Stock Intake books in only a donation that both clearances cover and that Processing has labelled. Otherwise it refuses with 409 `donation_not_cleared` or `labels_not_printed`, rather than booking the bags into a quarantine nobody can release. Every booked unit is `available`, with `released_at`/`released_by` set to the booking.
+- The intake queue still lists a legacy unlabelled hand-over, with `into_stock` false. The page shows it as "Not ready" with nothing to fill in. Processing labels it from the Processed list once Testing has cleared it, and it then books straight in.
+- Client: the Release tab, `QuarantinePanel` (on Stock Intake and, read-only, on Blood Inventory) and `releaseQuarantine()` are gone.
+- Kept: the `quarantined` unit status (old rows; discard still accepts it), the `inventory.released_from_quarantine` audit action and its activity label (old audit rows), and the inventory summary's `quarantined` counts, which no page shows any more.
+- Also removed, same day, by the owner's word ("remove it also"):
+  - The Issuance dashboard's "In Quarantine" card, and the quarantine part of each blood type's shelf bar. The dashboard has three headline cards.
+  - Stock Intake's manual bag entry: the component picker, the typed unit number and Add bag. A donation that can be booked in is labelled, and Processing labels only numbered bags. So every row is a numbered bag, and the page never sends `unit_id`.
+  - A labelled donation whose bags have no numbers shows "Its bags have no numbers" rather than a form. Its barcode would have had to be removed after the hand-over.
+  - The server's typed and generated unit-number paths stay, unused by the page.
+
+## Stock report: logos the height of the header, and a left logo of the centre's own
+
+**SOURCE:** The project owner, 2026-10-22: on the Daily Blood Stock Inventory "the logo is very small, the height should be level at Republic of the Philippines and Daily Blood Stock Inventory as of …", then "what about the left side logo for DOH", then "I want to add left side logo".
+
+**DECISION:**
+- Both logos run from the first header line down to the title, on the screen (`stock-report.vue`: the title moved into the head's grid, each logo box spans both rows and its image fills it) and in the PDF (`stock-inventory.blade.php`: the seal and logo cells span the header and title rows, images 80pt tall).
+- The default left logo is the DOH seal, a 400 × 400 PNG from Wikimedia Commons' "Department of Health (DOH) PHL.svg", at `resources/images/doh-seal.png` and the client's `public/images/doh-seal.png`.
+- A centre may upload its own left logo: `facilities.seal_path` (migration `2026_10_22_000002`), files under `facility-seals/` on the private disk. Same rules as the facility logo: `center.configure`, PNG/JPG up to 2 MB (`UpdateFacilityLogoRequest`, field `logo`), signed 30-minute link (`blood-center.facility.seal`), inlined into the PDF. `POST`/`DELETE /blood-center/facility/seal`. Audited as `center.seal_updated` / `center.seal_removed`.
+- The profile and the stock report carry `facility.seal_url`; null means the DOH seal. Only the stock report prints the left logo, and no billing document freezes it, so a replaced file is deleted at once.
+- Settings → Blood Center has a second card, "Left logo", which previews the DOH seal until one is uploaded. Its remove button reads "Use the DOH seal".
+- A logo with transparent padding still prints small inside its box. Crop the file before uploading.
+
+## Staff credentials after the name, in every department
+
+**SOURCE:** The project owner, 2026-10-22.
+- On the stock report's "BY: ROWENA TAN, Inventory Control Officer": "if a staff have a title such as MD, RMT, or RN … BY: ROWENA TAN, RMT".
+- Then: "apply that for all section/department".
+- Offered a separate Position and Credentials, the owner chose to merge them into one "Title" field that holds only credentials. The role says what a person does.
+
+**DECISION:**
+- `users.credentials` (40 characters, nullable; migration `2026_10_22_000003`) is a blood-centre account's **Title**: post-nominals such as RMT, RN or MD. Letters, digits, spaces, `.,&()/-`.
+  - The Admin sets it on the Staff page; staff set their own in Settings → Profile. The catalogue's `titles` (RMT, RN, MD) are its suggestions.
+- Blood-centre accounts keep no job post. The staff and profile endpoints neither take nor return `position`, the pages no longer show it, and `BloodCenterStaffSeeder` no longer writes it.
+  - The migration moves a blood-centre account's position that was only a credential (RMT, RN, MD, RPh, RM) into `credentials`.
+  - Other old posts stay in the column, unread.
+  - Hospital staff, and the platform admin's facility accounts, keep their `position`.
+- `User::signatureName()` gives "Rowena Tan, RMT". Every blood-centre attribution uses it:
+  - Collection: screened by, collected by, appointment booked by, paper-sheet created by.
+  - Testing: recorded or verified by, correction requested or reviewed by, deferrals, counselling referrals.
+  - Processing: processed by, labelled by, the clearance issuer on the final label.
+  - Issuance: inventory activity, stock thresholds updated by, direct distribution received by, request history.
+  - Billing: SOA issued by, receipt received by (new receipts only; issued ones keep their snapshot), cashier and closed by, journal recorded by.
+  - Admin: the Audit Log actor.
+- Every user relation loaded with a column list includes `credentials`. Donor names never use `signatureName()`.
+- The stock report's "BY:" line is the upper-cased name, then the title if there is one. It never prints a post.

@@ -40,8 +40,8 @@ class TransfusionRequestRepository
         'bloodType',
         'hospital',
         'items.component',
-        'requester:id,first_name,last_name',
-        'recorder:id,first_name,last_name',
+        'requester:id,first_name,last_name,credentials',
+        'recorder:id,first_name,last_name,credentials',
         'facilityAllocations.targetFacility',
     ];
 
@@ -52,15 +52,15 @@ class TransfusionRequestRepository
      */
     private const DETAIL_RELATIONS = [
         ...self::LIST_RELATIONS,
-        'items.closer:id,first_name,last_name',
+        'items.closer:id,first_name,last_name,credentials',
         'facilityAllocations.items.component',
         'facilityAllocations.allocations.unit',
         'facilityAllocations.bloodType',
         'facilityAllocations.requestingFacility',
-        'facilityAllocations.requester:id,first_name,last_name',
-        'facilityAllocations.recorder:id,first_name,last_name',
+        'facilityAllocations.requester:id,first_name,last_name,credentials',
+        'facilityAllocations.recorder:id,first_name,last_name,credentials',
         'facilityAllocations.walkIn',
-        'facilityAllocations.walkIn.verificationRecorder:id,first_name,last_name',
+        'facilityAllocations.walkIn.verificationRecorder:id,first_name,last_name,credentials',
     ];
 
     /**

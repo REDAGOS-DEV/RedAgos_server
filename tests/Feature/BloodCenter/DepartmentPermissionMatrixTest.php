@@ -245,7 +245,7 @@ class DepartmentPermissionMatrixTest extends TestCase
             'corrections.request', 'corrections.approve',
             'donations.register', 'donations.screen', 'donations.collect', 'donations.record_paper', 'lab.record_serology',
             'lab.record_components', 'lab.update_status', 'inventory.create', 'inventory.update',
-            'inventory.discard', 'inventory.thresholds', 'inventory.release_quarantine',
+            'inventory.discard', 'inventory.thresholds',
             'requests.approve', 'requests.release', 'billing.record_payment',
             'components.configure', 'billing.prices', 'donors.view_identity', 'donors.view_clinical',
         ] as $work) {
@@ -569,7 +569,7 @@ class DepartmentPermissionMatrixTest extends TestCase
             DepartmentPermissions::forRole(StaffRole::ItDataClerk)
         );
 
-        foreach (['inventory.create', 'inventory.update', 'inventory.discard', 'inventory.release_quarantine'] as $direct) {
+        foreach (['inventory.create', 'inventory.update', 'inventory.discard'] as $direct) {
             $this->assertNotContains($direct, DepartmentPermissions::forRole(StaffRole::ItDataClerk));
         }
     }
@@ -687,7 +687,7 @@ class DepartmentPermissionMatrixTest extends TestCase
 
         $this->assertSame(Department::values(), array_column($catalogue['departments'], 'department'));
         $this->assertSame(['read', 'write', 'update', 'delete'], array_column($catalogue['privileges'], 'key'));
-        $this->assertSame(['RMT', 'RN'], $catalogue['titles']);
+        $this->assertSame(['RMT', 'RN', 'MD'], $catalogue['titles']);
 
         $keys = [];
 

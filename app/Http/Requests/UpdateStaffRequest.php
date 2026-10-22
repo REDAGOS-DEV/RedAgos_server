@@ -66,7 +66,10 @@ class UpdateStaffRequest extends FormRequest
                 'sometimes', 'nullable', 'string', 'regex:/^(?:\+63|63|0)9\d{9}$/',
                 Rule::unique('users', 'phone')->ignore($uuid, 'uuid'),
             ],
-            'position' => ['sometimes', 'nullable', 'string', 'max:100'],
+            // The title, printed after the name on everything the staff member
+            // signs: RMT, MD, RN. Blood-centre accounts keep no job post beside
+            // it (project owner, 2026-10-22).
+            'credentials' => ['sometimes', 'nullable', 'string', 'max:40', 'regex:/^[\pL\d][\pL\d.,&()\/ -]*$/u'],
             'employee_id' => [
                 'sometimes', 'nullable', 'string', 'max:50',
                 Rule::unique('users', 'employee_id')
@@ -126,6 +129,8 @@ class UpdateStaffRequest extends FormRequest
     public function messages(): array
     {
         return [
+            'credentials.regex' => 'Write the credentials as letters, for example RMT, or MD, FPCP.',
+            'credentials.max' => 'Keep the credentials to 40 characters.',
             'phone.unique' => 'An account already exists for this phone number.',
             'is_supervisor.prohibited' => 'is_supervisor was replaced by management_level: admin or supervisor.',
             'employee_id.unique' => 'Another staff member at this facility already has this employee ID.',

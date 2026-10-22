@@ -24,6 +24,7 @@ class ProcessedDonationRepository
         'components.component',
         'components.declarer',
         'clearances',
+        'labeller',
     ];
 
     /**

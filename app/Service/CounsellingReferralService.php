@@ -238,11 +238,11 @@ class CounsellingReferralService
             // one for a request sent by itself before they were sent by hand.
             'contact_requested_at' => $referral->contact_requested_at?->toISOString(),
             'contact_requested_by' => $referral->contactRequester
-                ? trim($referral->contactRequester->first_name.' '.$referral->contactRequester->last_name)
+                ? $referral->contactRequester->signatureName()
                 : null,
             'note' => $referral->note,
             'updated_by' => $referral->updater
-                ? trim($referral->updater->first_name.' '.$referral->updater->last_name)
+                ? $referral->updater->signatureName()
                 : null,
             'donor' => $donor === null ? null : [
                 'uuid' => $donor->uuid,
@@ -264,11 +264,11 @@ class CounsellingReferralService
                 $serology->reactiveMarkers()
             ),
             'screened_by' => $serology?->recorder
-                ? trim($serology->recorder->first_name.' '.$serology->recorder->last_name)
+                ? $serology->recorder->signatureName()
                 : null,
             'screened_at' => $serology?->recorded_at?->toISOString(),
             'verified_by' => $serology?->verifier
-                ? trim($serology->verifier->first_name.' '.$serology->verifier->last_name)
+                ? $serology->verifier->signatureName()
                 : null,
             'verified_at' => $serology?->verified_at?->toISOString(),
         ];

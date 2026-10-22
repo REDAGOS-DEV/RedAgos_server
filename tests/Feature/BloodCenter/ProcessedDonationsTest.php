@@ -2,13 +2,16 @@
 
 namespace Tests\Feature\BloodCenter;
 
+use App\Enums\ClearanceKind;
 use App\Enums\DonationStatus;
 use App\Enums\StaffRole;
 use App\Models\BloodCollection;
 use App\Models\BloodComponent;
 use App\Models\BloodUnit;
 use App\Models\Donation;
+use App\Models\DonationClearance;
 use App\Models\Facility;
+use App\Models\FacilityBloodComponent;
 use App\Models\User;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Support\Carbon;
@@ -44,6 +47,33 @@ class ProcessedDonationsTest extends TestCase
         $this->technologist = User::factory()->bloodCenterStaff($this->facility, StaffRole::ComponentTechnologist)->create();
         $this->assistant = User::factory()->bloodCenterStaff($this->facility, StaffRole::ProcessingAssistant)->create();
         $this->component = BloodComponent::factory()->create(['name' => 'Packed RBC']);
+
+        // The final label prints an expiry, so the component needs a shelf life here.
+        FacilityBloodComponent::create([
+            'facility_id' => $this->facility->id,
+            'component_id' => $this->component->id,
+            'shelf_life_days' => 35,
+        ]);
+    }
+
+    /**
+     * Testing clears the donation and Processing prints its final labels: what
+     * the hand-over needs (project owner, 2026-10-22).
+     */
+    private function clearAndLabel(Donation $donation): void
+    {
+        foreach ([ClearanceKind::Tti, ClearanceKind::Immunohematology] as $kind) {
+            DonationClearance::create([
+                'donation_id' => $donation->id,
+                'kind' => $kind,
+                'issued_at' => now(),
+                'source' => 'test',
+            ]);
+        }
+
+        $this->actingAs($this->technologist)
+            ->postJson("/api/blood-center/laboratory/donations/{$donation->id}/labels")
+            ->assertOk();
     }
 
     private function drawn(string $barcode, string $firstName = 'Juan', ?Facility $at = null): Donation
@@ -142,14 +172,29 @@ class ProcessedDonationsTest extends TestCase
         $donation = $this->drawn('BC-2001');
         $this->process($donation);
 
+        // Not before Testing has cleared it and its final labels are printed.
+        $waiting = $this->rows($this->technologist)[0];
+        $this->assertSame('awaiting_testing', $waiting['label_state']);
+        $this->assertSame('Awaiting testing', $waiting['status_label']);
+        $this->assertFalse($waiting['can']['hand_over']);
+        $this->assertFalse($waiting['can']['print_labels']);
+        $this->assertTrue($waiting['can']['reject']);
+
+        $this->clearAndLabel($donation);
+
         $mine = $this->rows($this->technologist)[0];
+        $this->assertSame('labelled', $mine['label_state']);
+        $this->assertSame('Ready to hand over', $mine['status_label']);
+        $this->assertNotNull($mine['labelled_at']);
+        $this->assertSame(trim($this->technologist->first_name.' '.$this->technologist->last_name), $mine['labelled_by']);
         $this->assertTrue($mine['can']['hand_over']);
         $this->assertTrue($mine['can']['reject']);
 
-        // The assistant records breakdowns but hands nothing over.
+        // The assistant records breakdowns and prints labels, but hands nothing over.
         $theirs = $this->rows($this->assistant)[0];
         $this->assertFalse($theirs['can']['hand_over']);
         $this->assertFalse($theirs['can']['reject']);
+        $this->assertTrue($theirs['can']['print_labels']);
 
         $this->actingAs($this->assistant)
             ->patchJson("/api/blood-center/laboratory/donations/{$donation->id}/status", ['status' => 'completed'])
@@ -166,6 +211,7 @@ class ProcessedDonationsTest extends TestCase
             $this->process($donation);
         }
 
+        $this->clearAndLabel($handed);
         $this->handOver($handed)->assertOk()->assertJsonPath('data.status', 'completed');
         $this->actingAs($this->technologist)->patchJson("/api/blood-center/laboratory/donations/{$rejected->id}/status", [
             'status' => 'rejected',
@@ -216,6 +262,7 @@ class ProcessedDonationsTest extends TestCase
             $this->process($donation);
         }
 
+        $this->clearAndLabel($handed);
         $this->handOver($handed)->assertOk();
         $this->actingAs($this->technologist)->patchJson("/api/blood-center/laboratory/donations/{$rejected->id}/status", [
             'status' => 'rejected',
@@ -326,7 +373,7 @@ class ProcessedDonationsTest extends TestCase
 
         $this->assertStringStartsWith("\xEF\xBB\xBFDonationID,Bag,Donor,DonorID,BloodGroup,Components,Bags,ProcessedVolumeMl", $csv);
         $this->assertStringContainsString('BC-7001', $csv);
-        $this->assertStringContainsString('Awaiting hand-over', $csv);
+        $this->assertStringContainsString('Awaiting testing', $csv);
         $this->assertStringNotContainsString('Pedro', $csv);
         $this->assertDatabaseHas('audit_logs', ['action' => 'laboratory.processed_exported', 'actor_id' => $this->technologist->id]);
     }

@@ -2,9 +2,11 @@
 
 namespace Tests\Feature\BloodCenter;
 
+use App\Enums\BloodUnitStatus;
 use App\Enums\ClearanceKind;
 use App\Enums\DonationStatus;
 use App\Enums\StaffRole;
+use App\Models\AuditLog;
 use App\Models\BloodCollection;
 use App\Models\BloodComponent;
 use App\Models\BloodUnit;
@@ -12,9 +14,11 @@ use App\Models\Donation;
 use App\Models\DonationClearance;
 use App\Models\DonationComponent;
 use App\Models\Facility;
+use App\Models\FacilityBloodComponent;
 use App\Models\User;
 use App\Support\BagNumbers;
 use App\Support\OperationalDay;
+use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Testing\TestResponse;
@@ -22,7 +26,8 @@ use Tests\TestCase;
 
 /**
  * Two-phase labelling: bags numbered from the barcode sticker at Processing,
- * booked in under those numbers, and given their final label on release.
+ * given their final label by Processing once Testing clears them (project
+ * owner, 2026-10-22), and booked in under those numbers.
  */
 class TwoPhaseLabelingTest extends TestCase
 {
@@ -98,6 +103,7 @@ class TwoPhaseLabelingTest extends TestCase
     private function bookAllBags(): void
     {
         $this->declareBags();
+        $this->handOver();
 
         $this->bookIn([
             ['component_id' => $this->prbc->id],
@@ -122,6 +128,59 @@ class TwoPhaseLabelingTest extends TestCase
                 'source' => 'test',
             ]);
         }
+    }
+
+    /**
+     * Cleared by Testing and labelled by Processing: the only state Stock
+     * Intake books in (project owner, 2026-10-22).
+     */
+    private function handOver(): void
+    {
+        $this->clearBoth();
+        $this->donation->update(['labelled_at' => now()]);
+    }
+
+    private ?User $technologist = null;
+
+    /**
+     * The component technologist who prints the final labels.
+     */
+    private function technologist(): User
+    {
+        return $this->technologist ??= User::factory()->bloodCenterStaff($this->facility, StaffRole::ComponentTechnologist)->create([
+            'first_name' => 'Lea',
+            'last_name' => 'Navarro',
+        ]);
+    }
+
+    private function printLabels(): TestResponse
+    {
+        return $this->actingAs($this->technologist())
+            ->postJson("/api/blood-center/laboratory/donations/{$this->donation->id}/labels");
+    }
+
+    /**
+     * A shelf life for both components here: what the label's expiry is counted from.
+     */
+    private function shelfLives(): void
+    {
+        foreach ([[$this->prbc, 42], [$this->ffp, 365]] as [$component, $days]) {
+            FacilityBloodComponent::updateOrCreate(
+                ['facility_id' => $this->facility->id, 'component_id' => $component->id],
+                ['shelf_life_days' => $days]
+            );
+        }
+    }
+
+    /**
+     * Still with Processing, broken down, cleared by Testing, with shelf lives set.
+     */
+    private function readyToLabel(): void
+    {
+        $this->donation->update(['status' => DonationStatus::Collected]);
+        $this->declareBags();
+        $this->shelfLives();
+        $this->clearBoth();
     }
 
     // --- Bag numbers ---------------------------------------------------------
@@ -211,6 +270,7 @@ class TwoPhaseLabelingTest extends TestCase
     public function test_a_typed_unit_number_is_refused_for_a_barcoded_donation(): void
     {
         $this->declareBags();
+        $this->handOver();
 
         $this->bookIn([['component_id' => $this->prbc->id, 'unit_id' => 'MY-OWN-1']])
             ->assertStatus(422)
@@ -222,6 +282,7 @@ class TwoPhaseLabelingTest extends TestCase
     public function test_a_bag_number_already_used_elsewhere_is_refused(): void
     {
         $this->declareBags();
+        $this->handOver();
 
         // Another centre printing the same sticker series.
         BloodUnit::factory()->create(['id' => '1234567-PRBC']);
@@ -257,77 +318,194 @@ class TwoPhaseLabelingTest extends TestCase
         );
     }
 
-    // --- Release and the final label -------------------------------------------
+    // --- Processing's final label (project owner, 2026-10-22) --------------------
 
-    public function test_release_records_who_released_and_returns_the_final_labels(): void
+    public function test_processing_prints_the_final_labels_once_testing_has_cleared_the_donation(): void
     {
-        $this->bookAllBags();
-        $this->clearBoth();
+        $this->readyToLabel();
 
-        $response = $this->actingAs($this->officer)
-            ->postJson("/api/blood-center/inventory/quarantine/{$this->donation->id}/release")
+        $response = $this->printLabels()
             ->assertOk()
-            ->assertJsonPath('labels.donation_barcode', '1234567')
-            ->assertJsonPath('labels.facility', 'Sub-National Blood Center - Mindanao')
-            ->assertJsonCount(3, 'labels.units')
-            ->assertJsonPath('labels.units.0.released_by', 'Ana Reyes')
-            ->assertJsonPath('labels.clearances.0.label', 'TTI cleared')
-            ->assertJsonPath('labels.clearances.0.issued_by', 'Ben Cruz')
-            ->assertJsonPath('labels.clearances.1.label', 'ABO/Rh cleared');
+            ->assertJsonPath('donation_barcode', '1234567')
+            ->assertJsonPath('facility', 'Sub-National Blood Center - Mindanao')
+            ->assertJsonCount(3, 'units')
+            // In the order Processing declared the bags, under their Phase 1 numbers.
+            ->assertJsonPath('units.0.unit_id', '1234567-PRBC')
+            ->assertJsonPath('units.1.unit_id', '1234567-FFP')
+            ->assertJsonPath('units.2.unit_id', '1234567-PRBC-2')
+            ->assertJsonPath('units.0.labelled_by', 'Lea Navarro')
+            ->assertJsonPath('labelled_by', 'Lea Navarro')
+            ->assertJsonPath('clearances.0.label', 'TTI cleared')
+            ->assertJsonPath('clearances.0.issued_by', 'Ben Cruz')
+            ->assertJsonPath('clearances.1.label', 'ABO/Rh cleared');
 
-        $this->assertMatchesRegularExpression('/^TTI-\d{6}$/', $response->json('labels.clearances.0.code'));
-        $this->assertMatchesRegularExpression('/^IH-\d{6}$/', $response->json('labels.clearances.1.code'));
+        $this->assertMatchesRegularExpression('/^TTI-\d{6}$/', $response->json('clearances.0.code'));
+        $this->assertMatchesRegularExpression('/^IH-\d{6}$/', $response->json('clearances.1.code'));
 
-        $unit = BloodUnit::findOrFail('1234567-PRBC');
-        $this->assertNotNull($unit->released_at);
-        $this->assertSame($this->officer->id, (int) $unit->released_by);
+        $donation = $this->donation->fresh();
+        $this->assertNotNull($donation->labelled_at);
+        $this->assertSame($this->technologist()->id, (int) $donation->labelled_by);
     }
 
     public function test_the_final_label_carries_the_verified_blood_type_and_expiry(): void
     {
-        $this->bookAllBags();
-        $this->clearBoth();
+        $this->readyToLabel();
 
-        $label = collect(
-            $this->actingAs($this->officer)
-                ->postJson("/api/blood-center/inventory/quarantine/{$this->donation->id}/release")
-                ->json('labels.units')
-        )->firstWhere('unit_id', '1234567-FFP');
+        $label = collect($this->printLabels()->assertOk()->json('units'))->firstWhere('unit_id', '1234567-FFP');
 
         $this->assertSame($this->donation->donorProfile->bloodType->code, $label['blood_type']);
         $this->assertSame('Fresh Frozen Plasma', $label['component']);
         $this->assertSame(220, $label['volume_ml']);
-        $this->assertSame(OperationalDay::today()->addDays(30)->toDateString(), $label['expiry_date']);
+        // The day it was drawn, printed beside the volume.
+        $this->assertSame(OperationalDay::dateOf($this->donation->donation_date), $this->printLabels()->json('collected_on'));
+        // The day it was drawn plus the component's shelf life here.
+        $this->assertSame(
+            CarbonImmutable::parse(OperationalDay::dateOf($this->donation->donation_date))->addDays(365)->toDateString(),
+            $label['expiry_date']
+        );
     }
 
-    public function test_no_final_label_while_the_bags_are_in_quarantine(): void
+    public function test_no_final_label_until_testing_has_cleared_the_donation(): void
     {
-        $this->bookAllBags();
+        $this->donation->update(['status' => DonationStatus::Collected]);
+        $this->declareBags();
+        $this->shelfLives();
 
-        $this->actingAs($this->officer)
-            ->getJson("/api/blood-center/inventory/donations/{$this->donation->id}/labels")
-            ->assertStatus(409)
-            ->assertJsonPath('code', 'not_released');
+        $this->printLabels()->assertStatus(409)->assertJsonPath('code', 'tti_not_cleared');
+
+        DonationClearance::create([
+            'donation_id' => $this->donation->id,
+            'kind' => ClearanceKind::Tti,
+            'issued_at' => now(),
+            'source' => 'test',
+        ]);
+
+        $this->printLabels()->assertStatus(409)->assertJsonPath('code', 'immunohematology_not_cleared');
+
+        $this->assertNull($this->donation->fresh()->labelled_at);
+    }
+
+    public function test_no_final_label_without_a_shelf_life_or_a_bag_number(): void
+    {
+        $this->readyToLabel();
+        FacilityBloodComponent::where('component_id', $this->ffp->id)->update(['shelf_life_days' => null]);
+
+        $this->printLabels()->assertStatus(409)->assertJsonPath('code', 'shelf_life_missing');
+
+        $this->shelfLives();
+        $this->barcode(null);
+
+        $this->printLabels()->assertStatus(409)->assertJsonPath('code', 'barcode_missing');
+    }
+
+    public function test_a_rejected_donation_is_never_labelled(): void
+    {
+        $this->readyToLabel();
+        $this->donation->update(['status' => DonationStatus::Rejected]);
+
+        $this->printLabels()->assertStatus(409)->assertJsonPath('code', 'donation_rejected');
     }
 
     public function test_final_labels_can_be_reprinted_and_never_name_the_donor(): void
     {
-        $this->bookAllBags();
-        $this->clearBoth();
-        $this->actingAs($this->officer)
-            ->postJson("/api/blood-center/inventory/quarantine/{$this->donation->id}/release")
-            ->assertOk();
+        $this->readyToLabel();
+        $this->printLabels()->assertOk();
 
-        $response = $this->actingAs($this->officer)
-            ->getJson("/api/blood-center/inventory/donations/{$this->donation->id}/labels")
-            ->assertOk()
-            ->assertJsonCount(3, 'units');
+        $response = $this->printLabels()->assertOk()->assertJsonCount(3, 'units');
 
         $donor = $this->donation->donorProfile->donor;
         $this->assertStringNotContainsString($donor->first_name, $response->getContent());
         $this->assertStringNotContainsString($donor->last_name, $response->getContent());
 
-        $this->assertDatabaseHas('audit_logs', ['action' => 'inventory.labels_printed', 'actor_id' => $this->officer->id]);
+        $this->assertSame(2, AuditLog::where('action', 'laboratory.labels_printed')->where('actor_id', $this->technologist()->id)->count());
+    }
+
+    public function test_only_processing_prints_final_labels(): void
+    {
+        $this->readyToLabel();
+
+        $this->actingAs($this->officer)
+            ->postJson("/api/blood-center/laboratory/donations/{$this->donation->id}/labels")
+            ->assertForbidden();
+
+        // Issuance's own label route is gone.
+        $this->actingAs($this->officer)
+            ->getJson("/api/blood-center/inventory/donations/{$this->donation->id}/labels")
+            ->assertNotFound();
+    }
+
+    // --- Booking in labelled bags -------------------------------------------------
+
+    public function test_labelled_cleared_bags_are_booked_straight_into_stock(): void
+    {
+        $this->readyToLabel();
+        $this->printLabels()->assertOk();
+        $this->donation->update(['status' => DonationStatus::Completed]);
+
+        $this->bookIn([
+            ['component_id' => $this->prbc->id],
+            ['component_id' => $this->ffp->id],
+            ['component_id' => $this->prbc->id],
+        ])->assertCreated()->assertJsonPath('message', '3 blood units booked into stock.');
+
+        $unit = BloodUnit::findOrFail('1234567-PRBC');
+        $this->assertSame(BloodUnitStatus::Available, $unit->status);
+        $this->assertNotNull($unit->released_at);
+        $this->assertSame($this->officer->id, (int) $unit->released_by);
+    }
+
+    public function test_the_intake_queue_offers_the_expiry_on_the_label(): void
+    {
+        $this->readyToLabel();
+        $this->printLabels()->assertOk();
+        $this->donation->update(['status' => DonationStatus::Completed]);
+
+        $row = $this->actingAs($this->officer)
+            ->getJson('/api/blood-center/inventory/intake-queue')
+            ->assertOk()
+            ->json('data.0');
+
+        $this->assertTrue($row['into_stock']);
+        $this->assertSame(
+            CarbonImmutable::parse(OperationalDay::dateOf($this->donation->donation_date))->addDays(42)->toDateString(),
+            collect($row['components'])->firstWhere('component_id', $this->prbc->id)['expiry_date']
+        );
+    }
+
+    // --- Bags handed over before labelling moved ----------------------------------
+
+    public function test_a_bag_handed_over_unlabelled_is_refused_until_processing_labels_it(): void
+    {
+        // Handed over before 2026-10-22, untested and unlabelled. There is no
+        // quarantine to hold it in any more (project owner, 2026-10-22).
+        $this->declareBags();
+        $this->shelfLives();
+
+        $this->bookIn([['component_id' => $this->prbc->id]])
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'donation_not_cleared');
+
+        $this->clearBoth();
+
+        $this->bookIn([['component_id' => $this->prbc->id]])
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'labels_not_printed');
+
+        $this->assertSame(0, BloodUnit::where('donation_id', $this->donation->id)->count());
+
+        // Processing labels it from the Processed list; then it books straight in.
+        $this->printLabels()->assertOk();
+
+        $this->bookIn([['component_id' => $this->prbc->id]])->assertCreated();
+
+        $this->assertSame(BloodUnitStatus::Available, BloodUnit::findOrFail('1234567-PRBC')->status);
+    }
+
+    public function test_issuance_has_no_quarantine_release_any_more(): void
+    {
+        $this->actingAs($this->officer)
+            ->postJson("/api/blood-center/inventory/quarantine/{$this->donation->id}/release")
+            ->assertNotFound();
     }
 
     public function test_the_barcode_rename_can_be_rolled_back(): void
@@ -341,14 +519,5 @@ class TwoPhaseLabelingTest extends TestCase
         $migration->up();
         $this->assertTrue(Schema::hasColumn('blood_collections', 'donation_barcode'));
         $this->assertSame('1234567', BloodCollection::query()->where('donation_id', $this->donation->id)->value('donation_barcode'));
-    }
-
-    public function test_only_issuance_prints_final_labels(): void
-    {
-        $technologist = User::factory()->bloodCenterStaff($this->facility, StaffRole::ComponentTechnologist)->create();
-
-        $this->actingAs($technologist)
-            ->getJson("/api/blood-center/inventory/donations/{$this->donation->id}/labels")
-            ->assertForbidden();
     }
 }

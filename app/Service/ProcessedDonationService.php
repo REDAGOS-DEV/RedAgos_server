@@ -153,7 +153,14 @@ class ProcessedDonationService
         $latest = $rows->sortByDesc('created_at')->first();
         $numbers = BagNumbers::forRows($donation);
         $open = in_array($donation->status, [DonationStatus::Collected, DonationStatus::Tested], true);
+        $clearances = $this->laboratoryService->formatClearances($donation);
+        $cleared = ! in_array(false, $clearances, true);
+        $labelled = $donation->labelled_at !== null;
+        // The bags wait with Processing until Testing clears them and they
+        // carry their final labels (project owner, 2026-10-22), as
+        // LaboratoryService::guardReadyToComplete requires.
         $mayClose = $open && $viewer->can('lab.update_status');
+        $mayHandOver = $mayClose && $cleared && $labelled;
         $correction = $state['correction'] ?? null;
         $names = $state['names'] ?? [];
 
@@ -197,14 +204,29 @@ class ProcessedDonationService
             'processed_volume_ml' => $rows->whereNotNull('volume_ml')->isEmpty() ? null : (int) $rows->sum('volume_ml'),
             'collected_volume_ml' => $donation->volume_ml,
             'processed_at' => $latest?->created_at?->toISOString(),
-            'processed_by' => $latest?->declarer === null ? null : trim($latest->declarer->first_name.' '.$latest->declarer->last_name),
-            'clearances' => $this->laboratoryService->formatClearances($donation),
+            'processed_by' => $latest?->declarer === null ? null : $latest->declarer->signatureName(),
+            'clearances' => $clearances,
             'status' => $status,
+            // Where an unhanded unit stands: waiting on Testing, ready for its
+            // final labels, or labelled and ready to hand over.
+            'label_state' => $status !== 'awaiting_handover' ? null : match (true) {
+                ! $cleared => 'awaiting_testing',
+                ! $labelled => 'awaiting_labels',
+                default => 'labelled',
+            },
             'status_label' => match ($status) {
                 'handed_over' => 'Handed over',
                 'rejected' => 'Rejected',
-                default => 'Awaiting hand-over',
+                default => match (true) {
+                    ! $cleared => 'Awaiting testing',
+                    ! $labelled => 'Ready to label',
+                    default => 'Ready to hand over',
+                },
             },
+            'labelled_at' => $donation->labelled_at?->toISOString(),
+            'labelled_by' => $donation->labeller === null
+                ? null
+                : $donation->labeller->signatureName(),
             'donation_status' => $donation->status?->value,
             'donation_status_label' => $donation->status?->label(),
             'rejection_reason' => $donation->rejection_reason,
@@ -214,7 +236,7 @@ class ProcessedDonationService
             'correction' => $correction === null ? null : [
                 'id' => $correction->id,
                 'requested_by' => $correction->requester
-                    ? trim($correction->requester->first_name.' '.$correction->requester->last_name)
+                    ? $correction->requester->signatureName()
                     : null,
                 'requested_at' => $correction->created_at?->toISOString(),
                 'reason' => $correction->reason,
@@ -229,8 +251,14 @@ class ProcessedDonationService
             ],
             'locked' => $locked,
             'can' => [
-                'hand_over' => $mayClose,
+                'hand_over' => $mayHandOver,
                 'reject' => $mayClose,
+                // FinalLabelService's own conditions, as far as a row shows
+                // them: cleared, and not rejected. Reprints stay open after
+                // hand-over, for a bag whose label was lost.
+                'print_labels' => $cleared
+                    && $donation->status !== DonationStatus::Rejected
+                    && $viewer->can('lab.record_components'),
                 'correct' => $locked === null && $correction === null && ($state['may_file'] ?? false),
             ],
         ];

@@ -121,24 +121,4 @@ class BloodCenterInventoryController extends Controller
             $this->inventoryService->discard($request->user(), $unit, $request->validated()['reason'])
         );
     }
-
-    /**
-     * Release a donation's quarantined units once testing has cleared it.
-     */
-    public function releaseQuarantine(Request $request, int $donation): JsonResponse
-    {
-        return response()->json(
-            $this->inventoryService->releaseFromQuarantine($request->user(), $donation)
-        );
-    }
-
-    /**
-     * The final labels for a donation's released bags, to print or reprint.
-     */
-    public function labels(Request $request, int $donation): JsonResponse
-    {
-        return response()->json(
-            $this->inventoryService->labelsFor($request->user(), $donation)
-        );
-    }
 }

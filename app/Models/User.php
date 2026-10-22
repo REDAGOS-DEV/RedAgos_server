@@ -40,6 +40,7 @@ use Laravel\Sanctum\HasApiTokens;
     'terms_accepted_at',
     'employee_id',
     'position',
+    'credentials',
     'is_super_admin',
     'admin_privileges',
 ])]
@@ -127,6 +128,30 @@ class User extends Authenticatable implements MustVerifyEmail
 
             $user->additional_staff_roles = $kept === [] ? null : $kept;
         });
+    }
+
+    /**
+     * The name a staff member signs with: "Rowena Tan, RMT", or just the name without credentials.
+     *
+     * Every department prints this wherever it says who did something:
+     * screened by, labelled by, received by (project owner, 2026-10-22). A
+     * relation loaded with a column list must include `credentials`, or the
+     * name prints without them.
+     */
+    public function signatureName(): string
+    {
+        $name = trim($this->first_name.' '.$this->last_name);
+        $credentials = trim((string) $this->credentials);
+
+        return $credentials === '' ? $name : $name.', '.$credentials;
+    }
+
+    /**
+     * signatureName() for an actor who may be missing.
+     */
+    public static function signatureOf(?self $user): ?string
+    {
+        return $user?->signatureName();
     }
 
     /**

@@ -157,7 +157,7 @@ class ManualDeferralService
 
     private function nameOf(?User $user): ?string
     {
-        return $user === null ? null : trim($user->first_name.' '.$user->last_name);
+        return $user === null ? null : $user->signatureName();
     }
 
     /**

@@ -319,7 +319,7 @@ class BloodCenterAppointmentService
             // The drive's name, or the centre's own (project owner, 2026-10-17).
             'place' => $appointment->mobileEvent?->name ?? $appointment->facility?->name,
             'notes' => $appointment->notes,
-            'booked_by' => $appointment->bookedBy ? trim($appointment->bookedBy->first_name.' '.$appointment->bookedBy->last_name) : null,
+            'booked_by' => $appointment->bookedBy ? $appointment->bookedBy->signatureName() : null,
             'booked_at' => $appointment->created_at?->toISOString(),
             'donor' => $donor === null ? null : [
                 'uuid' => $donor->uuid,

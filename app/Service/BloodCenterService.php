@@ -48,7 +48,7 @@ class BloodCenterService
                 'first_name' => $user->first_name,
                 'last_name' => $user->last_name,
                 'employee_id' => $user->employee_id,
-                'position' => $user->position,
+                'credentials' => $user->credentials,
                 'email' => $user->email,
                 'phone' => $user->phone,
             ],
@@ -60,6 +60,8 @@ class BloodCenterService
                 'status' => $user->facility->status->value,
                 'operating_hours' => $user->facility->operating_hours,
                 'logo_url' => $this->facilityLogoService->urlFor($user->facility),
+                // The stock report's left-hand logo; null prints the DOH seal.
+                'seal_url' => $this->facilityLogoService->sealUrlFor($user->facility),
             ] : null,
             'account' => [
                 'username' => $user->username,

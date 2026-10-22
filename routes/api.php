@@ -24,6 +24,7 @@ use App\Http\Controllers\BloodCenterLaboratoryController;
 use App\Http\Controllers\BloodCenterPaperDonationController;
 use App\Http\Controllers\BloodCenterPosController;
 use App\Http\Controllers\BloodCenterProcessedDonationController;
+use App\Http\Controllers\BloodCenterProcessingDashboardController;
 use App\Http\Controllers\BloodCenterProfileController;
 use App\Http\Controllers\BloodCenterReceiptController;
 use App\Http\Controllers\BloodCenterReferenceController;
@@ -32,6 +33,7 @@ use App\Http\Controllers\BloodCenterRequestController;
 use App\Http\Controllers\BloodCenterSerologyResultController;
 use App\Http\Controllers\BloodCenterStaffController;
 use App\Http\Controllers\BloodCenterStatementController;
+use App\Http\Controllers\BloodCenterTestingDashboardController;
 use App\Http\Controllers\BloodCenterWalkInController;
 use App\Http\Controllers\BookingCatalogController;
 use App\Http\Controllers\DonorAppointmentController;
@@ -165,6 +167,12 @@ Route::get('/blood-center/facility/{facility}/logo', [BloodCenterFacilityControl
     ->whereNumber('facility')
     ->name('blood-center.facility.logo');
 
+// The stock report's left-hand logo, signed the same way.
+Route::get('/blood-center/facility/{facility}/seal', [BloodCenterFacilityController::class, 'showSeal'])
+    ->middleware('signed')
+    ->whereNumber('facility')
+    ->name('blood-center.facility.seal');
+
 // Authenticated rather than signed, unlike the avatar above: a link that opens a
 // government ID without credentials would be forwardable, and would leave nobody
 // to record in the audit trail. DonorProfilePolicy decides who may look.
@@ -248,6 +256,14 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         Route::delete('/facility/logo', [BloodCenterFacilityController::class, 'removeLogo'])
             ->middleware('can:center.configure');
 
+        // The left-hand logo of the Daily Blood Stock Inventory, the DOH
+        // seal until a centre uploads its own (project owner, 2026-10-22).
+        Route::post('/facility/seal', [BloodCenterFacilityController::class, 'uploadSeal'])
+            ->middleware(['can:center.configure', 'throttle:10,1']);
+
+        Route::delete('/facility/seal', [BloodCenterFacilityController::class, 'removeSeal'])
+            ->middleware('can:center.configure');
+
         // The wording of the thank-you and eligibility-reminder emails the
         // Donors page sends. The Admin's, like the logo: the centre speaks in
         // one voice, whoever at the counter clicks Send.
@@ -303,19 +319,8 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         Route::post('/inventory', [BloodCenterInventoryController::class, 'store'])
             ->middleware('can:inventory.create');
 
-        // Quarantine release, on both clearance tokens. Per donation, because
-        // the tokens are the donation's. Its own ability, held by the
-        // Inventory Control Officer; the service re-checks the tokens for
-        // everyone, supervisors included.
-        Route::post('/inventory/quarantine/{donation}/release', [BloodCenterInventoryController::class, 'releaseQuarantine'])
-            ->middleware('can:inventory.release_quarantine')
-            ->whereNumber('donation');
-
-        // The final (Phase 2) labels of a released donation, for printing or
-        // reprinting. Labelling is Issuance's step, so Issuance's ability.
-        Route::get('/inventory/donations/{donation}/labels', [BloodCenterInventoryController::class, 'labels'])
-            ->middleware('can:inventory.create')
-            ->whereNumber('donation');
+        // Final labels are Processing's now (project owner, 2026-10-22):
+        // POST /laboratory/donations/{donation}/labels.
 
         Route::patch('/inventory/{unit}', [BloodCenterInventoryController::class, 'update'])
             ->middleware('can:inventory.update')
@@ -777,6 +782,18 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             Route::get('/queue', [BloodCenterLaboratoryController::class, 'index'])
                 ->middleware('can:lab.view');
 
+            // The Testing dashboard (project owner, 2026-10-22). Counts only,
+            // but split by serology marker, so the recording ability gates it
+            // as it does the results list: Processing reads lab.view and is
+            // never told which marker was reactive.
+            Route::get('/testing-dashboard', [BloodCenterTestingDashboardController::class, 'show'])
+                ->middleware('can:lab.record_serology');
+
+            // The Processing dashboard (project owner, 2026-10-22). Counts
+            // only, for the department that records breakdowns.
+            Route::get('/processing-dashboard', [BloodCenterProcessingDashboardController::class, 'show'])
+                ->middleware('can:lab.record_components');
+
             Route::get('/donations/{donation}', [BloodCenterLaboratoryController::class, 'show'])
                 ->middleware('can:lab.view')->whereNumber('donation');
 
@@ -829,6 +846,13 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
 
             Route::post('/donations/{donation}/components', [BloodCenterLaboratoryController::class, 'declareComponents'])
                 ->middleware('can:lab.record_components')->whereNumber('donation');
+
+            // The final (Phase 2) labels, printed or reprinted by Processing
+            // once Testing has cleared the donation (project owner,
+            // 2026-10-22). A POST: printing records who labelled the bags and
+            // when, which the hand-over requires.
+            Route::post('/donations/{donation}/labels', [BloodCenterLaboratoryController::class, 'printLabels'])
+                ->middleware(['can:lab.record_components', 'throttle:30,1'])->whereNumber('donation');
 
             Route::patch('/donations/{donation}/status', [BloodCenterLaboratoryController::class, 'updateStatus'])
                 ->middleware('can:lab.update_status')->whereNumber('donation');

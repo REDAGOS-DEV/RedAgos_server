@@ -35,7 +35,7 @@ class StockThresholdRepository
         return StockThreshold::query()
             ->forFacility($facilityId)
             ->onActiveComponents()
-            ->with('updatedBy:id,first_name,last_name')
+            ->with('updatedBy:id,first_name,last_name,credentials')
             ->get()
             ->keyBy(fn (StockThreshold $threshold): string => self::cellKey($threshold->blood_type_id, $threshold->component_id));
     }

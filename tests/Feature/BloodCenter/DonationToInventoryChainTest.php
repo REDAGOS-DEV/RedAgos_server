@@ -11,8 +11,10 @@ use App\Models\BloodRequest;
 use App\Models\BloodUnit;
 use App\Models\Donation;
 use App\Models\Facility;
+use App\Models\FacilityBloodComponent;
 use App\Models\User;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Testing\TestResponse;
 use Tests\Concerns\RecordsTyping;
 use Tests\TestCase;
 
@@ -66,6 +68,24 @@ class DonationToInventoryChainTest extends TestCase
         $this->donor = User::factory()->donor()->create();
         $this->packedRbc = BloodComponent::factory()->create(['name' => 'Packed RBC']);
         $this->plasma = BloodComponent::factory()->create(['name' => 'Fresh Frozen Plasma']);
+
+        // The final label prints an expiry, so each component needs a shelf life here.
+        foreach ([[$this->packedRbc, 35], [$this->plasma, 365]] as [$component, $days]) {
+            FacilityBloodComponent::create([
+                'facility_id' => $this->facility->id,
+                'component_id' => $component->id,
+                'shelf_life_days' => $days,
+            ]);
+        }
+    }
+
+    /**
+     * Processing prints the final labels: the step before the hand-over (project owner, 2026-10-22).
+     */
+    private function printLabels(int $donationId): TestResponse
+    {
+        return $this->actingAs($this->processing)
+            ->postJson("/api/blood-center/laboratory/donations/{$donationId}/labels");
     }
 
     public function test_a_donation_travels_from_the_counter_to_issuable_stock(): void
@@ -109,6 +129,14 @@ class DonationToInventoryChainTest extends TestCase
             ])
             ->assertCreated();
 
+        // Not handed over unlabelled: the final labels come first.
+        $this->actingAs($this->processing)
+            ->patchJson("/api/blood-center/laboratory/donations/{$donationId}/status", ['status' => 'completed'])
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'labels_not_printed');
+
+        $this->printLabels($donationId)->assertOk()->assertJsonCount(2, 'units');
+
         $this->actingAs($this->processing)
             ->patchJson("/api/blood-center/laboratory/donations/{$donationId}/status", ['status' => 'completed'])
             ->assertOk()
@@ -129,16 +157,7 @@ class DonationToInventoryChainTest extends TestCase
 
         $this->assertCount(2, $units);
 
-        // Booked in held back, and released on the Inventory Control
-        // Officer's act once testing has cleared the donation.
-        $this->assertTrue($units->every(fn (BloodUnit $u): bool => $u->status === BloodUnitStatus::Quarantined));
-
-        $this->actingAs($this->inventory)
-            ->postJson("/api/blood-center/inventory/quarantine/{$donationId}/release")
-            ->assertOk();
-
-        $units = BloodUnit::where('donation_id', $donationId)->get();
-
+        // Cleared and labelled before they left Processing, so straight into stock.
         $this->assertTrue($units->every(fn (BloodUnit $u): bool => $u->status === BloodUnitStatus::Available));
 
         // Derived from the donor, never sent by any of the three departments.
@@ -355,30 +374,19 @@ class DonationToInventoryChainTest extends TestCase
             ->postJson("/api/blood-center/donations/{$donationId}/collection", $this->collectionPayload())
             ->assertCreated();
 
-        // Processing does not wait for the laboratory.
+        // Processing separates the bag without waiting for the laboratory…
         $this->actingAs($this->processing)
             ->postJson("/api/blood-center/laboratory/donations/{$donationId}/components", [
                 'components' => [['component_id' => $this->packedRbc->id, 'volume_ml' => 250]],
             ])->assertCreated();
 
+        // …but keeps it until Testing has cleared it and it carries its final label.
         $this->actingAs($this->processing)
             ->patchJson("/api/blood-center/laboratory/donations/{$donationId}/status", ['status' => 'completed'])
-            ->assertOk();
-
-        // Issuance books the bag in, held back.
-        $unitId = $this->actingAs($this->inventory)
-            ->postJson('/api/blood-center/inventory', [
-                'donation_id' => $donationId,
-                'units' => [['component_id' => $this->packedRbc->id, 'storage_location' => 'Cold Storage A-1', 'expiry_date' => now()->addDays(35)->toDateString()]],
-            ])
-            ->assertCreated()
-            ->assertJsonPath('units.0.status', 'quarantined')
-            ->json('units.0.id');
-
-        $this->actingAs($this->inventory)
-            ->postJson("/api/blood-center/inventory/quarantine/{$donationId}/release")
             ->assertStatus(409)
             ->assertJsonPath('code', 'tti_not_cleared');
+
+        $this->printLabels($donationId)->assertStatus(409)->assertJsonPath('code', 'tti_not_cleared');
 
         // Immunohematology types the unit, blind.
         $this->actingAs($this->typing)
@@ -392,10 +400,22 @@ class DonationToInventoryChainTest extends TestCase
             ->assertCreated()
             ->assertJsonPath('data.donor.blinded', true);
 
-        // Issuance releases it from quarantine.
-        $this->actingAs($this->inventory)
-            ->postJson("/api/blood-center/inventory/quarantine/{$donationId}/release")
+        // Processing labels the bag and hands it over.
+        $this->printLabels($donationId)->assertOk();
+
+        $this->actingAs($this->processing)
+            ->patchJson("/api/blood-center/laboratory/donations/{$donationId}/status", ['status' => 'completed'])
             ->assertOk();
+
+        // Issuance books it in, straight into stock.
+        $unitId = $this->actingAs($this->inventory)
+            ->postJson('/api/blood-center/inventory', [
+                'donation_id' => $donationId,
+                'units' => [['component_id' => $this->packedRbc->id, 'storage_location' => 'Cold Storage A-1', 'expiry_date' => now()->addDays(35)->toDateString()]],
+            ])
+            ->assertCreated()
+            ->assertJsonPath('units.0.status', 'available')
+            ->json('units.0.id');
 
         $this->assertSame(BloodUnitStatus::Available, BloodUnit::findOrFail($unitId)->status);
 
@@ -471,6 +491,8 @@ class DonationToInventoryChainTest extends TestCase
 
         $this->actingAs($this->processing)
             ->postJson("/api/blood-center/laboratory/donations/{$id}/components", ['components' => $components]);
+
+        $this->printLabels($id)->assertOk();
 
         $this->actingAs($this->processing)
             ->patchJson("/api/blood-center/laboratory/donations/{$id}/status", ['status' => 'completed']);

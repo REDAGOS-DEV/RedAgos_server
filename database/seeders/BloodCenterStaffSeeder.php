@@ -54,18 +54,18 @@ class BloodCenterStaffSeeder extends Seeder
      * one supervisor account was the Center Admin, so a database seeded then
      * needs only her level changed (the migration made her an Admin).
      *
-     * @var array<int, array{level: ManagementLevel, first: string, last: string, employee_id: string, email: string, username: string, position: string}>
+     * @var array<int, array{level: ManagementLevel, first: string, last: string, employee_id: string, email: string, username: string}>
      */
     private const MANAGEMENT = [
         [
             'level' => ManagementLevel::Admin,
             'first' => 'Eduardo', 'last' => 'Ramos', 'employee_id' => 'ADM-001',
-            'email' => 'center.admin', 'username' => 'snbc-center-admin', 'position' => 'Blood Center Admin',
+            'email' => 'center.admin', 'username' => 'snbc-center-admin',
         ],
         [
             'level' => ManagementLevel::Supervisor,
             'first' => 'Teresa', 'last' => 'Aquino', 'employee_id' => 'SUP-001',
-            'email' => 'supervisor', 'username' => 'snbc-supervisor', 'position' => 'Blood Center Supervisor',
+            'email' => 'supervisor', 'username' => 'snbc-supervisor',
         ],
     ];
 
@@ -127,7 +127,7 @@ class BloodCenterStaffSeeder extends Seeder
      * The one list the seeder, its test and the README all read, so the three
      * cannot disagree. The Admin comes first, then the Supervisor.
      *
-     * @return array<int, array{department: string, role: StaffRole|null, level: ManagementLevel|null, first_name: string, last_name: string, employee_id: string, email: string, username: string, position: string, head: bool}>
+     * @return array<int, array{department: string, role: StaffRole|null, level: ManagementLevel|null, first_name: string, last_name: string, employee_id: string, email: string, username: string, head: bool}>
      */
     public static function accounts(): array
     {
@@ -143,7 +143,6 @@ class BloodCenterStaffSeeder extends Seeder
                 'employee_id' => $manager['employee_id'],
                 'email' => $manager['email'].'@'.self::DOMAIN,
                 'username' => $manager['username'],
-                'position' => $manager['position'],
                 'head' => false,
             ];
         }
@@ -164,7 +163,6 @@ class BloodCenterStaffSeeder extends Seeder
                     'employee_id' => sprintf('%s-%03d', self::PREFIX[$department], $sequence),
                     'email' => str_replace('_', '.', $roleValue).'@'.self::DOMAIN,
                     'username' => 'snbc-'.str_replace('_', '-', $roleValue),
-                    'position' => $role->label(),
                     'head' => Department::from($department)->correctionApprover() === $role,
                 ];
             }
@@ -267,7 +265,6 @@ class BloodCenterStaffSeeder extends Seeder
                 // The hashed cast hashes this on save.
                 'password' => self::PASSWORD,
                 'employee_id' => $account['employee_id'],
-                'position' => $account['position'],
             ],
             $facility,
             $role,

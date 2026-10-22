@@ -36,7 +36,7 @@ class BloodRequestHistory
      * @var array<int, string>
      */
     private const TIMELINE_RELATIONS = [
-        'actor:id,first_name,last_name',
+        'actor:id,first_name,last_name,credentials',
         'actorFacility:id,name',
         'relatedRequest:id,reference_number,target_facility_id',
         'relatedRequest.targetFacility:id,name',
@@ -186,7 +186,7 @@ class BloodRequestHistory
             'to_status_label' => $event->to_status?->label(),
             'actor' => $event->actor ? [
                 'id' => $event->actor->id,
-                'name' => trim($event->actor->first_name.' '.$event->actor->last_name),
+                'name' => $event->actor->signatureName(),
             ] : null,
             'actor_facility' => $event->actorFacility ? [
                 'id' => $event->actorFacility->id,

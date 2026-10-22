@@ -72,7 +72,10 @@ class StoreStaffRequest extends FormRequest
             'email' => ['required', 'string', 'email:rfc', 'max:150', 'unique:users,email'],
             'phone' => ['nullable', 'string', 'regex:/^(?:\+63|63|0)9\d{9}$/', 'unique:users,phone'],
             // The title — RMT, RN, or anything typed. A label only.
-            'position' => ['nullable', 'string', 'max:100'],
+            // The title, printed after the name on everything the staff member
+            // signs: RMT, MD, RN. Blood-centre accounts keep no job post beside
+            // it (project owner, 2026-10-22).
+            'credentials' => ['nullable', 'string', 'max:40', 'regex:/^[\pL\d][\pL\d.,&()\/ -]*$/u'],
 
             // users carries unique(facility_id, employee_id), so the rule is
             // scoped the same way: two centres may both have a badge "001".
@@ -156,6 +159,8 @@ class StoreStaffRequest extends FormRequest
     public function messages(): array
     {
         return [
+            'credentials.regex' => 'Write the credentials as letters, for example RMT, or MD, FPCP.',
+            'credentials.max' => 'Keep the credentials to 40 characters.',
             'email.unique' => 'An account already exists for this email address.',
             'is_supervisor.prohibited' => 'is_supervisor was replaced by management_level: admin or supervisor.',
             'phone.unique' => 'An account already exists for this phone number.',

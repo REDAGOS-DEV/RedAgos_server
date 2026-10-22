@@ -31,11 +31,13 @@ class RecordImmunohematologyRequest extends FormRequest
         return [
             'blood_type_id' => ['required', 'integer', 'exists:blood_types,id'],
 
-            // The two independent ABO reads and the antibody screen. The
-            // clearance token turns on these; see DonationImmunohematology.
+            // The forward ABO read. The reverse group and the antibody screen
+            // are no longer asked for on the Testing page (project owner,
+            // 2026-10-22); when they are sent, the clearance still turns on
+            // them. See DonationImmunohematology.
             'forward_group' => ['required', 'string', Rule::in(AboGroup::values())],
-            'reverse_group' => ['required', 'string', Rule::in(AboGroup::values())],
-            'antibody_screen' => ['required', 'string', Rule::in(AntibodyScreen::values())],
+            'reverse_group' => ['sometimes', 'nullable', 'string', Rule::in(AboGroup::values())],
+            'antibody_screen' => ['sometimes', 'nullable', 'string', Rule::in(AntibodyScreen::values())],
 
             'notes' => ['sometimes', 'nullable', 'string', 'max:500'],
         ];
@@ -76,8 +78,6 @@ class RecordImmunohematologyRequest extends FormRequest
         return [
             'blood_type_id.required' => 'Record the ABO group and Rh type.',
             'forward_group.required' => 'Record the forward grouping.',
-            'reverse_group.required' => 'Record the reverse grouping.',
-            'antibody_screen.required' => 'Record the antibody screen.',
         ];
     }
 }

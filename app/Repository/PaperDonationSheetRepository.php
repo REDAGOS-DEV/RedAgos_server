@@ -31,7 +31,7 @@ class PaperDonationSheetRepository
     public function paginate(int $facilityId, int $perPage): LengthAwarePaginator
     {
         return $this->withCounts(PaperDonationSheet::query())
-            ->with(['creator:id,first_name,last_name', 'mobileEvent:id,name,location'])
+            ->with(['creator:id,first_name,last_name,credentials', 'mobileEvent:id,name,location'])
             ->where('facility_id', $facilityId)
             ->orderByDesc('held_on')
             ->orderByDesc('id')
@@ -41,7 +41,7 @@ class PaperDonationSheetRepository
     public function find(int $sheetId, int $facilityId): ?PaperDonationSheet
     {
         return $this->withCounts(PaperDonationSheet::query())
-            ->with(['creator:id,first_name,last_name', 'mobileEvent:id,name,location'])
+            ->with(['creator:id,first_name,last_name,credentials', 'mobileEvent:id,name,location'])
             ->where('id', $sheetId)
             ->where('facility_id', $facilityId)
             ->first();

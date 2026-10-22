@@ -49,10 +49,10 @@ class InventoryIntakeTest extends TestCase
             'blood_type_id' => $this->bloodType->id,
         ]);
 
-        $this->donation = Donation::factory()->create([
+        // Cleared and labelled: the only donation Stock Intake books in.
+        $this->donation = Donation::factory()->handedOver()->create([
             'facility_id' => $this->facilityId,
             'donor_id' => $this->donorProfile->donor_id,
-            'status' => 'completed',
         ]);
 
         // The laboratory's declaration of what this donation was separated
@@ -75,8 +75,8 @@ class InventoryIntakeTest extends TestCase
 
         $this->assertCount(1, $response->json('units'));
         $this->assertSame('O+', $response->json('units.0.blood_type.code'));
-        // Booked in held back: completing a donation no longer clears it.
-        $this->assertSame(BloodUnitStatus::Quarantined->value, $response->json('units.0.status'));
+        // Cleared and labelled, so straight into stock: there is no quarantine step.
+        $this->assertSame(BloodUnitStatus::Available->value, $response->json('units.0.status'));
     }
 
     public function test_blood_type_is_derived_and_never_taken_from_the_client(): void
@@ -227,6 +227,45 @@ class InventoryIntakeTest extends TestCase
             ->postJson('/api/blood-center/inventory', $this->payload())
             ->assertStatus(409)
             ->assertJsonPath('code', 'donation_not_completed');
+    }
+
+    /**
+     * Release is gone (project owner, 2026-10-22), so a bag that is not ready
+     * is refused rather than booked into a quarantine nobody can release.
+     */
+    public function test_a_donation_testing_has_not_cleared_is_refused(): void
+    {
+        $uncleared = Donation::factory()->create([
+            'facility_id' => $this->facilityId,
+            'donor_id' => $this->donorProfile->donor_id,
+            'status' => 'completed',
+            'labelled_at' => now(),
+        ]);
+        DonationComponent::factory()->create(['donation_id' => $uncleared->id, 'component_id' => $this->component->id]);
+
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/inventory', [...$this->payload(), 'donation_id' => $uncleared->id])
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'donation_not_cleared');
+
+        $this->assertSame(0, BloodUnit::where('donation_id', $uncleared->id)->count());
+    }
+
+    public function test_a_donation_processing_has_not_labelled_is_refused(): void
+    {
+        $unlabelled = Donation::factory()->handedOver()->create([
+            'facility_id' => $this->facilityId,
+            'donor_id' => $this->donorProfile->donor_id,
+            'labelled_at' => null,
+        ]);
+        DonationComponent::factory()->create(['donation_id' => $unlabelled->id, 'component_id' => $this->component->id]);
+
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/inventory', [...$this->payload(), 'donation_id' => $unlabelled->id])
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'labels_not_printed');
+
+        $this->assertSame(0, BloodUnit::where('donation_id', $unlabelled->id)->count());
     }
 
     public function test_a_donor_without_a_blood_type_is_refused(): void
