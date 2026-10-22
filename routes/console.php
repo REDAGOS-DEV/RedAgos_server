@@ -93,3 +93,13 @@ Schedule::command('payments:purge-events')
     ->timezone(config('blood_center.timezone'))
     ->withoutOverlapping()
     ->onOneServer();
+
+// The blood centres' morning reminders: tomorrow's drives, units close to
+// expiry and counselling referrals nobody has acted on, each to whoever
+// handles it (StaffNotificationTopics). 07:00, before the first shift starts.
+// Idempotent within a day only by running once a day.
+Schedule::command('blood-center:send-reminders')
+    ->dailyAt('07:00')
+    ->timezone(config('blood_center.timezone'))
+    ->withoutOverlapping()
+    ->onOneServer();

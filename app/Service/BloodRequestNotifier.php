@@ -2,15 +2,12 @@
 
 namespace App\Service;
 
-use App\Enums\Department;
-use App\Enums\ManagementLevel;
-use App\Enums\StaffRole;
 use App\Models\BloodRequest;
 use App\Models\User;
 use App\Notifications\BloodRequestDecided;
 use App\Notifications\BloodRequestSubmitted;
 use App\Notifications\WalkInRequestRecorded;
-use App\Support\DepartmentPermissions;
+use App\Support\StaffNotificationTopics;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Notification;
 
@@ -36,37 +33,13 @@ class BloodRequestNotifier
      */
     public function targetFacility(BloodRequest $request): void
     {
-        $roles = array_values(array_unique(array_map(
-            fn (StaffRole $role): string => $role->value,
-            [
-                ...DepartmentPermissions::rolesHolding('requests.approve'),
-                ...DepartmentPermissions::rolesHolding('requests.process'),
-            ]
-        )));
-
-        // Custom roles in a department whose staff can act on requests.
-        $departments = array_values(array_unique(array_map(
-            fn (Department $department): string => $department->value,
-            [
-                ...DepartmentPermissions::departmentsHolding('requests.approve'),
-                ...DepartmentPermissions::departmentsHolding('requests.process'),
-            ]
-        )));
-
+        // Who that is lives in StaffNotificationTopics, which the staff
+        // Settings screen reads too.
         $recipients = User::query()
             ->where('facility_id', $request->target_facility_id)
-            ->where(function ($query) use ($roles, $departments): void {
-                $query->whereIn('staff_role', $roles)
-                    // Held as one of their other roles counts the same.
-                    ->orWhere(function ($additional) use ($roles): void {
-                        foreach ($roles as $role) {
-                            $additional->orWhereJsonContains('additional_staff_roles', $role);
-                        }
-                    })
-                    ->orWhere(fn ($custom) => $custom->whereNotNull('custom_role')->whereIn('department', $departments))
-                    ->orWhere('management_level', ManagementLevel::Supervisor->value);
-            })
-            ->get();
+            ->get()
+            ->filter(fn (User $user): bool => StaffNotificationTopics::receivesRequests($user))
+            ->values();
 
         Notification::send($recipients, new BloodRequestSubmitted($request));
     }

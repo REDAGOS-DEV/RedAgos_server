@@ -14,7 +14,9 @@ use App\Models\Donation;
 use App\Models\DonationClearance;
 use App\Models\Facility;
 use App\Models\User;
+use App\Notifications\CorrectionAwaitingApproval;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Support\Facades\Notification;
 use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
 
@@ -119,6 +121,32 @@ class CorrectionRequestTest extends TestCase
         $this->assertSame('SEG-1010', $collection->donation_barcode);
         $this->assertSame(460, $this->donation->fresh()->volume_ml);
         $this->assertDatabaseHas('audit_logs', ['action' => 'correction.applied']);
+    }
+
+    public function test_the_head_is_told_a_correction_waits_for_them(): void
+    {
+        Notification::fake();
+        $phlebotomist = $this->staff(StaffRole::Phlebotomist);
+        $physician = $this->staff(StaffRole::ScreeningPhysician);
+        $labHead = $this->staff(StaffRole::LabSupervisor);
+
+        $this->ask($phlebotomist, 'collection', $this->collectionBox())->assertCreated();
+
+        Notification::assertSentTo($physician, CorrectionAwaitingApproval::class, function (CorrectionAwaitingApproval $notice) use ($physician): bool {
+            return $notice->toDatabase($physician)['action_route'] === '/blood-center/corrections';
+        });
+        Notification::assertNotSentTo([$phlebotomist, $labHead], CorrectionAwaitingApproval::class);
+    }
+
+    public function test_a_heads_own_correction_tells_nobody(): void
+    {
+        $head = $this->staff(StaffRole::LabSupervisor);
+        $this->recordSerology($head)->assertCreated();
+        Notification::fake();
+
+        $this->ask($head, 'serology', $this->panel(['hbsag' => 'reactive', 'confirm_reactive' => true]))->assertCreated();
+
+        Notification::assertNotSentTo($head, CorrectionAwaitingApproval::class);
     }
 
     public function test_a_correction_may_keep_its_own_donation_barcode(): void

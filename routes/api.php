@@ -60,6 +60,7 @@ use App\Http\Controllers\HospitalStaffController;
 use App\Http\Controllers\HospitalTransfusionRequestController;
 use App\Http\Controllers\HospitalWeeklyRequestController;
 use App\Http\Controllers\PasswordResetController;
+use App\Http\Controllers\StaffNotificationPreferencesController;
 use App\Http\Controllers\StockThresholdController;
 use App\Http\Controllers\UserController;
 use App\Http\Controllers\XenditWebhookController;
@@ -209,6 +210,9 @@ Route::middleware(['auth:sanctum', 'role:blood_center'])->prefix('blood-center')
     Route::patch('/profile', [BloodCenterProfileController::class, 'update']);
     Route::put('/profile', [BloodCenterProfileController::class, 'update']);
     Route::post('/password', [BloodCenterProfileController::class, 'updatePassword']);
+    // The notices this person gets, and the few they may turn off.
+    Route::get('/notification-preferences', [StaffNotificationPreferencesController::class, 'show']);
+    Route::patch('/notification-preferences', [StaffNotificationPreferencesController::class, 'update']);
 });
 
 // Blood Center — operational. Everything that touches real data attaches here:

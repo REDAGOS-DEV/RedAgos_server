@@ -6,6 +6,7 @@ use App\Enums\FacilityTypeName;
 use App\Models\Facility;
 use App\Models\User;
 use App\Notifications\LowStockAlert;
+use App\Support\StaffNotificationTopics;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Notification;
 
@@ -57,8 +58,9 @@ class StockAlertNotifier
             return $accounts;
         }
 
+        // Whoever can see the inventory, less anyone who turned the notice off.
         return $accounts
-            ->filter(fn (User $user): bool => in_array('inventory.view', $user->abilities(), true))
+            ->filter(fn (User $user): bool => StaffNotificationTopics::receivesLowStock($user))
             ->values();
     }
 
