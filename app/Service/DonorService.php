@@ -14,6 +14,7 @@ use App\Repository\DonorRepository;
 use App\Repository\EligibilityRepository;
 use App\Support\AccountIdentity;
 use App\Support\DonorAvatar;
+use App\Support\DonorNotificationPreferences;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
@@ -165,6 +166,7 @@ class DonorService
         $recentDonations = $this->donorRepository->recentDonations($donor->id);
         $monthlyCounts = $this->donorRepository
             ->monthlyCollectedDonationCounts($donor->id, $now->copy()->subMonths(11)->startOfMonth(), $now->copy()->endOfMonth());
+        $qrToken = $this->eligibilityService->activeQrToken($profile);
 
         return [
             'user' => $this->formatDonor($donor),
@@ -184,6 +186,10 @@ class DonorService
             // is now recorded `pending` -- the centre decides at the counter --
             // so eligibility_status alone never reports the questionnaire done.
             'questionnaire_status' => $this->eligibilityService->statusForProfile($profile)->value,
+            // Whether a check-in code is live right now, for the portal's badge
+            // and Pass card. Read without the audit entry GET /qr-code makes.
+            'qr_active' => $qrToken !== null,
+            'qr_valid_until' => $qrToken?->expires_at?->toDateString(),
             'blood_type' => $profile->bloodType?->code,
             // Every draw, not just what Processing has since completed: the
             // donor gave blood the moment the collection was recorded.
@@ -248,7 +254,7 @@ class DonorService
             'last_donation_date' => $this->lastDonationDate($profile)?->toDateString(),
             'next_eligible_date' => $this->eligibilityRuleEvaluator
                 ->nextEligibleDate($this->lastDonationDate($profile))?->toDateString(),
-            'notification_preferences' => $profile->notification_preferences ?: $this->defaultNotificationPreferences(),
+            'notification_preferences' => DonorNotificationPreferences::resolve($profile->notification_preferences),
             'identity' => $this->formatIdentity($donor, $profile),
         ];
     }
@@ -514,7 +520,12 @@ class DonorService
             ]);
         }
 
-        $preferences = array_merge($this->defaultNotificationPreferences(), $payload);
+        // Only the current switches are kept; an older screen's keys, read as a
+        // fallback until now, are dropped once the donor saves.
+        $preferences = array_merge(
+            DonorNotificationPreferences::resolve($profile->notification_preferences),
+            array_map('boolval', array_intersect_key($payload, DonorNotificationPreferences::DEFAULTS)),
+        );
         $this->donorRepository->updateDonorProfile($profile, [
             'notification_preferences' => $preferences,
         ]);
@@ -661,21 +672,6 @@ class DonorService
     private function buildUsername(string $email): string
     {
         return AccountIdentity::buildUsername($email);
-    }
-
-    /**
-     * @return array<string, bool>
-     */
-    private function defaultNotificationPreferences(): array
-    {
-        return [
-            'appointment_reminders' => true,
-            'eligibility_renewal' => true,
-            'nearby_drives' => false,
-            'email_updates' => false,
-            'donation_updates' => true,
-            'blood_drive_announcements' => true,
-        ];
     }
 
     /**

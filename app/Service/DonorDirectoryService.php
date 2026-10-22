@@ -17,6 +17,7 @@ use App\Repository\DonorDeferralRepository;
 use App\Repository\DonorDirectoryRepository;
 use App\Support\AccountIdentity;
 use App\Support\DonorAvatar;
+use App\Support\DonorNotificationPreferences;
 use App\Support\DonorStanding;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Model;
@@ -802,7 +803,7 @@ class DonorDirectoryService
      */
     private function acceptsEligibilityReminders(User $donor): bool
     {
-        return ($donor->donorProfile?->notification_preferences['eligibility_renewal'] ?? true) !== false;
+        return DonorNotificationPreferences::allows($donor, DonorNotificationPreferences::ELIGIBILITY_RENEWAL);
     }
 
     /**

@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Support\DonorNotificationPreferences;
 use Illuminate\Foundation\Http\FormRequest;
 
 class UpdateDonorNotificationPreferencesRequest extends FormRequest
@@ -16,13 +17,11 @@ class UpdateDonorNotificationPreferencesRequest extends FormRequest
      */
     public function rules(): array
     {
-        return [
-            'appointment_reminders' => ['required', 'boolean'],
-            'eligibility_renewal' => ['required', 'boolean'],
-            'nearby_drives' => ['required', 'boolean'],
-            'email_updates' => ['required', 'boolean'],
-            'donation_updates' => ['sometimes', 'boolean'],
-            'blood_drive_announcements' => ['sometimes', 'boolean'],
-        ];
+        // The switches in DonorNotificationPreferences::DEFAULTS. Each is
+        // optional, so a screen can save one row; the rest keep their value.
+        return array_map(
+            fn (): array => ['sometimes', 'boolean'],
+            DonorNotificationPreferences::DEFAULTS,
+        );
     }
 }

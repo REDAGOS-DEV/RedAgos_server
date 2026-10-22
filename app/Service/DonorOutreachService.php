@@ -10,6 +10,7 @@ use App\Models\FacilityDonor;
 use App\Models\FacilityEmailTemplate;
 use App\Models\User;
 use App\Repository\DonorDirectoryRepository;
+use App\Support\DonorNotificationPreferences;
 use App\Support\DonorStanding;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Facades\Log;
@@ -346,7 +347,7 @@ class DonorOutreachService
 
     private function acceptsReminders(User $donor): bool
     {
-        return ($donor->donorProfile?->notification_preferences['eligibility_renewal'] ?? true) !== false;
+        return DonorNotificationPreferences::allows($donor, DonorNotificationPreferences::ELIGIBILITY_RENEWAL);
     }
 
     private function isInactive(?FacilityDonor $record): bool
