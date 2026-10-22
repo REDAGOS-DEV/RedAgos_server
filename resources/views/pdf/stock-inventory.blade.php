@@ -43,10 +43,13 @@
 
         table { border-collapse: collapse; }
 
+        /* The seal and the logo run from the first header line down to the
+           title (project owner, 2026-10-22): each cell spans both rows, and
+           the image is as tall as the two. */
         .head { width: 100%; }
         .head td { vertical-align: middle; }
-        .head .seal, .head .logo { width: 70px; text-align: center; }
-        .head img { max-width: 62px; max-height: 62px; }
+        .head .seal, .head .logo { width: 84pt; text-align: center; }
+        .head img { height: 80pt; max-width: 84pt; }
         .head .lines { text-align: center; font-size: 8pt; line-height: 1.35; }
         .head .facility { font-weight: bold; font-size: 8.6pt; text-transform: uppercase; }
 
@@ -54,7 +57,7 @@
             text-align: center;
             font-size: 11pt;
             font-weight: bold;
-            margin: 6px 0 2px;
+            padding: 5px 0 0;
         }
 
         .legend { text-align: center; font-size: 6.4pt; color: #333; margin-bottom: 6px; }
@@ -101,7 +104,7 @@
 
 <table class="head">
     <tr>
-        <td class="seal">
+        <td class="seal" rowspan="2">
             @if ($seal)
                 <img src="{{ $seal }}" alt="Department of Health">
             @endif
@@ -112,17 +115,18 @@
             @endforeach
             <div class="facility">{{ $report['facility']['name'] }}</div>
         </td>
-        <td class="logo">
+        <td class="logo" rowspan="2">
             @if ($logo)
                 <img src="{{ $logo }}" alt="{{ $report['facility']['name'] }}">
             @endif
         </td>
     </tr>
+    <tr>
+        <td class="title">
+            DAILY BLOOD STOCK INVENTORY AS OF {{ $report['as_of_date'] }} at {{ $report['as_of_time'] }}
+        </td>
+    </tr>
 </table>
-
-<div class="title">
-    DAILY BLOOD STOCK INVENTORY AS OF {{ $report['as_of_date'] }} at {{ $report['as_of_time'] }}
-</div>
 <div class="legend">
     Issuable units only (available, not past expiry).
     Boxed red counts expire today or tomorrow.

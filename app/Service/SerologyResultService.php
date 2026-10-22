@@ -168,7 +168,7 @@ class SerologyResultService
             'correction' => $correction === null ? null : [
                 'id' => $correction->id,
                 'requested_by' => $correction->requester
-                    ? trim($correction->requester->first_name.' '.$correction->requester->last_name)
+                    ? $correction->requester->signatureName()
                     : null,
                 'requested_at' => $correction->created_at?->toISOString(),
                 'reason' => $correction->reason,

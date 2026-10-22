@@ -24,6 +24,9 @@ class Donation extends Model
         'status',
         'volume_ml',
         'rejection_reason',
+        // When Processing last printed the final labels, and who did.
+        'labelled_at',
+        'labelled_by',
     ];
 
     /**
@@ -39,7 +42,16 @@ class Donation extends Model
             'donation_date' => 'datetime',
             'status' => DonationStatus::class,
             'volume_ml' => 'integer',
+            'labelled_at' => 'datetime',
         ];
+    }
+
+    /**
+     * Whoever last printed the final labels.
+     */
+    public function labeller(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'labelled_by');
     }
 
     public function donorProfile(): BelongsTo

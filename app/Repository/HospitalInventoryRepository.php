@@ -40,7 +40,7 @@ class HospitalInventoryRepository
         'requestAllocation:id,request_id',
         'requestAllocation.request:id,reference_number,transfusion_request_id,weekly_request_id',
         'requestAllocation.request.transfusionRequest:id,reference_number',
-        'stockedBy:id,first_name,last_name',
+        'stockedBy:id,first_name,last_name,credentials',
     ];
 
     /**
@@ -49,11 +49,11 @@ class HospitalInventoryRepository
      * @var array<int, string>
      */
     private const TAG_ACTORS = [
-        'taggedBy:id,first_name,last_name',
-        'crossmatchedBy:id,first_name,last_name',
-        'transfusedBy:id,first_name,last_name',
-        'untaggedBy:id,first_name,last_name',
-        'returnedBy:id,first_name,last_name',
+        'taggedBy:id,first_name,last_name,credentials',
+        'crossmatchedBy:id,first_name,last_name,credentials',
+        'transfusedBy:id,first_name,last_name,credentials',
+        'untaggedBy:id,first_name,last_name,credentials',
+        'returnedBy:id,first_name,last_name,credentials',
         'transfusionRequest:id,reference_number',
         'patientBloodType:id,code',
     ];

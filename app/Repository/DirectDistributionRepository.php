@@ -24,7 +24,7 @@ class DirectDistributionRepository
      */
     private const RELATIONS = [
         'source:id,name,code',
-        'receiver:id,first_name,last_name',
+        'receiver:id,first_name,last_name,credentials',
         'transfusionRequest:id,reference_number',
         'bloodUnits:id,direct_distribution_id,blood_type_id,component_id,volume_ml,expiry_date',
         'bloodUnits.bloodType:id,code',

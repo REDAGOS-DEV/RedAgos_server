@@ -14,6 +14,10 @@ use Illuminate\Support\Facades\URL;
 /**
  * Each facility's own logo: stored privately, served by signed link, embedded in PDFs.
  *
+ * Also the left-hand logo of the Daily Blood Stock Inventory (`seal_path`),
+ * which defaults to the Department of Health seal. It is kept the same way
+ * but printed on that report alone.
+ *
  * Follows the donor-avatar pattern. The file lives on the private `local`
  * disk, so it is never reachable by guessing a path; the browser gets a
  * 30-minute signed URL, and a PDF gets the bytes inlined as a data URI
@@ -32,6 +36,9 @@ use Illuminate\Support\Facades\URL;
 class FacilityLogoService
 {
     private const DIRECTORY = 'facility-logos';
+
+    // Apart from the logos, so a billing document's signed logo path can never name one.
+    private const SEAL_DIRECTORY = 'facility-seals';
 
     private const DISK = 'local';
 
@@ -97,6 +104,105 @@ class FacilityLogoService
             'message' => 'Facility logo removed.',
             'logo_url' => null,
         ];
+    }
+
+    /**
+     * Store a new left-hand logo for the caller's facility's Daily Blood Stock Inventory.
+     *
+     * The report prints the Department of Health seal there until a centre
+     * uploads its own (project owner, 2026-10-22). No billing document
+     * prints it, so a replaced one is deleted at once.
+     *
+     * @return array<string, mixed>
+     */
+    public function uploadSeal(User $staff, UploadedFile $seal): array
+    {
+        $facility = $this->requireFacility($staff);
+        $previous = $facility->seal_path;
+
+        $facility->seal_path = $seal->store(self::SEAL_DIRECTORY, self::DISK);
+        $facility->save();
+
+        if ($previous && $previous !== $facility->seal_path) {
+            Storage::disk(self::DISK)->delete($previous);
+        }
+
+        $this->auditLogger->record($staff, 'center.seal_updated', $facility, [
+            'facility_id' => $facility->id,
+        ]);
+
+        return [
+            'message' => 'Left logo updated.',
+            'seal_url' => $this->sealUrlFor($facility),
+        ];
+    }
+
+    /**
+     * Remove the caller's facility's left-hand logo; the report goes back to the DOH seal.
+     *
+     * @return array<string, mixed>
+     */
+    public function removeSeal(User $staff): array
+    {
+        $facility = $this->requireFacility($staff);
+        $previous = $facility->seal_path;
+
+        $facility->seal_path = null;
+        $facility->save();
+
+        if ($previous) {
+            Storage::disk(self::DISK)->delete($previous);
+        }
+
+        $this->auditLogger->record($staff, 'center.seal_removed', $facility, [
+            'facility_id' => $facility->id,
+        ]);
+
+        return [
+            'message' => 'Left logo removed. The report prints the Department of Health seal.',
+            'seal_url' => null,
+        ];
+    }
+
+    /**
+     * A short-lived signed link to the left-hand logo, or null when the centre has none.
+     */
+    public function sealUrlFor(?Facility $facility): ?string
+    {
+        if ($facility === null || ! $this->hasSeal($facility)) {
+            return null;
+        }
+
+        return URL::temporarySignedRoute(
+            'blood-center.facility.seal',
+            now()->addMinutes(30),
+            ['facility' => $facility->id, 'v' => basename((string) $facility->seal_path)]
+        );
+    }
+
+    /**
+     * The left-hand logo as a data URI for dompdf, or null when the centre has none.
+     */
+    public function sealDataUriFor(?Facility $facility): ?string
+    {
+        if ($facility === null || ! $this->hasSeal($facility)) {
+            return null;
+        }
+
+        return $this->dataUri($facility->seal_path);
+    }
+
+    /**
+     * Stream the left-hand logo for its signed route.
+     */
+    public function sealResponse(Facility $facility): mixed
+    {
+        abort_unless($this->hasSeal($facility), 404);
+
+        return Storage::disk(self::DISK)->response($facility->seal_path, null, [
+            'Cache-Control' => 'private, max-age=1800',
+            'X-Content-Type-Options' => 'nosniff',
+        ]);
     }
 
     /**
@@ -184,6 +290,12 @@ class FacilityLogoService
     {
         return $facility->logo_path !== null
             && Storage::disk(self::DISK)->exists($facility->logo_path);
+    }
+
+    private function hasSeal(Facility $facility): bool
+    {
+        return $facility->seal_path !== null
+            && Storage::disk(self::DISK)->exists($facility->seal_path);
     }
 
     /**

@@ -385,7 +385,7 @@ class StockThresholdService
                     // Units still needed to reach PAR. Reported only: nothing alerts on it.
                     'to_par' => $par === null ? 0 : max(0, $par - $available),
                     'alerted_at' => $threshold?->alerted_at?->toIso8601String(),
-                    'updated_by' => $updatedBy === null ? null : trim($updatedBy->first_name.' '.$updatedBy->last_name),
+                    'updated_by' => $updatedBy === null ? null : $updatedBy->signatureName(),
                     'updated_at' => $threshold?->updated_at?->toIso8601String(),
                 ];
             }

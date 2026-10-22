@@ -91,6 +91,8 @@ final class AuditActions
 
         'center.logo_updated' => ['settings', 'edit', 'Updated the centre logo'],
         'center.logo_removed' => ['settings', 'delete', 'Removed the centre logo'],
+        'center.seal_updated' => ['settings', 'edit', 'Updated the left report logo'],
+        'center.seal_removed' => ['settings', 'delete', 'Removed the left report logo'],
         'center.component_added' => ['settings', 'create', 'Added a blood component'],
         'center.component_configured' => ['settings', 'edit', 'Changed a component\'s shelf life'],
         'facility.email_template_saved' => ['settings', 'edit', 'Saved an email template'],
@@ -165,6 +167,9 @@ final class AuditActions
         'laboratory.donation_completed' => ['processing', 'approve', 'Completed a donation'],
         'laboratory.donation_rejected' => ['processing', 'reject', 'Rejected a donation'],
         'laboratory.processed_exported' => ['processing', 'export', 'Exported processed donations'],
+        // Final labels moved from Issuance to Processing (2026-10-22); the
+        // inventory action below stays for the entries written before.
+        'laboratory.labels_printed' => ['processing', 'print', 'Printed final labels'],
         'inventory.labels_printed' => ['processing', 'print', 'Printed bag labels'],
 
         'inventory.recorded' => ['inventory', 'create', 'Stocked a unit'],

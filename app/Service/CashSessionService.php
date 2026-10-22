@@ -273,7 +273,7 @@ class CashSessionService
         $facilityId = $this->requireFacilityId($staff);
 
         return CashSession::query()
-            ->with(['cashier:id,first_name,last_name', 'closer:id,first_name,last_name'])
+            ->with(['cashier:id,first_name,last_name,credentials', 'closer:id,first_name,last_name,credentials'])
             ->where('facility_id', $facilityId)
             ->when(! $this->mayOversee($staff), fn ($query) => $query->where('cashier_id', $staff->id))
             ->when(isset($filters['status']), fn ($query) => $query->where('status', $filters['status']))
@@ -359,7 +359,7 @@ class CashSessionService
      */
     public function format(CashSession $session): array
     {
-        $session->loadMissing(['cashier:id,first_name,last_name', 'closer:id,first_name,last_name']);
+        $session->loadMissing(['cashier:id,first_name,last_name,credentials', 'closer:id,first_name,last_name,credentials']);
 
         return [
             'id' => $session->id,
@@ -369,11 +369,11 @@ class CashSessionService
             'counter_label' => $session->counter_label,
             'cashier' => $session->cashier ? [
                 'id' => $session->cashier->id,
-                'name' => trim($session->cashier->first_name.' '.$session->cashier->last_name),
+                'name' => $session->cashier->signatureName(),
             ] : null,
             'opened_at' => $session->opened_at?->toIso8601String(),
             'closed_at' => $session->closed_at?->toIso8601String(),
-            'closed_by' => $session->closer ? trim($session->closer->first_name.' '.$session->closer->last_name) : null,
+            'closed_by' => $session->closer ? $session->closer->signatureName() : null,
             'opening_float' => $session->opening_float,
             'expected_cash' => $session->expected_cash,
             'counted_cash' => $session->counted_cash,

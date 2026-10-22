@@ -106,6 +106,6 @@ class DonationScreening extends Model
             return $this->screened_by_name;
         }
 
-        return $this->recorder ? trim($this->recorder->first_name.' '.$this->recorder->last_name) : null;
+        return $this->recorder ? $this->recorder->signatureName() : null;
     }
 }

@@ -70,6 +70,6 @@ class BloodCollection extends Model
             return $this->phlebotomist_name;
         }
 
-        return $this->collector ? trim($this->collector->first_name.' '.$this->collector->last_name) : null;
+        return $this->collector ? $this->collector->signatureName() : null;
     }
 }

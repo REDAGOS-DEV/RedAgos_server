@@ -141,7 +141,7 @@ class StatementRevisionService
             'collected_at_issue' => $revision->collected_at_issue,
             'amount_due' => $revision->amount_due,
             'issued_at' => $revision->created_at?->toIso8601String(),
-            'issued_by' => $revision->creator ? trim($revision->creator->first_name.' '.$revision->creator->last_name) : null,
+            'issued_by' => $revision->creator ? $revision->creator->signatureName() : null,
             'issuer' => [
                 ...$this->facilityCard($revision->issuingFacility),
                 // The issuing centre's own logo heads the document, never a shared mark.

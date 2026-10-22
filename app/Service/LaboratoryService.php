@@ -120,8 +120,9 @@ class LaboratoryService
             $typing = $this->laboratoryRepository->upsertImmunohematology($locked->id, [
                 'blood_type_id' => $bloodTypeId,
                 'forward_group' => $payload['forward_group'],
-                'reverse_group' => $payload['reverse_group'],
-                'antibody_screen' => $payload['antibody_screen'],
+                // Optional: not asked for on the Testing page.
+                'reverse_group' => $payload['reverse_group'] ?? null,
+                'antibody_screen' => $payload['antibody_screen'] ?? null,
                 'notes' => $this->trimmedOrNull($payload['notes'] ?? null),
                 // "Screened by": the authenticated staff member, never a name
                 // from the request.
@@ -130,9 +131,9 @@ class LaboratoryService
             ]);
 
             // Immunohematology's clearance, issued the moment the typing can
-            // be trusted: forward and reverse agree and the screen is
-            // negative. Otherwise the typing is saved, held, and may be
-            // corrected. A cleared typing is also what the donor's profile
+            // be trusted: the forward read is recorded, and any reverse group
+            // or antibody screen sent with it agrees and is negative.
+            // Otherwise the typing is saved, held, and may be corrected. A cleared typing is also what the donor's profile
             // may adopt — so a first-time donor's bags can be booked into
             // quarantine before the serology run is back.
             $hold = $typing->clearanceHold();
@@ -506,10 +507,10 @@ class LaboratoryService
      * Reject a donation for a reactive marker and refer its donor for counselling.
      *
      * Must run inside the caller's transaction, with the donation locked. It
-     * applies to a donation Processing has already completed too: its units
-     * are then on the shelf in quarantine, and a rejected donation is what
-     * locks them there — releaseFromQuarantine() refuses it, so the only way
-     * out is discard.
+     * applies to a donation Processing has already completed too: a legacy
+     * donation handed over before testing finished. Stock Intake refuses an
+     * uncleared donation, and any of its bags booked into quarantine before
+     * the Release step was removed (2026-10-22) can only be discarded.
      *
      * THE ONE EXCEPTION TO THE DEPARTMENT SPLIT. Testing does not hold
      * `lab.update_status`, and still writes `rejected` here. It is not a
@@ -686,11 +687,12 @@ class LaboratoryService
     /**
      * Refuse to complete a donation Processing has not finished with.
      *
-     * Completing no longer clears anything for issue: it hands the bags to
-     * Issuance, which books them in quarantined. Test results are therefore
-     * not a condition here — plasma cannot wait for the serology run. What
-     * keeps untested blood from a patient is the quarantine release, which
-     * demands both clearance tokens.
+     * Completing hands labelled bags to Issuance, which books them straight
+     * into stock (project owner, 2026-10-22). So the bags wait in Processing's
+     * quarantine until Testing has cleared the donation and Processing has
+     * printed the final labels (FinalLabelService): both clearance tokens and
+     * the labels are conditions here. A correction that changes what a label
+     * says clears `labelled_at`, so relabelling comes before hand-over too.
      */
     private function guardReadyToComplete(Donation $donation): void
     {
@@ -715,6 +717,30 @@ class LaboratoryService
                 409,
                 'components_missing',
                 'Declare the component breakdown before completing the donation.'
+            );
+        }
+
+        if (! $this->clearanceRepository->has($donation->id, ClearanceKind::Tti)) {
+            throw $this->refuse(
+                409,
+                'tti_not_cleared',
+                'TTI Testing has not cleared this donation. Its bags stay with Processing until it does.'
+            );
+        }
+
+        if (! $this->clearanceRepository->has($donation->id, ClearanceKind::Immunohematology)) {
+            throw $this->refuse(
+                409,
+                'immunohematology_not_cleared',
+                'Immunohematology has not cleared this donation. Its bags stay with Processing until it does.'
+            );
+        }
+
+        if ($donation->labelled_at === null) {
+            throw $this->refuse(
+                409,
+                'labels_not_printed',
+                'Print and affix the final labels before handing the bags over.'
             );
         }
     }
@@ -886,6 +912,12 @@ class LaboratoryService
             // quarantine only when both have.
             'clearances' => $this->formatClearances($donation),
 
+            // When Processing last printed the final labels, which the
+            // hand-over requires. Read only when there is one, so the queue
+            // pays nothing for unlabelled rows.
+            'labelled_at' => $donation->labelled_at?->toISOString(),
+            'labelled_by' => $donation->labelled_by === null ? null : $this->staffName($donation->labeller),
+
             // The sticker every bag of this donation carries, and each bag's
             // number built from it — what the Phase 1 label prints.
             'donation_barcode' => BagNumbers::barcode($donation),
@@ -989,7 +1021,7 @@ class LaboratoryService
 
     private function staffName(?User $user): ?string
     {
-        return $user === null ? null : trim($user->first_name.' '.$user->last_name);
+        return $user === null ? null : $user->signatureName();
     }
 
     private function trimmedOrNull(mixed $value): ?string

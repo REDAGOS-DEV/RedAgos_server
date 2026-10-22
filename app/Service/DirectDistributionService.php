@@ -271,7 +271,7 @@ class DirectDistributionService
                 'status_label' => $bag->hospitalUnit?->status->label(),
             ])->all(),
             'received_at' => $delivery->received_at?->toIso8601String(),
-            'received_by' => $receiver === null ? null : trim($receiver->first_name.' '.$receiver->last_name),
+            'received_by' => $receiver === null ? null : $receiver->signatureName(),
         ];
     }
 

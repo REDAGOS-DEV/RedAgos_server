@@ -102,7 +102,7 @@ class PaymentReceiptService
                     'logo_path' => $request->targetFacility?->logo_path,
                 ],
                 'payer_name' => $payerName,
-                'received_by' => $issuer ? trim($issuer->first_name.' '.$issuer->last_name) : null,
+                'received_by' => $issuer ? $issuer->signatureName() : null,
                 'request' => [
                     'reference_number' => $request->reference_number,
                     'patient_name' => $request->patientFullName(),

@@ -355,7 +355,7 @@ class AuditLogService
 
     private function nameOf(User $user): string
     {
-        return trim($user->first_name.' '.$user->last_name);
+        return $user->signatureName();
     }
 
     private function code(string $prefix, string $id): string

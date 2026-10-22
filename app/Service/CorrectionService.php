@@ -423,6 +423,23 @@ class CorrectionService
         $donation = Donation::query()->whereKey($donationId)->lockForUpdate()->firstOrFail();
         $this->guardCorrectable([$donation], $correction->subject);
 
+        // The final labels print the breakdown, the typing, the clearances
+        // and the barcode. A correction to any of them, before hand-over,
+        // means the labels already printed are wrong: Processing prints them
+        // again before the hand-over will take (guardReadyToComplete).
+        if ($donation->labelled_at !== null
+            && $donation->status !== DonationStatus::Completed
+            && in_array($correction->subject, [
+                CorrectionSubject::Collection,
+                CorrectionSubject::Immunohematology,
+                CorrectionSubject::Serology,
+                CorrectionSubject::Components,
+            ], true)) {
+            $donation->labelled_at = null;
+            $donation->labelled_by = null;
+            $donation->save();
+        }
+
         // The clearance stood on the result being replaced, so it goes
         // with it. The corrected write issues a new one if it qualifies;
         // if that write is refused, the transaction restores this one.
@@ -698,6 +715,19 @@ class CorrectionService
 
         $kind = $this->clearanceKind($subject);
 
+        // Bags handed over carry final labels printed from these results
+        // (project owner, 2026-10-22), so the results are fixed once the bags
+        // have left Processing, as they are once a bag leaves quarantine.
+        if ($kind !== null
+            && $donation->status === DonationStatus::Completed
+            && $donation->labelled_at !== null) {
+            throw $this->refuse(
+                409,
+                'labels_handed_over',
+                'This unit was handed over with its final labels, so this result can no longer be corrected.'
+            );
+        }
+
         // A cleared result may still be corrected while every bag is in
         // quarantine — the correction can change whether it clears. Once a
         // bag has been released, the result is what put it on the shelf.
@@ -968,7 +998,7 @@ class CorrectionService
 
     private function name(?User $user): ?string
     {
-        return $user === null ? null : trim($user->first_name.' '.$user->last_name);
+        return $user === null ? null : $user->signatureName();
     }
 
     private function nothingToCorrect(CorrectionSubject $subject): string

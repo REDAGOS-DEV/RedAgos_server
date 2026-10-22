@@ -33,11 +33,10 @@ class InventoryRepository
     public function paginateUnits(int $facilityId, array $filters, int $perPage): LengthAwarePaginator
     {
         return $this->filtered($facilityId, $filters)
-            // The donation and its clearances, for the quarantine state of a
-            // held unit, and its date, for when the bag was collected.
+            // The donation's date, for when the bag was collected.
             // Constrained so a page of available stock does not drag every
             // donation's columns along.
-            ->with(['bloodType', 'component', 'donation:id,status,donation_date', 'donation.clearances'])
+            ->with(['bloodType', 'component', 'donation:id,status,donation_date'])
             // FEFO unless the caller asks for the newest bags first: a listing
             // of every status in FEFO order opens on long-gone units.
             ->when(
@@ -99,7 +98,7 @@ class InventoryRepository
             ->where('blood_units.facility_id', $facilityId)
             ->whereIn('audit_logs.action', $actions)
             ->when($unitId !== null, fn (Builder $query): Builder => $query->where('blood_units.id', $unitId))
-            ->with('actor:id,first_name,last_name')
+            ->with('actor:id,first_name,last_name,credentials')
             ->select([
                 'audit_logs.id',
                 'audit_logs.actor_id',
@@ -162,22 +161,6 @@ class InventoryRepository
             ->orderBy('id')
             ->pluck('id')
             ->all();
-    }
-
-    /**
-     * Lock a donation's quarantined units, for release.
-     *
-     * @return Collection<int, BloodUnit>
-     */
-    public function lockQuarantinedUnits(int $donationId, int $facilityId): Collection
-    {
-        return BloodUnit::query()
-            ->forFacility($facilityId)
-            ->where('donation_id', $donationId)
-            ->where('status', BloodUnitStatus::Quarantined)
-            ->orderBy('id')
-            ->lockForUpdate()
-            ->get();
     }
 
     public function lockUnit(string $unitId, int $facilityId): ?BloodUnit

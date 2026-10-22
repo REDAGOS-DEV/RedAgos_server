@@ -605,7 +605,7 @@ class PaperDonationService
             'phlebotomist_name' => $sheet->phlebotomist_name,
             'notify_donors' => (bool) $sheet->notify_donors,
             'notes' => $sheet->notes,
-            'created_by' => $sheet->creator ? trim($sheet->creator->first_name.' '.$sheet->creator->last_name) : null,
+            'created_by' => $sheet->creator ? $sheet->creator->signatureName() : null,
             'created_at' => $sheet->created_at?->toISOString(),
             'counts' => [
                 'rows' => $rows,

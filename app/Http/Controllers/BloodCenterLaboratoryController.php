@@ -7,6 +7,7 @@ use App\Http\Requests\ListLaboratoryQueueRequest;
 use App\Http\Requests\RecordImmunohematologyRequest;
 use App\Http\Requests\RecordSerologyRequest;
 use App\Http\Requests\UpdateLaboratoryStatusRequest;
+use App\Service\FinalLabelService;
 use App\Service\LaboratoryService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -14,7 +15,8 @@ use Illuminate\Http\Request;
 class BloodCenterLaboratoryController extends Controller
 {
     public function __construct(
-        private readonly LaboratoryService $laboratoryService
+        private readonly LaboratoryService $laboratoryService,
+        private readonly FinalLabelService $finalLabelService
     ) {}
 
     /**
@@ -91,6 +93,16 @@ class BloodCenterLaboratoryController extends Controller
         return response()->json(
             $this->laboratoryService->declareComponents($request->user(), $donation, $request->validated()),
             201
+        );
+    }
+
+    /**
+     * Print, or reprint, the final labels of a donation Testing has cleared.
+     */
+    public function printLabels(Request $request, int $donation): JsonResponse
+    {
+        return response()->json(
+            $this->finalLabelService->print($request->user(), $donation)
         );
     }
 

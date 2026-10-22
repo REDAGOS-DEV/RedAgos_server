@@ -50,7 +50,7 @@ class StockReportTest extends TestCase
         $this->issuance = User::factory()->bloodCenterStaff($this->facility, Department::Issuance)->create([
             'first_name' => 'John',
             'last_name' => 'Abarsolo',
-            'position' => 'RMT',
+            'credentials' => 'RMT',
         ]);
 
         foreach (['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'] as $code) {

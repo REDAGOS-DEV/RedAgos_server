@@ -2,9 +2,11 @@
 
 namespace Database\Factories;
 
+use App\Enums\ClearanceKind;
 use App\Enums\DonationStatus;
 use App\Models\BloodCollection;
 use App\Models\Donation;
+use App\Models\DonationClearance;
 use App\Models\DonorProfile;
 use App\Models\Facility;
 use App\Models\User;
@@ -80,6 +82,32 @@ class DonationFactory extends Factory
             'status' => DonationStatus::Completed,
             'donation_date' => $date,
         ]);
+    }
+
+    /**
+     * Indicate that Processing handed the bags over the way it must now.
+     *
+     * Testing has cleared both sections and Processing has printed the final
+     * labels: the only state Stock Intake books in (project owner,
+     * 2026-10-22). The clearances are written as backfilled ones, with no
+     * issuer, as a migration would.
+     */
+    public function handedOver(): static
+    {
+        return $this->state(fn (array $attributes): array => [
+            'status' => DonationStatus::Completed,
+            'labelled_at' => now(),
+        ])->afterCreating(function (Donation $donation): void {
+            foreach (ClearanceKind::cases() as $kind) {
+                DonationClearance::create([
+                    'donation_id' => $donation->id,
+                    'kind' => $kind,
+                    'issued_by' => null,
+                    'issued_at' => now(),
+                    'source' => 'factory',
+                ]);
+            }
+        });
     }
 
     /**

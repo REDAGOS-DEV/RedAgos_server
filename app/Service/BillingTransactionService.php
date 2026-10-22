@@ -34,7 +34,7 @@ class BillingTransactionService
         'receipt:id,receipt_number',
         'revision:id,document_number',
         'cashSession:id,session_number',
-        'recorder:id,first_name,last_name',
+        'recorder:id,first_name,last_name,credentials',
         'reverses:id,transaction_number',
     ];
 
@@ -258,7 +258,7 @@ class BillingTransactionService
             'reverses_transaction_number' => $row->reverses?->transaction_number,
             'reference' => $row->reference,
             'note' => $row->note,
-            'recorded_by' => $row->recorder ? trim($row->recorder->first_name.' '.$row->recorder->last_name) : null,
+            'recorded_by' => $row->recorder ? $row->recorder->signatureName() : null,
         ];
     }
 

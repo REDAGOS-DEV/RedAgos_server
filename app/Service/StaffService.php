@@ -111,7 +111,7 @@ class StaffService
                     'password' => Hash::make($payload['password']),
                     'account_status' => AccountStatus::PendingVerification,
                     'employee_id' => $payload['employee_id'] ?? null,
-                    'position' => isset($payload['position']) ? trim((string) $payload['position']) : null,
+                    'credentials' => filled($payload['credentials'] ?? null) ? trim((string) $payload['credentials']) : null,
                 ], $facility, $role, $level, $department, $customRole, $privileges, $additional);
 
                 // The facility is necessarily approved — staff.manage sits behind
@@ -282,8 +282,8 @@ class StaffService
             $staff->employee_id = $payload['employee_id'];
         }
 
-        if (array_key_exists('position', $payload)) {
-            $staff->position = $payload['position'] === null ? null : trim((string) $payload['position']);
+        if (array_key_exists('credentials', $payload)) {
+            $staff->credentials = filled($payload['credentials']) ? trim((string) $payload['credentials']) : null;
         }
 
         if (array_key_exists('staff_role', $payload)) {
@@ -602,7 +602,10 @@ class StaffService
             'phone' => $staff->phone,
             'username' => $staff->username,
             'employee_id' => $staff->employee_id,
-            'position' => $staff->position,
+            // The title: RMT, RN, MD. No job post beside it (project owner, 2026-10-22).
+            'credentials' => $staff->credentials,
+            // As it prints on what they sign: "Rowena Tan, RMT".
+            'signature_name' => $staff->signatureName(),
             'department' => $staff->department?->value,
             'department_label' => $staff->department?->label(),
             'staff_role' => $staff->staff_role?->value,

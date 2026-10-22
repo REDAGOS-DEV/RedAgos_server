@@ -35,6 +35,36 @@ class BloodCenterFacilityController extends Controller
     }
 
     /**
+     * Upload or replace the left-hand logo of the caller's Daily Blood Stock Inventory.
+     *
+     * Same file rules as the facility logo, so it takes the same request.
+     */
+    public function uploadSeal(UpdateFacilityLogoRequest $request): JsonResponse
+    {
+        return response()->json(
+            $this->facilityLogoService->uploadSeal($request->user(), $request->file('logo'))
+        );
+    }
+
+    /**
+     * Remove the left-hand logo; the report prints the DOH seal again.
+     */
+    public function removeSeal(Request $request): JsonResponse
+    {
+        return response()->json(
+            $this->facilityLogoService->removeSeal($request->user())
+        );
+    }
+
+    /**
+     * Stream the left-hand logo. Reached only through a signed, expiring URL.
+     */
+    public function showSeal(Facility $facility): mixed
+    {
+        return $this->facilityLogoService->sealResponse($facility);
+    }
+
+    /**
      * Stream a facility logo. Reached only through a signed, expiring URL.
      *
      * A billing document's link names the exact file it was issued with; the

@@ -159,7 +159,7 @@ class DonationRecordService
                 // Who typed it: on a paper record the screening's recorder is
                 // the encoder, and the names below are the paper's.
                 'entered_by' => $screening?->recorder
-                    ? trim($screening->recorder->first_name.' '.$screening->recorder->last_name)
+                    ? $screening->recorder->signatureName()
                     : null,
             ],
             'volume_ml' => $donation->volume_ml,

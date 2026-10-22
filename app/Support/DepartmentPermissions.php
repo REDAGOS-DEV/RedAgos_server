@@ -285,10 +285,6 @@ final class DepartmentPermissions
             // below; everyone with inventory.view can see the result.
             'inventory.thresholds',
 
-            // Release from quarantine. The service demands both clearance
-            // tokens, so holding this is never enough on its own.
-            'inventory.release_quarantine',
-
             // Read the Daily Blood Stock Inventory. Issuance prepares it; its
             // own ability rather than inventory.create so a Supervisor can
             // read the sheet without being able to book stock in.
@@ -426,7 +422,6 @@ final class DepartmentPermissions
         'lab.verify_serology' => 'update',
         'inventory.update' => 'update',
         'inventory.thresholds' => 'update',
-        'inventory.release_quarantine' => 'update',
 
         // Settings a named post keeps, like the stock minimums above: setting
         // a value rather than recording a new entry.
@@ -754,7 +749,8 @@ final class DepartmentPermissions
                 'label' => $privilege->label(),
                 'description' => $privilege->description(),
             ], StaffPrivilege::cases()),
-            'titles' => ['RMT', 'RN'],
+            // Suggested credentials, printed after a staff member's name (users.credentials).
+            'titles' => ['RMT', 'RN', 'MD'],
         ];
     }
 }

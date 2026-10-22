@@ -45,10 +45,10 @@ class BloodRequestRepository
         // PHP. A page of requests holds a handful of bags each; one query for
         // all of them is cheaper than an aggregate per figure.
         'allocations',
-        'requester:id,first_name,last_name',
-        'recorder:id,first_name,last_name',
+        'requester:id,first_name,last_name,credentials',
+        'recorder:id,first_name,last_name,credentials',
         'walkIn',
-        'walkIn.verificationRecorder:id,first_name,last_name',
+        'walkIn.verificationRecorder:id,first_name,last_name,credentials',
         // The patient requirement a facility allocation is a share of, so the
         // centre sees "you are asked for 1 of the 5 the patient needs".
         'transfusionRequest:id,reference_number,status,closed_at',
