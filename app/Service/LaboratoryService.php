@@ -6,7 +6,6 @@ use App\Enums\ClearanceKind;
 use App\Enums\DonationStatus;
 use App\Enums\MarkerResult;
 use App\Enums\SerologyMarker;
-use App\Enums\StaffRole;
 use App\Enums\TestResult;
 use App\Models\CounsellingReferral;
 use App\Models\Donation;
@@ -18,8 +17,8 @@ use App\Notifications\SerologyVerificationRequested;
 use App\Repository\ClearanceRepository;
 use App\Repository\LaboratoryRepository;
 use App\Support\BagNumbers;
-use App\Support\DepartmentPermissions;
 use App\Support\DonorBlinding;
+use App\Support\StaffNotificationTopics;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Facades\DB;
@@ -595,23 +594,14 @@ class LaboratoryService
      */
     private function askForVerification(Donation $donation, Facility $facility, User $recorder): void
     {
-        $roles = array_map(
-            fn (StaffRole $role): string => $role->value,
-            DepartmentPermissions::rolesHolding('lab.verify_serology')
-        );
-
         try {
+            // The verifiers, by StaffNotificationTopics, less the one who recorded it.
             $recipients = User::query()
                 ->where('facility_id', $facility->id)
                 ->whereKeyNot($recorder->id)
-                ->where(function ($query) use ($roles): void {
-                    $query->whereIn('staff_role', $roles);
-
-                    foreach ($roles as $role) {
-                        $query->orWhereJsonContains('additional_staff_roles', $role);
-                    }
-                })
-                ->get();
+                ->get()
+                ->filter(fn (User $user): bool => StaffNotificationTopics::receivesSerology($user))
+                ->values();
 
             Notification::send($recipients, new SerologyVerificationRequested(
                 $donation,

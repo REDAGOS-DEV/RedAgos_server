@@ -2,6 +2,8 @@
 
 use App\Http\Controllers\AdminPrivilegeController;
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\BloodCenterAdminOverviewController;
+use App\Http\Controllers\BloodCenterAdminReportController;
 use App\Http\Controllers\BloodCenterAppointmentController;
 use App\Http\Controllers\BloodCenterAuditLogController;
 use App\Http\Controllers\BloodCenterBillingController;
@@ -9,6 +11,7 @@ use App\Http\Controllers\BloodCenterBillingTransactionController;
 use App\Http\Controllers\BloodCenterCheckoutController;
 use App\Http\Controllers\BloodCenterCollectionController;
 use App\Http\Controllers\BloodCenterCollectionDashboardController;
+use App\Http\Controllers\BloodCenterCollectionReportController;
 use App\Http\Controllers\BloodCenterComponentController;
 use App\Http\Controllers\BloodCenterComponentPriceController;
 use App\Http\Controllers\BloodCenterCorrectionController;
@@ -60,6 +63,7 @@ use App\Http\Controllers\HospitalStaffController;
 use App\Http\Controllers\HospitalTransfusionRequestController;
 use App\Http\Controllers\HospitalWeeklyRequestController;
 use App\Http\Controllers\PasswordResetController;
+use App\Http\Controllers\StaffNotificationPreferencesController;
 use App\Http\Controllers\StockThresholdController;
 use App\Http\Controllers\UserController;
 use App\Http\Controllers\XenditWebhookController;
@@ -209,6 +213,9 @@ Route::middleware(['auth:sanctum', 'role:blood_center'])->prefix('blood-center')
     Route::patch('/profile', [BloodCenterProfileController::class, 'update']);
     Route::put('/profile', [BloodCenterProfileController::class, 'update']);
     Route::post('/password', [BloodCenterProfileController::class, 'updatePassword']);
+    // The notices this person gets, and the few they may turn off.
+    Route::get('/notification-preferences', [StaffNotificationPreferencesController::class, 'show']);
+    Route::patch('/notification-preferences', [StaffNotificationPreferencesController::class, 'update']);
 });
 
 // Blood Center — operational. Everything that touches real data attaches here:
@@ -921,6 +928,20 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         // alone; read-only, and the trail itself is never edited from here.
         Route::get('/audit-log', [BloodCenterAuditLogController::class, 'index'])
             ->middleware('can:audit.view');
+
+        // The Admin's dashboard: role coverage, the team, the centre's setup.
+        Route::get('/admin-overview', [BloodCenterAdminOverviewController::class, 'show'])
+            ->middleware('can:staff.manage');
+
+        // The Admin's reports for a period: the centre in figures, staff and
+        // access, and activity. The Supervisor holds reports.view_all too.
+        Route::get('/reports/centre', [BloodCenterAdminReportController::class, 'show'])
+            ->middleware(['can:reports.view_all', 'throttle:30,1']);
+
+        // The Donor & Collection department's reports: every counter role
+        // holds donations.view, and no one outside the department does.
+        Route::get('/reports/collection', [BloodCenterCollectionReportController::class, 'show'])
+            ->middleware(['can:donations.view', 'throttle:30,1']);
     });
 
 // Admin — facility management. This is the only place a blood centre or a

@@ -82,6 +82,8 @@ class User extends Authenticatable implements MustVerifyEmail
             'management_level' => ManagementLevel::class,
             'is_super_admin' => 'boolean',
             'admin_privileges' => 'array',
+            // A staff member's own switches (StaffNotificationTopics).
+            'notification_preferences' => 'array',
             'password' => 'hashed',
         ];
     }

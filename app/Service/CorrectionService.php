@@ -25,16 +25,21 @@ use App\Models\Facility;
 use App\Models\Payment;
 use App\Models\RequestAllocation;
 use App\Models\User;
+use App\Notifications\CorrectionAwaitingApproval;
 use App\Repository\ClearanceRepository;
 use App\Repository\InventoryRepository;
 use App\Support\CorrectionValues;
+use App\Support\StaffNotificationTopics;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Routing\Redirector;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Notification;
 use Illuminate\Validation\ValidationException;
+use Throwable;
 
 /**
  * Changing a saved record: the writer asks, the department's head decides.
@@ -232,6 +237,8 @@ class CorrectionService
 
         if ($applied !== null) {
             $this->recordApplied($requester, $correction, $applied, $facility, selfApplied: true);
+        } else {
+            $this->tellApprovers($requester, $correction, $facility);
         }
 
         return [
@@ -240,6 +247,33 @@ class CorrectionService
                 : 'Correction requested. It is applied once it is approved.',
             'data' => $this->format($correction->fresh(self::WITH), $requester),
         ];
+    }
+
+    /**
+     * Tell the department's head a correction waits for them. After the
+     * commit, and never a reason to fail the filing: the Corrections page and
+     * its badge still show it.
+     */
+    private function tellApprovers(User $requester, CorrectionRequest $correction, Facility $facility): void
+    {
+        try {
+            $approvers = User::query()
+                ->where('facility_id', $facility->id)
+                ->whereKeyNot($requester->id)
+                ->get()
+                ->filter(fn (User $user): bool => StaffNotificationTopics::decidesCorrection($user, $correction))
+                ->values();
+
+            Notification::send($approvers, new CorrectionAwaitingApproval(
+                $correction,
+                $requester->signatureName() ?? 'A colleague'
+            ));
+        } catch (Throwable $exception) {
+            Log::warning('Could not send the correction notice.', [
+                'correction_id' => $correction->id,
+                'exception' => $exception->getMessage(),
+            ]);
+        }
     }
 
     /**
