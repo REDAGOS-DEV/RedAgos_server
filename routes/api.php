@@ -38,6 +38,7 @@ use App\Http\Controllers\BloodCenterWalkInController;
 use App\Http\Controllers\BookingCatalogController;
 use App\Http\Controllers\DonorAppointmentController;
 use App\Http\Controllers\DonorDashboardController;
+use App\Http\Controllers\DonorDeferralController;
 use App\Http\Controllers\DonorDonationController;
 use App\Http\Controllers\DonorEligibilityController;
 use App\Http\Controllers\DonorIdentityVerificationController;
@@ -116,6 +117,9 @@ Route::middleware(['auth:sanctum', 'role:donor'])->prefix('donors')->group(funct
     Route::get('/eligibility/questions', [DonorEligibilityController::class, 'questions']);
     Route::get('/eligibility/prefill', [DonorEligibilityController::class, 'prefill']);
     Route::get('/eligibility', [DonorEligibilityController::class, 'status']);
+    // Whether a deferral stands on the donor's own record. No reason, no kind
+    // beyond temporary: DonorDeferralStatusService says why.
+    Route::get('/deferral', [DonorDeferralController::class, 'show']);
     Route::post('/eligibility/screening', [DonorEligibilityController::class, 'submit'])
         ->middleware('throttle:5,60');
 

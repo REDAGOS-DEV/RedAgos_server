@@ -19,7 +19,8 @@ use Illuminate\Support\Carbon;
 class MobileEventService
 {
     public function __construct(
-        private readonly MobileEventRepository $mobileEventRepository
+        private readonly MobileEventRepository $mobileEventRepository,
+        private readonly BloodDriveAnnouncer $bloodDriveAnnouncer
     ) {}
 
     /**
@@ -63,6 +64,9 @@ class MobileEventService
             'facility_id' => $facility->id,
             'created_by' => $staff->id,
         ]);
+
+        // The centre's donors hear about it, each on the channels they chose.
+        $this->bloodDriveAnnouncer->announce($event);
 
         return $this->format($event);
     }

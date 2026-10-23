@@ -7,6 +7,7 @@ use App\Enums\QuestionCategory;
 use App\Enums\QuestionnaireStatus;
 use App\Models\DonationAppointment;
 use App\Models\DonorProfile;
+use App\Models\DonorQrToken;
 use App\Models\EligibilityQuestion;
 use App\Models\EligibilityScreening;
 use App\Models\Facility;
@@ -341,6 +342,27 @@ class EligibilityService
     }
 
     /**
+     * The donor's usable check-in token, if any, as the donor portal reports it.
+     *
+     * Never one during the waiting period after a donation: a token minted
+     * before the draw must not read as a live credential afterwards. A plain
+     * read, with no audit entry, so the dashboard can say whether a code
+     * exists without logging a "viewed" the donor never made.
+     */
+    public function activeQrToken(DonorProfile $profile): ?DonorQrToken
+    {
+        $nextEligibleDate = $this->evaluator->nextEligibleDate(
+            $this->eligibilityRepository->lastBloodDrawnAt($profile->donor_id)
+        );
+
+        if ($nextEligibleDate !== null && $nextEligibleDate->isFuture()) {
+            return null;
+        }
+
+        return $this->eligibilityRepository->usableQrToken($profile->donor_id);
+    }
+
+    /**
      * Get the donor's check-in credential and the details printed alongside it.
      *
      * @return array<string, mixed>
@@ -361,10 +383,7 @@ class EligibilityService
         $donationIntervalActive = $nextEligibleDate !== null
             && $nextEligibleDate->isFuture();
 
-        // Safety layer: never report a QR as active during the waiting period.
-        $token = $donationIntervalActive
-        ? null
-        : $this->eligibilityRepository->usableQrToken($profile->donor_id);
+        $token = $this->activeQrToken($profile);
 
         $this->auditLogger->record($user, 'donor.qr_code.viewed', $screening, [
             'has_usable_token' => $token !== null,

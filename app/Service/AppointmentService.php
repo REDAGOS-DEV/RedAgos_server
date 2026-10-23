@@ -60,6 +60,9 @@ class AppointmentService
                 'name' => $event->name,
                 'location' => $event->location,
                 'date' => $event->event_date->toDateString(),
+                // Wall-clock 'HH:MM', so the donor's home can say a drive is on now.
+                'start_time' => $event->start_time ? substr($event->start_time, 0, 5) : null,
+                'end_time' => $event->end_time ? substr($event->end_time, 0, 5) : null,
                 'registered' => (int) $event->registered,
                 'total_slots' => $event->max_capacity,
                 'status' => $event->status(),
