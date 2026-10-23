@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\AdminPrivilegeController;
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\BloodCenterAdminOverviewController;
 use App\Http\Controllers\BloodCenterAppointmentController;
 use App\Http\Controllers\BloodCenterAuditLogController;
 use App\Http\Controllers\BloodCenterBillingController;
@@ -925,6 +926,10 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         // alone; read-only, and the trail itself is never edited from here.
         Route::get('/audit-log', [BloodCenterAuditLogController::class, 'index'])
             ->middleware('can:audit.view');
+
+        // The Admin's dashboard: role coverage, the team, the centre's setup.
+        Route::get('/admin-overview', [BloodCenterAdminOverviewController::class, 'show'])
+            ->middleware('can:staff.manage');
     });
 
 // Admin — facility management. This is the only place a blood centre or a
