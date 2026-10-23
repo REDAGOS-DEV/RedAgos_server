@@ -19,7 +19,8 @@ use App\Models\User;
  * The tasks are always on, because a missed one holds up a patient or a
  * donor: hospital requests, reactive serology to verify, corrections to
  * decide and counselling referrals nobody has acted on. The watches (low
- * stock, units about to expire, tomorrow's drive) may be switched off.
+ * stock, units about to expire, tomorrow's drive, the morning briefing,
+ * deferrals that end today) may be switched off.
  */
 final class StaffNotificationTopics
 {
@@ -43,11 +44,17 @@ final class StaffNotificationTopics
 
     public const DRIVE_REMINDERS = 'drive_reminders';
 
+    public const MORNING_BRIEFING = 'morning_briefing';
+
+    public const DEFERRALS_ENDING = 'deferrals_ending';
+
     /** The switches a staff member may turn off, with their defaults. */
     public const OPTIONAL = [
         self::LOW_STOCK => true,
         self::EXPIRING_UNITS => true,
         self::DRIVE_REMINDERS => true,
+        self::MORNING_BRIEFING => true,
+        self::DEFERRALS_ENDING => true,
     ];
 
     /**
@@ -127,11 +134,33 @@ final class StaffNotificationTopics
             && self::wants($user, self::EXPIRING_UNITS);
     }
 
-    /** Tomorrow's drive: whoever runs drives, unless they turned it off. */
+    /**
+     * Tomorrow's drive: whoever runs drives, and whoever works the donors at
+     * one (the appointment roles: they screen and draw there), unless they
+     * turned it off.
+     */
     public static function receivesDriveReminders(User $user): bool
     {
-        return in_array('drives.manage', $user->abilities(), true)
-            && self::wants($user, self::DRIVE_REMINDERS);
+        return self::worksDrives($user) && self::wants($user, self::DRIVE_REMINDERS);
+    }
+
+    /** The day's appointments and drives, each morning: the appointment roles. */
+    public static function receivesMorningBriefing(User $user): bool
+    {
+        return in_array('appointments.view', $user->abilities(), true)
+            && self::wants($user, self::MORNING_BRIEFING);
+    }
+
+    /** Temporary deferrals that end today: whoever reads donors' clinical records. */
+    public static function receivesDeferralsEnding(User $user): bool
+    {
+        return in_array('donors.view_clinical', $user->abilities(), true)
+            && self::wants($user, self::DEFERRALS_ENDING);
+    }
+
+    private static function worksDrives(User $user): bool
+    {
+        return array_intersect(['drives.manage', 'appointments.view'], $user->abilities()) !== [];
     }
 
     /**
@@ -232,14 +261,38 @@ final class StaffNotificationTopics
             ];
         }
 
-        if (in_array('drives.manage', $user->abilities(), true)) {
+        if (in_array('appointments.view', $user->abilities(), true)) {
+            $topics[] = [
+                'key' => self::MORNING_BRIEFING,
+                'label' => 'Morning briefing',
+                'description' => 'At 7 each morning, the appointments booked for today and any drive held today.',
+                'reason' => 'You see this centre\'s appointments.',
+                'locked' => false,
+                'enabled' => self::wants($user, self::MORNING_BRIEFING),
+            ];
+        }
+
+        if (self::worksDrives($user)) {
             $topics[] = [
                 'key' => self::DRIVE_REMINDERS,
                 'label' => 'Drive tomorrow',
                 'description' => 'The morning before a mobile drive this centre holds.',
-                'reason' => 'You run this centre\'s drives.',
+                'reason' => in_array('drives.manage', $user->abilities(), true)
+                    ? 'You run this centre\'s drives.'
+                    : 'You work with the donors at this centre\'s drives.',
                 'locked' => false,
                 'enabled' => self::wants($user, self::DRIVE_REMINDERS),
+            ];
+        }
+
+        if (in_array('donors.view_clinical', $user->abilities(), true)) {
+            $topics[] = [
+                'key' => self::DEFERRALS_ENDING,
+                'label' => 'Deferrals ending',
+                'description' => 'Each morning, the donors whose temporary deferral ends today, so they can be invited back.',
+                'reason' => 'You read donors\' clinical records.',
+                'locked' => false,
+                'enabled' => self::wants($user, self::DEFERRALS_ENDING),
             ];
         }
 

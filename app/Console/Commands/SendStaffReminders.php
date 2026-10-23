@@ -2,15 +2,20 @@
 
 namespace App\Console\Commands;
 
+use App\Enums\AppointmentStatus;
 use App\Enums\BloodUnitStatus;
 use App\Enums\FacilityTypeName;
 use App\Enums\ReferralStatus;
 use App\Models\BloodUnit;
 use App\Models\CounsellingReferral;
+use App\Models\DonationAppointment;
+use App\Models\DonorDeferral;
 use App\Models\Facility;
 use App\Models\MobileEvent;
 use App\Models\User;
+use App\Notifications\DeferralsEnding;
 use App\Notifications\DriveTomorrow;
+use App\Notifications\MorningBriefing;
 use App\Notifications\ReferralsWaiting;
 use App\Notifications\UnitsExpiringSoon;
 use App\Support\StaffNotificationTopics;
@@ -24,7 +29,11 @@ use Throwable;
 /**
  * Each blood centre's morning reminders, to whoever handles each:
  *
- *   - tomorrow's mobile drives, to whoever runs drives;
+ *   - the day ahead (today's appointments and drives), to the appointment
+ *     roles, on a day with something booked;
+ *   - tomorrow's mobile drives, to whoever runs drives and the appointment roles;
+ *   - temporary deferrals that end today, to whoever reads donors' clinical
+ *     records. Only those ending today are counted, so each is told once;
  *   - available units that expire within a few days, to inventory viewers;
  *   - counselling referrals still pending a few days on, to whoever follows
  *     them up. Only the referrals that reach that age today are counted, so
@@ -38,7 +47,7 @@ class SendStaffReminders extends Command
 {
     protected $signature = 'blood-center:send-reminders';
 
-    protected $description = 'Send blood centre staff their morning reminders (drives, expiring units, waiting referrals)';
+    protected $description = 'Send blood centre staff their morning reminders (briefing, drives, deferrals ending, expiring units, waiting referrals)';
 
     public function handle(): int
     {
@@ -73,6 +82,31 @@ class SendStaffReminders extends Command
         $sent = 0;
 
         $to = fn (callable $rule): Collection => $staff->filter(fn (User $user): bool => $rule($user))->values();
+
+        $appointments = DonationAppointment::query()
+            ->where('facility_id', $centre->id)
+            ->whereIn('status', AppointmentStatus::activeValues())
+            ->whereDate('appointment_datetime', $today)
+            ->count();
+        $drivesToday = MobileEvent::query()->where('facility_id', $centre->id)->whereDate('event_date', $today)->pluck('name')->all();
+
+        if ($appointments > 0 || $drivesToday !== []) {
+            $recipients = $to([StaffNotificationTopics::class, 'receivesMorningBriefing']);
+            Notification::send($recipients, new MorningBriefing($appointments, $drivesToday));
+            $sent += $recipients->count();
+        }
+
+        $ending = DonorDeferral::query()
+            ->where('facility_id', $centre->id)
+            ->whereNull('lifted_at')
+            ->whereDate('ends_on', $today)
+            ->count();
+
+        if ($ending > 0) {
+            $recipients = $to([StaffNotificationTopics::class, 'receivesDeferralsEnding']);
+            Notification::send($recipients, new DeferralsEnding($ending));
+            $sent += $recipients->count();
+        }
 
         foreach (MobileEvent::query()->where('facility_id', $centre->id)->whereDate('event_date', $today->copy()->addDay())->get() as $drive) {
             $recipients = $to([StaffNotificationTopics::class, 'receivesDriveReminders']);

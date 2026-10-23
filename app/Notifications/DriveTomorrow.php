@@ -7,10 +7,11 @@ use Illuminate\Bus\Queueable;
 use Illuminate\Notifications\Notification;
 
 /**
- * A mobile drive the centre holds tomorrow, for whoever runs drives.
+ * A mobile drive the centre holds tomorrow, for whoever runs drives and the
+ * staff who work its donors.
  *
- * Sent the morning before by the staff reminders (SendStaffReminders). Staff
- * who run drives may turn it off in Settings.
+ * Sent the morning before by the staff reminders (SendStaffReminders). It may
+ * be turned off in Settings.
  */
 class DriveTomorrow extends Notification
 {
@@ -42,8 +43,10 @@ class DriveTomorrow extends Notification
             'meta' => null,
             'icon' => 'route',
             'tone' => 'info',
-            'action_label' => 'Open drives',
-            'action_route' => '/blood-center/drives',
+            // Whoever runs drives opens the drive; the others see who booked.
+            ...(method_exists($notifiable, 'abilities') && in_array('drives.manage', $notifiable->abilities(), true)
+                ? ['action_label' => 'Open drives', 'action_route' => '/blood-center/drives']
+                : ['action_label' => 'Open appointments', 'action_route' => '/blood-center/appointments']),
             'mobile_event_id' => $this->drive->id,
         ];
     }

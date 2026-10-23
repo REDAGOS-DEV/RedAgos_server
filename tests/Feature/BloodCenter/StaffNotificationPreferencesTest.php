@@ -74,12 +74,13 @@ class StaffNotificationPreferencesTest extends TestCase
     {
         $receptionist = User::factory()->bloodCenterStaff($this->centre, StaffRole::MedicalReceptionist)->create();
 
-        $this->assertSame([StaffNotificationTopics::DRIVE_REMINDERS], $this->topicKeys($receptionist));
+        $this->assertSame([StaffNotificationTopics::MORNING_BRIEFING, StaffNotificationTopics::DRIVE_REMINDERS], $this->topicKeys($receptionist));
 
         $this->actingAs($receptionist)
             ->patchJson('/api/blood-center/notification-preferences', ['drive_reminders' => false])
             ->assertOk()
-            ->assertJsonPath('topics.0.enabled', false);
+            ->assertJsonPath('topics.1.key', StaffNotificationTopics::DRIVE_REMINDERS)
+            ->assertJsonPath('topics.1.enabled', false);
 
         $this->assertFalse(StaffNotificationTopics::receivesDriveReminders($receptionist->fresh()));
     }

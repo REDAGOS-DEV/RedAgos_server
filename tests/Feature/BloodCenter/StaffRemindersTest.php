@@ -7,10 +7,14 @@ use App\Enums\StaffRole;
 use App\Models\BloodUnit;
 use App\Models\CounsellingReferral;
 use App\Models\Donation;
+use App\Models\DonationAppointment;
+use App\Models\DonorDeferral;
 use App\Models\Facility;
 use App\Models\MobileEvent;
 use App\Models\User;
+use App\Notifications\DeferralsEnding;
 use App\Notifications\DriveTomorrow;
+use App\Notifications\MorningBriefing;
 use App\Notifications\ReferralsWaiting;
 use App\Notifications\UnitsExpiringSoon;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
@@ -55,6 +59,49 @@ class StaffRemindersTest extends TestCase
         Carbon::setTestNow();
 
         parent::tearDown();
+    }
+
+    public function test_tomorrows_drive_also_reaches_the_physician_who_screens_there(): void
+    {
+        MobileEvent::factory()->create(['facility_id' => $this->centre->id, 'event_date' => '2026-10-23']);
+        $physician = User::factory()->bloodCenterStaff($this->centre, StaffRole::ScreeningPhysician)->create();
+
+        $this->artisan('blood-center:send-reminders')->assertSuccessful();
+
+        Notification::assertSentTo($physician, DriveTomorrow::class, fn (DriveTomorrow $n): bool => $n->toDatabase($physician)['action_route'] === '/blood-center/appointments');
+        Notification::assertSentTo($this->receptionist, DriveTomorrow::class, fn (DriveTomorrow $n): bool => $n->toDatabase($this->receptionist)['action_route'] === '/blood-center/drives');
+    }
+
+    public function test_the_morning_briefing_reaches_the_appointment_roles_on_a_booked_day(): void
+    {
+        DonationAppointment::factory()->count(2)->create(['facility_id' => $this->centre->id, 'appointment_datetime' => '2026-10-22 09:00']);
+        $physician = User::factory()->bloodCenterStaff($this->centre, StaffRole::ScreeningPhysician)->create();
+        $physician->forceFill(['notification_preferences' => ['morning_briefing' => false]])->save();
+
+        $this->artisan('blood-center:send-reminders')->assertSuccessful();
+
+        Notification::assertSentTo($this->receptionist, MorningBriefing::class, fn (MorningBriefing $n): bool => str_starts_with($n->toDatabase($this->receptionist)['title'], 'Today: 2 appointments'));
+        Notification::assertNotSentTo([$physician, $this->officer, $this->clerk], MorningBriefing::class);
+    }
+
+    public function test_no_briefing_on_a_day_with_nothing_booked(): void
+    {
+        $this->artisan('blood-center:send-reminders')->assertSuccessful();
+
+        Notification::assertNothingSentTo($this->receptionist);
+    }
+
+    public function test_deferrals_ending_today_reach_the_physician_once(): void
+    {
+        $physician = User::factory()->bloodCenterStaff($this->centre, StaffRole::ScreeningPhysician)->create();
+        DonorDeferral::factory()->create(['facility_id' => $this->centre->id, 'ends_on' => '2026-10-22']);
+        DonorDeferral::factory()->create(['facility_id' => $this->centre->id, 'ends_on' => '2026-10-23']);
+        DonorDeferral::factory()->create(['facility_id' => $this->centre->id, 'ends_on' => '2026-10-22', 'lifted_at' => '2026-10-20 10:00']);
+
+        $this->artisan('blood-center:send-reminders')->assertSuccessful();
+
+        Notification::assertSentTo($physician, DeferralsEnding::class, fn (DeferralsEnding $n): bool => $n->toDatabase($physician)['title'] === 'A donor\'s deferral ends today');
+        Notification::assertNotSentTo([$this->receptionist, $this->officer], DeferralsEnding::class);
     }
 
     public function test_tomorrows_drive_reaches_whoever_runs_drives(): void
