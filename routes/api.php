@@ -3,6 +3,7 @@
 use App\Http\Controllers\AdminPrivilegeController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\BloodCenterAdminOverviewController;
+use App\Http\Controllers\BloodCenterAdminReportController;
 use App\Http\Controllers\BloodCenterAppointmentController;
 use App\Http\Controllers\BloodCenterAuditLogController;
 use App\Http\Controllers\BloodCenterBillingController;
@@ -930,6 +931,11 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         // The Admin's dashboard: role coverage, the team, the centre's setup.
         Route::get('/admin-overview', [BloodCenterAdminOverviewController::class, 'show'])
             ->middleware('can:staff.manage');
+
+        // The Admin's reports for a period: the centre in figures, staff and
+        // access, and activity. The Supervisor holds reports.view_all too.
+        Route::get('/reports/centre', [BloodCenterAdminReportController::class, 'show'])
+            ->middleware(['can:reports.view_all', 'throttle:30,1']);
     });
 
 // Admin — facility management. This is the only place a blood centre or a
