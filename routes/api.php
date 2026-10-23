@@ -11,6 +11,7 @@ use App\Http\Controllers\BloodCenterBillingTransactionController;
 use App\Http\Controllers\BloodCenterCheckoutController;
 use App\Http\Controllers\BloodCenterCollectionController;
 use App\Http\Controllers\BloodCenterCollectionDashboardController;
+use App\Http\Controllers\BloodCenterCollectionReportController;
 use App\Http\Controllers\BloodCenterComponentController;
 use App\Http\Controllers\BloodCenterComponentPriceController;
 use App\Http\Controllers\BloodCenterCorrectionController;
@@ -936,6 +937,11 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         // access, and activity. The Supervisor holds reports.view_all too.
         Route::get('/reports/centre', [BloodCenterAdminReportController::class, 'show'])
             ->middleware(['can:reports.view_all', 'throttle:30,1']);
+
+        // The Donor & Collection department's reports: every counter role
+        // holds donations.view, and no one outside the department does.
+        Route::get('/reports/collection', [BloodCenterCollectionReportController::class, 'show'])
+            ->middleware(['can:donations.view', 'throttle:30,1']);
     });
 
 // Admin — facility management. This is the only place a blood centre or a
