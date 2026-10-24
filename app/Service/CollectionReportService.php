@@ -220,14 +220,18 @@ class CollectionReportService
             }
         }
         $days = $days === [] || str_contains($text, 'daily') ? $allDays : array_values(array_unique($days));
+        // The days set in the booking schedule win over the written hours.
+        if (is_array($facility->open_days) && $facility->open_days !== []) {
+            $days = array_map('intval', $facility->open_days);
+        }
         sort($days);
 
         // Hours: the first slot's hour to the hour the last one ends in.
         $from = $facility->slots_start_at ? (int) substr((string) $facility->slots_start_at, 0, 2) : 0;
+        // The last slot starts at slots_end_at, so its hour is part of the day.
         $to = 24;
         if ($facility->slots_end_at) {
-            [$h, $m] = array_map('intval', explode(':', substr((string) $facility->slots_end_at, 0, 5)));
-            $to = min(24, $m > 0 ? $h + 1 : $h);
+            $to = min(24, (int) substr((string) $facility->slots_end_at, 0, 2) + 1);
         }
         if ($to <= $from) {
             [$from, $to] = [0, 24];

@@ -42,6 +42,12 @@ class AppointmentService
                 'name' => $facility->name,
                 'location' => $facility->address,
                 'hours' => $facility->operating_hours,
+                // So the booking calendar can grey out the days it is shut.
+                'open_days' => $facility->open_days,
+                'closed_dates' => array_values(array_filter(
+                    $facility->closed_dates ?? [],
+                    fn (array $c): bool => ($c['date'] ?? '') >= now()->toDateString()
+                )),
                 'status' => $facility->is_accepting_donations ? 'Open today' : 'Closed',
             ])
             ->all();
@@ -89,6 +95,12 @@ class AppointmentService
         }
 
         $day = Carbon::parse($date);
+
+        // A closed day, or a weekday the centre does not open, offers no times.
+        if (! $facility->isOpenOn($day)) {
+            return [];
+        }
+
         $booked = $this->appointmentRepository->bookedCountsByTime($facility->id, $day);
         $capacity = max(1, (int) $facility->slot_capacity);
 
@@ -529,6 +541,14 @@ class AppointmentService
     private function guardSlotAvailable(int $facilityId, Carbon $slot, ?int $excludingId = null): void
     {
         $facility = $this->appointmentRepository->findBookableCenter($facilityId);
+
+        if ($facility !== null && ($reason = $facility->closedReasonOn($slot)) !== null) {
+            throw new HttpResponseException(response()->json([
+                'message' => 'The centre takes no bookings on '.$slot->format('l, j F Y').": {$reason}. Please choose another day.",
+                'code' => 'centre_closed',
+            ], 422));
+        }
+
         $capacity = max(1, (int) ($facility?->slot_capacity ?? 1));
         $booked = $this->appointmentRepository->lockedSlotCount($facilityId, $slot);
 

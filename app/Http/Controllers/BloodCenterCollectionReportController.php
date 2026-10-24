@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Service\CollectionRecordExportService;
 use App\Service\CollectionReportService;
+use App\Service\ReportPdfService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
@@ -15,7 +16,8 @@ class BloodCenterCollectionReportController extends Controller
 {
     public function __construct(
         private readonly CollectionReportService $collectionReportService,
-        private readonly CollectionRecordExportService $collectionRecordExportService
+        private readonly CollectionRecordExportService $collectionRecordExportService,
+        private readonly ReportPdfService $reportPdfService
     ) {}
 
     public function show(Request $request): JsonResponse
@@ -47,5 +49,18 @@ class BloodCenterCollectionReportController extends Controller
             'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             'Content-Disposition' => 'attachment; filename="'.$file['filename'].'"',
         ]);
+    }
+
+    /**
+     * The same period's report as a printable PDF (ReportPdfService).
+     */
+    public function pdf(Request $request): Response
+    {
+        $validated = $request->validate([
+            'from' => ['required', 'date_format:Y-m-d'],
+            'to' => ['required', 'date_format:Y-m-d'],
+        ]);
+
+        return $this->reportPdfService->collection($request->user(), $validated['from'], $validated['to']);
     }
 }

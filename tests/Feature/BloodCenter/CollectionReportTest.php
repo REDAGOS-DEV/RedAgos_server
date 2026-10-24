@@ -209,7 +209,7 @@ class CollectionReportTest extends TestCase
     {
         $this->centre->update(['operating_hours' => 'Mon - Fri 8 AM - 3 PM', 'slots_start_at' => '08:00', 'slots_end_at' => '15:00']);
 
-        $this->assertSame(['days' => [0, 1, 2, 3, 4], 'from' => 8, 'to' => 15, 'label' => 'Mon - Fri 8 AM - 3 PM'], $this->report()['opening_hours']);
+        $this->assertSame(['days' => [0, 1, 2, 3, 4], 'from' => 8, 'to' => 16, 'label' => 'Mon - Fri 8 AM - 3 PM'], $this->report()['opening_hours']);
 
         $this->centre->update(['operating_hours' => 'Mon, Wed and Sat', 'slots_start_at' => '07:00', 'slots_end_at' => '16:30']);
         $this->physician = $this->physician->fresh();
@@ -220,6 +220,17 @@ class CollectionReportTest extends TestCase
         $this->centre->update(['operating_hours' => '24/7']);
         $this->physician = $this->physician->fresh();
         $this->assertSame([range(0, 6), 0, 24], array_values(array_slice($this->report()['opening_hours'], 0, 3)));
+    }
+
+    public function test_the_report_downloads_as_a_pdf(): void
+    {
+        Donation::factory()->create(['facility_id' => $this->centre->id, 'donation_date' => '2026-10-05 02:00', 'status' => DonationStatus::Completed]);
+
+        $this->actingAs($this->physician)
+            ->get('/api/blood-center/reports/collection/pdf?from=2026-10-01&to=2026-10-20')
+            ->assertOk()
+            ->assertHeader('Content-Type', 'application/pdf')
+            ->assertDownload('redagos-collection-report-2026-10-01-to-2026-10-20.pdf');
     }
 
     public function test_someone_outside_collection_may_not_read_it(): void

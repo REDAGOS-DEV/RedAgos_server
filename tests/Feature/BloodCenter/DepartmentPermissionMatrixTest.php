@@ -230,13 +230,15 @@ class DepartmentPermissionMatrixTest extends TestCase
         $abilities = $admin->abilities();
 
         // Project owner, 2026-10-15: no Issuance or Billing pages, and no
-        // corrections, for the Admin. The Audit Log was added 2026-10-21.
+        // corrections, for the Admin. The Audit Log was added 2026-10-21, the
+        // booking schedule 2026-10-24.
         $this->assertEqualsCanonicalizing([
             'reference.view',
             'reports.view_own',
             'reports.view_all',
             'staff.manage',
             'center.configure',
+            'booking.configure',
             'audit.view',
         ], $abilities);
 
