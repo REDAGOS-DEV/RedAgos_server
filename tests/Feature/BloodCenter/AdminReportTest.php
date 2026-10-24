@@ -129,4 +129,13 @@ class AdminReportTest extends TestCase
             ->getJson('/api/blood-center/reports/centre?from=2026-10-01&to=2026-10-20')
             ->assertForbidden();
     }
+
+    public function test_the_report_downloads_as_a_pdf(): void
+    {
+        $this->actingAs($this->admin)
+            ->get('/api/blood-center/reports/centre/pdf?from=2026-10-01&to=2026-10-20')
+            ->assertOk()
+            ->assertHeader('Content-Type', 'application/pdf')
+            ->assertDownload('redagos-centre-report-2026-10-01-to-2026-10-20.pdf');
+    }
 }

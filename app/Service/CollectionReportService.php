@@ -4,10 +4,12 @@ namespace App\Service;
 
 use App\Enums\AppointmentStatus;
 use App\Enums\DonationStatus;
+use App\Enums\DonationType;
 use App\Enums\DonorType;
 use App\Enums\ScreeningOutcome;
 use App\Models\Donation;
 use App\Models\DonationAppointment;
+use App\Models\Facility;
 use App\Models\MobileEvent;
 use App\Models\User;
 use App\Repository\CollectionDashboardRepository;
@@ -25,7 +27,9 @@ use Illuminate\Support\Collection;
  * Names no donor: the reasons are the physician's own words, grouped.
  *
  * The donor profile is the centre's monthly collection record (SNBC record):
- * every donation by sex, age bracket and type of donor, and how the donor came.
+ * every donation by sex, age bracket, type of donor (walk-in, TS or NTS, as
+ * the counter picked it, or at a mobile drive) and donor status (first time,
+ * new to the centre, repeat, lapsed).
  */
 class CollectionReportService
 {
@@ -83,7 +87,7 @@ class CollectionReportService
                 'appointment:id,event_id',
             ])
             ->withExists('collection')
-            ->get(['id', 'donor_id', 'appointment_id', 'paper_sheet_id', 'donation_date', 'status']);
+            ->get(['id', 'donor_id', 'appointment_id', 'paper_sheet_id', 'donation_type', 'donation_date', 'status']);
 
         $donations = 0;
         $given = [];
@@ -172,8 +176,68 @@ class CollectionReportService
             'daily' => array_values($days),
             'donor_profile' => $this->donorProfile($facility->id, collect($given), $tz, $last),
             'busiest' => $this->busiest($visits, $tz),
+            'opening_hours' => $this->openingHours($facility),
             'previous' => $this->previous($facility->id, $first, $last),
         ];
+    }
+
+    /**
+     * When the centre is open, for the busiest-hours grid: the days from its
+     * operating hours ("Mon - Fri 8 AM - 3 PM"), the hours from its first to
+     * its last appointment slot. Every day and hour when nothing says
+     * otherwise, and "24/7" means just that.
+     *
+     * @return array{days: array<int, int>, from: int, to: int, label: ?string}
+     */
+    private function openingHours(Facility $facility): array
+    {
+        $text = strtolower((string) $facility->operating_hours);
+        $allDays = range(0, 6);
+
+        if (str_contains($text, '24/7') || str_contains($text, '24 hours')) {
+            return ['days' => $allDays, 'from' => 0, 'to' => 24, 'label' => $facility->operating_hours];
+        }
+
+        // Days as written: a range ("Mon - Fri", "Mon to Sat") or a list ("Mon, Wed, Fri").
+        $names = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+        $pattern = '(mon|tue|wed|thu|fri|sat|sun)[a-z]*';
+        $days = [];
+        if (preg_match_all("/{$pattern}\\s*(?:-|–|to)\\s*{$pattern}/u", $text, $ranges, PREG_SET_ORDER)) {
+            foreach ($ranges as $range) {
+                $start = array_search($range[1], $names, true);
+                $end = array_search($range[2], $names, true);
+                for ($d = $start; ; $d = ($d + 1) % 7) {
+                    $days[] = $d;
+                    if ($d === $end) {
+                        break;
+                    }
+                }
+            }
+        }
+        if (preg_match_all("/{$pattern}/u", $text, $single)) {
+            foreach ($single[1] as $name) {
+                $days[] = array_search($name, $names, true);
+            }
+        }
+        $days = $days === [] || str_contains($text, 'daily') ? $allDays : array_values(array_unique($days));
+        // The days set in the booking schedule win over the written hours.
+        if (is_array($facility->open_days) && $facility->open_days !== []) {
+            $days = array_map('intval', $facility->open_days);
+        }
+        sort($days);
+
+        // Hours: the first slot's hour to the hour the last one ends in.
+        $from = $facility->slots_start_at ? (int) substr((string) $facility->slots_start_at, 0, 2) : 0;
+        // The last slot starts at slots_end_at, so its hour is part of the day.
+        $to = 24;
+        if ($facility->slots_end_at) {
+            $to = min(24, (int) substr((string) $facility->slots_end_at, 0, 2) + 1);
+        }
+        if ($to <= $from) {
+            [$from, $to] = [0, 24];
+        }
+
+        return ['days' => $days, 'from' => $from, 'to' => $to, 'label' => $facility->operating_hours];
     }
 
     /**
@@ -263,7 +327,7 @@ class CollectionReportService
             'sex' => ['female' => 0, 'male' => 0, 'not_stated' => 0],
             'age' => array_fill_keys([...array_keys(self::AGE_BRACKETS), 'not_stated'], 0),
             'type' => array_fill_keys(DonorType::values(), 0),
-            'arrival' => ['walk_in' => 0, 'booked' => 0, 'drive' => 0],
+            'kind' => ['walk_in' => 0, 'ts' => 0, 'nts' => 0, 'drive' => 0],
         ];
 
         $months = [];
@@ -292,10 +356,10 @@ class CollectionReportService
                 default => DonorType::FirstTime,
             };
 
-            $arrival = match (true) {
+            // Type of donor, as the counter picked it; a drive's donors are counted apart.
+            $kind = match (true) {
                 $visit->appointment?->event_id !== null || $visit->paper_sheet_id !== null => 'drive',
-                $visit->appointment_id !== null => 'booked',
-                default => 'walk_in',
+                default => ($visit->donation_type ?? DonationType::WalkIn)->value,
             };
 
             $month = $at->format('Y-m');
@@ -305,7 +369,7 @@ class CollectionReportService
                 $row['sex'][$sex]++;
                 $row['age'][$bracket]++;
                 $row['type'][$type->value]++;
-                $row['arrival'][$arrival]++;
+                $row['kind'][$kind]++;
             }
             unset($row);
         }

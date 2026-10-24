@@ -178,6 +178,10 @@ final class DepartmentPermissions
             'drives.view',
             'drives.manage',
 
+            // The centre's booking days, hours and places (project owner,
+            // 2026-10-24); the Admin holds it too (ADMINISTRATION).
+            'booking.configure',
+
             'donations.view',
 
             // Opens the visit's donation record at check-in.
@@ -397,6 +401,7 @@ final class DepartmentPermissions
         'donors.record_questionnaire' => 'write',
         'donors.defer' => 'write',
         'drives.manage' => 'write',
+        'booking.configure' => 'update',
         'appointments.manage' => 'write',
         'donations.register' => 'write',
         'donations.screen' => 'write',
@@ -489,6 +494,7 @@ final class DepartmentPermissions
         ...self::OVERVIEW,
         'staff.manage',
         'center.configure',
+        'booking.configure',
         'audit.view',
     ];
 

@@ -5,6 +5,7 @@ namespace App\Service;
 use App\Enums\AppointmentStatus;
 use App\Enums\BloodBagType;
 use App\Enums\DonationStatus;
+use App\Enums\DonationType;
 use App\Enums\ScreeningOutcome;
 use App\Models\BloodCollection;
 use App\Models\Donation;
@@ -255,12 +256,14 @@ class CollectionService
                 'appointment_id' => $appointment?->id,
                 'donation_date' => now(),
                 'status' => DonationStatus::Registered,
+                'donation_type' => DonationType::tryFrom((string) ($payload['donation_type'] ?? '')) ?? DonationType::WalkIn,
             ]);
         });
 
         $this->auditLogger->record($staff, 'collection.donation_opened', $donation, [
             'facility_id' => $facility->id,
             'donor_id' => $donor->id,
+            'donation_type' => $donation->donation_type?->value,
         ]);
 
         return [
@@ -912,6 +915,8 @@ class CollectionService
             'status_label' => $donation->status?->label(),
             'owning_department' => $donation->status?->owningDepartment()?->value,
             'volume_ml' => $donation->volume_ml,
+            'donation_type' => $donation->donation_type?->value,
+            'donation_type_label' => $donation->donation_type?->label(),
             'rejection_reason' => $clinical ? $donation->rejection_reason : null,
             'screening' => match (true) {
                 $screening === null => null,

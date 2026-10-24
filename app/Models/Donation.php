@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\DonationStatus;
+use App\Enums\DonationType;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -20,6 +21,8 @@ class Donation extends Model
         'appointment_id',
         // The drive's paper sheet it was typed from; null at the counter.
         'paper_sheet_id',
+        // Walk-in, TS or NTS, as the counter picked it (DonationType).
+        'donation_type',
         'donation_date',
         'status',
         'volume_ml',
@@ -34,6 +37,7 @@ class Donation extends Model
      */
     protected $attributes = [
         'status' => DonationStatus::Registered->value,
+        'donation_type' => 'walk_in',
     ];
 
     protected function casts(): array
@@ -43,6 +47,7 @@ class Donation extends Model
             'status' => DonationStatus::class,
             'volume_ml' => 'integer',
             'labelled_at' => 'datetime',
+            'donation_type' => DonationType::class,
         ];
     }
 

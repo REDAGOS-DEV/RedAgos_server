@@ -8,6 +8,7 @@ use App\Http\Controllers\BloodCenterAppointmentController;
 use App\Http\Controllers\BloodCenterAuditLogController;
 use App\Http\Controllers\BloodCenterBillingController;
 use App\Http\Controllers\BloodCenterBillingTransactionController;
+use App\Http\Controllers\BloodCenterBookingScheduleController;
 use App\Http\Controllers\BloodCenterCheckoutController;
 use App\Http\Controllers\BloodCenterCollectionController;
 use App\Http\Controllers\BloodCenterCollectionDashboardController;
@@ -22,6 +23,7 @@ use App\Http\Controllers\BloodCenterDonorQuestionnaireController;
 use App\Http\Controllers\BloodCenterDriveController;
 use App\Http\Controllers\BloodCenterEmailTemplateController;
 use App\Http\Controllers\BloodCenterFacilityController;
+use App\Http\Controllers\BloodCenterForecastController;
 use App\Http\Controllers\BloodCenterInventoryController;
 use App\Http\Controllers\BloodCenterLaboratoryController;
 use App\Http\Controllers\BloodCenterPaperDonationController;
@@ -937,10 +939,29 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         // access, and activity. The Supervisor holds reports.view_all too.
         Route::get('/reports/centre', [BloodCenterAdminReportController::class, 'show'])
             ->middleware(['can:reports.view_all', 'throttle:30,1']);
+        Route::get('/reports/centre/pdf', [BloodCenterAdminReportController::class, 'pdf'])
+            ->middleware(['can:reports.view_all', 'throttle:20,1']);
 
         // The Donor & Collection department's reports: every counter role
         // holds donations.view, and no one outside the department does.
         Route::get('/reports/collection', [BloodCenterCollectionReportController::class, 'show'])
+            ->middleware(['can:donations.view', 'throttle:30,1']);
+        // The same period's report as a printable PDF, with the centre's letterhead.
+        Route::get('/reports/collection/pdf', [BloodCenterCollectionReportController::class, 'pdf'])
+            ->middleware(['can:donations.view', 'throttle:20,1']);
+        // When the centre takes bookings: its days, hours, places and closed
+        // dates. The Admin's and the Medical Receptionist's (BookingScheduleService).
+        Route::get('/booking-schedule', [BloodCenterBookingScheduleController::class, 'show'])
+            ->middleware('can:booking.configure');
+        Route::put('/booking-schedule', [BloodCenterBookingScheduleController::class, 'update'])
+            ->middleware(['can:booking.configure', 'throttle:20,1']);
+
+        // The weeks ahead, in the parts the viewer's department plans with;
+        // the service decides which (DemandForecastService).
+        Route::get('/reports/forecast', [BloodCenterForecastController::class, 'show'])
+            ->middleware('throttle:30,1');
+        // The same period's collection record, as the centre's SNBC Excel sheet.
+        Route::get('/reports/collection/snbc-record', [BloodCenterCollectionReportController::class, 'snbcRecord'])
             ->middleware(['can:donations.view', 'throttle:30,1']);
     });
 

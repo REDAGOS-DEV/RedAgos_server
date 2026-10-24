@@ -96,6 +96,7 @@ final class AuditActions
         'center.component_added' => ['settings', 'create', 'Added a blood component'],
         'center.component_configured' => ['settings', 'edit', 'Changed a component\'s shelf life'],
         'facility.email_template_saved' => ['settings', 'edit', 'Saved an email template'],
+        'facility.booking_schedule_updated' => ['settings', 'edit', 'Changed the booking schedule'],
         'facility.email_template_reset' => ['settings', 'edit', 'Reset an email template'],
         'facility.xendit_account_set' => ['settings', 'edit', 'Changed the online payment account'],
         'facility.created' => ['settings', 'create', 'Facility created'],
