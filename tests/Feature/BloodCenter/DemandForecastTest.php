@@ -12,6 +12,7 @@ use App\Models\BloodRequestItem;
 use App\Models\BloodType;
 use App\Models\BloodUnit;
 use App\Models\Donation;
+use App\Models\DonationSerology;
 use App\Models\Facility;
 use App\Models\User;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
@@ -65,6 +66,44 @@ class DemandForecastTest extends TestCase
         $this->actingAs(User::factory()->bloodCenterAdmin($this->centre)->create())
             ->getJson('/api/blood-center/reports/forecast')
             ->assertForbidden();
+    }
+
+    public function test_testing_sees_the_reactive_panels_it_may_expect(): void
+    {
+        $tech = $this->staff(StaffRole::SerologyTechnologist);
+        $donor = User::factory()->donor()->create();
+        $panel = function (string $at, bool $reactive) use ($tech, $donor): void {
+            $donation = Donation::factory()->create([
+                'donor_id' => $donor->id,
+                'facility_id' => $this->centre->id,
+                'donation_date' => Carbon::parse($at, config('blood_center.timezone')),
+                'status' => DonationStatus::Collected,
+            ]);
+            DonationSerology::create([
+                'donation_id' => $donation->id,
+                'hiv' => 'non_reactive',
+                'hbsag' => $reactive ? 'reactive' : 'non_reactive',
+                'hcv' => 'non_reactive',
+                'syphilis' => 'non_reactive',
+                'malaria' => 'non_reactive',
+                'recorded_by' => $tech->id,
+                'recorded_at' => Carbon::parse($at, config('blood_center.timezone')),
+                'verified_by' => $reactive ? $tech->id : null,
+                'verified_at' => $reactive ? Carbon::parse($at, config('blood_center.timezone')) : null,
+            ]);
+        };
+
+        // Two in the history, one reactive; one this week, not yet history.
+        $panel('2026-10-13 10:00', true);
+        $panel('2026-10-14 10:00', false);
+        $panel('2026-10-20 10:00', true);
+
+        $reactive = $this->actingAs($tech)->getJson('/api/blood-center/reports/forecast')->assertOk()->json('testing.reactive');
+
+        $this->assertSame(2, $reactive['panels']);
+        $this->assertSame(1, $reactive['found']);
+        $this->assertEquals(50, $reactive['rate']);
+        $this->assertSame(1, array_sum($reactive['series']));
     }
 
     public function test_demand_is_weighted_to_recent_weeks_and_set_against_the_stock(): void

@@ -39,6 +39,7 @@ use App\Http\Controllers\BloodCenterSerologyResultController;
 use App\Http\Controllers\BloodCenterStaffController;
 use App\Http\Controllers\BloodCenterStatementController;
 use App\Http\Controllers\BloodCenterTestingDashboardController;
+use App\Http\Controllers\BloodCenterTestingReportController;
 use App\Http\Controllers\BloodCenterWalkInController;
 use App\Http\Controllers\BookingCatalogController;
 use App\Http\Controllers\DonorAppointmentController;
@@ -955,6 +956,11 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             ->middleware('can:booking.configure');
         Route::put('/booking-schedule', [BloodCenterBookingScheduleController::class, 'update'])
             ->middleware(['can:booking.configure', 'throttle:20,1']);
+
+        // The Testing department's reports: whoever records serology or the
+        // typing (TestingReportService checks either ability).
+        Route::get('/reports/testing', [BloodCenterTestingReportController::class, 'show'])
+            ->middleware('throttle:30,1');
 
         // The weeks ahead, in the parts the viewer's department plans with;
         // the service decides which (DemandForecastService).

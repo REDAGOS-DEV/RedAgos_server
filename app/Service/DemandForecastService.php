@@ -5,11 +5,13 @@ namespace App\Service;
 use App\Enums\AppointmentStatus;
 use App\Enums\BloodRequestStatus;
 use App\Enums\BloodUnitStatus;
+use App\Enums\SerologyMarker;
 use App\Models\BloodComponent;
 use App\Models\BloodType;
 use App\Models\BloodUnit;
 use App\Models\Donation;
 use App\Models\DonationAppointment;
+use App\Models\DonationSerology;
 use App\Models\FacilityBloodComponent;
 use App\Models\User;
 use App\Repository\CollectionDashboardRepository;
@@ -378,9 +380,33 @@ class DemandForecastService
             ];
         }
 
+        // The panels read at the bench in the history, reactive ones apart:
+        // what the bench may expect to find, not only how much comes in
+        // (2026-10-24). Counted when recorded, as the Testing report counts.
+        $panels = DonationSerology::query()
+            ->whereHas('donation', fn ($q) => $q->where('facility_id', $c['facility']->id))
+            ->where('recorded_at', '>=', $c['first']->utc())
+            ->where('recorded_at', '<', $c['thisWeek']->utc())
+            ->get(['id', 'donation_id', 'recorded_at', ...SerologyMarker::values()])
+            ->map(fn (DonationSerology $panel): object => (object) [
+                'week' => $c['weekOf']($panel->recorded_at),
+                'reactive' => $panel->isReactive() ? 1 : 0,
+            ])
+            ->filter(fn (object $row): bool => $row->week !== null)
+            ->values();
+        $reactiveSeries = $this->series($panels, fn (object $row): int => $row->reactive);
+        $read = $panels->count();
+
         return [
             'samples' => [...$this->estimate($series), 'series' => $series],
             'days' => $days,
+            'reactive' => [
+                ...$this->estimate($reactiveSeries),
+                'series' => $reactiveSeries,
+                'panels' => $read,
+                'found' => array_sum($reactiveSeries),
+                'rate' => $read ? round(array_sum($reactiveSeries) / $read * 100, 1) : null,
+            ],
         ];
     }
 
