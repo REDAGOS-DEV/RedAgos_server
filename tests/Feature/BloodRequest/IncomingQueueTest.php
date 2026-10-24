@@ -259,7 +259,12 @@ class IncomingQueueTest extends TestCase
             ->getJson('/api/blood-center/blood-requests/summary')
             ->assertOk()
             ->assertJsonPath('open_by_purpose.patient_transfusion', 1)
-            ->assertJsonPath('open_by_purpose.replenishment', 1);
+            ->assertJsonPath('open_by_purpose.replenishment', 1)
+            // Each tab's quick filters count that tab alone.
+            ->assertJsonPath('by_purpose.replenishment.totals.pending', 1)
+            ->assertJsonPath('by_purpose.replenishment.totals.fulfilled', 1)
+            ->assertJsonPath('by_purpose.patient_transfusion.totals.fulfilled', 0)
+            ->assertJsonPath('by_purpose.patient_transfusion.totals.'.$forPatient->status->value, 1);
     }
 
     public function test_the_summary_counts_every_state_including_empty_ones(): void

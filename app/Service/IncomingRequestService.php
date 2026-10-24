@@ -263,8 +263,67 @@ class IncomingRequestService
             'awaiting_release' => $awaitingRelease,
             'open_by_source' => $bySource,
             'open_by_purpose' => $byPurpose,
+            'by_purpose' => $this->summaryByPurpose($facilityId),
             'as_of' => OperationalDay::today()->toIso8601String(),
         ];
+    }
+
+    /**
+     * Each tab's own counts for the list's quick filters: every status, the
+     * open emergencies, and the requests with units reserved and waiting to
+     * go out. The tabs list patient requests and restocking orders apart, so
+     * a facility-wide figure would not match the list under it.
+     *
+     * @return array<string, array{totals: array<string, int>, open_emergencies: int, awaiting_release: int}>
+     */
+    private function summaryByPurpose(int $facilityId): array
+    {
+        $statusRows = BloodRequest::query()
+            ->addressedTo($facilityId)
+            ->groupBy('request_purpose', 'status')
+            ->selectRaw('request_purpose, status, COUNT(*) as aggregate')
+            ->toBase()
+            ->get();
+
+        // Open, as the list's emergency filter reads it: partly filled ones too.
+        $emergencies = BloodRequest::query()
+            ->addressedTo($facilityId)
+            ->open()
+            ->where('urgency_level', UrgencyLevel::Emergency->value)
+            ->groupBy('request_purpose')
+            ->selectRaw('request_purpose, COUNT(*) as aggregate')
+            ->toBase()
+            ->pluck('aggregate', 'request_purpose')
+            ->all();
+
+        $awaiting = BloodRequest::query()
+            ->addressedTo($facilityId)
+            ->whereHas('allocations', fn ($query) => $query->where('status', 'allocated'))
+            ->groupBy('request_purpose')
+            ->selectRaw('request_purpose, COUNT(*) as aggregate')
+            ->toBase()
+            ->pluck('aggregate', 'request_purpose')
+            ->all();
+
+        $result = [];
+
+        foreach (RequestPurpose::values() as $purpose) {
+            $totals = [];
+
+            foreach (BloodRequestStatus::values() as $status) {
+                $totals[$status] = (int) ($statusRows
+                    ->first(fn ($row) => $row->request_purpose === $purpose && $row->status === $status)
+                    ?->aggregate ?? 0);
+            }
+
+            $result[$purpose] = [
+                'totals' => $totals,
+                'open_emergencies' => (int) ($emergencies[$purpose] ?? 0),
+                'awaiting_release' => (int) ($awaiting[$purpose] ?? 0),
+            ];
+        }
+
+        return $result;
     }
 
     /**
