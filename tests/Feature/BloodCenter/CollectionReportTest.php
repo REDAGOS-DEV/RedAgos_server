@@ -4,6 +4,7 @@ namespace Tests\Feature\BloodCenter;
 
 use App\Enums\AppointmentStatus;
 use App\Enums\DonationStatus;
+use App\Enums\DonationType;
 use App\Enums\ScreeningOutcome;
 use App\Enums\StaffRole;
 use App\Models\Donation;
@@ -119,7 +120,7 @@ class CollectionReportTest extends TestCase
         $this->assertSame(1, $total['age']['25-44']);
         $this->assertSame(1, $total['age']['45-64']);
         $this->assertSame(['new_to_centre' => 1, 'first_time' => 1, 'repeat_retained' => 1, 'lapsed' => 1], $total['type']);
-        $this->assertSame(4, $total['arrival']['walk_in']);
+        $this->assertSame(4, $total['kind']['walk_in']);
         $this->assertSame('2026-10', $profile['months'][0]['month']);
     }
 
@@ -136,6 +137,89 @@ class CollectionReportTest extends TestCase
         $this->assertSame('2026-09-30', $data['previous']['to']);
         $this->assertSame(1, $data['previous']['collected']);
         $this->assertSame(2, $data['busiest'][0][9]);
+    }
+
+    public function test_the_counter_picks_the_type_of_donation_and_the_record_counts_it(): void
+    {
+        $receptionist = User::factory()->bloodCenterStaff($this->centre, StaffRole::MedicalReceptionist)->create();
+        $donor = User::factory()->donor()->create();
+
+        $id = $this->actingAs($receptionist)
+            ->postJson('/api/blood-center/donations', ['donor_uuid' => $donor->uuid, 'donation_type' => 'ts'])
+            ->assertCreated()
+            ->assertJsonPath('data.donation_type', 'ts')
+            ->assertJsonPath('data.donation_type_label', 'TS')
+            ->json('data.id');
+        Donation::query()->whereKey($id)->update(['status' => DonationStatus::Completed, 'donation_date' => '2026-10-05 02:00']);
+
+        $given = ['facility_id' => $this->centre->id, 'status' => DonationStatus::Completed];
+        Donation::factory()->create($given + ['donation_date' => '2026-10-06 02:00', 'donation_type' => DonationType::NonTypeSpecific]);
+        Donation::factory()->create($given + ['donation_date' => '2026-10-07 02:00']);
+
+        $kind = $this->report()['donor_profile']['total']['kind'];
+
+        $this->assertSame(['walk_in' => 1, 'ts' => 1, 'nts' => 1, 'drive' => 0], $kind);
+    }
+
+    public function test_a_donation_left_without_a_type_is_a_walk_in_and_an_unknown_type_is_refused(): void
+    {
+        $receptionist = User::factory()->bloodCenterStaff($this->centre, StaffRole::MedicalReceptionist)->create();
+
+        $this->actingAs($receptionist)->postJson('/api/blood-center/donations', ['donor_uuid' => User::factory()->donor()->create()->uuid])
+            ->assertCreated()
+            ->assertJsonPath('data.donation_type', 'walk_in');
+
+        $this->actingAs($receptionist)->postJson('/api/blood-center/donations', ['donor_uuid' => User::factory()->donor()->create()->uuid, 'donation_type' => 'replacement'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('donation_type');
+    }
+
+    public function test_the_snbc_record_downloads_as_the_centres_excel_sheet(): void
+    {
+        $given = ['facility_id' => $this->centre->id, 'status' => DonationStatus::Completed];
+        $donor = DonorProfile::factory()->create(['gender' => 'female', 'birth_date' => '2000-01-15']);
+        Donation::factory()->create($given + ['donor_id' => $donor->donor_id, 'donation_date' => '2026-10-05 02:00', 'donation_type' => DonationType::TypeSpecific]);
+
+        $response = $this->actingAs($this->physician)
+            ->get('/api/blood-center/reports/collection/snbc-record?from=2026-10-01&to=2026-10-20')
+            ->assertOk()
+            ->assertHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+            ->assertDownload('redagos-snbc-record-2026-10-01-to-2026-10-20.xlsx');
+
+        $path = tempnam(sys_get_temp_dir(), 'snbc');
+        file_put_contents($path, $response->getContent());
+        $zip = new \ZipArchive;
+        $zip->open($path);
+        $sheet = (string) $zip->getFromName('xl/worksheets/sheet1.xml');
+        $zip->close();
+        @unlink($path);
+
+        foreach (['COLLECTION RECORD (SNBC RECORD)', $this->centre->name, 'TYPE OF DONOR', 'DONOR STATUS', 'October 2026', 'TOTAL'] as $text) {
+            $this->assertStringContainsString(htmlspecialchars($text, ENT_XML1 | ENT_QUOTES), $sheet);
+        }
+        // Row 9, October: one female, 25-44, a walk-in who is TS, total 1.
+        $this->assertStringContainsString('<c r="B9" s="6"><v>1</v></c>', $sheet);
+        $this->assertStringContainsString('<c r="I9" s="6"><v>1</v></c>', $sheet);
+        $this->assertStringContainsString('<c r="J9" s="6"><v>1</v></c>', $sheet);
+        $this->assertStringContainsString('<c r="K9" s="6"><v>0</v></c>', $sheet);
+        $this->assertStringContainsString('<c r="Q9" s="6"><v>1</v></c>', $sheet);
+    }
+
+    public function test_the_busiest_hours_follow_the_centres_opening_hours(): void
+    {
+        $this->centre->update(['operating_hours' => 'Mon - Fri 8 AM - 3 PM', 'slots_start_at' => '08:00', 'slots_end_at' => '15:00']);
+
+        $this->assertSame(['days' => [0, 1, 2, 3, 4], 'from' => 8, 'to' => 15, 'label' => 'Mon - Fri 8 AM - 3 PM'], $this->report()['opening_hours']);
+
+        $this->centre->update(['operating_hours' => 'Mon, Wed and Sat', 'slots_start_at' => '07:00', 'slots_end_at' => '16:30']);
+        $this->physician = $this->physician->fresh();
+        $hours = $this->report()['opening_hours'];
+        $this->assertSame([0, 2, 5], $hours['days']);
+        $this->assertSame([7, 17], [$hours['from'], $hours['to']]);
+
+        $this->centre->update(['operating_hours' => '24/7']);
+        $this->physician = $this->physician->fresh();
+        $this->assertSame([range(0, 6), 0, 24], array_values(array_slice($this->report()['opening_hours'], 0, 3)));
     }
 
     public function test_someone_outside_collection_may_not_read_it(): void

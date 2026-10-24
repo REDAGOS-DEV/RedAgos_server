@@ -942,6 +942,9 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         // holds donations.view, and no one outside the department does.
         Route::get('/reports/collection', [BloodCenterCollectionReportController::class, 'show'])
             ->middleware(['can:donations.view', 'throttle:30,1']);
+        // The same period's collection record, as the centre's SNBC Excel sheet.
+        Route::get('/reports/collection/snbc-record', [BloodCenterCollectionReportController::class, 'snbcRecord'])
+            ->middleware(['can:donations.view', 'throttle:30,1']);
     });
 
 // Admin — facility management. This is the only place a blood centre or a
