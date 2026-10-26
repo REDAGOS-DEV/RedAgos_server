@@ -116,6 +116,10 @@
         <strong>Purpose of Request:</strong>
         This request is for <strong>BLOOD BANK REPLENISHMENT</strong> (restocking of hospital blood bank
         inventory). It is not raised for a named patient, so the patient details above are left blank.
+        @if ($bloodTypes)
+            It restocks several blood types (<strong>{{ $bloodTypes }}</strong>); the units of each are listed
+            against its component below.
+        @endif
     </div>
 @endunless
 
@@ -183,6 +187,9 @@
         <span>({{ $component['volume'] }})</span>
         @if ($component['selected'])
             <span class="units">{{ $component['quantity'] }} unit(s)</span>
+            @if ($component['by_blood_type'])
+                <span>&mdash; {{ $component['by_blood_type'] }}</span>
+            @endif
         @endif
     </div>
 

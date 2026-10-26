@@ -38,6 +38,9 @@ class Facility extends Model
         'slot_interval_minutes',
         'slots_start_at',
         'slots_end_at',
+        // The weekdays it takes bookings (0 = Monday) and the dates it is closed.
+        'open_days',
+        'closed_dates',
     ];
 
     /**
@@ -64,7 +67,38 @@ class Facility extends Model
             'is_accepting_donations' => 'boolean',
             'slot_capacity' => 'integer',
             'slot_interval_minutes' => 'integer',
+            'open_days' => 'array',
+            'closed_dates' => 'array',
         ];
+    }
+
+    /**
+     * Whether the centre takes bookings on a day: one of its open weekdays
+     * (every day when none are set), and not one of its closed dates.
+     */
+    public function isOpenOn(\DateTimeInterface $day): bool
+    {
+        return $this->closedReasonOn($day) === null;
+    }
+
+    /**
+     * Why the centre takes no bookings on a day, or null when it does.
+     */
+    public function closedReasonOn(\DateTimeInterface $day): ?string
+    {
+        $date = $day->format('Y-m-d');
+        foreach ($this->closed_dates ?? [] as $closed) {
+            if (($closed['date'] ?? null) === $date) {
+                return filled($closed['reason'] ?? null) ? (string) $closed['reason'] : 'Closed';
+            }
+        }
+
+        $openDays = $this->open_days;
+        if (is_array($openDays) && $openDays !== [] && ! in_array((int) $day->format('N') - 1, array_map('intval', $openDays), true)) {
+            return 'Not open on '.$day->format('l').'s';
+        }
+
+        return null;
     }
 
     public function facilityType(): BelongsTo
@@ -129,7 +163,7 @@ class Facility extends Model
     /**
      * The account that speaks for this facility.
      *
-     * Created alongside the facility by a Super Admin and given the supervisor
+     * Created alongside the facility by a Super Admin and given the Admin
      * level, so it is the one account guaranteed to be able to staff the
      * portal. The column keeps its historical name from when facilities
      * self-registered; the meaning is unchanged.

@@ -23,7 +23,7 @@ class StaffIsolationTest extends TestCase
 {
     use LazilyRefreshDatabase;
 
-    private User $supervisor;
+    private User $admin;
 
     private User $foreignStaff;
 
@@ -31,8 +31,8 @@ class StaffIsolationTest extends TestCase
     {
         parent::setUp();
 
-        $this->supervisor = User::factory()
-            ->bloodCenterSupervisor(Facility::factory()->approved()->create())
+        $this->admin = User::factory()
+            ->bloodCenterAdmin(Facility::factory()->approved()->create())
             ->create();
 
         $this->foreignStaff = User::factory()
@@ -58,7 +58,7 @@ class StaffIsolationTest extends TestCase
     #[DataProvider('singleRecordRoutes')]
     public function test_a_foreign_staff_uuid_is_not_found(string $method, string $suffix): void
     {
-        $this->actingAs($this->supervisor)
+        $this->actingAs($this->admin)
             ->{$method}("/api/blood-center/staff/{$this->foreignStaff->uuid}{$suffix}", [
                 'staff_role' => StaffRole::BillingClerk->value,
             ])
@@ -74,7 +74,7 @@ class StaffIsolationTest extends TestCase
     {
         $this->foreignStaff->delete();
 
-        $this->actingAs($this->supervisor)
+        $this->actingAs($this->admin)
             ->postJson("/api/blood-center/staff/{$this->foreignStaff->uuid}/restore")
             ->assertNotFound();
 
@@ -85,10 +85,10 @@ class StaffIsolationTest extends TestCase
     {
         $unknown = (string) Str::uuid();
 
-        $foreign = $this->actingAs($this->supervisor)
+        $foreign = $this->actingAs($this->admin)
             ->getJson("/api/blood-center/staff/{$this->foreignStaff->uuid}");
 
-        $missing = $this->actingAs($this->supervisor)
+        $missing = $this->actingAs($this->admin)
             ->getJson("/api/blood-center/staff/{$unknown}");
 
         $this->assertSame($missing->getStatusCode(), $foreign->getStatusCode());
@@ -116,7 +116,7 @@ class StaffIsolationTest extends TestCase
     public function test_department_staff_cannot_reach_the_roster(string $method, string $uri): void
     {
         $colleague = User::factory()
-            ->bloodCenterStaff($this->supervisor->facility, Department::Issuance)
+            ->bloodCenterStaff($this->admin->facility, Department::Issuance)
             ->create();
 
         $this->actingAs($colleague)
@@ -131,12 +131,12 @@ class StaffIsolationTest extends TestCase
             ->assertUnauthorized();
     }
 
-    public function test_a_working_supervisor_still_manages_staff(): void
+    public function test_a_working_admin_still_manages_staff(): void
     {
-        // The department must not narrow a supervisor: a billing supervisor
-        // manages the roster exactly as a management-only one does.
+        // The department must not narrow the level: an Admin who is also a
+        // billing clerk manages the roster exactly as one with no post does.
         $working = User::factory()
-            ->bloodCenterSupervisor($this->supervisor->facility, Department::Billing)
+            ->bloodCenterAdmin($this->admin->facility, Department::Billing)
             ->create();
 
         $this->actingAs($working)
@@ -144,14 +144,14 @@ class StaffIsolationTest extends TestCase
             ->assertOk();
     }
 
-    public function test_a_supervisor_whose_facility_is_unapproved_is_refused(): void
+    public function test_an_admin_whose_facility_is_unapproved_is_refused(): void
     {
         $facility = Facility::factory()->rejected()->create();
-        $supervisor = User::factory()->bloodCenterSupervisor($facility)->create();
+        $admin = User::factory()->bloodCenterAdmin($facility)->create();
 
         // facility.operational runs before the ability, so roster management
         // stops the moment the centre stops being operational.
-        $this->actingAs($supervisor)
+        $this->actingAs($admin)
             ->getJson('/api/blood-center/staff')
             ->assertForbidden()
             ->assertJsonPath('code', 'facility_not_approved');

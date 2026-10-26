@@ -107,7 +107,7 @@ class RegistrationTest extends TestCase
     {
         $user = match ($kind) {
             'donor' => User::factory()->donor()->create(),
-            'blood_center' => User::factory()->bloodCenterSupervisor()->create(),
+            'blood_center' => User::factory()->bloodCenterAdmin()->create(),
             default => User::factory()->create(),
         };
 
@@ -120,11 +120,11 @@ class RegistrationTest extends TestCase
      */
     public function test_facility_staff_cannot_reach_facility_creation_through_their_own_portal(): void
     {
-        $supervisor = User::factory()->bloodCenterSupervisor()->create();
+        $admin = User::factory()->bloodCenterAdmin()->create();
 
-        $this->assertTrue($supervisor->hasRole(RoleName::BloodCenter));
+        $this->assertTrue($admin->hasRole(RoleName::BloodCenter));
 
-        $this->actingAs($supervisor)
+        $this->actingAs($admin)
             ->postJson('/api/admin/facilities', $this->payload())
             ->assertForbidden();
     }

@@ -92,6 +92,55 @@ class QrCodeTest extends TestCase
             ->assertJsonPath('next_eligible_date', $expectedDate);
     }
 
+    public function test_the_dashboard_reports_a_live_code_without_logging_a_view(): void
+    {
+        $screening = EligibilityScreening::factory()->create(['donor_id' => $this->donor->id]);
+        DonorQrToken::factory()->create([
+            'donor_id' => $this->donor->id,
+            'screening_id' => $screening->id,
+            'expires_at' => now()->addDays(5),
+            'revoked_at' => null,
+        ]);
+
+        $this->actingAs($this->donor)
+            ->getJson('/api/donors/dashboard')
+            ->assertOk()
+            ->assertJsonPath('qr_active', true)
+            ->assertJsonPath('qr_valid_until', now()->addDays(5)->toDateString());
+
+        // The dashboard reads the token; it does not "view" the code.
+        $this->assertFalse(AuditLog::query()->where('action', 'donor.qr_code.viewed')->exists());
+    }
+
+    public function test_the_dashboard_reports_no_code_when_none_was_issued(): void
+    {
+        $this->actingAs($this->donor)
+            ->getJson('/api/donors/dashboard')
+            ->assertOk()
+            ->assertJsonPath('qr_active', false)
+            ->assertJsonPath('qr_valid_until', null);
+    }
+
+    public function test_the_dashboard_never_reports_a_code_during_the_donation_interval(): void
+    {
+        Donation::factory()
+            ->completedAt(now()->subDay()->toDateString())
+            ->create(['donor_id' => $this->donor->id]);
+
+        $screening = EligibilityScreening::factory()->create(['donor_id' => $this->donor->id]);
+        DonorQrToken::factory()->create([
+            'donor_id' => $this->donor->id,
+            'screening_id' => $screening->id,
+            'expires_at' => now()->addDays(14),
+            'revoked_at' => null,
+        ]);
+
+        $this->actingAs($this->donor)
+            ->getJson('/api/donors/dashboard')
+            ->assertOk()
+            ->assertJsonPath('qr_active', false);
+    }
+
     public function test_refresh_is_refused_during_the_donation_interval(): void
     {
         $donationDate = now()->subDay();

@@ -70,10 +70,10 @@ class InventoryIdCollisionTest extends TestCase
             'blood_type_id' => $this->bloodType->id,
         ]);
 
-        $this->donation = Donation::factory()->create([
+        // Cleared and labelled: the only donation Stock Intake books in.
+        $this->donation = Donation::factory()->handedOver()->create([
             'facility_id' => $this->facilityId,
             'donor_id' => $this->donorProfile->donor_id,
-            'status' => 'completed',
         ]);
 
         // The laboratory's declaration of what this donation was separated
@@ -164,6 +164,7 @@ class InventoryIdCollisionTest extends TestCase
         $payload['units'][] = [
             'component_id' => $this->component->id,
             'unit_id' => 'BAG-778813',
+            'storage_location' => 'Cold Storage A-1',
             'expiry_date' => $this->inDays(30),
         ];
 

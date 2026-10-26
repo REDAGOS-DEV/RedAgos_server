@@ -135,7 +135,7 @@ class RequestHistoryTest extends TestCase
         $this->assertSame(2, collect($allocations[1]->lines)->firstWhere('component', 'Fresh Frozen Plasma')['reserved']);
     }
 
-    public function test_a_walk_in_records_who_confirmed_it(): void
+    public function test_a_walk_in_records_who_recorded_it_and_for_which_hospital(): void
     {
         $response = $this->actingAs($this->issuance)
             ->postJson('/api/blood-center/blood-requests/walk-in', $this->walkInPayload())
@@ -148,7 +148,8 @@ class RequestHistoryTest extends TestCase
 
         $this->assertCount(1, $events);
         $this->assertSame('walk_in_recorded', $events[0]['event']);
-        $this->assertStringContainsString('Ana Lim', $events[0]['note']);
+        // No phone confirmation since 2026-10-19, so no one at the hospital is named.
+        $this->assertStringContainsString('Brought in by a watcher', $events[0]['note']);
         $this->assertStringContainsString('Southern Hospital Blood Bank', $events[0]['note']);
         $this->assertSame($this->issuance->id, $events[0]['actor']['id']);
     }

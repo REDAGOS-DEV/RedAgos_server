@@ -5,12 +5,32 @@ namespace Tests\Feature\BloodCenter;
 use App\Enums\RoleName;
 use App\Models\Facility;
 use App\Models\User;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 
 class SupervisorBackfillTest extends TestCase
 {
     use LazilyRefreshDatabase;
+
+    /**
+     * Put back the column the 2026-08-26 backfill was written against.
+     *
+     * `is_supervisor` was replaced by `management_level` on 2026-10-15 and
+     * dropped, but the migration that filled it still runs on a fresh
+     * database, before the replacement. The column is restored inside the
+     * test's own transaction, so the rollback removes it again.
+     */
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        Schema::table('users', function (Blueprint $table): void {
+            $table->boolean('is_supervisor')->default(false);
+        });
+    }
 
     /**
      * Drive the migration's backfill directly.
@@ -33,12 +53,17 @@ class SupervisorBackfillTest extends TestCase
      */
     private function legacyStaff(Facility $facility): User
     {
-        $staff = User::factory()->bloodCenterStaff($facility)->create();
+        return User::factory()->bloodCenterStaff($facility)->create();
+    }
 
-        $staff->is_supervisor = false;
-        $staff->save();
+    private function markSupervisor(User $user): void
+    {
+        DB::table('users')->where('id', $user->id)->update(['is_supervisor' => true]);
+    }
 
-        return $staff;
+    private function isSupervisor(User $user): bool
+    {
+        return (bool) DB::table('users')->where('id', $user->id)->value('is_supervisor');
     }
 
     public function test_the_registration_contact_is_promoted(): void
@@ -52,8 +77,8 @@ class SupervisorBackfillTest extends TestCase
 
         $this->runBackfill();
 
-        $this->assertTrue($contact->fresh()->is_supervisor);
-        $this->assertFalse($colleague->fresh()->is_supervisor, 'Only the contact should be promoted.');
+        $this->assertTrue($this->isSupervisor($contact));
+        $this->assertFalse($this->isSupervisor($colleague), 'Only the contact should be promoted.');
     }
 
     public function test_a_facility_with_staff_but_no_contact_promotes_the_lowest_id(): void
@@ -67,8 +92,8 @@ class SupervisorBackfillTest extends TestCase
 
         $this->runBackfill();
 
-        $this->assertTrue($first->fresh()->is_supervisor);
-        $this->assertFalse($second->fresh()->is_supervisor);
+        $this->assertTrue($this->isSupervisor($first));
+        $this->assertFalse($this->isSupervisor($second));
 
         // The choice is written back so it is inspectable after the fact.
         $this->assertSame($first->id, $facility->fresh()->registration_contact_user_id);
@@ -86,7 +111,7 @@ class SupervisorBackfillTest extends TestCase
 
         $this->runBackfill();
 
-        $this->assertTrue($staff->fresh()->is_supervisor, 'The facility must not be left without a supervisor.');
+        $this->assertTrue($this->isSupervisor($staff), 'The facility must not be left without a supervisor.');
     }
 
     public function test_a_facility_with_no_staff_promotes_nobody_and_does_not_fail(): void
@@ -117,7 +142,7 @@ class SupervisorBackfillTest extends TestCase
 
         $this->assertSame(
             1,
-            User::where('facility_id', $facility->id)->where('is_supervisor', true)->count(),
+            DB::table('users')->where('facility_id', $facility->id)->where('is_supervisor', true)->count(),
             'Replaying the backfill must not promote a second supervisor.'
         );
     }
@@ -126,16 +151,17 @@ class SupervisorBackfillTest extends TestCase
     {
         $facility = Facility::factory()->approved()->create();
         $contact = $this->legacyStaff($facility);
-        $alreadyPromoted = User::factory()->bloodCenterSupervisor($facility)->create();
+        $alreadyPromoted = $this->legacyStaff($facility);
+        $this->markSupervisor($alreadyPromoted);
 
         $facility->registration_contact_user_id = $contact->id;
         $facility->save();
 
         $this->runBackfill();
 
-        $this->assertTrue($alreadyPromoted->fresh()->is_supervisor);
+        $this->assertTrue($this->isSupervisor($alreadyPromoted));
         $this->assertFalse(
-            $contact->fresh()->is_supervisor,
+            $this->isSupervisor($contact),
             'A facility that already has a supervisor should be skipped entirely.'
         );
     }
@@ -152,8 +178,8 @@ class SupervisorBackfillTest extends TestCase
 
         $this->runBackfill();
 
-        $this->assertFalse((bool) $departed->fresh()->is_supervisor);
-        $this->assertTrue($current->fresh()->is_supervisor);
+        $this->assertFalse($this->isSupervisor($departed));
+        $this->assertTrue($this->isSupervisor($current));
     }
 
     public function test_each_facility_is_backfilled_independently(): void
@@ -166,11 +192,13 @@ class SupervisorBackfillTest extends TestCase
 
         $this->runBackfill();
 
-        $this->assertTrue($firstStaff->fresh()->is_supervisor);
-        $this->assertTrue($secondStaff->fresh()->is_supervisor);
+        $this->assertTrue($this->isSupervisor($firstStaff));
+        $this->assertTrue($this->isSupervisor($secondStaff));
     }
 
-    public function test_approving_a_facility_guarantees_it_has_a_supervisor(): void
+    // --- Today's equivalent: approval guarantees an Admin -------------------------
+
+    public function test_approving_a_facility_guarantees_it_has_an_admin(): void
     {
         $facility = Facility::factory()->pendingApproval()->create();
         $applicant = User::factory()->bloodCenterApplicant($facility)->create();
@@ -181,14 +209,14 @@ class SupervisorBackfillTest extends TestCase
             ->postJson("/api/admin/facilities/{$facility->id}/approve")
             ->assertOk();
 
-        $this->assertTrue($applicant->fresh()->is_supervisor);
+        $this->assertTrue($applicant->fresh()->isCenterAdmin());
         $this->assertNull($applicant->fresh()->department, 'Approval grants the management level, not a department.');
     }
 
-    public function test_approving_a_facility_that_already_has_a_supervisor_does_not_promote_a_second(): void
+    public function test_approving_a_facility_that_already_has_an_admin_does_not_promote_a_second(): void
     {
         $facility = Facility::factory()->pendingApproval()->create();
-        $supervisor = User::factory()->bloodCenterSupervisor($facility)->create();
+        $centreAdmin = User::factory()->bloodCenterAdmin($facility)->create();
         $colleague = User::factory()->bloodCenterStaff($facility)->create();
 
         $admin = User::factory()->withRole(RoleName::Admin)->create();
@@ -197,7 +225,22 @@ class SupervisorBackfillTest extends TestCase
             ->postJson("/api/admin/facilities/{$facility->id}/approve")
             ->assertOk();
 
-        $this->assertTrue($supervisor->fresh()->is_supervisor);
-        $this->assertFalse($colleague->fresh()->is_supervisor);
+        $this->assertTrue($centreAdmin->fresh()->isCenterAdmin());
+        $this->assertNull($colleague->fresh()->management_level);
+    }
+
+    public function test_a_view_only_supervisor_does_not_count_as_the_admin_approval_guarantees(): void
+    {
+        $facility = Facility::factory()->pendingApproval()->create();
+        $supervisor = User::factory()->bloodCenterSupervisor($facility)->create();
+
+        $admin = User::factory()->withRole(RoleName::Admin)->create();
+
+        $this->actingAs($admin)
+            ->postJson("/api/admin/facilities/{$facility->id}/approve")
+            ->assertOk();
+
+        // The only account is promoted, because a Supervisor manages nobody.
+        $this->assertTrue($supervisor->fresh()->isCenterAdmin());
     }
 }

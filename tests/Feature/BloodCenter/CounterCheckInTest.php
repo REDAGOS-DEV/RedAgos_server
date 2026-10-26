@@ -346,8 +346,11 @@ class CounterCheckInTest extends TestCase
             ->assertJsonValidationErrors('valid_id_number');
     }
 
-    public function test_a_walk_in_who_supplies_an_email_is_sent_a_verification_link(): void
+    public function test_a_walk_in_who_supplies_an_email_is_not_mailed_a_verification_link(): void
     {
+        // Staff typed the address. A link mailed to a mistyped one would let
+        // its owner confirm it and reset the password, so the donor confirms
+        // it from the portal after signing in with the counter's slip.
         $response = $this->actingAs($this->staff)
             ->postJson('/api/blood-center/donors', [
                 'first_name' => 'Ana',
@@ -360,7 +363,8 @@ class CounterCheckInTest extends TestCase
 
         $donor = User::where('uuid', $response->json('data.uuid'))->firstOrFail();
 
-        Notification::assertSentTo($donor, VerifyEmailNotification::class);
+        Notification::assertNotSentTo($donor, VerifyEmailNotification::class);
+        $this->assertFalse($donor->hasVerifiedEmail());
     }
 
     public function test_an_underage_donor_is_refused(): void

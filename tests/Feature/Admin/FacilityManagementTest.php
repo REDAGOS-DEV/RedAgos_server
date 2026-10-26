@@ -5,6 +5,7 @@ namespace Tests\Feature\Admin;
 use App\Enums\AccountStatus;
 use App\Enums\FacilityStatus;
 use App\Enums\FacilityTypeName;
+use App\Enums\HospitalRole;
 use App\Enums\RoleName;
 use App\Models\AuditLog;
 use App\Models\Facility;
@@ -150,26 +151,30 @@ class FacilityManagementTest extends TestCase
 
         $this->assertTrue($bank->hasRole(RoleName::BloodBank));
         $this->assertFalse($bank->hasRole(RoleName::BloodCenter));
+
+        // A blood bank's primary account is its Head; a centre's holds no hospital role.
+        $this->assertSame(HospitalRole::Head, $bank->hospital_role);
+        $this->assertNull($centre->hospital_role);
     }
 
     #[DataProvider('facilityTypes')]
-    public function test_the_primary_account_is_linked_to_its_facility_and_holds_the_supervisor_level(string $type): void
+    public function test_the_primary_account_is_linked_to_its_facility_and_holds_the_admin_level(string $type): void
     {
         $payload = $type === 'blood_bank' ? $this->bloodBankPayload() : $this->payload();
 
         $this->actingAs($this->admin())
             ->postJson('/api/admin/facilities', $payload)
             ->assertCreated()
-            ->assertJsonPath('data.primary_account.is_supervisor', true);
+            ->assertJsonPath('data.primary_account.management_level', 'admin');
 
         $facility = Facility::where('doh_license_number', $payload['doh_license_number'])->firstOrFail();
         $primary = User::where('email', $payload['primary_account']['email'])->firstOrFail();
 
         $this->assertSame($facility->id, $primary->facility_id);
-        $this->assertTrue($primary->is_supervisor);
+        $this->assertTrue($primary->isCenterAdmin());
 
-        // The supervisor level is what carries staff.manage, so the facility
-        // has somebody able to build out its roster from day one.
+        // The Admin level is what carries staff.manage, so the facility has
+        // somebody able to build out its roster from day one.
         $this->assertContains('staff.manage', $primary->abilities());
 
         // And the facility records which account speaks for it.
@@ -308,7 +313,7 @@ class FacilityManagementTest extends TestCase
                 'registration_contact_user_id' => $otherAdmin->id,
                 'primary_account' => [
                     'facility_id' => $otherFacility->id,
-                    'is_supervisor' => false,
+                    'management_level' => 'supervisor',
                     'department' => 'issuance',
                     'roles' => ['admin'],
                     'account_status' => AccountStatus::Active->value,
@@ -327,7 +332,7 @@ class FacilityManagementTest extends TestCase
         $this->assertSame($primary->id, $facility->registration_contact_user_id);
 
         $this->assertSame($facility->id, $primary->facility_id);
-        $this->assertTrue($primary->is_supervisor);
+        $this->assertTrue($primary->isCenterAdmin());
         $this->assertNull($primary->department);
         $this->assertFalse($primary->hasRole(RoleName::Admin));
         $this->assertSame(AccountStatus::PendingVerification, $primary->account_status);
@@ -502,7 +507,7 @@ class FacilityManagementTest extends TestCase
     {
         return [
             'donor' => ['donor'],
-            'blood center supervisor' => ['blood_center_supervisor'],
+            'blood center admin' => ['blood_center_admin'],
             'blood bank staff' => ['blood_bank'],
             'roleless account' => ['none'],
         ];
@@ -513,7 +518,7 @@ class FacilityManagementTest extends TestCase
     {
         $actor = match ($kind) {
             'donor' => User::factory()->donor()->create(),
-            'blood_center_supervisor' => User::factory()->bloodCenterSupervisor()->create(),
+            'blood_center_admin' => User::factory()->bloodCenterAdmin()->create(),
             'blood_bank' => User::factory()
                 ->withRole(RoleName::BloodBank)
                 ->create(['facility_id' => Facility::factory()->bloodBank()->approved()->create()->id]),
@@ -543,7 +548,7 @@ class FacilityManagementTest extends TestCase
         $this->assertSame(FacilityStatus::Approved->value, $row['status']);
         $this->assertSame('maria.santos@drbc.ph', $row['primary_account']['email']);
         $this->assertSame('Maria Santos', $row['primary_account']['full_name']);
-        $this->assertTrue($row['primary_account']['is_supervisor']);
+        $this->assertSame('admin', $row['primary_account']['management_level']);
     }
 
     public function test_the_list_can_filter_by_facility_type(): void

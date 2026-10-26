@@ -40,6 +40,7 @@ class HospitalInventoryRepository
         'requestAllocation:id,request_id',
         'requestAllocation.request:id,reference_number,transfusion_request_id,weekly_request_id',
         'requestAllocation.request.transfusionRequest:id,reference_number',
+        'stockedBy:id,first_name,last_name,credentials',
     ];
 
     /**
@@ -48,11 +49,11 @@ class HospitalInventoryRepository
      * @var array<int, string>
      */
     private const TAG_ACTORS = [
-        'taggedBy:id,first_name,last_name',
-        'crossmatchedBy:id,first_name,last_name',
-        'transfusedBy:id,first_name,last_name',
-        'untaggedBy:id,first_name,last_name',
-        'returnedBy:id,first_name,last_name',
+        'taggedBy:id,first_name,last_name,credentials',
+        'crossmatchedBy:id,first_name,last_name,credentials',
+        'transfusedBy:id,first_name,last_name,credentials',
+        'untaggedBy:id,first_name,last_name,credentials',
+        'returnedBy:id,first_name,last_name,credentials',
         'transfusionRequest:id,reference_number',
         'patientBloodType:id,code',
     ];
@@ -159,10 +160,46 @@ class HospitalInventoryRepository
                 'facility_id' => $facilityId,
                 'unit_id' => $bag['unit_id'],
                 'request_allocation_id' => $bag['request_allocation_id'],
-                'status' => HospitalUnitStatus::Available,
+                // In custody, not yet stock: inventory staff stock it in.
+                'status' => HospitalUnitStatus::Received,
             ]),
             $bags
         ));
+    }
+
+    /**
+     * The storage locations a hospital has already stocked bags into, A to Z.
+     *
+     * @return array<int, string>
+     */
+    public function distinctStorageLocations(int $facilityId): array
+    {
+        return HospitalUnit::query()
+            ->forFacility($facilityId)
+            ->whereNotNull('hospital_units.storage_location')
+            ->distinct()
+            ->orderBy('hospital_units.storage_location')
+            ->pluck('hospital_units.storage_location')
+            ->all();
+    }
+
+    /**
+     * Resolve this hospital's bags by their unit ids, in custody-row id order.
+     *
+     * So a write over several bags locks them in the order the expiry sweep
+     * does, and the two cannot deadlock.
+     *
+     * @param  array<int, string>  $unitIds
+     * @return array<int, string>
+     */
+    public function unitIdsInLockOrder(int $facilityId, array $unitIds): array
+    {
+        return HospitalUnit::query()
+            ->forFacility($facilityId)
+            ->whereIn('hospital_units.unit_id', $unitIds)
+            ->orderBy('hospital_units.id')
+            ->pluck('hospital_units.unit_id')
+            ->all();
     }
 
     /**
@@ -208,6 +245,34 @@ class HospitalInventoryRepository
                 'blood_type_id' => (int) $row->blood_type_id,
                 'code' => (string) $row->code,
                 'available' => (int) $row->available,
+            ])
+            ->all();
+    }
+
+    /**
+     * Issuable bags counted by blood type and component, for threshold monitoring.
+     *
+     * Only bags in `available` custody count: a tagged bag is held for a named
+     * patient and a pending-return bag has left storage. The date predicate is
+     * the centre's own rule, so a bag past its date that the nightly sweep has
+     * not reached yet is not counted as stock.
+     *
+     * @return array<int, array{blood_type_id: int, component_id: int, units: int}>
+     */
+    public function issuableCountsByTypeAndComponent(int $facilityId, string $operationalDate): array
+    {
+        return HospitalUnit::query()
+            ->forFacility($facilityId)
+            ->where('hospital_units.status', HospitalUnitStatus::Available->value)
+            ->join('blood_units', 'blood_units.id', '=', 'hospital_units.unit_id')
+            ->whereDate('blood_units.expiry_date', '>=', $operationalDate)
+            ->groupBy('blood_units.blood_type_id', 'blood_units.component_id')
+            ->selectRaw('blood_units.blood_type_id, blood_units.component_id, COUNT(*) as units')
+            ->get()
+            ->map(fn ($row): array => [
+                'blood_type_id' => (int) $row->blood_type_id,
+                'component_id' => (int) $row->component_id,
+                'units' => (int) $row->units,
             ])
             ->all();
     }
@@ -405,7 +470,8 @@ class HospitalInventoryRepository
     }
 
     /**
-     * Available hospital bags past their date, across every hospital.
+     * Untagged hospital bags past their date, across every hospital: on the
+     * shelf, or arrived and still awaiting stock-in.
      *
      * Deliberately NOT facility-scoped, and CANDIDATES only, exactly as
      * InventoryRepository::dueUnits(). Touches the hospital's side of the bag
@@ -416,7 +482,7 @@ class HospitalInventoryRepository
     public function dueUnits(string $operationalDate): Builder
     {
         return HospitalUnit::query()
-            ->where('hospital_units.status', HospitalUnitStatus::Available->value)
+            ->whereIn('hospital_units.status', [HospitalUnitStatus::Available->value, HospitalUnitStatus::Received->value])
             ->whereHas('bloodUnit', fn (Builder $bag): Builder => $bag->whereDate('expiry_date', '<', $operationalDate));
     }
 

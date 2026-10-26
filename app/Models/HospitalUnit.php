@@ -50,6 +50,7 @@ class HospitalUnit extends Model
     {
         return [
             'status' => HospitalUnitStatus::class,
+            'stocked_at' => 'immutable_datetime',
             'expired_at' => 'immutable_datetime',
             'discarded_at' => 'immutable_datetime',
         ];
@@ -110,6 +111,14 @@ class HospitalUnit extends Model
     public function latestTag(): HasOne
     {
         return $this->hasOne(UnitTag::class)->latestOfMany();
+    }
+
+    /**
+     * The inventory staff member who stocked the bag in.
+     */
+    public function stockedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'stocked_by');
     }
 
     /**

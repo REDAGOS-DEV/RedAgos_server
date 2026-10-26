@@ -3,6 +3,7 @@
 namespace App\Notifications;
 
 use App\Models\Donation;
+use App\Support\DonorNotificationPreferences;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
@@ -38,9 +39,8 @@ class DonationRecorded extends Notification implements ShouldQueue
      */
     public function via(object $notifiable): array
     {
-        return $notifiable->hasEmailAddress()
-            ? ['mail', 'database']
-            : ['database'];
+        // The email is the donor's choice in Settings; the in-app copy is always written.
+        return DonorNotificationPreferences::alwaysInAppChannels($notifiable, DonorNotificationPreferences::RESULTS_EMAIL);
     }
 
     /**

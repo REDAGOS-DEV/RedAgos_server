@@ -24,7 +24,7 @@ class WeeklyRequestRepository
      */
     private const HEADER_RELATIONS = [
         'targetFacility:id,name,address',
-        'requester:id,first_name,last_name',
+        'requester:id,first_name,last_name,credentials',
     ];
 
     public function __construct(
@@ -40,7 +40,7 @@ class WeeklyRequestRepository
     {
         return ReplenishmentSchedule::query()
             ->forFacility($facilityId)
-            ->with(['targetFacility:id,name,address', 'updatedBy:id,first_name,last_name'])
+            ->with(['targetFacility:id,name,address', 'updatedBy:id,first_name,last_name,credentials'])
             ->orderBy('id')
             ->get();
     }
@@ -53,7 +53,7 @@ class WeeklyRequestRepository
         return ReplenishmentSchedule::query()
             ->forFacility($facilityId)
             ->where('target_facility_id', $targetFacilityId)
-            ->with(['targetFacility:id,name,address', 'updatedBy:id,first_name,last_name'])
+            ->with(['targetFacility:id,name,address', 'updatedBy:id,first_name,last_name,credentials'])
             ->first();
     }
 

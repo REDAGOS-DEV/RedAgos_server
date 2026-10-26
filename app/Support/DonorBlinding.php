@@ -15,8 +15,9 @@ use App\Models\User;
  * and nothing that identifies them.
  *
  * The roles that meet the donor in person hold the ability: the counter, the
- * screening physician, the chair, and the laboratory supervisor who works the
- * counselling referrals.
+ * screening physician and the chair. Testing is blind throughout, its
+ * Laboratory Supervisor included (project owner, 2026-10-25), so even the
+ * counselling referrals go by barcode.
  */
 final class DonorBlinding
 {

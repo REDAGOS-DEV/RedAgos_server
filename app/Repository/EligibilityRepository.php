@@ -10,6 +10,7 @@ use App\Models\EligibilityQuestion;
 use App\Models\EligibilityScreening;
 use App\Models\EligibilityScreeningAnswer;
 use App\Support\OperationalDay;
+use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 
@@ -154,6 +155,25 @@ class EligibilityRepository
         EligibilityScreening::where('donor_id', $donorId)
             ->whereNull('invalidated_at')
             ->where('valid_until', '>', now())
+            ->update([
+                'invalidated_at' => now(),
+            ]);
+    }
+
+    /**
+     * Retire the questionnaires a donation recorded after the fact consumed:
+     * those answered on or before it, and still current.
+     *
+     * A drive's paper record is typed days or months later. A questionnaire
+     * the donor answered since, for their next visit, was not used by it and
+     * must survive; one answered before it was. Returns how many were retired.
+     */
+    public function invalidateScreeningsAnsweredBy(int $donorId, CarbonInterface $at): int
+    {
+        return EligibilityScreening::where('donor_id', $donorId)
+            ->whereNull('invalidated_at')
+            ->where('valid_until', '>', now())
+            ->where('screened_at', '<=', $at)
             ->update([
                 'invalidated_at' => now(),
             ]);

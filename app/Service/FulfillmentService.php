@@ -12,6 +12,7 @@ use App\Models\User;
 use App\Repository\BloodRequestRepository;
 use App\Repository\InventoryRepository;
 use App\Support\CorrectionValues;
+use App\Support\DocumentNumbering;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Facades\DB;
@@ -65,7 +66,9 @@ class FulfillmentService
     {
         $facilityId = $this->requireFacilityId($user);
 
-        $result = DB::transaction(function () use ($user, $requestId, $facilityId, $allocationIds, $handedTo): array {
+        // A subsidised request may issue a Statement of Account revision as it
+        // goes (below), so the transaction retries on a document-number collision.
+        $result = DocumentNumbering::transaction(function () use ($user, $requestId, $facilityId, $allocationIds, $handedTo): array {
             $request = $this->bloodRequestRepository->lockAddressedTo($requestId, $facilityId)
                 ?? throw $this->refuse(404, 'request_not_found', 'Blood request not found.');
 
@@ -75,6 +78,10 @@ class FulfillmentService
             // and already settled, so this passes — but it is the real check,
             // and it starts refusing the moment a component carries a price.
             $this->billingService->assertClearsRelease($request);
+
+            // Units reserved after the subsidy are the hospital's too: its
+            // Statement of Account is brought up to what is going out.
+            $this->billingService->restateSubsidisedStatement($request, $user);
 
             $holds = $request->allocations()
                 ->where('status', AllocationStatus::Allocated)
@@ -190,7 +197,7 @@ class FulfillmentService
      * transaction, on the request it has locked, so the delivery and the
      * closure are one decision in the history.
      *
-     * @return array<int, array{request_item_id: int, component: string|null, quantity: int}>
+     * @return array<int, array{request_item_id: int, blood_type: string|null, component: string|null, quantity: int}>
      */
     private function closeWeeklyShortfall(BloodRequest $request, User $user): array
     {
@@ -215,9 +222,12 @@ class FulfillmentService
                 $user
             );
 
+            $item = $request->items->firstWhere('id', $itemId);
+
             $closed[] = [
                 'request_item_id' => (int) $itemId,
-                'component' => $request->items->firstWhere('id', $itemId)?->component?->name,
+                'blood_type' => $item?->bloodType?->code,
+                'component' => $item?->component?->name,
                 'quantity' => $short,
             ];
         }
@@ -296,12 +306,16 @@ class FulfillmentService
         $lines = $this->resolver->figures($request);
 
         return [
-            'message' => 'Receipt confirmed.',
+            // In custody now; inventory staff stock them in (project owner, 2026-10-11).
+            'message' => 'Receipt confirmed. The units now wait in Inventory for stock-in.',
             'status' => $request->status->value,
             'status_label' => $request->status->label(),
             'received_count' => (int) $lines->sum('received'),
             'fulfilled_quantity' => (int) $lines->sum('fulfilled'),
+            // The bags taken into custody, awaiting stock-in. The key keeps
+            // its name for the screens that already read it.
             'stocked_count' => $stocked,
+            'awaiting_stock_in' => $stocked,
         ];
     }
 

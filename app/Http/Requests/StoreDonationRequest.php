@@ -2,7 +2,9 @@
 
 namespace App\Http\Requests;
 
+use App\Enums\DonationType;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
 
 class StoreDonationRequest extends FormRequest
 {
@@ -22,6 +24,9 @@ class StoreDonationRequest extends FormRequest
         return [
             'donor_uuid' => ['required', 'uuid'],
             'appointment_id' => ['sometimes', 'nullable', 'integer'],
+
+            // Walk-in, TS or NTS, picked at the counter; a walk-in when left out.
+            'donation_type' => ['sometimes', Rule::enum(DonationType::class)],
         ];
     }
 }

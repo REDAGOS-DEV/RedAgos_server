@@ -2,14 +2,12 @@
 
 namespace App\Service;
 
-use App\Enums\Department;
-use App\Enums\StaffRole;
 use App\Models\BloodRequest;
 use App\Models\User;
 use App\Notifications\BloodRequestDecided;
 use App\Notifications\BloodRequestSubmitted;
 use App\Notifications\WalkInRequestRecorded;
-use App\Support\DepartmentPermissions;
+use App\Support\StaffNotificationTopics;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Notification;
 
@@ -28,36 +26,20 @@ class BloodRequestNotifier
      * Addressed to whoever can act on it — the roles that decide on or
      * allocate against a request — rather than to a department, so an IT clerk
      * sitting in Issuance is not paged for a request they cannot touch.
-     * Supervisors are included because they hold every ability and may be the
-     * only account staffing a small centre out of hours.
+     * The Supervisor is included although they do not act on a request: they
+     * watch the centre's incoming requests, and a request waiting at a small
+     * centre out of hours should reach someone. The Blood Center Admin, who
+     * keeps the staff accounts and sees no requests, is not.
      */
     public function targetFacility(BloodRequest $request): void
     {
-        $roles = array_values(array_unique(array_map(
-            fn (StaffRole $role): string => $role->value,
-            [
-                ...DepartmentPermissions::rolesHolding('requests.approve'),
-                ...DepartmentPermissions::rolesHolding('requests.process'),
-            ]
-        )));
-
-        // Custom roles in a department whose staff can act on requests.
-        $departments = array_values(array_unique(array_map(
-            fn (Department $department): string => $department->value,
-            [
-                ...DepartmentPermissions::departmentsHolding('requests.approve'),
-                ...DepartmentPermissions::departmentsHolding('requests.process'),
-            ]
-        )));
-
+        // Who that is lives in StaffNotificationTopics, which the staff
+        // Settings screen reads too.
         $recipients = User::query()
             ->where('facility_id', $request->target_facility_id)
-            ->where(function ($query) use ($roles, $departments): void {
-                $query->whereIn('staff_role', $roles)
-                    ->orWhere(fn ($custom) => $custom->whereNotNull('custom_role')->whereIn('department', $departments))
-                    ->orWhere('is_supervisor', true);
-            })
-            ->get();
+            ->get()
+            ->filter(fn (User $user): bool => StaffNotificationTopics::receivesRequests($user))
+            ->values();
 
         Notification::send($recipients, new BloodRequestSubmitted($request));
     }
@@ -66,25 +48,28 @@ class BloodRequestNotifier
      * Tell the requesting hospital what became of its request.
      *
      * The hospital user who submitted it hears first. A walk-in has no such
-     * user — the hospital confirmed it by phone — so the hospital's own
+     * user — a watcher brought it to the centre — so the hospital's own
      * accounts are told instead, because the request is still theirs.
      */
-    public function requester(BloodRequest $request, string $outcome): void
+    /**
+     * @param  array<string, mixed>  $context  what the outcome needs to be told in words (closed_short: component, quantity, note)
+     */
+    public function requester(BloodRequest $request, string $outcome, array $context = []): void
     {
         $request->loadMissing('requester');
 
         Notification::send(
             $request->requester ? collect([$request->requester]) : $this->hospitalAccounts($request),
-            new BloodRequestDecided($request, $outcome)
+            new BloodRequestDecided($request, $outcome, $context)
         );
     }
 
     /**
      * Tell the hospital that a blood centre has recorded a request on its behalf.
      *
-     * The hospital confirmed it on the phone; this is the written trace of that
-     * call reaching the system, so the hospital can see and track the request
-     * it vouched for.
+     * A watcher brought it to the centre instead of the hospital blood bank;
+     * this tells the hospital it exists, so it can see and track a request
+     * that is still its own.
      */
     public function walkInRecorded(BloodRequest $request): void
     {

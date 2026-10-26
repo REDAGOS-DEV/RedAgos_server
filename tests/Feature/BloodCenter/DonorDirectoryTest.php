@@ -58,20 +58,33 @@ class DonorDirectoryTest extends TestCase
         return $donor;
     }
 
-    public function test_browsing_returns_only_donors_this_facility_has_dealt_with(): void
+    public function test_browsing_lists_every_donor_in_redagos_and_says_whose_they_are(): void
     {
+        // Global across the blood centres (project owner, 2026-10-25).
         $mine = $this->donorAt($this->facility);
         $theirs = $this->donorAt(Facility::factory()->approved()->create());
 
-        $uuids = collect(
+        $rows = collect(
             $this->actingAs($this->staff)
                 ->getJson('/api/blood-center/donors')
                 ->assertOk()
                 ->json('data')
-        )->pluck('uuid');
+        )->keyBy('uuid');
 
-        $this->assertContains($mine->uuid, $uuids);
-        $this->assertNotContains($theirs->uuid, $uuids);
+        $this->assertSame('own_facility', $rows[$mine->uuid]['scope']);
+        $this->assertSame('cross_facility', $rows[$theirs->uuid]['scope']);
+    }
+
+    public function test_the_export_stays_with_this_centres_own_donors(): void
+    {
+        $mine = $this->donorAt($this->facility);
+        $theirs = $this->donorAt(Facility::factory()->approved()->create());
+        $receptionist = User::factory()->bloodCenterStaff($this->facility, StaffRole::MedicalReceptionist)->create();
+
+        $csv = $this->actingAs($receptionist)->get('/api/blood-center/donors/export')->assertOk()->streamedContent();
+
+        $this->assertStringContainsString($mine->last_name, $csv);
+        $this->assertStringNotContainsString($theirs->last_name, $csv);
     }
 
     public function test_a_donor_with_only_an_appointment_here_is_browsable(): void
@@ -97,26 +110,24 @@ class DonorDirectoryTest extends TestCase
             ->getJson("/api/blood-center/donors/lookup?type=donor_code&value={$code}")
             ->assertOk()
             ->assertJsonPath('scope', 'cross_facility')
-            ->assertJsonPath('restricted', true)
+            ->assertJsonPath('restricted', false)
             ->assertJsonPath('donation_summary.total_donations', 3);
     }
 
-    public function test_the_cross_facility_view_withholds_detailed_records(): void
+    public function test_another_centres_donor_opens_as_the_full_record(): void
     {
+        // The full record for every centre (project owner, 2026-10-25).
         $theirs = $this->donorAt(Facility::factory()->approved()->create());
-        DonorProfile::where('donor_id', $theirs->id)->update(['address' => '123 Secret Street']);
+        DonorProfile::where('donor_id', $theirs->id)->update(['address' => '123 Main Street']);
 
-        $body = $this->actingAs($this->staff)
+        $this->actingAs($this->staff)
             ->getJson("/api/blood-center/donors/{$theirs->uuid}")
             ->assertOk()
-            ->json();
-
-        // Identity and a summary, so staff can confirm the person in front of
-        // them and judge eligibility. Nothing else.
-        $this->assertArrayHasKey('donation_summary', $body);
-        $this->assertArrayNotHasKey('address', $body);
-        $this->assertArrayNotHasKey('valid_id_number', $body);
-        $this->assertArrayNotHasKey('donations_at_this_facility', $body);
+            ->assertJsonPath('scope', 'cross_facility')
+            ->assertJsonPath('restricted', false)
+            ->assertJsonPath('address', '123 Main Street')
+            ->assertJsonPath('donations_at_this_facility', 0)
+            ->assertJsonStructure(['valid_id_number', 'eligibility']);
     }
 
     public function test_an_own_facility_donor_returns_the_full_record(): void
@@ -154,16 +165,17 @@ class DonorDirectoryTest extends TestCase
         $this->assertStringNotContainsString('secret.jpg', $body);
     }
 
-    public function test_detailed_history_is_refused_for_another_facilitys_donor(): void
+    public function test_another_centres_donations_stay_with_it(): void
     {
         $theirs = $this->donorAt(Facility::factory()->approved()->create());
 
-        // Deliberately 403 with a reason rather than an empty list: an empty
-        // array would read as "this donor has never donated", which is false.
+        // Each centre's own history (project owner, 2026-10-25): none here,
+        // and the scope says why rather than reading as "never donated".
         $this->actingAs($this->staff)
             ->getJson("/api/blood-center/donors/{$theirs->uuid}/history")
-            ->assertForbidden()
-            ->assertJsonPath('code', 'donor_not_at_facility');
+            ->assertOk()
+            ->assertJsonPath('scope', 'cross_facility')
+            ->assertJsonCount(0, 'donations');
     }
 
     public function test_history_returns_only_this_facilitys_donations(): void
@@ -222,10 +234,15 @@ class DonorDirectoryTest extends TestCase
         $this->actingAs($lab)->getJson('/api/blood-center/donors')->assertForbidden();
     }
 
-    public function test_a_supervisor_may_browse_donors(): void
+    public function test_neither_management_level_browses_donors(): void
     {
-        $supervisor = User::factory()->bloodCenterSupervisor($this->facility)->create();
-
-        $this->actingAs($supervisor)->getJson('/api/blood-center/donors')->assertOk();
+        // Donor records are Collection's. The Admin and the Supervisor watch
+        // the centre's numbers, not its donors.
+        foreach ([
+            User::factory()->bloodCenterAdmin($this->facility)->create(),
+            User::factory()->bloodCenterSupervisor($this->facility)->create(),
+        ] as $manager) {
+            $this->actingAs($manager)->getJson('/api/blood-center/donors')->assertForbidden();
+        }
     }
 }

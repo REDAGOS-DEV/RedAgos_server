@@ -559,6 +559,8 @@ class AppointmentTest extends TestCase
         $upcoming = MobileEvent::factory()->create([
             'facility_id' => $this->center->id,
             'max_capacity' => 60,
+            'start_time' => '08:00:00',
+            'end_time' => '16:00:00',
         ]);
 
         $this->actingAs($this->donor)
@@ -567,7 +569,9 @@ class AppointmentTest extends TestCase
             ->assertJsonCount(1)
             ->assertJsonPath('0.id', $upcoming->id)
             ->assertJsonPath('0.registered', 0)
-            ->assertJsonPath('0.total_slots', 60);
+            ->assertJsonPath('0.total_slots', 60)
+            ->assertJsonPath('0.start_time', '08:00')
+            ->assertJsonPath('0.end_time', '16:00');
     }
 
     public function test_appointment_endpoints_reject_a_non_donor(): void

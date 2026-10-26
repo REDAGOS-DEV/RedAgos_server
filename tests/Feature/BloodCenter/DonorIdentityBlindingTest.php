@@ -83,16 +83,27 @@ class DonorIdentityBlindingTest extends TestCase
         $this->assertStringNotContainsString('Magbanua', $response->getContent());
     }
 
-    public function test_the_lab_supervisor_and_a_centre_supervisor_see_who_it_is(): void
+    public function test_the_lab_supervisor_works_blind_too(): void
     {
-        $supervisor = User::factory()->bloodCenterSupervisor($this->facility)->create();
+        // Testing's head included (project owner, 2026-10-25).
+        $response = $this->actingAs($this->staff(StaffRole::LabSupervisor))
+            ->getJson("/api/blood-center/laboratory/donations/{$this->donation->id}")
+            ->assertOk()
+            ->assertJsonPath('donor.blinded', true)
+            ->assertJsonPath('collection.donation_barcode', 'SEG-7781');
 
-        foreach ([$this->staff(StaffRole::LabSupervisor), $supervisor] as $viewer) {
-            $this->actingAs($viewer)
+        $this->assertStringNotContainsString('Magbanua', $response->getContent());
+    }
+
+    public function test_neither_management_level_reaches_the_laboratory_record(): void
+    {
+        foreach ([
+            User::factory()->bloodCenterAdmin($this->facility)->create(),
+            User::factory()->bloodCenterSupervisor($this->facility)->create(),
+        ] as $manager) {
+            $this->actingAs($manager)
                 ->getJson("/api/blood-center/laboratory/donations/{$this->donation->id}")
-                ->assertOk()
-                ->assertJsonPath('donor.blinded', false)
-                ->assertJsonPath('donor.full_name', 'Rosalinda Magbanua');
+                ->assertForbidden();
         }
     }
 

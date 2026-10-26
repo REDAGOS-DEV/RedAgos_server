@@ -411,7 +411,7 @@ class HospitalUnitTaggingTest extends TestCase
 
         $rows = AuditLog::query()
             ->where('action', 'like', 'hospital_inventory.%')
-            ->where('action', '!=', 'hospital_inventory.stocked')
+            ->whereNotIn('action', ['hospital_inventory.received', 'hospital_inventory.stocked'])
             ->orderBy('id')
             ->get();
 

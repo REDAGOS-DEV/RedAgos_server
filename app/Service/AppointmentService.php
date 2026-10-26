@@ -13,8 +13,8 @@ use App\Repository\AppointmentRepository;
 use App\Repository\EligibilityRepository;
 use App\Support\AppointmentScreeningWindow;
 use App\Support\OperationalDay;
-use Illuminate\Http\Exceptions\HttpResponseException;
 use Carbon\CarbonImmutable;
+use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -42,6 +42,12 @@ class AppointmentService
                 'name' => $facility->name,
                 'location' => $facility->address,
                 'hours' => $facility->operating_hours,
+                // So the booking calendar can grey out the days it is shut.
+                'open_days' => $facility->open_days,
+                'closed_dates' => array_values(array_filter(
+                    $facility->closed_dates ?? [],
+                    fn (array $c): bool => ($c['date'] ?? '') >= now()->toDateString()
+                )),
                 'status' => $facility->is_accepting_donations ? 'Open today' : 'Closed',
             ])
             ->all();
@@ -60,6 +66,9 @@ class AppointmentService
                 'name' => $event->name,
                 'location' => $event->location,
                 'date' => $event->event_date->toDateString(),
+                // Wall-clock 'HH:MM', so the donor's home can say a drive is on now.
+                'start_time' => $event->start_time ? substr($event->start_time, 0, 5) : null,
+                'end_time' => $event->end_time ? substr($event->end_time, 0, 5) : null,
                 'registered' => (int) $event->registered,
                 'total_slots' => $event->max_capacity,
                 'status' => $event->status(),
@@ -86,6 +95,12 @@ class AppointmentService
         }
 
         $day = Carbon::parse($date);
+
+        // A closed day, or a weekday the centre does not open, offers no times.
+        if (! $facility->isOpenOn($day)) {
+            return [];
+        }
+
         $booked = $this->appointmentRepository->bookedCountsByTime($facility->id, $day);
         $capacity = max(1, (int) $facility->slot_capacity);
 
@@ -231,6 +246,175 @@ class AppointmentService
     }
 
     /**
+     * Book an appointment for a donor who phoned the centre (project owner,
+     * 2026-10-17), at the staff member's own centre or one of its drives.
+     *
+     * The portal's own rules, through the same guards, so a booking taken by
+     * phone can never be one the donor could not have made: not in the past or
+     * beyond the horizon, not before the donation interval has passed, not a
+     * second active booking, and not into a full slot or drive. Two differences,
+     * both because staff are not the donor: no email-verification gate (a
+     * walk-in may have no address), and a donor with a standing deferral is
+     * refused outright rather than left to the counter to turn away.
+     *
+     * A drive is a mobile blood drive this centre runs (MobileEvent). Its date is its own;
+     * the time is one of the slots inside the drive's hours.
+     *
+     * @param  array{date?: string, time_slot: string, drive_id?: int|null, notes?: string|null}  $payload
+     */
+    public function bookOnBehalf(User $staff, Facility $facility, User $donor, array $payload, bool $deferred): DonationAppointment
+    {
+        $profile = $donor->donorProfile
+            ?? throw ValidationException::withMessages(['donor_uuid' => ['This account has no donor profile.']]);
+
+        if ($deferred) {
+            throw new HttpResponseException(response()->json([
+                'message' => 'This donor is deferred and cannot be booked to donate.',
+                'code' => 'donor_deferred',
+                'errors' => ['donor_uuid' => ['This donor is deferred and cannot be booked to donate.']],
+            ], 422));
+        }
+
+        $drive = isset($payload['drive_id']) ? $this->ownUpcomingDrive($facility, (int) $payload['drive_id']) : null;
+
+        if ($drive === null && $this->appointmentRepository->findBookableCenter($facility->id) === null) {
+            throw ValidationException::withMessages([
+                'date' => ['Your centre is not accepting donations at the moment.'],
+            ]);
+        }
+
+        $times = array_column($this->slotsFor($facility, $drive?->event_date->toDateString() ?? $payload['date'], $drive), 'time');
+
+        if (! in_array($payload['time_slot'], $times, true)) {
+            throw ValidationException::withMessages([
+                'time_slot' => ['Choose one of the listed time slots.'],
+            ]);
+        }
+
+        $slot = $drive !== null
+            ? $drive->event_date->copy()->setTimeFromTimeString($payload['time_slot'])
+            : Carbon::parse($payload['date'].' '.$payload['time_slot']);
+
+        $this->guardBookingWindow($slot);
+        $this->guardDonationInterval($profile, $slot, forStaff: true);
+        $this->guardNoActiveAppointment($profile->donor_id, forStaff: true);
+
+        $appointment = DB::transaction(function () use ($profile, $facility, $drive, $slot, $payload, $staff): DonationAppointment {
+            if ($drive !== null) {
+                $this->guardDriveCapacity($drive->id);
+            } else {
+                $this->guardSlotAvailable($facility->id, $slot);
+            }
+
+            return $this->appointmentRepository->create([
+                'donor_id' => $profile->donor_id,
+                'facility_id' => $facility->id,
+                'event_id' => $drive?->id,
+                'appointment_datetime' => $slot,
+                'status' => AppointmentStatus::Scheduled,
+                'notes' => filled($payload['notes'] ?? null) ? trim((string) $payload['notes']) : null,
+                'booked_by' => $staff->id,
+            ]);
+        });
+
+        $appointment->load(['facility', 'mobileEvent']);
+
+        // The same confirmation the portal sends: the donor learns of a booking
+        // made for them, and gets its date and the questionnaire reminder.
+        $this->sendConfirmation($donor, $appointment);
+
+        return $appointment;
+    }
+
+    /**
+     * Cancel a booking for the donor, as staff. Only a booking still waiting
+     * for its donor: one under way is closed at the counter, and a missed one
+     * is a no-show. The check-in credential goes with it, as in the portal.
+     */
+    public function cancelOnBehalf(DonationAppointment $appointment): DonationAppointment
+    {
+        if ($appointment->status !== AppointmentStatus::Scheduled) {
+            throw new HttpResponseException(response()->json([
+                'message' => 'Only a scheduled appointment can be cancelled.',
+                'code' => 'appointment_not_active',
+            ], 409));
+        }
+
+        $this->appointmentRepository->update($appointment, ['status' => AppointmentStatus::Cancelled]);
+        $this->eligibilityRepository->revokeQrTokens((int) $appointment->donor_id);
+
+        return $appointment;
+    }
+
+    /**
+     * The times a staff member may book at their centre or one of its drives on
+     * a date, with how many places each has left.
+     *
+     * At the centre, the portal's own slot grid and per-slot capacity. At a
+     * drive, the slots inside the drive's hours (the centre's grid when it set
+     * none), all sharing the drive's one capacity; null when it has no limit.
+     *
+     * @return array<int, array{time: string, end: string, available: int|null, total: int|null}>
+     */
+    public function slotsFor(Facility $facility, string $date, ?MobileEvent $drive = null): array
+    {
+        $interval = max(5, (int) $facility->slot_interval_minutes);
+        $end = fn (string $time): string => Carbon::parse($time)->addMinutes($interval)->format('H:i');
+
+        if ($drive === null) {
+            if ($this->appointmentRepository->findBookableCenter($facility->id) === null) {
+                return [];
+            }
+
+            return array_map(fn (array $slot): array => [...$slot, 'end' => $end($slot['time'])], $this->timeSlots($facility->id, $date));
+        }
+
+        $times = $this->slotTimes($facility);
+
+        if (filled($drive->start_time) && filled($drive->end_time)) {
+            $times = [];
+            $from = Carbon::parse($drive->start_time);
+            $until = Carbon::parse($drive->end_time)->subMinutes($interval);
+
+            while ($from->lessThanOrEqualTo($until)) {
+                $times[] = $from->format('H:i');
+                $from->addMinutes($interval);
+            }
+        }
+
+        $left = $drive->max_capacity === null
+            ? null
+            : max(0, $drive->max_capacity - (int) ($drive->registered ?? $drive->appointments()->active()->count()));
+
+        return array_map(function (string $time) use ($drive, $left, $end): array {
+            $isPast = $drive->event_date->copy()->setTimeFromTimeString($time)->isPast();
+
+            return [
+                'time' => $time,
+                'end' => $end($time),
+                'available' => $isPast ? 0 : $left,
+                'total' => $drive->max_capacity,
+            ];
+        }, $times);
+    }
+
+    /**
+     * One of this centre's own upcoming drives, or a field error.
+     */
+    public function ownUpcomingDrive(Facility $facility, int $driveId): MobileEvent
+    {
+        $drive = $this->appointmentRepository->findUpcomingDrive($driveId);
+
+        if ($drive === null || (int) $drive->facility_id !== (int) $facility->id) {
+            throw ValidationException::withMessages([
+                'drive_id' => ['Choose one of your centre\'s upcoming drives.'],
+            ]);
+        }
+
+        return $drive;
+    }
+
+    /**
      * Revoke the donor's QR when a moved appointment leaves its questionnaire
      * outside the new screening window.
      *
@@ -312,7 +496,7 @@ class AppointmentService
     /**
      * Reject a slot that falls before the donor's next eligible donation date.
      */
-    private function guardDonationInterval(DonorProfile $profile, Carbon $slot): void
+    private function guardDonationInterval(DonorProfile $profile, Carbon $slot, bool $forStaff = false): void
     {
         $lastDonationAt = $this->eligibilityRepository->lastBloodDrawnAt($profile->donor_id);
         $nextEligible = $this->evaluator->nextEligibleDate($lastDonationAt);
@@ -321,11 +505,14 @@ class AppointmentService
             return;
         }
 
+        $message = ($forStaff ? 'This donor cannot donate again until ' : 'You cannot donate again until ')
+            .$nextEligible->toDateString().'.';
+
         throw new HttpResponseException(response()->json([
-            'message' => 'You cannot donate again until '.$nextEligible->toDateString().'.',
+            'message' => $message,
             'code' => 'below_min_interval',
             'errors' => [
-                'date' => ['You cannot donate again until '.$nextEligible->toDateString().'.'],
+                'date' => [$message],
             ],
             'next_eligible_date' => $nextEligible->toDateString(),
         ], 422));
@@ -334,14 +521,16 @@ class AppointmentService
     /**
      * Reject a second concurrent booking for the same donor.
      */
-    private function guardNoActiveAppointment(int $donorId): void
+    private function guardNoActiveAppointment(int $donorId, bool $forStaff = false): void
     {
         if (! $this->appointmentRepository->hasActiveAppointment($donorId)) {
             return;
         }
 
         throw new HttpResponseException(response()->json([
-            'message' => 'You already have an upcoming appointment. Cancel or reschedule it first.',
+            'message' => $forStaff
+                ? 'This donor already has an upcoming appointment. Cancel or move that one first.'
+                : 'You already have an upcoming appointment. Cancel or reschedule it first.',
             'code' => 'duplicate_appointment',
         ], 409));
     }
@@ -352,6 +541,14 @@ class AppointmentService
     private function guardSlotAvailable(int $facilityId, Carbon $slot, ?int $excludingId = null): void
     {
         $facility = $this->appointmentRepository->findBookableCenter($facilityId);
+
+        if ($facility !== null && ($reason = $facility->closedReasonOn($slot)) !== null) {
+            throw new HttpResponseException(response()->json([
+                'message' => 'The centre takes no bookings on '.$slot->format('l, j F Y').": {$reason}. Please choose another day.",
+                'code' => 'centre_closed',
+            ], 422));
+        }
+
         $capacity = max(1, (int) ($facility?->slot_capacity ?? 1));
         $booked = $this->appointmentRepository->lockedSlotCount($facilityId, $slot);
 

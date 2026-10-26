@@ -57,14 +57,14 @@ class DirectDistributionTest extends TestCase
             ->assertJsonPath('sources.0.code', 'PRC');
     }
 
-    public function test_receiving_a_bag_puts_it_on_the_shelf_under_the_senders_own_number(): void
+    public function test_receiving_a_bag_takes_it_into_custody_under_the_senders_own_number(): void
     {
         $this->receive(' prc-920923323 ', ['collection_date' => OperationalDay::today()->subDays(2)->toDateString()])
             ->assertCreated()
             ->assertJsonPath('direct_distribution.external_unit_number', 'PRC-920923323')
             ->assertJsonPath('direct_distribution.source.name', 'Philippine Red Cross')
             ->assertJsonPath('direct_distribution.transfusion_request.id', $this->requirement->id)
-            ->assertJsonPath('direct_distribution.units.0.status', HospitalUnitStatus::Available->value)
+            ->assertJsonPath('direct_distribution.units.0.status', HospitalUnitStatus::Received->value)
             ->assertJsonPath('direct_distribution.units.0.bag_number', 'PRC-920923323')
             ->assertJsonPath('direct_distribution.received_by', trim($this->requester->first_name.' '.$this->requester->last_name));
 
@@ -81,11 +81,12 @@ class DirectDistributionTest extends TestCase
         $this->assertTrue($bag->isDirectDistribution());
 
         $custody = HospitalUnit::query()->where('unit_id', $bag->id)->sole();
-        $this->assertSame(HospitalUnitStatus::Available, $custody->status);
+        // In custody, awaiting stock-in like any received bag.
+        $this->assertSame(HospitalUnitStatus::Received, $custody->status);
         $this->assertNull($custody->request_allocation_id);
 
         $this->assertDatabaseHas('audit_logs', ['action' => 'direct_distribution.received', 'actor_id' => $this->requester->id]);
-        $this->assertDatabaseHas('audit_logs', ['action' => 'hospital_inventory.stocked']);
+        $this->assertDatabaseHas('audit_logs', ['action' => 'hospital_inventory.received']);
     }
 
     public function test_inventory_shows_the_external_number_and_links_the_bag_to_the_patient(): void
@@ -135,6 +136,7 @@ class DirectDistributionTest extends TestCase
     {
         $this->receive('PRC-300')->assertCreated();
         $unit = HospitalUnit::query()->sole();
+        $this->stockIn($unit);
 
         $this->tagUnit($unit)->assertOk();
         $this->act($unit, 'crossmatch')->assertOk();
@@ -342,7 +344,7 @@ class DirectDistributionTest extends TestCase
             ["DD-{$delivery->id}", "DD-{$delivery->id}-2", "DD-{$delivery->id}-3"],
             BloodUnit::query()->pluck('id')->all()
         );
-        $this->assertSame(3, HospitalUnit::query()->where('status', HospitalUnitStatus::Available)->count());
+        $this->assertSame(3, HospitalUnit::query()->where('status', HospitalUnitStatus::Received)->count());
 
         $this->actingAs($this->requester)
             ->getJson('/api/hospital/inventory?search=PRC-920923323')
@@ -362,6 +364,7 @@ class DirectDistributionTest extends TestCase
     {
         $this->receiveBatch('PRC-1200', 2)->assertCreated();
         $unit = HospitalUnit::query()->orderBy('id')->firstOrFail();
+        $this->stockIn($unit);
 
         $this->tagUnit($unit)->assertOk()->assertJsonPath('unit.bag_number', 'PRC-1200 #1');
     }
@@ -446,6 +449,16 @@ class DirectDistributionTest extends TestCase
      *
      * @param  array<string, mixed>  $overrides
      */
+    /**
+     * Stock a received bag in, as inventory staff do before it can be tagged.
+     */
+    private function stockIn(HospitalUnit $unit): void
+    {
+        $this->actingAs($this->requester)
+            ->postJson('/api/hospital/inventory/stock-in', ['units' => [['unit_id' => $unit->unit_id]]])
+            ->assertOk();
+    }
+
     private function receive(string $number, array $overrides = []): TestResponse
     {
         return $this->actingAs($this->requester)

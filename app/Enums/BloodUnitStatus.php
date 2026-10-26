@@ -35,6 +35,23 @@ enum BloodUnitStatus: string
     }
 
     /**
+     * The statuses of a unit that has left quarantine: released on both
+     * clearances, whatever became of it since. Once a donation has one, the
+     * test results that released it can no longer be corrected.
+     *
+     * @return array<int, string>
+     */
+    public static function leftQuarantineValues(): array
+    {
+        return [
+            self::Available->value,
+            self::Reserved->value,
+            self::Issued->value,
+            self::Expired->value,
+        ];
+    }
+
+    /**
      * Get the human-readable label shown in inventory filters.
      */
     public function label(): string

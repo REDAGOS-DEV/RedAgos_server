@@ -4,6 +4,7 @@ namespace App\Service;
 
 use App\Enums\AllocationStatus;
 use App\Enums\BloodRequestStatus;
+use App\Enums\BloodUnitStatus;
 use App\Enums\LineClosureReason;
 use App\Enums\RequestEventType;
 use App\Models\BloodRequest;
@@ -17,6 +18,7 @@ use App\Support\OperationalDay;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 use RuntimeException;
 
 /**
@@ -62,13 +64,21 @@ class RequestAllocationService
      * What a line still needs is its allocatable quantity: asked for, less what
      * is already held or released, and nothing at all once the line is closed.
      *
+     * Given $unitIds, exactly those units are held instead: the bags staff
+     * picked from the shelf (project owner, 2026-10-19). Each must be one the
+     * walk could have chosen — this centre's, available, in date, held for
+     * nobody, and of a line's blood type and component with room left on it —
+     * and is refused by name otherwise. Without them, the oldest-dated units
+     * are taken, as before.
+     *
+     * @param  array<int, string>|null  $unitIds
      * @return array<string, mixed>
      */
-    public function allocate(User $user, int $requestId, ?int $wanted = null, ?int $requestItemId = null): array
+    public function allocate(User $user, int $requestId, ?int $wanted = null, ?int $requestItemId = null, ?array $unitIds = null): array
     {
         $facilityId = $this->requireFacilityId($user);
 
-        $result = DB::transaction(function () use ($user, $requestId, $facilityId, $wanted, $requestItemId): array {
+        $result = DB::transaction(function () use ($user, $requestId, $facilityId, $wanted, $requestItemId, $unitIds): array {
             $request = $this->lockRequestForDecision($requestId, $facilityId);
             $from = $request->status;
 
@@ -93,36 +103,42 @@ class RequestAllocationService
             $taken = collect();
             $allocations = collect();
 
-            foreach ($lines as $line) {
-                if ($budget < 1) {
-                    break;
+            if ($unitIds !== null) {
+                [$taken, $allocations] = $this->takeChosenUnits($request, $lines, $figures, $unitIds, $facilityId, $user);
+            } else {
+                foreach ($lines as $line) {
+                    if ($budget < 1) {
+                        break;
+                    }
+
+                    $outstanding = (int) ($figures->get($line->id)['allocatable'] ?? 0);
+
+                    if ($outstanding < 1) {
+                        continue;
+                    }
+
+                    // The line's own blood type: a weekly request's lines each
+                    // restock a different one.
+                    $units = $this->inventoryRepository->lockAvailableUnitsFefo(
+                        $facilityId,
+                        (int) $line->blood_type_id,
+                        (int) $line->component_id,
+                        min($budget, $outstanding),
+                        OperationalDay::todayAsDate()
+                    );
+
+                    // An empty shelf for one component is not a failure of the
+                    // whole allocation: the next line may still be coverable, and
+                    // a partial hold is the honest answer.
+                    if ($units->isEmpty()) {
+                        continue;
+                    }
+
+                    $this->reserve($units);
+                    $allocations = $allocations->concat($this->recordHolds($request, $line, $units, $user));
+                    $taken = $taken->concat($units);
+                    $budget -= $units->count();
                 }
-
-                $outstanding = (int) ($figures->get($line->id)['allocatable'] ?? 0);
-
-                if ($outstanding < 1) {
-                    continue;
-                }
-
-                $units = $this->inventoryRepository->lockAvailableUnitsFefo(
-                    $facilityId,
-                    (int) $request->blood_type_id,
-                    (int) $line->component_id,
-                    min($budget, $outstanding),
-                    OperationalDay::todayAsDate()
-                );
-
-                // An empty shelf for one component is not a failure of the
-                // whole allocation: the next line may still be coverable, and
-                // a partial hold is the honest answer.
-                if ($units->isEmpty()) {
-                    continue;
-                }
-
-                $this->reserve($units);
-                $allocations = $allocations->concat($this->recordHolds($request, $line, $units, $user));
-                $taken = $taken->concat($units);
-                $budget -= $units->count();
             }
 
             if ($taken->isEmpty()) {
@@ -197,6 +213,64 @@ class RequestAllocationService
     }
 
     /**
+     * What staff may pick for each line of a request.
+     *
+     * The units the walk would take from — this centre's, available, in date,
+     * held for nobody, of the line's own blood type and component — listed
+     * first-expiring first, so the list opens in the order the walk would have
+     * chosen. Reading holds nothing: allocate() checks every pick again under
+     * a lock, so a unit taken meanwhile is refused by name.
+     *
+     * @return array<string, mixed>
+     */
+    public function candidates(User $user, int $requestId): array
+    {
+        $facilityId = $this->requireFacilityId($user);
+
+        $request = $this->bloodRequestRepository->findAddressedTo($requestId, $facilityId)
+            ?? throw $this->refuse(404, 'request_not_found', 'Blood request not found.');
+
+        $figures = $this->resolver->freshFigures($request);
+        $today = OperationalDay::todayAsDate();
+
+        $lines = $request->items()->with(['component', 'bloodType'])->orderBy('id')->get()
+            ->map(function (BloodRequestItem $line) use ($figures, $facilityId, $today): array {
+                $allocatable = (int) ($figures->get($line->id)['allocatable'] ?? 0);
+                $units = $allocatable < 1
+                    ? collect()
+                    : $this->inventoryRepository->candidateUnits($facilityId, (int) $line->blood_type_id, (int) $line->component_id, $today);
+
+                return [
+                    'request_item_id' => $line->id,
+                    'component' => [
+                        'id' => $line->component_id,
+                        'name' => $line->component?->name,
+                        'code' => $line->component?->labelCode(),
+                    ],
+                    'blood_type' => ['id' => $line->blood_type_id, 'code' => $line->bloodType?->code],
+                    'requested' => (int) $line->quantity,
+                    'allocatable' => $allocatable,
+                    'units' => $units->map(fn (BloodUnit $unit): array => [
+                        'id' => $unit->id,
+                        'expiry_date' => $unit->expiry_date?->toDateString(),
+                        'days_remaining' => $unit->expiry_date ? OperationalDay::daysUntil($unit->expiry_date) : null,
+                        'storage_location' => $unit->storage_location,
+                        'volume_ml' => $unit->volume_ml,
+                    ])->values()->all(),
+                ];
+            })
+            ->values()
+            ->all();
+
+        return [
+            'request_id' => $request->id,
+            'reference_number' => $request->reference_number,
+            'is_open' => ! $request->isClosed(),
+            'lines' => $lines,
+        ];
+    }
+
+    /**
      * Close the rest of one line that this facility cannot supply.
      *
      * The request keeps what it asked for. The remainder is recorded as
@@ -210,14 +284,27 @@ class RequestAllocationService
     {
         $facilityId = $this->requireFacilityId($user);
 
-        $request = DB::transaction(function () use ($user, $requestId, $itemId, $note, $facilityId): BloodRequest {
+        [$request, $closed] = DB::transaction(function () use ($user, $requestId, $itemId, $note, $facilityId): array {
             $request = $this->lockRequestForDecision($requestId, $facilityId);
+
+            // What is being closed, for the hospital's notice: read before the
+            // close, which takes the line's allocatable to nothing.
+            $item = $request->items()->with('component')->whereKey($itemId)->first();
+            $quantity = (int) ($this->resolver->freshFigures($request)->get($itemId)['allocatable'] ?? 0);
 
             $this->lineCloser->close($request, $itemId, LineClosureReason::Unavailable, $note, $user);
             $this->transfusionResolver->settleParentOf($request);
 
-            return $request;
+            return [$request, [
+                'component' => $item?->component?->name,
+                'quantity' => $quantity,
+                'note' => $note,
+            ]];
         });
+
+        // The hospital hears at once (project owner, 2026-10-19), so it can
+        // ask another facility for what this one cannot supply.
+        $this->notifier->requester($request, 'closed_short', $closed);
 
         return [
             'message' => 'The remaining quantity was closed as unavailable.',
@@ -390,6 +477,94 @@ class RequestAllocationService
         }
 
         return $request;
+    }
+
+    /**
+     * Hold the units staff picked, each against a line with room left for it.
+     *
+     * Refused whole, with a reason against each unit that cannot be held: a
+     * partial hold of a hand-picked set would leave staff guessing which bags
+     * went where.
+     *
+     * @param  Collection<int, BloodRequestItem>  $lines
+     * @param  Collection<int, array<string, mixed>>  $figures
+     * @param  array<int, string>  $unitIds
+     * @return array{0: Collection<int, BloodUnit>, 1: Collection<int, RequestAllocation>}
+     */
+    private function takeChosenUnits(BloodRequest $request, Collection $lines, Collection $figures, array $unitIds, int $facilityId, User $user): array
+    {
+        $lines->each(fn (BloodRequestItem $line) => $line->loadMissing(['component', 'bloodType']));
+
+        $today = OperationalDay::todayAsDate();
+        $units = $this->inventoryRepository->lockUnitsById($facilityId, $unitIds);
+        $claimed = array_flip($this->inventoryRepository->claimedUnitIds($unitIds));
+
+        $room = [];
+
+        foreach ($lines as $line) {
+            $room[$line->id] = (int) ($figures->get($line->id)['allocatable'] ?? 0);
+        }
+
+        $chosen = [];
+        $errors = [];
+
+        foreach (array_values($unitIds) as $index => $unitId) {
+            $unit = $units->get($unitId);
+            $field = "unit_ids.{$index}";
+
+            if ($unit === null) {
+                $errors[$field] = ["{$unitId} is not in this centre's stock."];
+
+                continue;
+            }
+
+            if ($unit->status !== BloodUnitStatus::Available || isset($claimed[$unitId]) || $unit->expiry_date->toDateString() < $today) {
+                $errors[$field] = ["{$unitId} is no longer available."];
+
+                continue;
+            }
+
+            // The same rule as the walk: the line's own blood type and
+            // component, never a compatible substitute.
+            $matching = $lines->filter(fn (BloodRequestItem $line): bool => (int) $line->blood_type_id === (int) $unit->blood_type_id
+                && (int) $line->component_id === (int) $unit->component_id);
+
+            if ($matching->isEmpty()) {
+                $errors[$field] = ["{$unitId} is not a blood type and component this request asks for."];
+
+                continue;
+            }
+
+            $line = $matching->first(fn (BloodRequestItem $candidate): bool => $room[$candidate->id] > 0);
+
+            if ($line === null) {
+                $first = $matching->first();
+                $errors[$field] = ["More {$first->component?->name} ({$first->bloodType?->code}) was picked than this request still needs."];
+
+                continue;
+            }
+
+            $room[$line->id]--;
+            $chosen[$line->id]['line'] = $line;
+            $chosen[$line->id]['units'][] = $unit;
+        }
+
+        if ($errors !== []) {
+            throw ValidationException::withMessages($errors);
+        }
+
+        $taken = collect();
+        $allocations = collect();
+
+        foreach ($chosen as $pick) {
+            $picked = collect($pick['units']);
+
+            $this->reserve($picked);
+            $allocations = $allocations->concat($this->recordHolds($request, $pick['line'], $picked, $user));
+            $taken = $taken->concat($picked);
+        }
+
+        return [$taken, $allocations];
     }
 
     /**

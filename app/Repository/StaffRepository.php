@@ -3,6 +3,7 @@
 namespace App\Repository;
 
 use App\Enums\AccountStatus;
+use App\Enums\ManagementLevel;
 use App\Models\User;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
@@ -46,15 +47,18 @@ class StaffRepository
             )
             ->when(
                 isset($filters['staff_role']),
-                fn (Builder $query): Builder => $query->where('staff_role', $filters['staff_role'])
+                // As the main role or any other they hold.
+                fn (Builder $query): Builder => $query->where(fn (Builder $q): Builder => $q
+                    ->where('staff_role', $filters['staff_role'])
+                    ->orWhereJsonContains('additional_staff_roles', $filters['staff_role']))
             )
             ->when(
                 isset($filters['account_status']),
                 fn (Builder $query): Builder => $query->where('account_status', $filters['account_status'])
             )
             ->when(
-                $filters['supervisors_only'] ?? false,
-                fn (Builder $query): Builder => $query->where('is_supervisor', true)
+                isset($filters['management_level']),
+                fn (Builder $query): Builder => $query->where('management_level', $filters['management_level'])
             )
             ->when(
                 isset($filters['search']),
@@ -76,19 +80,20 @@ class StaffRepository
     }
 
     /**
-     * Count the accounts at a facility that can actually exercise the management level.
+     * Count the Blood Center Admins at a facility who can actually manage its staff.
      *
-     * Soft-deleted and non-authenticating accounts do not count: an account
-     * that cannot sign in cannot manage anyone, so leaving one behind would be
-     * the same lockout the supervisor floor exists to prevent. Email
-     * verification is deliberately not part of this — it is a gate the holder
-     * can clear themselves, unlike suspension or deletion.
+     * Only the Admin level counts: a view-only Supervisor cannot manage
+     * anyone. Soft-deleted and non-authenticating accounts do not count
+     * either: an account that cannot sign in cannot manage anyone, so leaving
+     * one behind would be the same lockout the Admin floor exists to prevent.
+     * Email verification is deliberately not part of this — it is a gate the
+     * holder can clear themselves, unlike suspension or deletion.
      */
-    public function countActiveSupervisors(int $facilityId): int
+    public function countActiveAdmins(int $facilityId): int
     {
         return User::query()
             ->where('facility_id', $facilityId)
-            ->where('is_supervisor', true)
+            ->where('management_level', ManagementLevel::Admin->value)
             ->whereIn('account_status', $this->authenticatingStatuses())
             ->count();
     }
@@ -97,7 +102,7 @@ class StaffRepository
      * The account statuses that still permit signing in.
      *
      * Derived from the enum rather than hard-coded so a new status cannot be
-     * added without the supervisor floor noticing.
+     * added without the Admin floor noticing.
      *
      * @return array<int, string>
      */

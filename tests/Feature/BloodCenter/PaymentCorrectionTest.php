@@ -73,7 +73,7 @@ class PaymentCorrectionTest extends TestCase
         $this->supervisor = User::factory()->bloodCenterStaff($this->centre, StaffRole::BillingSupervisor)->create();
         $this->clerk = User::factory()->bloodCenterStaff($this->centre, StaffRole::BillingClerk)->create();
         $this->issuance = User::factory()->bloodCenterStaff($this->centre, StaffRole::InventoryControlOfficer)->create();
-        $this->centerAdmin = User::factory()->bloodCenterSupervisor($this->centre)->create();
+        $this->centerAdmin = User::factory()->bloodCenterAdmin($this->centre)->create();
         $this->requester = User::factory()->bloodBankStaff($this->hospital)->create();
 
         $this->bloodType = BloodType::firstOrCreate(['code' => 'O+'], ['label' => 'O+']);
@@ -112,7 +112,7 @@ class PaymentCorrectionTest extends TestCase
         $this->assertDatabaseHas('audit_logs', ['action' => 'correction.applied', 'auditable_id' => (string) $this->payment->id]);
     }
 
-    public function test_a_clerk_cannot_approve_and_a_supervisors_own_request_goes_to_the_center_admin(): void
+    public function test_a_clerk_cannot_approve_and_the_billing_supervisors_own_correction_applies_at_once(): void
     {
         $id = $this->file($this->clerk, $this->payment, $this->change(amount: 1000))->assertCreated()->json('data.id');
 
@@ -125,15 +125,10 @@ class PaymentCorrectionTest extends TestCase
 
         $this->actingAs($this->supervisor)->postJson("/api/blood-center/corrections/{$id}/reject", ['note' => 'Not needed.'])->assertOk();
 
-        $mine = $this->file($this->supervisor, $this->payment, $this->change(amount: 900))->assertCreated()->json('data.id');
-
-        $peer = User::factory()->bloodCenterStaff($this->centre, StaffRole::BillingSupervisor)->create();
-
-        $this->actingAs($this->supervisor)->postJson("/api/blood-center/corrections/{$mine}/approve")
-            ->assertStatus(409)->assertJsonPath('code', 'self_approval');
-        $this->actingAs($peer)->postJson("/api/blood-center/corrections/{$mine}/approve")
-            ->assertForbidden()->assertJsonPath('code', 'not_the_approver');
-        $this->actingAs($this->centerAdmin)->postJson("/api/blood-center/corrections/{$mine}/approve")->assertOk();
+        // Billing's head needs no other approval for their own correction.
+        $this->file($this->supervisor, $this->payment, $this->change(amount: 900))
+            ->assertCreated()
+            ->assertJsonPath('data.status', 'approved');
 
         $this->assertSame('900.00', $this->payment->refresh()->amount_paid);
     }
@@ -232,7 +227,7 @@ class PaymentCorrectionTest extends TestCase
 
     public function test_the_payments_are_read_only_behind_the_ability_to_record_them(): void
     {
-        $this->payment->delete();
+        $this->startWithoutPayments();
         $gcash = Payment::factory()->gcash('GC-SECRET-77')->create(['billing_id' => $this->billing->id]);
 
         $this->actingAs($this->clerk)
@@ -284,7 +279,7 @@ class PaymentCorrectionTest extends TestCase
 
     public function test_a_payment_is_settled_from_the_locked_statement_not_one_loaded_earlier(): void
     {
-        $this->payment->delete();
+        $this->startWithoutPayments();
         $this->billing->update(['total_amount' => 1500, 'status' => BillingStatus::Unpaid]);
 
         $stale = Billing::findOrFail($this->billing->id);
@@ -434,5 +429,18 @@ class PaymentCorrectionTest extends TestCase
             ->addressedTo($this->centre)
             ->forStock($this->bloodType, $this->component, 1)
             ->create();
+    }
+
+    /**
+     * Point the test at a request and statement of its own, with no payment on it yet.
+     *
+     * A payment is never deleted (add_ledger_triggers_to_payments_table), so a
+     * test that needs a statement without setUp's payment takes a fresh one
+     * rather than removing that payment.
+     */
+    private function startWithoutPayments(): void
+    {
+        $this->request = $this->requestForStock();
+        $this->billing = Billing::factory()->paid(1500)->create(['request_id' => $this->request->id]);
     }
 }

@@ -11,8 +11,9 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  *
  * The watcher is the representative who presented the request, not the
  * requester: the hospital blood bank stays the institutional party. The
- * verifier is the hospital staff member who confirmed the request by phone
- * before it was created — a walk-in is never entered on anything less.
+ * verifier is the hospital staff member who confirmed the request by phone;
+ * only walk-ins recorded before 2026-10-19 have one, since the project owner
+ * removed the confirmation step that day.
  *
  * None of these values is written to audit_logs, which carries identifiers
  * only.

@@ -10,6 +10,7 @@ use App\Models\BloodType;
 use App\Models\Facility;
 use App\Models\User;
 use App\Models\WeeklyRequest;
+use App\Service\BloodRequestFormService;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Tests\Feature\BloodRequest\Concerns\BuildsFulfilmentScenarios;
@@ -20,10 +21,10 @@ use Tests\TestCase;
  * Sending a weekly request, and the request days that govern it.
  *
  * The rules worth naming: a weekly request goes only on one of the hospital's
- * request days for that centre, at most once a day; it becomes one ordinary
- * replenishment request per blood type, each routine; and the status says,
- * per centre, whether today's request is due, sent, or which recent request
- * days went without one.
+ * request days for that centre, at most once a day; it becomes one routine
+ * replenishment request, whatever blood types it restocks, with each line
+ * naming its own; and the status says, per centre, whether today's request is
+ * due, sent, or which recent request days went without one.
  */
 class WeeklyRequestTest extends TestCase
 {
@@ -40,7 +41,7 @@ class WeeklyRequestTest extends TestCase
         $this->travelToMonday();
     }
 
-    public function test_a_weekly_request_sends_one_routine_replenishment_per_blood_type(): void
+    public function test_a_weekly_request_is_one_routine_replenishment_across_its_blood_types(): void
     {
         $this->scheduleWith($this->centre);
 
@@ -56,32 +57,32 @@ class WeeklyRequestTest extends TestCase
             ->assertJsonPath('weekly_request.target_facility.id', $this->centre->id)
             ->assertJsonPath('weekly_request.status', 'submitted')
             ->assertJsonPath('weekly_request.totals.requested', 9)
-            ->assertJsonCount(2, 'weekly_request.requests');
+            ->assertJsonCount(1, 'weekly_request.requests')
+            ->assertJsonPath('weekly_request.requests.0.reference_number', "RQ-{$this->hospital->id}-0001")
+            ->assertJsonPath('weekly_request.requests.0.blood_type.id', null)
+            ->assertJsonPath('weekly_request.requests.0.blood_types', ['A+', 'O+'])
+            ->assertJsonCount(3, 'weekly_request.requests.0.items');
 
         $weekly = WeeklyRequest::query()->sole();
-        $requests = BloodRequest::query()->where('weekly_request_id', $weekly->id)->orderBy('blood_type_id')->get();
+        $request = BloodRequest::query()->where('weekly_request_id', $weekly->id)->sole();
 
-        $this->assertCount(2, $requests);
+        $this->assertSame(RequestPurpose::Replenishment, $request->request_purpose);
+        $this->assertSame(UrgencyLevel::Routine, $request->urgency_level);
+        $this->assertSame(BloodRequestStatus::Pending, $request->status);
+        $this->assertSame($this->centre->id, $request->target_facility_id);
+        $this->assertSame($this->requester->id, $request->requested_by);
+        $this->assertSame(9, $request->quantity);
 
-        foreach ($requests as $request) {
-            $this->assertSame(RequestPurpose::Replenishment, $request->request_purpose);
-            $this->assertSame(UrgencyLevel::Routine, $request->urgency_level);
-            $this->assertSame(BloodRequestStatus::Pending, $request->status);
-            $this->assertSame($this->centre->id, $request->target_facility_id);
-            $this->assertSame($this->requester->id, $request->requested_by);
-        }
+        // The lines differ in blood type, so the request names none of its own.
+        $this->assertNull($request->blood_type_id);
 
-        $oPositive = $requests->firstWhere('blood_type_id', $this->bloodType->id);
-        $this->assertSame([$this->prbc->id => 4, $this->ffp->id => 2], $oPositive->items()->orderBy('id')->pluck('quantity', 'component_id')->all());
-        $this->assertSame(
-            [$this->prbc->id => 3],
-            $requests->firstWhere('blood_type_id', $this->aPositive->id)->items()->pluck('quantity', 'component_id')->all()
-        );
-
-        // Each blood type takes its own number in the hospital's one RQ sequence.
         $this->assertEqualsCanonicalizing(
-            ["RQ-{$this->hospital->id}-0001", "RQ-{$this->hospital->id}-0002"],
-            $requests->pluck('reference_number')->all()
+            [
+                [$this->bloodType->id, $this->prbc->id, 4],
+                [$this->bloodType->id, $this->ffp->id, 2],
+                [$this->aPositive->id, $this->prbc->id, 3],
+            ],
+            $request->items->map(fn ($item): array => [$item->blood_type_id, $item->component_id, $item->quantity])->all()
         );
 
         $this->assertDatabaseHas('audit_logs', [
@@ -91,7 +92,49 @@ class WeeklyRequestTest extends TestCase
         ]);
     }
 
-    public function test_the_blood_requests_name_their_weekly_request(): void
+    public function test_a_weekly_request_of_one_blood_type_names_it_on_the_request(): void
+    {
+        $this->scheduleWith($this->centre);
+        $weekly = $this->sentWeekly([[$this->aPositive, $this->prbc, 2], [$this->aPositive, $this->ffp, 1]]);
+        $request = BloodRequest::query()->where('weekly_request_id', $weekly->id)->sole();
+
+        $this->assertSame($this->aPositive->id, $request->blood_type_id);
+
+        $this->actingAs($this->issuance)
+            ->getJson("/api/blood-center/blood-requests/{$request->id}")
+            ->assertOk()
+            ->assertJsonPath('request.blood_type.code', 'A+')
+            ->assertJsonPath('request.blood_types', ['A+'])
+            ->assertJsonPath('request.items.0.blood_type.code', 'A+');
+    }
+
+    public function test_the_request_form_lists_each_component_by_blood_type(): void
+    {
+        $this->scheduleWith($this->centre);
+        $weekly = $this->sentWeekly([
+            [$this->bloodType, $this->prbc, 4],
+            [$this->aPositive, $this->prbc, 3],
+            [$this->bloodType, $this->ffp, 2],
+        ]);
+        $request = BloodRequest::query()->where('weekly_request_id', $weekly->id)->sole();
+
+        $data = app(BloodRequestFormService::class)->viewData($request);
+        $blocks = collect($data['components'])->keyBy('name');
+
+        // The form's one Blood Type box cannot hold two, so each component names its own.
+        $this->assertNull($data['bloodGroup']);
+        $this->assertSame('A+, O+', $data['bloodTypes']);
+        $this->assertSame(7, $blocks['Packed RBC']['quantity']);
+        $this->assertSame('A+ 3, O+ 4', $blocks['Packed RBC']['by_blood_type']);
+        $this->assertSame('O+ 2', $blocks['Fresh Frozen Plasma']['by_blood_type']);
+
+        $this->actingAs($this->issuance)
+            ->get("/api/blood-center/blood-requests/{$request->id}/form")
+            ->assertOk()
+            ->assertHeader('content-type', 'application/pdf');
+    }
+
+    public function test_the_blood_request_names_its_weekly_request(): void
     {
         $this->scheduleWith($this->centre);
         $weekly = $this->sentWeekly([[$this->bloodType, $this->prbc, 2]]);
@@ -206,8 +249,10 @@ class WeeklyRequestTest extends TestCase
             ->assertStatus(422)
             ->assertJsonValidationErrors(['lines.1.component_id']);
 
-        // The same component in another blood type is a different line.
+        // The same component in another blood type is a different line of the same request.
         $this->sendWeekly([[$this->bloodType, $this->prbc, 2], [$this->aPositive, $this->prbc, 1]])->assertCreated();
+
+        $this->assertSame(2, BloodRequest::query()->sole()->items()->where('component_id', $this->prbc->id)->count());
     }
 
     public function test_a_weekly_request_cannot_go_to_another_blood_bank(): void
@@ -219,13 +264,14 @@ class WeeklyRequestTest extends TestCase
             ->assertJsonValidationErrors(['target_facility_id']);
     }
 
-    public function test_the_centre_is_told_of_each_blood_request(): void
+    public function test_the_centre_is_told_once_of_the_whole_order(): void
     {
         $this->scheduleWith($this->centre);
 
         $this->sendWeekly([[$this->bloodType, $this->prbc, 2], [$this->aPositive, $this->prbc, 1]])->assertCreated();
 
-        $this->assertSame(2, $this->issuance->notifications()->count());
+        $this->assertSame(1, $this->issuance->notifications()->count());
+        $this->assertStringContainsString('3 unit(s) of A+, O+', $this->issuance->notifications()->sole()->data['desc']);
     }
 
     public function test_a_blood_centre_account_cannot_send_one(): void

@@ -16,6 +16,7 @@ use App\Models\Facility;
 use App\Models\TransfusionRequest;
 use App\Models\User;
 use App\Repository\BloodRequestRepository;
+use App\Repository\FacilityRepository;
 use App\Repository\TransfusionRequestRepository;
 use App\Support\RequestFormReferenceData;
 use Illuminate\Database\QueryException;
@@ -28,10 +29,10 @@ use Illuminate\Validation\ValidationException;
  * A Patient Transfusion request that a watcher brought straight to a blood centre.
  *
  * The watcher did not go through the hospital blood bank first, so there is no
- * portal request. Issuance staff phone the hospital blood bank and, only if the
- * hospital confirms the request, record it here on the hospital's behalf. While
- * they are on the call nothing is saved; a call the hospital does not confirm
- * leaves no record at all.
+ * portal request. Issuance staff record it here on the hospital's behalf. Until
+ * 2026-10-19 they first phoned the hospital and recorded only a request the
+ * hospital confirmed; the project owner removed that step, so a walk-in is now
+ * recorded from what the watcher brings, and older ones keep their confirmation.
  *
  * Three things are fixed rather than taken from input. The requesting facility
  * is the patient's hospital, which must be a registered blood bank — it is the
@@ -43,7 +44,8 @@ use Illuminate\Validation\ValidationException;
  * Transfusion Request in the hospital's PTR sequence, with one facility
  * allocation — addressed to this centre, for the whole need — in its RQ
  * sequence. The walk-in row sits on that allocation, recording who presented
- * it and who at the hospital confirmed it. The hospital sees the requirement
+ * it (and, on one recorded before 2026-10-19, who at the hospital confirmed
+ * it). The hospital sees the requirement
  * in its own list and may ask other centres for whatever this one cannot
  * supply; and if the watcher carries the rest to another centre, that centre
  * adds its own allocation to the same requirement ("continue").
@@ -60,7 +62,8 @@ class WalkInRequestService
         private readonly TransfusionAllocationWriter $writer,
         private readonly BloodRequestHistory $history,
         private readonly BloodRequestNotifier $notifier,
-        private readonly AuditLogger $auditLogger
+        private readonly AuditLogger $auditLogger,
+        private readonly FacilityRepository $facilityRepository
     ) {}
 
     /**
@@ -81,6 +84,8 @@ class WalkInRequestService
                     'name' => $hospital->name,
                     'address' => $hospital->address,
                     'phone' => $hospital->phone,
+                    // False for a hospital known only from an earlier walk-in.
+                    'registered' => $hospital->status !== FacilityStatus::Unregistered,
                 ])
                 ->values()
                 ->all(),
@@ -110,9 +115,10 @@ class WalkInRequestService
     public function findDuplicates(User $user, array $criteria): array
     {
         $centreId = $this->requireFacilityId($user);
-        $hospital = $this->requireHospital((int) $criteria['hospital_id']);
+        // A typed name nobody has used before has no requests to find.
+        $hospital = $this->resolveHospital($criteria, create: false);
 
-        $matches = $this->classify(
+        $matches = $hospital === null ? [] : $this->classify(
             $centreId,
             $this->transfusionRepository->patientMatches($hospital->id, $criteria)
         );
@@ -125,7 +131,7 @@ class WalkInRequestService
     }
 
     /**
-     * Record a walk-in the hospital has confirmed by phone.
+     * Record a walk-in a watcher brought to the counter.
      *
      * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
@@ -133,7 +139,7 @@ class WalkInRequestService
     public function record(User $user, array $payload): array
     {
         $centreId = $this->requireFacilityId($user);
-        $hospital = $this->requireHospital((int) $payload['hospital_id']);
+        $hospital = $this->resolveHospital($payload, create: true);
 
         foreach (range(1, self::REFERENCE_ATTEMPTS) as $attempt) {
             try {
@@ -179,9 +185,7 @@ class WalkInRequestService
 
         $continuing = ! empty($payload['transfusion_request_id']);
         $acknowledgement = trim((string) ($payload['duplicate_acknowledgement'] ?? ''));
-        $verification = $payload['verification'];
         $centreName = Facility::query()->whereKey($centreId)->value('name') ?? 'A blood centre';
-        $confirmation = "Confirmed by phone with {$verification['verifier_name']} ({$verification['verifier_position']}) of {$hospital->name}.";
 
         if ($continuing) {
             $requirement = $this->transfusionRepository->lockRaisedBy((int) $payload['transfusion_request_id'], $hospital->id)
@@ -231,7 +235,7 @@ class WalkInRequestService
         }
 
         if ($requirement === null) {
-            $requirement = $this->createRequirement($user, $hospital, $payload, $centreName, $confirmation);
+            $requirement = $this->createRequirement($user, $hospital, $payload, $centreName);
             $lines = array_map(fn (array $item): array => [
                 'component_id' => (int) $item['component_id'],
                 'quantity' => (int) $item['quantity'],
@@ -258,7 +262,7 @@ class WalkInRequestService
             $user,
             RequestSource::BloodCenterWalkIn,
             RequestEventType::WalkInRecorded,
-            $confirmation.($continuing ? " Added to {$requirement->reference_number}." : ''),
+            "Brought in by a watcher at {$centreName} for {$hospital->name}.".($continuing ? " Added to {$requirement->reference_number}." : ''),
         );
 
         $representative = $payload['representative'];
@@ -274,12 +278,8 @@ class WalkInRequestService
             'attending_physician' => $payload['attending_physician'] ?? null,
             'patient_ward' => $payload['patient_ward'] ?? null,
             'patient_record_number' => $payload['patient_record_number'] ?? null,
-            'verifier_name' => $verification['verifier_name'],
-            'verifier_position' => $verification['verifier_position'],
-            'verifier_contact' => $verification['verifier_contact'],
-            'verified_at' => $verification['verified_at'],
-            'verification_recorded_by' => $user->id,
-            'verification_notes' => $verification['notes'] ?? null,
+            // No phone confirmation is taken any more (project owner,
+            // 2026-10-19); the verifier columns stay empty.
             'duplicate_acknowledgement' => $acknowledgement === '' ? null : $acknowledgement,
         ]);
 
@@ -291,7 +291,7 @@ class WalkInRequestService
                 RequestEventType::AllocationsAdded,
                 $user,
                 $from,
-                "Walk-in at {$centreName}: asked for {$allocation->quantity} more unit(s). {$confirmation}",
+                "Walk-in at {$centreName}: asked for {$allocation->quantity} more unit(s).",
                 ['allocations' => [$allocation->reference_number]],
             );
         }
@@ -316,13 +316,12 @@ class WalkInRequestService
     /**
      * Record the patient's requirement a walk-in brought to the counter.
      *
-     * The hospital confirmed the need on the phone. Nobody at the hospital
-     * keyed it in, so no requester is named; the centre staff member who did
-     * is the recorder.
+     * Nobody at the hospital keyed it in, so no requester is named; the centre
+     * staff member who did is the recorder.
      *
      * @param  array<string, mixed>  $payload
      */
-    private function createRequirement(User $user, Facility $hospital, array $payload, string $centreName, string $confirmation): TransfusionRequest
+    private function createRequirement(User $user, Facility $hospital, array $payload, string $centreName): TransfusionRequest
     {
         $requirement = TransfusionRequest::query()->create([
             'reference_number' => $this->transfusionRepository->nextReference($hospital->id),
@@ -352,7 +351,7 @@ class WalkInRequestService
             RequestEventType::TransfusionCreated,
             $user,
             null,
-            "Walk-in at {$centreName}. {$confirmation}",
+            "Walk-in at {$centreName}.",
         );
 
         return $requirement;
@@ -468,19 +467,56 @@ class WalkInRequestService
      */
     private function eligibleHospitals(): Collection
     {
+        // Registered ones, and those a centre already named on a walk-in, so a
+        // watcher's continuation at another centre finds the same hospital.
         return Facility::query()
-            ->approved()
+            ->whereIn('status', [FacilityStatus::Approved->value, FacilityStatus::Unregistered->value])
             ->whereHas('facilityType', fn ($query) => $query->where('name', FacilityTypeName::BloodBank->value))
             ->orderBy('name')
             ->get();
     }
 
     /**
-     * Resolve the patient's hospital, refusing anything but a registered blood bank.
+     * The patient's hospital: the one chosen from the list, or the one a typed
+     * name means (project owner, 2026-10-19, for a hospital not on RedAgos).
      *
-     * The hospital is the institutional party the request belongs to, and the
-     * one that confirmed it by phone. A facility that is not an approved
-     * hospital blood bank cannot be either.
+     * A typed name is matched, ignoring case and spacing, to a registered
+     * hospital first and then to one a centre already named. Recording a
+     * walk-in creates the unregistered hospital when there is none; looking
+     * for duplicates never does, and gets null.
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    private function resolveHospital(array $payload, bool $create): ?Facility
+    {
+        if (! empty($payload['hospital_id'])) {
+            return $this->requireHospital((int) $payload['hospital_id']);
+        }
+
+        $name = trim((string) ($payload['hospital_name'] ?? ''));
+
+        if ($name === '') {
+            throw ValidationException::withMessages([
+                'hospital_id' => ["Choose the patient's hospital blood bank, or type its name."],
+            ]);
+        }
+
+        $known = $this->facilityRepository->findWalkInHospitalByName($name);
+
+        if ($known !== null || ! $create) {
+            return $known;
+        }
+
+        return $this->facilityRepository->createUnregisteredBloodBank($name);
+    }
+
+    /**
+     * Resolve the patient's hospital, refusing anything but a hospital blood
+     * bank that is registered or was named on an earlier walk-in.
+     *
+     * The hospital is the institutional party the request belongs to: its
+     * requirement, its notices and its receipt of the units. A facility that
+     * is not an approved hospital blood bank cannot be that party.
      */
     private function requireHospital(int $hospitalId): Facility
     {
@@ -489,7 +525,7 @@ class WalkInRequestService
         if (
             ! $hospital
             || $hospital->facilityType?->name !== FacilityTypeName::BloodBank->value
-            || $hospital->status !== FacilityStatus::Approved
+            || ! in_array($hospital->status, [FacilityStatus::Approved, FacilityStatus::Unregistered], true)
         ) {
             throw ValidationException::withMessages([
                 'hospital_id' => ['Choose a registered hospital blood bank.'],

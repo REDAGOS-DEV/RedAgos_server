@@ -14,7 +14,8 @@ use Illuminate\Validation\Rule;
  * a walk-in carries the same DOH form, ticked the same way. Everything else
  * differs: the hospital is named rather than taken from the caller, the purpose
  * is fixed, and the request cannot be saved without the watcher who presented
- * it and the hospital staff member who confirmed it by phone.
+ * it. The hospital's phone confirmation is no longer asked for (project owner,
+ * 2026-10-19).
  *
  * A continuation names the Patient Transfusion Request it adds this centre's
  * share to and, per line, the requirement line the share answers. Patient,
@@ -32,7 +33,10 @@ class StoreWalkInBloodRequestRequest extends StoreBloodRequestRequest
         $unlessContinuing = 'required_without:transfusion_request_id';
 
         return [
-            'hospital_id' => ['required', 'integer', 'exists:facilities,id'],
+            // The hospital chosen from the list, or the name of one not on
+            // RedAgos (project owner, 2026-10-19). One or the other.
+            'hospital_id' => ['required_without:hospital_name', 'nullable', 'integer', 'exists:facilities,id'],
+            'hospital_name' => ['required_without:hospital_id', 'nullable', 'string', 'max:150'],
             'transfusion_request_id' => ['nullable', 'integer', 'exists:transfusion_requests,id'],
             'urgency_level' => ['required', Rule::in(UrgencyLevel::values())],
 
@@ -64,18 +68,6 @@ class StoreWalkInBloodRequestRequest extends StoreBloodRequestRequest
             'representative.id_type' => ['nullable', Rule::in(ValidIdType::values())],
             'representative.id_number' => ['nullable', 'required_with:representative.id_type', 'string', 'max:50'],
 
-            // The hospital's confirmation. A walk-in exists only once the
-            // hospital has said yes, so `confirmed` must be true and the person
-            // who said it must be named.
-            'verification' => ['required', 'array'],
-            'verification.confirmed' => ['accepted'],
-            'verification.verifier_name' => ['required', 'string', 'max:150'],
-            'verification.verifier_position' => ['required', 'string', 'max:100'],
-            'verification.verifier_contact' => ['required', 'string', 'max:30'],
-            // A few minutes' grace for a counter PC whose clock runs ahead.
-            'verification.verified_at' => ['required', 'date', 'before_or_equal:+5 minutes'],
-            'verification.notes' => ['nullable', 'string', 'max:500'],
-
             'duplicate_acknowledgement' => ['nullable', 'string', 'min:5', 'max:255'],
         ];
     }
@@ -87,7 +79,8 @@ class StoreWalkInBloodRequestRequest extends StoreBloodRequestRequest
     {
         return [
             ...parent::messages(),
-            'hospital_id.required' => "Choose the patient's hospital blood bank.",
+            'hospital_id.required_without' => "Choose the patient's hospital blood bank, or type its name.",
+            'hospital_name.required_without' => "Choose the patient's hospital blood bank, or type its name.",
             'patient_surname.required_without' => 'Enter the patient surname.',
             'patient_first_name.required_without' => 'Enter the patient first name.',
             'patient_age.required_without' => 'Enter the patient age.',
@@ -100,12 +93,6 @@ class StoreWalkInBloodRequestRequest extends StoreBloodRequestRequest
             'representative.relationship.required' => 'Enter how the watcher is related to the patient.',
             'representative.contact.required' => "Enter the watcher's contact number.",
             'representative.id_number.required_with' => 'Enter the ID number of the ID presented.',
-            'verification.confirmed.accepted' => 'A walk-in request can only be recorded once the hospital blood bank has confirmed it.',
-            'verification.verifier_name.required' => 'Enter the name of the hospital staff member who confirmed the request.',
-            'verification.verifier_position.required' => 'Enter their position.',
-            'verification.verifier_contact.required' => 'Enter the number you called.',
-            'verification.verified_at.required' => 'Enter when the hospital confirmed the request.',
-            'verification.verified_at.before_or_equal' => 'The confirmation cannot be in the future.',
             'duplicate_acknowledgement.min' => 'Say why a separate request is needed.',
         ];
     }

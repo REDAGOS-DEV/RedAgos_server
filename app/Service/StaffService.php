@@ -4,6 +4,7 @@ namespace App\Service;
 
 use App\Enums\AccountStatus;
 use App\Enums\Department;
+use App\Enums\ManagementLevel;
 use App\Enums\RoleName;
 use App\Enums\StaffPrivilege;
 use App\Enums\StaffRole;
@@ -22,7 +23,7 @@ use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 /**
- * Roster management for one blood centre, performed by its supervisor.
+ * Roster management for one blood centre, performed by its Blood Center Admin.
  *
  * Every method resolves the facility from the authenticated caller and scopes
  * its queries to it. can:staff.manage says the caller may manage staff; it says
@@ -75,19 +76,30 @@ class StaffService
     public function create(User $actor, array $payload): array
     {
         $facility = $this->requireFacility($actor);
-        $isSupervisor = (bool) ($payload['is_supervisor'] ?? false);
+        $level = isset($payload['management_level']) ? ManagementLevel::from($payload['management_level']) : null;
         $role = isset($payload['staff_role']) ? StaffRole::from($payload['staff_role']) : null;
-        $customRole = $role === null && filled($payload['custom_role'] ?? null) ? trim((string) $payload['custom_role']) : null;
+        $additional = $this->rolesFrom($payload['additional_staff_roles'] ?? []);
+
+        // Several roles but no main one: the first is the main one.
+        if ($role === null && $additional !== []) {
+            $role = array_shift($additional);
+        }
+
+        $additional = array_values(array_filter($additional, fn (StaffRole $r): bool => $r !== $role));
+
+        // Beside a predefined role or in place of one, since 2026-10-17.
+        $customRole = filled($payload['custom_role'] ?? null) ? trim((string) $payload['custom_role']) : null;
         $department = $role?->department()
             ?? (isset($payload['department']) ? Department::from($payload['department']) : null);
         $privileges = isset($payload['staff_privileges'])
             ? array_values(array_unique($payload['staff_privileges']))
             : null;
 
-        $this->guardRoleAssigned($role, $customRole, $department, $isSupervisor);
+        $this->guardRoleAssigned($role, $customRole, $department, $level !== null);
+        $this->guardOneDepartment($additional, $department);
 
         try {
-            $staff = DB::transaction(function () use ($facility, $payload, $role, $isSupervisor, $department, $customRole, $privileges): User {
+            $staff = DB::transaction(function () use ($facility, $payload, $role, $additional, $level, $department, $customRole, $privileges): User {
                 $created = $this->bloodCenterRepository->createStaffUser([
                     'uuid' => (string) Str::uuid(),
                     'first_name' => trim($payload['first_name']),
@@ -99,8 +111,8 @@ class StaffService
                     'password' => Hash::make($payload['password']),
                     'account_status' => AccountStatus::PendingVerification,
                     'employee_id' => $payload['employee_id'] ?? null,
-                    'position' => isset($payload['position']) ? trim((string) $payload['position']) : null,
-                ], $facility, $role, $isSupervisor, $department, $customRole, $privileges);
+                    'credentials' => filled($payload['credentials'] ?? null) ? trim((string) $payload['credentials']) : null,
+                ], $facility, $role, $level, $department, $customRole, $privileges, $additional);
 
                 // The facility is necessarily approved — staff.manage sits behind
                 // facility.operational — so the role is granted immediately.
@@ -121,10 +133,11 @@ class StaffService
         $this->auditLogger->record($actor, 'staff.created', $staff, [
             'facility_id' => $facility->id,
             'staff_role' => $role?->value,
+            'additional_staff_roles' => array_map(fn (StaffRole $r): string => $r->value, $additional),
             'custom_role' => $customRole,
             'department' => $department?->value,
             'privileges' => $privileges,
-            'is_supervisor' => $isSupervisor,
+            'management_level' => $level?->value,
         ]);
 
         return [
@@ -145,25 +158,25 @@ class StaffService
         $staff = $this->findOrFail($actor, $uuid);
 
         $before = [
-            'staff_role' => $staff->staff_role?->value,
+            'roles' => $this->roleValues($staff),
             'role_label' => $staff->roleLabel(),
             'department' => $staff->department?->value,
             'privileges' => $this->privilegeValues($staff),
-            'is_supervisor' => $staff->is_supervisor,
+            'management_level' => $staff->management_level?->value,
             'account_status' => $staff->account_status?->value,
         ];
 
         try {
             $staff = DB::transaction(function () use ($facility, $staff, $payload): User {
                 // Serialise on the facility row before touching anything that
-                // could reduce the supervisor count. Two concurrent demotions
-                // would otherwise both read "two supervisors" and both proceed.
+                // could reduce the Admin count. Two concurrent demotions would
+                // otherwise both read "two Admins" and both proceed.
                 $this->bloodCenterRepository->lockFacility($facility->id);
 
                 $this->applyUpdate($staff, $payload);
                 $staff->save();
 
-                $this->guardSupervisorFloor($facility->id);
+                $this->guardAdminFloor($facility->id);
 
                 return $staff;
             });
@@ -203,7 +216,7 @@ class StaffService
 
             $staff->delete();
 
-            $this->guardSupervisorFloor($facility->id);
+            $this->guardAdminFloor($facility->id);
         });
 
         $staff->tokens()->delete();
@@ -269,8 +282,8 @@ class StaffService
             $staff->employee_id = $payload['employee_id'];
         }
 
-        if (array_key_exists('position', $payload)) {
-            $staff->position = $payload['position'] === null ? null : trim((string) $payload['position']);
+        if (array_key_exists('credentials', $payload)) {
+            $staff->credentials = filled($payload['credentials']) ? trim((string) $payload['credentials']) : null;
         }
 
         if (array_key_exists('staff_role', $payload)) {
@@ -279,14 +292,30 @@ class StaffService
                 : StaffRole::from($payload['staff_role']);
         }
 
-        if (array_key_exists('custom_role', $payload)) {
-            $staff->custom_role = blank($payload['custom_role']) ? null : trim((string) $payload['custom_role']);
+        if (array_key_exists('additional_staff_roles', $payload)) {
+            $staff->additional_staff_roles = array_map(
+                fn (StaffRole $role): string => $role->value,
+                $this->rolesFrom($payload['additional_staff_roles'] ?? [])
+            );
         }
 
-        // A predefined role and a custom one never stand together.
-        if ($staff->staff_role !== null) {
+        if (array_key_exists('custom_role', $payload)) {
+            $staff->custom_role = blank($payload['custom_role']) ? null : trim((string) $payload['custom_role']);
+        } elseif (array_key_exists('staff_role', $payload) && $staff->staff_role !== null) {
+            // A caller that sets the main role and says nothing of a custom
+            // one is replacing it, as before several roles were possible.
             $staff->custom_role = null;
         }
+
+        // Several roles but no main one: the first is the main one.
+        $additional = $this->rolesFrom($staff->additional_staff_roles ?? []);
+
+        if ($staff->staff_role === null && $additional !== []) {
+            $staff->staff_role = array_shift($additional);
+        }
+
+        $additional = array_values(array_filter($additional, fn (StaffRole $r): bool => $r !== $staff->staff_role));
+        $staff->additional_staff_roles = array_map(fn (StaffRole $r): string => $r->value, $additional) ?: null;
 
         if (array_key_exists('department', $payload)) {
             $staff->department = $payload['department'] === null ? null : Department::from($payload['department']);
@@ -296,8 +325,10 @@ class StaffService
             $staff->staff_privileges = array_values(array_unique($payload['staff_privileges']));
         }
 
-        if (array_key_exists('is_supervisor', $payload)) {
-            $staff->is_supervisor = (bool) $payload['is_supervisor'];
+        if (array_key_exists('management_level', $payload)) {
+            $staff->management_level = $payload['management_level'] === null
+                ? null
+                : ManagementLevel::from($payload['management_level']);
         }
 
         if (array_key_exists('account_status', $payload)) {
@@ -305,14 +336,16 @@ class StaffService
         }
 
         // Checked against the resulting state rather than the payload, because a
-        // partial update can clear a role, demote a supervisor, or do both in
-        // one request.
+        // partial update can clear a role, remove a level, or do both in one
+        // request.
         $this->guardRoleAssigned(
             $staff->staff_role,
             $staff->custom_role,
             $staff->staff_role?->department() ?? $staff->department,
-            $staff->is_supervisor
+            $staff->management_level !== null
         );
+
+        $this->guardOneDepartment($additional, $staff->staff_role?->department() ?? $staff->department);
     }
 
     /**
@@ -329,8 +362,9 @@ class StaffService
         if ($before['role_label'] !== $staff->roleLabel() || $before['department'] !== $staff->department?->value) {
             $this->auditLogger->record($actor, 'staff.role_changed', $staff, [
                 ...$context,
-                'from' => $before['staff_role'] ?? $before['role_label'],
-                'to' => $staff->staff_role?->value ?? $staff->roleLabel(),
+                // Every role either side, main first, custom ones by name.
+                'from' => $before['roles'],
+                'to' => $this->roleValues($staff),
                 'from_department' => $before['department'],
                 'to_department' => $staff->department?->value,
             ]);
@@ -344,13 +378,12 @@ class StaffService
             ]);
         }
 
-        if ($before['is_supervisor'] !== $staff->is_supervisor) {
-            $this->auditLogger->record(
-                $actor,
-                $staff->is_supervisor ? 'staff.supervisor_granted' : 'staff.supervisor_revoked',
-                $staff,
-                $context
-            );
+        if ($before['management_level'] !== $staff->management_level?->value) {
+            $this->auditLogger->record($actor, 'staff.management_level_changed', $staff, [
+                ...$context,
+                'from' => $before['management_level'],
+                'to' => $staff->management_level?->value,
+            ]);
         }
 
         if ($before['account_status'] !== $staff->account_status?->value) {
@@ -363,34 +396,35 @@ class StaffService
     }
 
     /**
-     * Refuse a change that would leave the facility with nobody able to manage it.
+     * Refuse a change that would leave the facility with nobody able to manage its staff.
      *
+     * Only an Admin counts: a view-only Supervisor cannot manage anyone.
      * Called after the write inside the transaction rather than before it: the
-     * cheapest correct way to ask "would this leave zero supervisors" is to
-     * make the change and count, letting the rollback undo it.
+     * cheapest correct way to ask "would this leave zero Admins" is to make
+     * the change and count, letting the rollback undo it.
      */
-    private function guardSupervisorFloor(int $facilityId): void
+    private function guardAdminFloor(int $facilityId): void
     {
-        if ($this->staffRepository->countActiveSupervisors($facilityId) > 0) {
+        if ($this->staffRepository->countActiveAdmins($facilityId) > 0) {
             return;
         }
 
         throw $this->refuse(
             409,
-            'last_supervisor',
-            'This facility would be left with no supervisor. Promote another staff member first.'
+            'last_admin',
+            'This facility would be left with no Blood Center Admin. Make another staff member an Admin first.'
         );
     }
 
     /**
-     * Refuse a non-supervisor who has been left without a role.
+     * Refuse an account with neither a role nor a management level.
      *
      * Such an account holds no abilities at all, so it can sign in and reach
      * nothing. That is the right fail-closed default for an account awaiting
-     * assignment, but it is not a state a supervisor should be able to create
-     * on purpose without noticing.
+     * assignment, but it is not a state an Admin should be able to create on
+     * purpose without noticing.
      */
-    private function guardRoleAssigned(?StaffRole $role, ?string $customRole, ?Department $department, bool $isSupervisor): void
+    private function guardRoleAssigned(?StaffRole $role, ?string $customRole, ?Department $department, bool $hasLevel): void
     {
         if ($role !== null) {
             return;
@@ -406,13 +440,71 @@ class StaffService
             return;
         }
 
-        if ($isSupervisor) {
+        if ($hasLevel) {
             return;
         }
 
         throw ValidationException::withMessages([
-            'staff_role' => ['Choose or type a role, or grant the supervisor level instead.'],
+            'staff_role' => ['Choose or type a role, or give them the Admin or Supervisor level instead.'],
         ]);
+    }
+
+    /**
+     * Refuse roles from more than one department.
+     *
+     * The project owner's rule (2026-10-17): a person may hold several roles,
+     * but all in one department, so a role blind to donors is never paired
+     * with one that sees their names. User's saving hook would drop a stray
+     * role silently; this says why first.
+     *
+     * @param  array<int, StaffRole>  $additional
+     */
+    private function guardOneDepartment(array $additional, ?Department $department): void
+    {
+        foreach ($additional as $role) {
+            if ($department !== null && $role->department() !== $department) {
+                throw ValidationException::withMessages([
+                    'additional_staff_roles' => [
+                        "{$role->label()} is in {$role->department()->label()}, not {$department->label()}. One person's roles must all be in one department.",
+                    ],
+                ]);
+            }
+        }
+    }
+
+    /**
+     * StaffRole cases from submitted values, without repeats.
+     *
+     * @param  array<int, mixed>  $values
+     * @return array<int, StaffRole>
+     */
+    private function rolesFrom(array $values): array
+    {
+        $roles = [];
+
+        foreach ($values as $value) {
+            $role = $value instanceof StaffRole ? $value : StaffRole::tryFrom((string) $value);
+
+            if ($role !== null && ! in_array($role, $roles, true)) {
+                $roles[] = $role;
+            }
+        }
+
+        return $roles;
+    }
+
+    /**
+     * Every role an account holds, as the audit trail records it: predefined
+     * roles by value, main first, then a custom one by name.
+     *
+     * @return array<int, string>
+     */
+    private function roleValues(User $staff): array
+    {
+        return [
+            ...array_map(fn (StaffRole $role): string => $role->value, $staff->staffRoles()),
+            ...(filled($staff->custom_role) ? [$staff->custom_role] : []),
+        ];
     }
 
     /**
@@ -510,15 +602,26 @@ class StaffService
             'phone' => $staff->phone,
             'username' => $staff->username,
             'employee_id' => $staff->employee_id,
-            'position' => $staff->position,
+            // The title: RMT, RN, MD. No job post beside it (project owner, 2026-10-22).
+            'credentials' => $staff->credentials,
+            // As it prints on what they sign: "Rowena Tan, RMT".
+            'signature_name' => $staff->signatureName(),
             'department' => $staff->department?->value,
             'department_label' => $staff->department?->label(),
             'staff_role' => $staff->staff_role?->value,
             'staff_role_label' => $staff->staff_role?->label(),
+            // The others, main role excluded; staff_roles is every one, main first.
+            'additional_staff_roles' => array_values(array_map(
+                fn (StaffRole $role): string => $role->value,
+                array_slice($staff->staffRoles(), 1)
+            )),
+            'staff_roles' => array_map(fn (StaffRole $role): string => $role->value, $staff->staffRoles()),
             'custom_role' => $staff->custom_role,
             'role_label' => $staff->roleLabel(),
+            'role_labels' => $staff->roleLabels(),
             'staff_privileges' => $this->privilegeValues($staff),
-            'is_supervisor' => (bool) $staff->is_supervisor,
+            'management_level' => $staff->management_level?->value,
+            'management_level_label' => $staff->management_level?->label(),
             'account_status' => $staff->account_status?->value,
             'email_verified' => $staff->hasVerifiedEmail(),
             'permissions' => $staff->abilities(),

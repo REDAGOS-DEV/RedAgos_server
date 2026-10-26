@@ -71,9 +71,10 @@ trait BuildsFulfilmentScenarios
     /**
      * Put issuable units of one component on a centre's shelf.
      *
-     * They expire in thirty days unless told otherwise — the factory default.
+     * They expire in thirty days unless told otherwise — the factory default —
+     * and are of the scenario's blood type unless another is given.
      */
-    protected function stock(Facility $facility, BloodComponent $component, int $count, ?int $expiresInDays = null): void
+    protected function stock(Facility $facility, BloodComponent $component, int $count, ?int $expiresInDays = null, ?BloodType $bloodType = null): void
     {
         if ($count < 1) {
             return;
@@ -86,7 +87,7 @@ trait BuildsFulfilmentScenarios
 
         BloodUnit::factory()->count($count)->create([
             'facility_id' => $facility->id,
-            'blood_type_id' => $this->bloodType->id,
+            'blood_type_id' => ($bloodType ?? $this->bloodType)->id,
             'component_id' => $component->id,
             'donation_id' => $donation->id,
             'status' => BloodUnitStatus::Available,
@@ -197,7 +198,7 @@ trait BuildsFulfilmentScenarios
     }
 
     /**
-     * A complete walk-in payload the hospital has confirmed.
+     * A complete walk-in payload, as the counter sends it.
      *
      * @param  array<string, mixed>  $overrides
      * @return array<string, mixed>
@@ -227,14 +228,6 @@ trait BuildsFulfilmentScenarios
                 'contact' => '09171234567',
                 'id_type' => 'philsys',
                 'id_number' => '1234-5678-9012',
-            ],
-            'verification' => [
-                'confirmed' => true,
-                'verifier_name' => 'Ana Lim',
-                'verifier_position' => 'Blood Bank Medical Technologist',
-                'verifier_contact' => '(082) 222-1234',
-                'verified_at' => now()->subMinutes(5)->toIso8601String(),
-                'notes' => 'Confirmed the patient is admitted and the physician signed the request.',
             ],
         ], $overrides);
     }

@@ -3,7 +3,6 @@
 namespace App\Http\Requests;
 
 use App\Enums\PaymentMethod;
-use App\Enums\PaymentStatus;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -27,31 +26,64 @@ class RecordPaymentRequest extends FormRequest
     /**
      * Get the validation rules that apply to the request.
      *
-     * A GCash settlement must carry its provider reference. No payment gateway
-     * is configured yet, so that reference is the only evidence the money moved
-     * — recording an electronic payment without one would leave billing staff
-     * asserting a transfer nobody can check.
+     * A GCash, card or bank-transfer settlement must carry its provider
+     * reference. RedAgos checks none of them with the provider, so that
+     * reference is the only evidence the money moved — recording an electronic
+     * payment without one would leave billing staff asserting a transfer nobody
+     * can check.
+     *
+     * At most two decimal places: an amount is pesos and centavos, and
+     * BillingService counts in whole centavos.
+     *
+     * The status is never chosen. A payment recorded by hand is money already
+     * received, so it is always completed; an attempt that may still fail
+     * belongs to a payment provider, not to this form. Decided by the project
+     * owner on 2026-10-10. A correction is held to the same rule: it fixes
+     * what was recorded, not whether the money arrived.
      *
      * @return array<string, array<int, mixed>>
      */
     public function rules(): array
     {
         return [
-            'amount_paid' => ['required', 'numeric', 'min:0.01', 'max:9999999.99'],
+            'amount_paid' => ['required', 'numeric', 'decimal:0,2', 'min:0.01', 'max:9999999.99'],
             'payment_method' => ['required', Rule::in(PaymentMethod::values())],
             'reference_number' => [
-                Rule::requiredIf(fn (): bool => $this->input('payment_method') === PaymentMethod::Gcash->value),
+                Rule::requiredIf(fn (): bool => PaymentMethod::tryFrom((string) $this->input('payment_method'))?->isElectronic() ?? false),
                 'nullable',
                 'string',
                 'max:100',
                 Rule::unique('payments', 'reference_number')->ignore($this->correctingPaymentId),
             ],
+            'status' => ['prohibited'],
 
-            // A correction fixes what was recorded; it is not a way to turn a
-            // payment into a failed or refunded one.
-            'status' => $this->correctingPaymentId !== null
-                ? ['prohibited']
-                : ['sometimes', Rule::in(PaymentStatus::values())],
+            // The cash handed over at the counter, when it is more than the
+            // amount recorded: the difference is the change given back. Cash
+            // only; a GCash, card or bank payment is for the amount itself.
+            'amount_tendered' => [
+                'sometimes',
+                'nullable',
+                'numeric',
+                'decimal:0,2',
+                'min:0.01',
+                'max:9999999.99',
+                Rule::prohibitedIf(fn (): bool => $this->input('payment_method') !== PaymentMethod::Cash->value && $this->filled('amount_tendered')),
+            ],
+
+            // A card payment's additional information: the cardholder's last
+            // name, to match the terminal slip (project owner, 2026-10-13).
+            // Card only, and optional.
+            'additional_information' => [
+                'sometimes',
+                'nullable',
+                'string',
+                'max:100',
+                Rule::prohibitedIf(fn (): bool => $this->input('payment_method') !== PaymentMethod::Card->value && $this->filled('additional_information')),
+            ],
+
+            // Who handed the money over — usually the patient's watcher. Printed
+            // on the receipt as "Received from", and nowhere else.
+            'payer_name' => ['sometimes', 'nullable', 'string', 'max:120'],
         ];
     }
 
@@ -63,9 +95,13 @@ class RecordPaymentRequest extends FormRequest
     public function messages(): array
     {
         return [
+            'amount_paid.decimal' => 'Record the amount in pesos and centavos, with at most two decimal places.',
             'amount_paid.min' => 'Record the amount actually received.',
-            'reference_number.required' => 'A GCash payment needs its reference number.',
+            'reference_number.required' => 'A GCash, card or bank-transfer payment needs its reference number.',
             'reference_number.unique' => 'That payment reference has already been recorded.',
+            'status.prohibited' => 'A recorded payment is money received; its status cannot be chosen.',
+            'amount_tendered.prohibited' => 'Only a cash payment has an amount tendered.',
+            'additional_information.prohibited' => 'Only a card payment carries additional information.',
         ];
     }
 }

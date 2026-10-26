@@ -5,6 +5,8 @@ namespace Tests\Feature\BloodRequest;
 use App\Enums\BillingStatus;
 use App\Enums\BloodUnitStatus;
 use App\Enums\Department;
+use App\Enums\PaymentSource;
+use App\Enums\PaymentStatus;
 use App\Models\BloodComponent;
 use App\Models\BloodRequest;
 use App\Models\BloodType;
@@ -13,6 +15,7 @@ use App\Models\Donation;
 use App\Models\DonorProfile;
 use App\Models\Facility;
 use App\Models\FacilityBloodComponent;
+use App\Models\Payment;
 use App\Models\ReplenishmentSchedule;
 use App\Models\User;
 use App\Notifications\BloodRequestSubmitted;
@@ -202,16 +205,145 @@ class BillingAndNotificationTest extends TestCase
         $this->priceComponent(500);
         $request = $this->allocatedRequest(1);
 
+        // Staff can no longer record a failed payment, but rows recorded that
+        // way before the rule changed are still in the trail, and must never
+        // count as money collected.
+        Payment::factory()->gcash('GC-FAILED-1')->failed()->create([
+            'billing_id' => $request->billing()->firstOrFail()->id,
+            'amount_paid' => 500,
+        ]);
+
+        $this->actingAs($this->billingStaff)
+            ->getJson("/api/blood-center/billings/{$request->id}")
+            ->assertOk()
+            ->assertJsonPath('billing.collected', 0)
+            ->assertJsonPath('billing.status', BillingStatus::Unpaid->value);
+    }
+
+    public function test_a_status_cannot_be_chosen_when_recording_a_payment(): void
+    {
+        $this->priceComponent(500);
+        $request = $this->allocatedRequest(1);
+
         $this->actingAs($this->billingStaff)
             ->postJson("/api/blood-center/billings/{$request->id}/payments", [
                 'amount_paid' => 500,
-                'payment_method' => 'gcash',
-                'reference_number' => 'GC-FAILED-1',
+                'payment_method' => 'cash',
                 'status' => 'failed',
             ])
-            ->assertCreated()
-            ->assertJsonPath('billing.collected', 0)
-            ->assertJsonPath('billing.status', BillingStatus::Unpaid->value);
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['status']);
+
+        $this->assertDatabaseCount('payments', 0);
+    }
+
+    public function test_an_amount_with_a_fraction_of_a_centavo_is_refused(): void
+    {
+        $this->priceComponent(500);
+        $request = $this->allocatedRequest(1);
+
+        $this->actingAs($this->billingStaff)
+            ->postJson("/api/blood-center/billings/{$request->id}/payments", [
+                'amount_paid' => '100.005',
+                'payment_method' => 'cash',
+            ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['amount_paid']);
+    }
+
+    public function test_a_payment_names_who_recorded_it_and_where_it_came_from(): void
+    {
+        $this->priceComponent(500);
+        $request = $this->allocatedRequest(1);
+
+        $this->actingAs($this->billingStaff)
+            ->postJson("/api/blood-center/billings/{$request->id}/payments", [
+                'amount_paid' => 500,
+                'payment_method' => 'cash',
+            ])
+            ->assertCreated();
+
+        $payment = Payment::query()->sole();
+
+        $this->assertSame(PaymentSource::Manual, $payment->source);
+        $this->assertSame(PaymentStatus::Completed, $payment->status);
+        $this->assertSame($this->billingStaff->id, $payment->recorded_by);
+    }
+
+    public function test_no_payment_is_taken_once_nothing_is_outstanding(): void
+    {
+        $this->priceComponent(500);
+        $request = $this->allocatedRequest(1);
+
+        $this->actingAs($this->billingStaff)
+            ->postJson("/api/blood-center/billings/{$request->id}/payments", [
+                'amount_paid' => 500,
+                'payment_method' => 'cash',
+            ])
+            ->assertCreated();
+
+        $this->actingAs($this->billingStaff)
+            ->postJson("/api/blood-center/billings/{$request->id}/payments", [
+                'amount_paid' => 100,
+                'payment_method' => 'cash',
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'billing_settled');
+
+        $this->assertDatabaseCount('payments', 1);
+    }
+
+    public function test_a_zero_statement_takes_no_payment(): void
+    {
+        $request = $this->allocatedRequest(1);
+
+        $this->actingAs($this->billingStaff)
+            ->postJson("/api/blood-center/billings/{$request->id}/payments", [
+                'amount_paid' => 100,
+                'payment_method' => 'cash',
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'billing_settled');
+
+        $this->assertDatabaseCount('payments', 0);
+    }
+
+    public function test_a_voided_statement_takes_no_payment_and_stays_void(): void
+    {
+        $this->priceComponent(500);
+        $request = $this->allocatedRequest(1);
+        $billing = $request->billing()->firstOrFail();
+        $billing->update(['status' => BillingStatus::Void]);
+
+        $this->actingAs($this->billingStaff)
+            ->postJson("/api/blood-center/billings/{$request->id}/payments", [
+                'amount_paid' => 500,
+                'payment_method' => 'cash',
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'billing_settled_by_decision');
+
+        $this->assertSame(BillingStatus::Void, $billing->refresh()->status);
+        $this->assertDatabaseCount('payments', 0);
+    }
+
+    public function test_centavos_add_up_exactly(): void
+    {
+        $this->priceComponent(0.3);
+        $request = $this->allocatedRequest(1);
+
+        // 0.1 + 0.2 is not 0.3 in floating point. Counted in centavos it is,
+        // so the statement settles rather than being left a hair short.
+        foreach (['0.1', '0.2'] as $amount) {
+            $this->actingAs($this->billingStaff)
+                ->postJson("/api/blood-center/billings/{$request->id}/payments", [
+                    'amount_paid' => $amount,
+                    'payment_method' => 'cash',
+                ])
+                ->assertCreated();
+        }
+
+        $this->assertSame(BillingStatus::Paid, $request->billing()->firstOrFail()->status);
     }
 
     public function test_the_statement_grows_when_more_units_are_held(): void

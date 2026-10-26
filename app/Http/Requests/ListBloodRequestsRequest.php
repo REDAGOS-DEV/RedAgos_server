@@ -37,9 +37,14 @@ class ListBloodRequestsRequest extends FormRequest
             'request_purpose' => ['sometimes', Rule::in(RequestPurpose::values())],
             'blood_type_id' => ['sometimes', 'integer', 'exists:blood_types,id'],
             'component_id' => ['sometimes', 'integer', 'exists:blood_components,id'],
-            'search' => ['sometimes', 'string', 'max:40'],
+            // A reference, a patient's name or the other facility's name.
+            'search' => ['sometimes', 'string', 'max:100'],
+            // When it was asked for, as operational dates.
+            'from' => ['sometimes', 'date_format:Y-m-d'],
+            'to' => ['sometimes', 'date_format:Y-m-d', 'after_or_equal:from'],
             'awaiting_release' => ['sometimes', 'boolean'],
             'awaiting_receipt' => ['sometimes', 'boolean'],
+            'open' => ['sometimes', 'boolean'],
             'per_page' => ['sometimes', 'integer', 'min:1', 'max:100'],
         ];
     }

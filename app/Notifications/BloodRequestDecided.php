@@ -17,9 +17,13 @@ class BloodRequestDecided extends Notification
 {
     use Queueable;
 
+    /**
+     * @param  array<string, mixed>  $context  closed_short: component, quantity, note
+     */
     public function __construct(
         private readonly BloodRequest $request,
-        private readonly string $outcome
+        private readonly string $outcome,
+        private readonly array $context = []
     ) {}
 
     /**
@@ -70,6 +74,7 @@ class BloodRequestDecided extends Notification
             'allocated' => 'Blood request approved',
             'rejected' => 'Blood request rejected',
             'released' => 'Blood units dispatched',
+            'closed_short' => 'Part of a blood request cannot be supplied',
             default => 'Blood request updated',
         };
     }
@@ -88,14 +93,33 @@ class BloodRequestDecided extends Notification
                     : ''),
             'released' => "{$facility} has dispatched the units for request {$reference}. "
                 .'Confirm receipt once they arrive.',
+            'closed_short' => $this->closedShortDescription($facility, $reference),
             default => "Request {$reference} has been updated.",
         };
+    }
+
+    /**
+     * A centre closed the rest of one component as unavailable (project owner,
+     * 2026-10-19): what, how much, and that another facility can be asked.
+     */
+    private function closedShortDescription(string $facility, ?string $reference): string
+    {
+        $quantity = (int) ($this->context['quantity'] ?? 0);
+        $component = $this->context['component'] ?? 'one component';
+        $what = $quantity > 0 ? "{$quantity} unit(s) of {$component}" : "the rest of {$component}";
+        $note = trim((string) ($this->context['note'] ?? ''));
+
+        return "{$facility} cannot supply {$what} on request {$reference}."
+            .($note !== '' ? " {$note}." : '')
+            .($this->request->transfusion_request_id !== null
+                ? ' Those units are unallocated again; ask another facility for them.'
+                : ' Ask another facility for them.');
     }
 
     private function tone(): string
     {
         return match ($this->outcome) {
-            'rejected' => 'warning',
+            'rejected', 'closed_short' => 'warning',
             default => 'success',
         };
     }

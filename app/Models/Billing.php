@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\BillingStatus;
+use App\Support\Money;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -31,6 +32,10 @@ class Billing extends Model
         'billing_date',
         'total_amount',
         'status',
+        'settled_at',
+        'settled_by',
+        'settlement_reference',
+        'settlement_note',
     ];
 
     protected function casts(): array
@@ -39,7 +44,24 @@ class Billing extends Model
             'status' => BillingStatus::class,
             'total_amount' => 'decimal:2',
             'billing_date' => 'immutable_datetime',
+            'settled_at' => 'immutable_date',
         ];
+    }
+
+    /**
+     * The staff member who recorded that the hospital settled a weekly bill.
+     */
+    public function settledBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'settled_by');
+    }
+
+    /**
+     * The bill's journal: every money event on it, oldest first.
+     */
+    public function transactions(): HasMany
+    {
+        return $this->hasMany(BillingTransaction::class)->orderBy('id');
     }
 
     public function request(): BelongsTo
@@ -48,7 +70,12 @@ class Billing extends Model
     }
 
     /**
-     * The billing staff member who raised the statement.
+     * The staff member whose allocation first raised the statement.
+     *
+     * The statement is raised by BillingService::syncFor() on the first
+     * allocation, so this is usually an Issuance user, not Billing staff. The
+     * column means "statement created by", as decided by the project owner on
+     * 2026-10-10; who took a payment is on the payment (recorded_by).
      */
     public function billedBy(): BelongsTo
     {
@@ -58,6 +85,22 @@ class Billing extends Model
     public function payments(): HasMany
     {
         return $this->hasMany(Payment::class, 'billing_id');
+    }
+
+    /**
+     * The issued Statements of Account, oldest first.
+     */
+    public function revisions(): HasMany
+    {
+        return $this->hasMany(BillingRevision::class)->orderBy('revision_number');
+    }
+
+    /**
+     * The gateway checkouts opened against this statement.
+     */
+    public function attempts(): HasMany
+    {
+        return $this->hasMany(PaymentAttempt::class)->orderBy('id');
     }
 
     /**
@@ -80,7 +123,7 @@ class Billing extends Model
      */
     public function isZeroRated(): bool
     {
-        return (float) $this->total_amount === 0.0;
+        return Money::toCentavos($this->total_amount) === 0;
     }
 
     /**

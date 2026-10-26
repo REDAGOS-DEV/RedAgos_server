@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Requests\DiscardBloodUnitRequest;
+use App\Http\Requests\ListInventoryActivityRequest;
 use App\Http\Requests\ListInventoryRequest;
 use App\Http\Requests\StoreBloodUnitsRequest;
 use App\Http\Requests\UpdateBloodUnitRequest;
@@ -62,6 +63,20 @@ class BloodCenterInventoryController extends Controller
     }
 
     /**
+     * What has happened to the caller's facility stock, newest first.
+     */
+    public function activity(ListInventoryActivityRequest $request): JsonResponse
+    {
+        return response()->json(
+            $this->inventoryService->activity(
+                $request->user(),
+                $request->validated('unit_id'),
+                $request->integer('per_page', 10)
+            )
+        );
+    }
+
+    /**
      * List donations cleared for issue that still have units to book in.
      */
     public function intakeQueue(Request $request): JsonResponse
@@ -104,26 +119,6 @@ class BloodCenterInventoryController extends Controller
     {
         return response()->json(
             $this->inventoryService->discard($request->user(), $unit, $request->validated()['reason'])
-        );
-    }
-
-    /**
-     * Release a donation's quarantined units once testing has cleared it.
-     */
-    public function releaseQuarantine(Request $request, int $donation): JsonResponse
-    {
-        return response()->json(
-            $this->inventoryService->releaseFromQuarantine($request->user(), $donation)
-        );
-    }
-
-    /**
-     * The final labels for a donation's released bags, to print or reprint.
-     */
-    public function labels(Request $request, int $donation): JsonResponse
-    {
-        return response()->json(
-            $this->inventoryService->labelsFor($request->user(), $donation)
         );
     }
 }

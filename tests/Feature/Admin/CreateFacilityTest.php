@@ -4,6 +4,7 @@ namespace Tests\Feature\Admin;
 
 use App\Enums\AccountStatus;
 use App\Enums\FacilityStatus;
+use App\Enums\HospitalRole;
 use App\Enums\RoleName;
 use App\Models\Facility;
 use App\Models\User;
@@ -68,7 +69,7 @@ class CreateFacilityTest extends TestCase
         $primary = User::where('email', 'maria@redagos.test')->sole();
 
         $this->assertSame($facility->id, $primary->facility_id);
-        $this->assertTrue($primary->is_supervisor);
+        $this->assertTrue($primary->isCenterAdmin());
         $this->assertNull($primary->department);
         $this->assertTrue($primary->hasRole(RoleName::BloodCenter));
         $this->assertSame($primary->id, $facility->registration_contact_user_id);
@@ -83,6 +84,7 @@ class CreateFacilityTest extends TestCase
 
         $this->assertFalse((bool) $facility->is_accepting_donations);
         $this->assertTrue(User::where('email', 'maria@redagos.test')->sole()->hasRole(RoleName::BloodBank));
+        $this->assertSame(HospitalRole::Head, User::where('email', 'maria@redagos.test')->sole()->hospital_role);
     }
 
     public function test_it_stores_phone_numbers_in_the_form_the_columns_hold(): void

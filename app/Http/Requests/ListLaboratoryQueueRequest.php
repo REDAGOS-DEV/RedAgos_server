@@ -23,8 +23,9 @@ class ListLaboratoryQueueRequest extends FormRequest
 
             // Which department's queue. `serology` and `immunohematology` are
             // each laboratory department's own — donations still waiting on
-            // its clearance. `testing` is either of the two. Anything else is
-            // the queue Processing has always worked.
+            // its clearance. `testing` is either of the two. `processing` is
+            // what still has no component breakdown; a processed unit is on
+            // the Processed list instead.
             'stage' => ['sometimes', 'string', Rule::in(['testing', 'serology', 'immunohematology', 'processing'])],
 
             // A scanned or typed donation barcode (the sticker on the tube), to

@@ -14,7 +14,7 @@ class DonorProfilePolicy
      * A government ID is not a profile photo. Only the donor it belongs to and
      * the platform administrators who review it may open one; blood-centre staff
      * fall through to false and verify the physical card at the counter instead.
-     * No department ability grants this, so a supervisor cannot earn it either.
+     * No department ability or management level grants this.
      */
     public function viewIdentityDocument(User $user, DonorProfile $profile): bool
     {

@@ -3,6 +3,7 @@
 namespace App\Repository;
 
 use App\Enums\Department;
+use App\Enums\ManagementLevel;
 use App\Enums\StaffRole;
 use App\Models\BloodComponent;
 use App\Models\BloodType;
@@ -23,31 +24,37 @@ class BloodCenterRepository
      * Create a staff user attached to a facility.
      *
      * facility_id and everything that decides what the account may do — role,
-     * department, privileges, supervisor level — are assigned directly rather
+     * department, privileges, management level — are assigned directly rather
      * than filled, so no mass-assignment path may reach any of them. A
      * predefined role's department overrides the one passed, on save.
      *
+     * The main role, any others (same department; User's saving hook keeps
+     * them there) and a custom role may all stand together.
+     *
      * @param  array<string, mixed>  $attributes
      * @param  array<int, string>|null  $privileges  Null means all four.
+     * @param  array<int, StaffRole>  $additionalRoles
      */
     public function createStaffUser(
         array $attributes,
         Facility $facility,
         ?StaffRole $role = null,
-        bool $isSupervisor = false,
+        ?ManagementLevel $level = null,
         ?Department $department = null,
         ?string $customRole = null,
-        ?array $privileges = null
+        ?array $privileges = null,
+        array $additionalRoles = []
     ): User {
         $user = new User;
 
         $user->fill($attributes);
         $user->facility_id = $facility->id;
         $user->staff_role = $role;
-        $user->custom_role = $role === null ? $customRole : null;
+        $user->additional_staff_roles = array_map(fn (StaffRole $r): string => $r->value, $additionalRoles) ?: null;
+        $user->custom_role = $customRole;
         $user->department = $department;
         $user->staff_privileges = $privileges;
-        $user->is_supervisor = $isSupervisor;
+        $user->management_level = $level;
         $user->save();
 
         return $user;

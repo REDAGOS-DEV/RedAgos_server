@@ -1,0 +1,307 @@
+<?php
+
+namespace App\Service;
+
+use App\Enums\BillingStatus;
+use App\Models\Billing;
+use App\Models\BillingRevision;
+use App\Models\BloodRequest;
+use App\Models\Facility;
+use App\Models\User;
+use App\Repository\DocumentSequenceRepository;
+use App\Support\DocumentNumbering;
+use App\Support\FacilityMonogram;
+use App\Support\Money;
+use Barryvdh\DomPDF\Facade\Pdf;
+use Illuminate\Http\Exceptions\HttpResponseException;
+use Illuminate\Http\Response;
+
+/**
+ * Issued invoices: frozen revisions of a request's bill, and their printed form.
+ *
+ * The live statement (billings) keeps changing as units are reserved; what a
+ * payer is shown must not. Each issue, checkout and payment is pinned to a
+ * revision frozen at that moment. A revision is reused while nothing on the
+ * statement has changed, so printing twice does not consume a second number,
+ * and a new one is frozen the moment the bill or the balance moves.
+ *
+ * The printed document is an Invoice: one billable request (project owner,
+ * 2026-10-25, replacing the 2026-10-10 "Statement of Account" title). A
+ * Statement of Account is now the period summary of a hospital's invoices
+ * (AccountStatementService). Neither is a BIR document, and the invoice says so.
+ * Invoices issued before the change keep their SOA- numbers; issued numbers
+ * never change.
+ */
+class StatementRevisionService
+{
+    public function __construct(
+        private readonly StatementFigures $figures,
+        private readonly DocumentSequenceRepository $sequences,
+        private readonly FacilityLogoService $facilityLogoService,
+        private readonly AuditLogger $auditLogger
+    ) {}
+
+    /**
+     * Reuse the latest revision if the live figures still match it, otherwise freeze a new one.
+     *
+     * Must run inside a transaction that already holds the request, then the
+     * billing row (BillingService::lockForMutation()). Every figure is read
+     * under those locks, and the document number is taken last, from the
+     * issuing facility's statement counter.
+     *
+     * @return array{0: BillingRevision, 1: bool} The revision, and whether it was frozen just now.
+     */
+    public function issueOrReuse(BloodRequest $lockedRequest, Billing $lockedBilling, ?User $actor, string $reason): array
+    {
+        $lines = $this->figures->linesFor($lockedRequest);
+        $total = $this->figures->totalOf($lines);
+        $collected = $this->figures->collectedFor($lockedBilling);
+        $status = $lockedBilling->status;
+        $due = $this->amountDue($status, $total, $collected);
+
+        $latest = BillingRevision::query()
+            ->with('items')
+            ->where('billing_id', $lockedBilling->id)
+            ->orderByDesc('revision_number')
+            ->first();
+
+        if ($latest !== null && $this->matches($latest, $lines, $total, $collected, $status)) {
+            return [$latest, false];
+        }
+
+        $issuingFacilityId = (int) $lockedRequest->target_facility_id;
+        $sequence = $this->sequences->next($issuingFacilityId, 'statement');
+
+        $revision = BillingRevision::query()->create([
+            'billing_id' => $lockedBilling->id,
+            'revision_number' => ($latest?->revision_number ?? 0) + 1,
+            'document_number' => DocumentNumbering::format('INV', $issuingFacilityId, $sequence),
+            'issuing_facility_id' => $issuingFacilityId,
+            'payer_facility_id' => (int) $lockedRequest->facility_id,
+            // The logo it is issued with, so a reprint after the centre changes
+            // its logo still shows the one on the copy the payer was given.
+            'issuer_logo_path' => Facility::query()->whereKey($issuingFacilityId)->value('logo_path'),
+            'currency' => 'PHP',
+            'total_amount' => Money::toDecimal($total),
+            'collected_at_issue' => Money::toDecimal($collected),
+            'amount_due' => Money::toDecimal($due),
+            // A weekly bill is the hospital's, before and after it settles it.
+            'statement_only' => $status === BillingStatus::StatementOnly || $status === BillingStatus::SettledOutside,
+            'billing_status' => $status,
+            'reason' => $reason,
+            'created_by' => $actor?->id,
+        ]);
+
+        foreach ($lines as $line) {
+            $revision->items()->create([
+                'request_item_id' => $line['request_item_id'],
+                'component_id' => $line['component_id'],
+                'component_name' => $line['component_name'],
+                'quantity' => $line['quantity'],
+                'unit_price' => Money::toDecimal($line['unit_price']),
+                'line_total' => Money::toDecimal($line['line_total']),
+            ]);
+        }
+
+        return [$revision->load('items'), true];
+    }
+
+    /**
+     * Every revision issued for a statement, oldest first, as the API shows them.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function listFor(Billing $billing): array
+    {
+        $billing->loadMissing('request');
+
+        return $billing->revisions()->with(['items', 'issuingFacility', 'payerFacility', 'creator'])->get()
+            ->each(fn (BillingRevision $revision) => $revision->setRelation('billing', $billing))
+            ->map(fn (BillingRevision $revision): array => $this->format($revision))
+            ->all();
+    }
+
+    /**
+     * Project one revision for the API. Amounts are decimal strings.
+     *
+     * @return array<string, mixed>
+     */
+    public function format(BillingRevision $revision): array
+    {
+        $revision->loadMissing(['items', 'issuingFacility', 'payerFacility', 'billing.request', 'creator']);
+        $request = $revision->billing?->request;
+
+        return [
+            'id' => $revision->id,
+            'document_number' => $revision->document_number,
+            'revision_number' => $revision->revision_number,
+            'reason' => $revision->reason,
+            'billing_status' => $revision->billing_status->value,
+            'billing_status_label' => $revision->billing_status->label(),
+            'statement_only' => $revision->statement_only,
+            'currency' => $revision->currency,
+            'total_amount' => $revision->total_amount,
+            'collected_at_issue' => $revision->collected_at_issue,
+            'amount_due' => $revision->amount_due,
+            'issued_at' => $revision->created_at?->toIso8601String(),
+            'issued_by' => $revision->creator ? $revision->creator->signatureName() : null,
+            'issuer' => [
+                ...$this->facilityCard($revision->issuingFacility),
+                // The issuing centre's own logo heads the document, never a shared mark.
+                'logo_url' => $this->facilityLogoService->urlForPath($revision->issuingFacility, $revision->issuer_logo_path),
+            ],
+            // A Patient Transfusion statement is the patient's to settle; a
+            // weekly order is the requesting hospital's (owner, 2026-10-10).
+            'bill_to' => [
+                'patient_name' => $revision->statement_only ? null : $request?->patientFullName(),
+                'facility' => $revision->payerFacility?->name,
+            ],
+            'request_reference' => $request?->reference_number,
+            'lines' => $revision->items->map(fn ($item): array => [
+                'component_name' => $item->component_name,
+                'quantity' => $item->quantity,
+                'unit_price' => $item->unit_price,
+                'line_total' => $item->line_total,
+            ])->all(),
+        ];
+    }
+
+    /**
+     * Find a revision issued by the caller's own centre.
+     */
+    public function findIssuedBy(int $revisionId, int $facilityId): BillingRevision
+    {
+        return BillingRevision::query()
+            ->whereKey($revisionId)
+            ->where('issuing_facility_id', $facilityId)
+            ->first()
+            ?? throw $this->notFound();
+    }
+
+    /**
+     * Find a revision addressed to the caller's own hospital.
+     */
+    public function findAddressedTo(int $revisionId, int $facilityId): BillingRevision
+    {
+        return BillingRevision::query()
+            ->whereKey($revisionId)
+            ->where('payer_facility_id', $facilityId)
+            ->first()
+            ?? throw $this->notFound();
+    }
+
+    /**
+     * Render one revision as its printed Invoice.
+     *
+     * Rendered from the revision's own rows, never the live statement, so the
+     * same revision prints the same document every time.
+     */
+    public function pdf(BillingRevision $revision, User $viewer): Response
+    {
+        $data = $this->viewData($revision);
+
+        $this->auditLogger->record($viewer, 'billing.statement_downloaded', $revision->billing, [
+            'revision_id' => $revision->id,
+            'document_number' => $revision->document_number,
+            'facility_id' => $viewer->facility_id,
+        ]);
+
+        return Pdf::loadView('pdf.billing-statement', $data)
+            ->setPaper('a4')
+            ->setOptions([
+                'isRemoteEnabled' => false,
+                'isHtml5ParserEnabled' => true,
+                'defaultFont' => 'DejaVu Sans',
+            ])
+            ->download("{$revision->document_number}.pdf");
+    }
+
+    /**
+     * Everything the printed Invoice needs, read from the revision alone.
+     *
+     * @return array<string, mixed>
+     */
+    public function viewData(BillingRevision $revision): array
+    {
+        $revision->loadMissing(['items', 'issuingFacility', 'payerFacility', 'billing.request', 'creator']);
+        $request = $revision->billing?->request;
+
+        // dompdf cannot decode a PNG without GD; the statement still prints without the logo.
+        $images = extension_loaded('gd');
+
+        return [
+            'revision' => $revision,
+            'request' => $request,
+            // A weekly order has no patient; a Patient Transfusion statement is
+            // the patient's, and names them.
+            'patient' => $revision->statement_only ? null : $request?->patientFullName(),
+            'logo' => $images ? $this->facilityLogoService->dataUriForPath($revision->issuingFacility, $revision->issuer_logo_path) : null,
+            'monogram' => FacilityMonogram::of($revision->issuingFacility?->name),
+        ];
+    }
+
+    /**
+     * The issuing centre as a statement heads it.
+     *
+     * @return array{name: string|null, address: string|null, doh_license_number: string|null, phone: string|null, email: string|null}
+     */
+    private function facilityCard(?Facility $facility): array
+    {
+        return [
+            'name' => $facility?->name,
+            'address' => $facility?->address,
+            'doh_license_number' => $facility?->doh_license_number,
+            'phone' => $facility?->phone,
+            'email' => $facility?->email,
+        ];
+    }
+
+    /**
+     * What a statement leaves to be paid, in centavos.
+     *
+     * A collectible statement owes its total less what it has collected. A
+     * statement-only one owes its total too, but to be settled outside
+     * RedAgos. A voided or subsidised one owes nothing.
+     */
+    private function amountDue(BillingStatus $status, int $total, int $collected): int
+    {
+        return $status->isCollectible() || $status === BillingStatus::StatementOnly
+            ? max($total - $collected, 0)
+            : 0;
+    }
+
+    /**
+     * Whether an issued revision still says exactly what the live statement says.
+     *
+     * Compared line by line, not component by component: a weekly request can
+     * ask for the same component in two blood types, and those are two lines.
+     *
+     * @param  array<int, array{request_item_id: int, component_id: int, quantity: int, unit_price: int}>  $lines
+     */
+    private function matches(BillingRevision $revision, array $lines, int $total, int $collected, BillingStatus $status): bool
+    {
+        if (Money::toCentavos($revision->total_amount) !== $total
+            || Money::toCentavos($revision->collected_at_issue) !== $collected
+            || $revision->billing_status !== $status) {
+            return false;
+        }
+
+        $issued = $revision->items
+            ->map(fn ($item): string => $item->request_item_id.':'.$item->component_id.':'.$item->quantity.':'.Money::toCentavos($item->unit_price))
+            ->sort()->values()->all();
+
+        $live = collect($lines)
+            ->map(fn (array $line): string => $line['request_item_id'].':'.$line['component_id'].':'.$line['quantity'].':'.$line['unit_price'])
+            ->sort()->values()->all();
+
+        return $issued === $live;
+    }
+
+    private function notFound(): HttpResponseException
+    {
+        return new HttpResponseException(response()->json([
+            'message' => 'Statement not found.',
+            'code' => 'statement_not_found',
+        ], 404));
+    }
+}

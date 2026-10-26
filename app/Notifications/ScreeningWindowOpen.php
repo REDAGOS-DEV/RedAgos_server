@@ -4,6 +4,7 @@ namespace App\Notifications;
 
 use App\Models\DonationAppointment;
 use App\Support\AppointmentScreeningWindow;
+use App\Support\DonorNotificationPreferences;
 use Illuminate\Bus\Queueable;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
@@ -43,9 +44,8 @@ class ScreeningWindowOpen extends Notification
      */
     public function via(object $notifiable): array
     {
-        return $notifiable->hasEmailAddress()
-            ? ['mail', 'database']
-            : ['database'];
+        // The email is the donor's choice in Settings; the in-app copy is always written.
+        return DonorNotificationPreferences::alwaysInAppChannels($notifiable, DonorNotificationPreferences::APPOINTMENTS_EMAIL);
     }
 
     public function toMail(object $notifiable): MailMessage

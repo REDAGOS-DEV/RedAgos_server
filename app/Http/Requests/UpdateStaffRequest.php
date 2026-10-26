@@ -4,6 +4,7 @@ namespace App\Http\Requests;
 
 use App\Enums\AccountStatus;
 use App\Enums\Department;
+use App\Enums\ManagementLevel;
 use App\Enums\StaffPrivilege;
 use App\Enums\StaffRole;
 use App\Support\AccountIdentity;
@@ -32,11 +33,17 @@ class UpdateStaffRequest extends FormRequest
         // A typed role that names a predefined one is that role, so the
         // roster never holds a custom "Laboratory Supervisor" beside the real
         // one with different abilities.
-        if ($this->filled('custom_role') && ! $this->filled('staff_role')) {
+        if ($this->filled('custom_role')) {
             $typed = StaffRole::fromTyped((string) $this->input('custom_role'));
 
-            if ($typed !== null) {
+            if ($typed !== null && ! $this->filled('staff_role')) {
                 $this->merge(['staff_role' => $typed->value, 'custom_role' => null]);
+            } elseif ($typed !== null) {
+                // Beside a main role it is one more of their roles.
+                $this->merge([
+                    'additional_staff_roles' => array_values(array_unique([...(array) $this->input('additional_staff_roles', []), $typed->value])),
+                    'custom_role' => null,
+                ]);
             }
         }
 
@@ -59,7 +66,10 @@ class UpdateStaffRequest extends FormRequest
                 'sometimes', 'nullable', 'string', 'regex:/^(?:\+63|63|0)9\d{9}$/',
                 Rule::unique('users', 'phone')->ignore($uuid, 'uuid'),
             ],
-            'position' => ['sometimes', 'nullable', 'string', 'max:100'],
+            // The title, printed after the name on everything the staff member
+            // signs: RMT, MD, RN. Blood-centre accounts keep no job post beside
+            // it (project owner, 2026-10-22).
+            'credentials' => ['sometimes', 'nullable', 'string', 'max:40', 'regex:/^[\pL\d][\pL\d.,&()\/ -]*$/u'],
             'employee_id' => [
                 'sometimes', 'nullable', 'string', 'max:50',
                 Rule::unique('users', 'employee_id')
@@ -68,19 +78,24 @@ class UpdateStaffRequest extends FormRequest
             ],
 
             // Nullable here rather than conditionally required: a partial
-            // update may clear a role while the same request grants the
-            // supervisor level. StaffService checks the resulting combination,
+            // update may clear a role while the same request grants a
+            // management level. StaffService checks the resulting combination,
             // which is the only place both values are known.
             'department' => ['sometimes', 'nullable', 'string', Rule::in(Department::values())],
             'staff_role' => ['sometimes', 'nullable', 'string', Rule::in(StaffRole::values())],
+            'additional_staff_roles' => ['sometimes', 'nullable', 'array', 'max:10'],
+            'additional_staff_roles.*' => ['string', 'distinct', Rule::in(StaffRole::values())],
             'custom_role' => ['sometimes', 'nullable', 'string', 'max:100'],
             'staff_privileges' => ['sometimes', 'array', 'min:1'],
             'staff_privileges.*' => ['string', 'distinct', Rule::in(StaffPrivilege::values())],
-            'is_supervisor' => ['sometimes', 'boolean'],
+            'management_level' => ['sometimes', 'nullable', Rule::enum(ManagementLevel::class)],
+
+            // Replaced by management_level; see StoreStaffRequest.
+            'is_supervisor' => ['prohibited'],
 
             // pending_verification is deliberately absent: it is set at
             // creation and cleared by the holder verifying their address, not
-            // something a supervisor reaches back into.
+            // something an Admin reaches back into.
             'account_status' => [
                 'sometimes', 'string',
                 Rule::in([
@@ -114,7 +129,10 @@ class UpdateStaffRequest extends FormRequest
     public function messages(): array
     {
         return [
+            'credentials.regex' => 'Write the credentials as letters, for example RMT, or MD, FPCP.',
+            'credentials.max' => 'Keep the credentials to 40 characters.',
             'phone.unique' => 'An account already exists for this phone number.',
+            'is_supervisor.prohibited' => 'is_supervisor was replaced by management_level: admin or supervisor.',
             'employee_id.unique' => 'Another staff member at this facility already has this employee ID.',
         ];
     }

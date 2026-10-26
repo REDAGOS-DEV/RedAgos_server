@@ -6,6 +6,7 @@ use App\Enums\BloodRequestStatus;
 use App\Enums\RequestPurpose;
 use App\Enums\RequestSource;
 use App\Enums\UrgencyLevel;
+use App\Support\BloodGroup;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -133,7 +134,7 @@ class BloodRequest extends Model
     }
 
     /**
-     * The weekly request this replenishment is one blood type of, if any.
+     * The weekly request this replenishment was sent as, if any.
      */
     public function weeklyRequest(): BelongsTo
     {
@@ -177,6 +178,12 @@ class BloodRequest extends Model
         return $this->belongsTo(User::class, 'reviewed_by');
     }
 
+    /**
+     * The blood type every line of the request shares.
+     *
+     * Null on a request whose lines differ: a weekly request restocks several
+     * blood types in one order, and each line names its own.
+     */
     public function bloodType(): BelongsTo
     {
         return $this->belongsTo(BloodType::class);
@@ -222,6 +229,25 @@ class BloodRequest extends Model
         return Attribute::get(
             fn (): int => (int) $this->items->sum('quantity')
         );
+    }
+
+    /**
+     * Name every blood type the lines ask for, in blood-group order.
+     *
+     * One code on every request but a weekly one, which can restock several.
+     * Callers reading this over a collection should eager-load items.bloodType.
+     *
+     * @return array<int, string>
+     */
+    public function bloodTypeCodes(): array
+    {
+        return $this->items
+            ->map(fn (BloodRequestItem $item): ?string => $item->bloodType?->code)
+            ->filter()
+            ->unique()
+            ->sortBy(fn (string $code): int => BloodGroup::sortKey($code))
+            ->values()
+            ->all();
     }
 
     /**

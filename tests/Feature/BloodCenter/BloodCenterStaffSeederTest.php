@@ -4,6 +4,7 @@ namespace Tests\Feature\BloodCenter;
 
 use App\Enums\AccountStatus;
 use App\Enums\Department;
+use App\Enums\ManagementLevel;
 use App\Enums\RoleName;
 use App\Enums\StaffRole;
 use App\Models\Facility;
@@ -38,19 +39,22 @@ class BloodCenterStaffSeederTest extends TestCase
         return User::query()->where('facility_id', $this->facility()->id)->orderBy('id')->get();
     }
 
-    public function test_it_seeds_a_center_admin_and_one_account_per_role(): void
+    public function test_it_seeds_an_admin_a_supervisor_and_one_account_per_role(): void
     {
         $this->seedStaff();
 
         $staff = $this->staff();
 
-        $this->assertCount(count(StaffRole::cases()) + 1, $staff);
-        $this->assertSame(14, $staff->count());
+        $this->assertCount(count(StaffRole::cases()) + 2, $staff);
+        $this->assertSame(15, $staff->count());
 
-        $admins = $staff->where('is_supervisor', true);
-        $this->assertCount(1, $admins);
-        $this->assertNull($admins->first()->staff_role);
-        $this->assertNull($admins->first()->department);
+        foreach (ManagementLevel::cases() as $level) {
+            $holders = $staff->where('management_level', $level);
+
+            $this->assertCount(1, $holders, "{$level->value} must have exactly one sample account.");
+            $this->assertNull($holders->first()->staff_role);
+            $this->assertNull($holders->first()->department);
+        }
 
         // A role added to the enum without a sample account fails here.
         foreach (StaffRole::cases() as $role) {
@@ -58,18 +62,24 @@ class BloodCenterStaffSeederTest extends TestCase
 
             $this->assertCount(1, $holders, "{$role->value} must have exactly one sample account.");
             $this->assertSame($role->department(), $holders->first()->department, "{$role->value} must sit in its own department.");
-            $this->assertFalse((bool) $holders->first()->is_supervisor);
+            $this->assertNull($holders->first()->management_level);
         }
     }
 
-    public function test_the_center_admin_is_created_first_and_is_the_facility_contact(): void
+    public function test_the_admin_is_created_first_and_is_the_facility_contact(): void
     {
         $this->seedStaff();
 
         $first = $this->staff()->first();
 
-        $this->assertSame('supervisor@redagos.test', $first->email);
+        $this->assertSame('center.admin@redagos.test', $first->email);
+        $this->assertTrue($first->isCenterAdmin());
         $this->assertSame($first->id, $this->facility()->registration_contact_user_id);
+
+        // The account that was the one supervisor keeps its address, now view-only.
+        $supervisor = User::query()->where('email', 'supervisor@redagos.test')->sole();
+        $this->assertTrue($supervisor->isCenterSupervisor());
+        $this->assertNotContains('staff.manage', $supervisor->abilities());
     }
 
     public function test_an_existing_facility_contact_is_not_replaced(): void
@@ -90,7 +100,7 @@ class BloodCenterStaffSeederTest extends TestCase
     {
         $this->seedStaff();
 
-        $accounts = collect(BloodCenterStaffSeeder::accounts())->skip(1)->groupBy('department');
+        $accounts = collect(BloodCenterStaffSeeder::accounts())->whereNull('level')->groupBy('department');
 
         foreach (Department::cases() as $department) {
             $rows = $accounts[$department->label()];
@@ -116,7 +126,8 @@ class BloodCenterStaffSeederTest extends TestCase
         $this->assertSame('lab.supervisor@redagos.test', $accounts->firstWhere('role', StaffRole::LabSupervisor)['email']);
         $this->assertSame('snbc-it-data-clerk', $accounts->firstWhere('role', StaffRole::ItDataClerk)['username']);
         $this->assertSame('BIL-001', $accounts->firstWhere('role', StaffRole::BillingSupervisor)['employee_id']);
-        $this->assertSame('SUP-001', $accounts->first()['employee_id']);
+        $this->assertSame('ADM-001', $accounts->first()['employee_id']);
+        $this->assertSame('SUP-001', $accounts->firstWhere('level', ManagementLevel::Supervisor)['employee_id']);
 
         foreach ($this->staff() as $user) {
             $this->assertNotNull(User::query()->where('email', $user->email)->first());
@@ -146,7 +157,7 @@ class BloodCenterStaffSeederTest extends TestCase
 
         $this->seed(BloodCenterStaffSeeder::class);
 
-        $this->assertSame(14, $this->staff()->count());
+        $this->assertSame(15, $this->staff()->count());
         $this->assertTrue(Hash::check('Changed-Pass9', $user->fresh()->password));
     }
 
@@ -190,7 +201,7 @@ class BloodCenterStaffSeederTest extends TestCase
         $this->seedStaff();
 
         // Two only: the login route is throttled to five a minute.
-        foreach (['supervisor@redagos.test', 'billing.supervisor@redagos.test'] as $email) {
+        foreach (['center.admin@redagos.test', 'billing.supervisor@redagos.test'] as $email) {
             $this->postJson('/api/login', [
                 'email' => $email,
                 'password' => BloodCenterStaffSeeder::PASSWORD,

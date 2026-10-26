@@ -4,12 +4,15 @@ namespace App\Models;
 
 use App\Enums\AccountStatus;
 use App\Enums\Department;
+use App\Enums\HospitalRole;
+use App\Enums\ManagementLevel;
 use App\Enums\RoleName;
 use App\Enums\StaffRole;
 use App\Notifications\ResetPasswordNotification;
 use App\Notifications\VerifyEmailNotification;
 use App\Support\AdminPrivileges;
 use App\Support\DepartmentPermissions;
+use App\Support\HospitalPermissions;
 use Database\Factories\UserFactory;
 use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
@@ -37,6 +40,7 @@ use Laravel\Sanctum\HasApiTokens;
     'terms_accepted_at',
     'employee_id',
     'position',
+    'credentials',
     'is_super_admin',
     'admin_privileges',
 ])]
@@ -64,14 +68,22 @@ class User extends Authenticatable implements MustVerifyEmail
         return [
             'email_verified_at' => 'datetime',
             'activated_at' => 'datetime',
+            // Neither is fillable: both are written with forceFill() by the
+            // counter's sign-in slip and the donor's own password change.
+            'sign_in_issued_at' => 'datetime',
+            'password_change_required' => 'boolean',
             'terms_accepted_at' => 'datetime',
             'account_status' => AccountStatus::class,
             'department' => Department::class,
             'staff_role' => StaffRole::class,
+            'additional_staff_roles' => 'array',
+            'hospital_role' => HospitalRole::class,
             'staff_privileges' => 'array',
-            'is_supervisor' => 'boolean',
+            'management_level' => ManagementLevel::class,
             'is_super_admin' => 'boolean',
             'admin_privileges' => 'array',
+            // A staff member's own switches (StaffNotificationTopics).
+            'notification_preferences' => 'array',
             'password' => 'hashed',
         ];
     }
@@ -83,24 +95,119 @@ class User extends Authenticatable implements MustVerifyEmail
      * alongside it is overwritten on save so the two can never disagree. A
      * custom role keeps the department it was assigned, since nothing else
      * could supply one. An account with no role at all has no department.
+     *
+     * The additional roles are kept to the main role's department, without
+     * repeats and without the main role itself: one person's roles are all in
+     * one department (project owner, 2026-10-17). A list with no main role
+     * promotes its first entry, so an account never holds only "extra" roles.
+     * StaffService refuses a mismatch with a message first; this is the floor.
      */
     protected static function booted(): void
     {
         static::saving(function (User $user): void {
+            $additional = array_values(array_filter(array_map(
+                fn ($value): ?StaffRole => StaffRole::tryFrom((string) $value),
+                $user->additional_staff_roles ?? []
+            )));
+
+            if ($user->staff_role === null && $additional !== []) {
+                $user->staff_role = array_shift($additional);
+            }
+
             if ($user->staff_role !== null) {
                 $user->department = $user->staff_role->department();
             } elseif (blank($user->custom_role)) {
                 $user->department = null;
             }
+
+            $kept = [];
+
+            foreach ($additional as $role) {
+                if ($role !== $user->staff_role && $role->department() === $user->department && ! in_array($role->value, $kept, true)) {
+                    $kept[] = $role->value;
+                }
+            }
+
+            $user->additional_staff_roles = $kept === [] ? null : $kept;
         });
     }
 
     /**
-     * The role as the staff roster shows it: a predefined role's title, or the custom one typed.
+     * The name a staff member signs with: "Rowena Tan, RMT", or just the name without credentials.
+     *
+     * Every department prints this wherever it says who did something:
+     * screened by, labelled by, received by (project owner, 2026-10-22). A
+     * relation loaded with a column list must include `credentials`, or the
+     * name prints without them.
+     */
+    public function signatureName(): string
+    {
+        $name = trim($this->first_name.' '.$this->last_name);
+        $credentials = trim((string) $this->credentials);
+
+        return $credentials === '' ? $name : $name.', '.$credentials;
+    }
+
+    /**
+     * signatureName() for an actor who may be missing.
+     */
+    public static function signatureOf(?self $user): ?string
+    {
+        return $user?->signatureName();
+    }
+
+    /**
+     * Every predefined role the account holds: the main one first.
+     *
+     * @return array<int, StaffRole>
+     */
+    public function staffRoles(): array
+    {
+        $roles = $this->staff_role !== null ? [$this->staff_role] : [];
+
+        foreach ($this->additional_staff_roles ?? [] as $value) {
+            $role = StaffRole::tryFrom((string) $value);
+
+            if ($role !== null && ! in_array($role, $roles, true)) {
+                $roles[] = $role;
+            }
+        }
+
+        return $roles;
+    }
+
+    /**
+     * Whether the account holds this predefined role, as its main role or another.
+     *
+     * Use this, never `staff_role ===`, wherever a role is a qualification:
+     * the department's correction approver, the Billing Supervisor.
+     */
+    public function hasStaffRole(StaffRole $role): bool
+    {
+        return in_array($role, $this->staffRoles(), true);
+    }
+
+    /**
+     * Every role as the staff roster shows it: the predefined titles, then the custom one typed.
+     *
+     * @return array<int, string>
+     */
+    public function roleLabels(): array
+    {
+        return [
+            ...array_map(fn (StaffRole $role): string => $role->label(), $this->staffRoles()),
+            ...(filled($this->custom_role) ? [$this->custom_role] : []),
+        ];
+    }
+
+    /**
+     * The roles on one line, e.g. "Medical Receptionist, Phlebotomist".
      */
     public function roleLabel(): ?string
     {
-        return $this->staff_role?->label() ?? (filled($this->custom_role) ? $this->custom_role : null);
+        $labels = $this->roleLabels();
+
+        return $labels === [] ? null : implode(', ', $labels);
     }
 
     public function roles(): BelongsToMany
@@ -134,7 +241,7 @@ class User extends Authenticatable implements MustVerifyEmail
     }
 
     /**
-     * Get every ability this account holds through its staff role or the management level.
+     * Get every ability this account holds through its staff role or its management level.
      *
      * This is what the `can:` route middleware resolves against, and what the
      * client mirrors to decide which navigation to render. The server remains
@@ -146,16 +253,36 @@ class User extends Authenticatable implements MustVerifyEmail
     {
         return array_values(array_unique([
             ...DepartmentPermissions::for($this),
+            ...HospitalPermissions::for($this),
             ...AdminPrivileges::for($this),
         ]));
     }
 
     /**
+     * Whether this account is its blood centre's Admin: staff, roles, settings
+     * and escalated correction decisions, but no department work.
+     */
+    public function isCenterAdmin(): bool
+    {
+        return $this->management_level === ManagementLevel::Admin;
+    }
+
+    /**
+     * Whether this account holds the view-only Supervisor level.
+     *
+     * Not the Laboratory or Billing Supervisor: those are staff roles.
+     */
+    public function isCenterSupervisor(): bool
+    {
+        return $this->management_level === ManagementLevel::Supervisor;
+    }
+
+    /**
      * Determine whether the user works in the given department.
      *
-     * Deliberately independent of is_supervisor: this answers "where do they
-     * work", not "what may they do". Use abilities() for the latter, because a
-     * supervisor holds every ability whatever their department says.
+     * Deliberately independent of management_level: this answers "where do
+     * they work", not "what may they do". Use abilities() for the latter,
+     * because a level adds abilities whatever their department says.
      */
     public function worksIn(Department $department): bool
     {

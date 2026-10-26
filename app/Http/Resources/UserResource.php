@@ -32,6 +32,12 @@ class UserResource extends JsonResource
             'username' => $this->username,
             'account_status' => $this->account_status?->value,
             'email_verified' => $this->hasVerifiedEmail(),
+            // Signed in with a temporary password from the counter's slip: the
+            // client sends them to set their own, and every other endpoint
+            // refuses until they do (EnsurePasswordChanged). Named without the
+            // word "password": SensitiveDataExposureTest refuses any payload
+            // that carries it, and that blunt check is worth keeping.
+            'temporary_sign_in' => (bool) $this->password_change_required,
             'activated_at' => $this->activated_at?->toISOString(),
             'roles' => $this->whenLoaded(
                 'roles',
@@ -41,6 +47,10 @@ class UserResource extends JsonResource
             'department' => $this->department?->value,
             'department_label' => $this->department?->label(),
             'staff_role' => $this->staff_role?->value,
+            // Every predefined role held, main first. staff_role is the main one.
+            'staff_roles' => array_map(fn ($role): string => $role->value, $this->resource->staffRoles()),
+            'hospital_role' => $this->hospital_role?->value,
+            'hospital_role_label' => $this->hospital_role?->label(),
             'staff_role_label' => $this->staff_role?->label(),
             'custom_role' => $this->custom_role,
             'role_label' => $this->resource->roleLabel(),
@@ -48,7 +58,10 @@ class UserResource extends JsonResource
                 fn ($privilege): string => $privilege->value,
                 DepartmentPermissions::privilegesOf($this->resource)
             ),
-            'is_supervisor' => (bool) $this->is_supervisor,
+            // admin, supervisor, or null. Not the Laboratory or Billing
+            // Supervisor, which are staff roles above.
+            'management_level' => $this->management_level?->value,
+            'management_level_label' => $this->management_level?->label(),
             'is_super_admin' => (bool) $this->is_super_admin,
             // The raw grant, separate from `permissions` below. An unrestricted
             // admin holds every privilege without any of them being stored, so

@@ -36,11 +36,12 @@ class BloodRequestHistory
      * @var array<int, string>
      */
     private const TIMELINE_RELATIONS = [
-        'actor:id,first_name,last_name',
+        'actor:id,first_name,last_name,credentials',
         'actorFacility:id,name',
         'relatedRequest:id,reference_number,target_facility_id',
         'relatedRequest.targetFacility:id,name',
         'requestItem.component:id,name',
+        'requestItem.bloodType:id,code',
         'request:id,reference_number,target_facility_id',
         'request.targetFacility:id,name',
     ];
@@ -71,8 +72,9 @@ class BloodRequestHistory
         array $meta = [],
     ): BloodRequestEvent {
         $lines = $this->resolver->freshFigures($request);
-        $request->loadMissing('items.component');
+        $request->loadMissing(['items.component', 'items.bloodType']);
         $names = $request->items->pluck('component.name', 'id');
+        $types = $request->items->pluck('bloodType.code', 'id');
 
         return BloodRequestEvent::query()->create([
             'request_id' => $request->id,
@@ -86,6 +88,7 @@ class BloodRequestHistory
             'related_request_id' => $related?->id,
             'lines' => $lines->map(fn (array $line): array => [
                 'request_item_id' => $line['request_item_id'],
+                'blood_type' => $types->get($line['request_item_id']),
                 'component' => $names->get($line['request_item_id']),
                 'requested' => $line['requested'],
                 'reserved' => $line['reserved'],
@@ -183,7 +186,7 @@ class BloodRequestHistory
             'to_status_label' => $event->to_status?->label(),
             'actor' => $event->actor ? [
                 'id' => $event->actor->id,
-                'name' => trim($event->actor->first_name.' '.$event->actor->last_name),
+                'name' => $event->actor->signatureName(),
             ] : null,
             'actor_facility' => $event->actorFacility ? [
                 'id' => $event->actorFacility->id,
@@ -197,6 +200,7 @@ class BloodRequestHistory
             ] : null,
             'item' => $event->requestItem ? [
                 'id' => $event->requestItem->id,
+                'blood_type' => $event->requestItem->bloodType?->code,
                 'component' => $event->requestItem->component?->name,
             ] : null,
             'related_request' => $event->relatedRequest ? [

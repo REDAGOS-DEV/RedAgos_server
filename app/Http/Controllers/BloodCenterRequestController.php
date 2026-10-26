@@ -13,6 +13,7 @@ use App\Service\RequestAllocationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
  * The fulfilling side: a blood centre's incoming queue and what it may do with it.
@@ -48,6 +49,14 @@ class BloodCenterRequestController extends Controller
     }
 
     /**
+     * The queue as CSV, with the list's filters.
+     */
+    public function export(ListBloodRequestsRequest $request): StreamedResponse
+    {
+        return $this->incomingRequestService->csv($request->user(), $request->safe()->except('per_page'));
+    }
+
+    /**
      * Summarise the queue for the dashboard counters.
      */
     public function summary(Request $request): JsonResponse
@@ -77,9 +86,26 @@ class BloodCenterRequestController extends Controller
                 $request->user(),
                 $bloodRequest,
                 $validated['quantity'] ?? null,
-                $validated['request_item_id'] ?? null
+                $validated['request_item_id'] ?? null,
+                $validated['unit_ids'] ?? null
             )
         );
+    }
+
+    /**
+     * The referral slip a watcher takes to the next blood centre.
+     */
+    public function referralSlip(Request $request, int $bloodRequest): JsonResponse
+    {
+        return response()->json($this->incomingRequestService->referralSlip($request->user(), $bloodRequest));
+    }
+
+    /**
+     * The units staff may pick for each line of a request, first-expiring first.
+     */
+    public function units(Request $request, int $bloodRequest): JsonResponse
+    {
+        return response()->json($this->requestAllocationService->candidates($request->user(), $bloodRequest));
     }
 
     /**

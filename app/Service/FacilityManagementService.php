@@ -4,6 +4,7 @@ namespace App\Service;
 
 use App\Enums\AccountStatus;
 use App\Enums\FacilityTypeName;
+use App\Enums\HospitalRole;
 use App\Models\Facility;
 use App\Models\User;
 use App\Repository\AuthRepository;
@@ -102,6 +103,12 @@ class FacilityManagementService
 
                 $this->facilityRepository->attachRole($primary, $type->role());
                 $this->facilityRepository->setPrimaryAccount($facility, $primary);
+
+                // A blood bank's primary account is its Head (project owner, 2026-10-11).
+                if ($type === FacilityTypeName::BloodBank) {
+                    $primary->hospital_role = HospitalRole::Head;
+                    $primary->save();
+                }
 
                 if ($verified) {
                     // The same state the emailed link leaves behind, so a
@@ -295,7 +302,7 @@ class FacilityManagementService
             'position' => $account->position,
             'account_status' => $account->account_status?->value,
             'email_verified' => $account->hasVerifiedEmail(),
-            'is_supervisor' => (bool) $account->is_supervisor,
+            'management_level' => $account->management_level?->value,
         ];
     }
 }

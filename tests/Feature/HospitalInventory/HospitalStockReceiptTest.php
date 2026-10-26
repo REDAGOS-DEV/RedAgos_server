@@ -15,7 +15,9 @@ use Tests\Feature\HospitalInventory\Concerns\BuildsHospitalStock;
 use Tests\TestCase;
 
 /**
- * Receipt is how a bag reaches a hospital blood bank's own shelf — and the only way.
+ * Receipt is how a bag reaches a hospital blood bank's custody — and the only
+ * way. Since 2026-10-11 it arrives awaiting stock-in; inventory staff then
+ * stock it in (HospitalStockInTest).
  *
  * The centre's side of the bag must not move: it was dispatched, it reads
  * `issued`, and the hospital's custody is a separate row beside it. A change
@@ -33,7 +35,7 @@ class HospitalStockReceiptTest extends TestCase
         $this->buildScenario();
     }
 
-    public function test_confirming_receipt_puts_each_bag_on_the_hospital_shelf_as_available(): void
+    public function test_confirming_receipt_takes_each_bag_into_custody_awaiting_stock_in(): void
     {
         $request = $this->releasedRequest(2);
 
@@ -41,7 +43,8 @@ class HospitalStockReceiptTest extends TestCase
             ->postJson("/api/hospital/blood-requests/{$request->id}/confirm-receipt")
             ->assertOk()
             ->assertJsonPath('received_count', 2)
-            ->assertJsonPath('stocked_count', 2);
+            ->assertJsonPath('stocked_count', 2)
+            ->assertJsonPath('awaiting_stock_in', 2);
 
         $stocked = HospitalUnit::query()->orderBy('unit_id')->get();
 
@@ -52,7 +55,8 @@ class HospitalStockReceiptTest extends TestCase
         );
 
         foreach ($stocked as $unit) {
-            $this->assertSame(HospitalUnitStatus::Available, $unit->status);
+            $this->assertSame(HospitalUnitStatus::Received, $unit->status);
+            $this->assertNull($unit->stocked_at);
             $this->assertSame($this->hospital->id, $unit->facility_id);
             $this->assertSame($unit->unit_id, $unit->requestAllocation->unit_id);
         }
@@ -147,6 +151,10 @@ class HospitalStockReceiptTest extends TestCase
 
         $unit = HospitalUnit::query()->where('unit_id', $bag->id)->firstOrFail();
 
+        $this->actingAs($this->requester)
+            ->postJson('/api/hospital/inventory/stock-in', ['units' => [['unit_id' => $unit->unit_id, 'storage_location' => 'Ref 1']]])
+            ->assertOk();
+
         $this->tagUnit($unit)->assertOk();
         $this->act($unit, 'crossmatch')->assertOk();
         $this->act($unit, 'transfuse')->assertOk();
@@ -160,7 +168,7 @@ class HospitalStockReceiptTest extends TestCase
         $this->assertSame($centreCounts, app(InventoryRepository::class)->summaryCounts($this->centre->id));
     }
 
-    public function test_each_stocked_bag_is_audited_against_the_bag_itself(): void
+    public function test_each_received_bag_is_audited_against_the_bag_itself(): void
     {
         $request = $this->releasedRequest(2);
 
@@ -168,7 +176,9 @@ class HospitalStockReceiptTest extends TestCase
             ->postJson("/api/hospital/blood-requests/{$request->id}/confirm-receipt")
             ->assertOk();
 
-        $rows = AuditLog::query()->where('action', 'hospital_inventory.stocked')->get();
+        // Taken into custody; stocking in is audited separately, as hospital_inventory.stocked.
+        $this->assertSame(0, AuditLog::query()->where('action', 'hospital_inventory.stocked')->count());
+        $rows = AuditLog::query()->where('action', 'hospital_inventory.received')->get();
 
         $this->assertCount(2, $rows);
         $this->assertEqualsCanonicalizing(

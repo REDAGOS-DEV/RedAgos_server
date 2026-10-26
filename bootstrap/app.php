@@ -1,7 +1,9 @@
 <?php
 
 use App\Http\Middleware\EnsureBloodCenterOperational;
+use App\Http\Middleware\EnsurePasswordChanged;
 use App\Http\Middleware\RequireRole;
+use App\Http\Middleware\VerifyXenditCallbackToken;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -18,6 +20,13 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias([
             'role' => RequireRole::class,
             'facility.operational' => EnsureBloodCenterOperational::class,
+            'xendit.callback' => VerifyXenditCallbackToken::class,
+        ]);
+
+        // Every API route: an account on the counter's temporary password may
+        // only set its own (see the middleware for the few exceptions).
+        $middleware->api(append: [
+            EnsurePasswordChanged::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

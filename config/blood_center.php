@@ -96,4 +96,22 @@ return [
         'seal_path' => resource_path('images/doh-seal.png'),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Cash Shifts at the Billing Counter
+    |--------------------------------------------------------------------------
+    |
+    | Off, the counter takes payments without a shift: the owner decided on
+    | 2026-10-11 that with one billing staff member there is no drawer to hand
+    | over, and a void is allowed on the day the payment was recorded.
+    |
+    | On, every counter payment goes into the cashier's open shift, the shift
+    | is closed with the drawer counted, and a void is allowed only while the
+    | payment's shift is still open. Turn it on once more than one cashier
+    | shares the counter.
+    |
+    */
+
+    'cash_shifts' => (bool) env('BILLING_CASH_SHIFTS', false),
+
 ];

@@ -6,6 +6,7 @@ use App\Enums\AllocationStatus;
 use App\Enums\BloodUnitStatus;
 use App\Enums\ClearanceKind;
 use App\Enums\DonationStatus;
+use App\Models\AuditLog;
 use App\Models\BloodUnit;
 use App\Models\Donation;
 use App\Models\RequestAllocation;
@@ -32,11 +33,83 @@ class InventoryRepository
     public function paginateUnits(int $facilityId, array $filters, int $perPage): LengthAwarePaginator
     {
         return $this->filtered($facilityId, $filters)
-            // The donation and its clearances, for the quarantine state of a
-            // held unit. Constrained so a page of available stock does not
-            // drag every donation's columns along.
-            ->with(['bloodType', 'component', 'donation:id,status', 'donation.clearances'])
-            ->fefo()
+            // The donation's date, for when the bag was collected.
+            // Constrained so a page of available stock does not drag every
+            // donation's columns along.
+            ->with(['bloodType', 'component', 'donation:id,status,donation_date'])
+            // FEFO unless the caller asks for the newest bags first: a listing
+            // of every status in FEFO order opens on long-gone units.
+            ->when(
+                ($filters['sort'] ?? 'fefo') === 'recent',
+                fn (Builder $query): Builder => $query->orderByDesc('created_at')->orderByDesc('id'),
+                fn (Builder $query): Builder => $query->fefo()
+            )
+            ->paginate($perPage)
+            ->withQueryString();
+    }
+
+    /**
+     * Units this facility issued between two instants.
+     *
+     * Counted from the allocation's released_at, the moment a bag left the
+     * building, and scoped through the unit, so only this centre's own bags
+     * count.
+     */
+    public function issuedCountBetween(int $facilityId, CarbonImmutable $from, CarbonImmutable $to): int
+    {
+        return RequestAllocation::query()
+            ->join('blood_units', 'blood_units.id', '=', 'request_allocations.unit_id')
+            ->where('blood_units.facility_id', $facilityId)
+            ->where('request_allocations.status', AllocationStatus::Released->value)
+            ->whereBetween('request_allocations.released_at', [$from, $to])
+            ->count();
+    }
+
+    /**
+     * Units this facility released from quarantine to stock since an instant.
+     */
+    public function releasedToStockSince(int $facilityId, CarbonImmutable $since): int
+    {
+        return BloodUnit::query()
+            ->forFacility($facilityId)
+            ->where('released_at', '>=', $since)
+            ->count();
+    }
+
+    /**
+     * What happened to this facility's units, newest first.
+     *
+     * Read from the audit trail, scoped through the unit each row is about
+     * rather than through the row's context: a facility id in the context is
+     * written by some actions and not others, and the unit is the one thing
+     * every row has. Only the actions this centre itself takes are listed, so
+     * a hospital confirming receipt of a bag never shows up here.
+     *
+     * @param  array<int, string>  $actions
+     * @return LengthAwarePaginator<int, AuditLog>
+     */
+    public function paginateActivity(int $facilityId, array $actions, ?string $unitId, int $perPage): LengthAwarePaginator
+    {
+        return AuditLog::query()
+            ->join('blood_units', 'blood_units.id', '=', 'audit_logs.auditable_id')
+            ->join('blood_types', 'blood_types.id', '=', 'blood_units.blood_type_id')
+            ->join('blood_components', 'blood_components.id', '=', 'blood_units.component_id')
+            ->where('audit_logs.auditable_type', BloodUnit::class)
+            ->where('blood_units.facility_id', $facilityId)
+            ->whereIn('audit_logs.action', $actions)
+            ->when($unitId !== null, fn (Builder $query): Builder => $query->where('blood_units.id', $unitId))
+            ->with('actor:id,first_name,last_name,credentials')
+            ->select([
+                'audit_logs.id',
+                'audit_logs.actor_id',
+                'audit_logs.action',
+                'audit_logs.auditable_id',
+                'audit_logs.created_at',
+                'blood_types.code as blood_type_code',
+                'blood_components.name as component_name',
+            ])
+            ->orderByDesc('audit_logs.created_at')
+            ->orderByDesc('audit_logs.id')
             ->paginate($perPage)
             ->withQueryString();
     }
@@ -88,22 +161,6 @@ class InventoryRepository
             ->orderBy('id')
             ->pluck('id')
             ->all();
-    }
-
-    /**
-     * Lock a donation's quarantined units, for release.
-     *
-     * @return Collection<int, BloodUnit>
-     */
-    public function lockQuarantinedUnits(int $donationId, int $facilityId): Collection
-    {
-        return BloodUnit::query()
-            ->forFacility($facilityId)
-            ->where('donation_id', $donationId)
-            ->where('status', BloodUnitStatus::Quarantined)
-            ->orderBy('id')
-            ->lockForUpdate()
-            ->get();
     }
 
     public function lockUnit(string $unitId, int $facilityId): ?BloodUnit
@@ -347,6 +404,131 @@ class InventoryRepository
     }
 
     /**
+     * Stock on hand per blood type, split the way the Issuance dashboard draws it.
+     *
+     * `expiring_soon` is the part of `available` dated within seven days, the
+     * same window as nearExpiryCounts(). `reserved` is held for a request and
+     * `quarantined` is booked in but not yet cleared. A type appears once it
+     * has any of the three.
+     *
+     * @return array<int, array{blood_type_id: int, code: string, available: int, expiring_soon: int, reserved: int, quarantined: int}>
+     */
+    public function stockByBloodType(int $facilityId, string $operationalDate): array
+    {
+        $soonUntil = CarbonImmutable::parse($operationalDate)->addDays(7)->toDateString();
+
+        return BloodUnit::query()
+            ->forFacility($facilityId)
+            ->whereIn('blood_units.status', [
+                BloodUnitStatus::Available->value,
+                BloodUnitStatus::Reserved->value,
+                BloodUnitStatus::Quarantined->value,
+            ])
+            ->join('blood_types', 'blood_types.id', '=', 'blood_units.blood_type_id')
+            ->groupBy('blood_types.id', 'blood_types.code')
+            ->orderBy('blood_types.id')
+            ->selectRaw(
+                'blood_types.id as blood_type_id, blood_types.code as code,'
+                .' SUM(CASE WHEN blood_units.status = ? THEN 1 ELSE 0 END) as available,'
+                .' SUM(CASE WHEN blood_units.status = ? AND blood_units.expiry_date BETWEEN ? AND ? THEN 1 ELSE 0 END) as expiring_soon,'
+                .' SUM(CASE WHEN blood_units.status = ? THEN 1 ELSE 0 END) as reserved,'
+                .' SUM(CASE WHEN blood_units.status = ? THEN 1 ELSE 0 END) as quarantined',
+                [
+                    BloodUnitStatus::Available->value,
+                    BloodUnitStatus::Available->value,
+                    $operationalDate,
+                    $soonUntil,
+                    BloodUnitStatus::Reserved->value,
+                    BloodUnitStatus::Quarantined->value,
+                ]
+            )
+            ->get()
+            ->map(fn ($row): array => [
+                'blood_type_id' => (int) $row->blood_type_id,
+                'code' => $row->code,
+                'available' => (int) $row->available,
+                'expiring_soon' => (int) $row->expiring_soon,
+                'reserved' => (int) $row->reserved,
+                'quarantined' => (int) $row->quarantined,
+            ])
+            ->all();
+    }
+
+    /**
+     * The facility's stock levels as they stood at one instant, rebuilt from
+     * the timestamps each unit and each hold carries.
+     *
+     * A unit counts from the moment it was booked in until it was issued,
+     * discarded or expired. Until its release it is quarantined. One with no
+     * release stamp that has since left quarantine went straight into stock
+     * (seeded or older rows), so it counts as released on arrival. Once
+     * released it is reserved while a hold on it was open, and available
+     * otherwise. Bags a hospital recorded from a direct distribution were
+     * never this centre's stock and are left out.
+     *
+     * `$at` is an instant in the application's timezone, as boundsFor() gives
+     * it; `$operationalDate` is that instant's date, for the expiry window.
+     *
+     * @return array{available: int, expiring_soon: int, reserved: int, quarantined: int}
+     */
+    public function levelsAt(int $facilityId, CarbonImmutable $at, string $operationalDate): array
+    {
+        $soonUntil = CarbonImmutable::parse($operationalDate)->addDays(7)->toDateString();
+        $leftQuarantine = BloodUnitStatus::leftQuarantineValues();
+        $statusList = implode(', ', array_fill(0, count($leftQuarantine), '?'));
+
+        // Written so neither ever evaluates to NULL: NOT NULL is NULL, and a
+        // CASE on it would quietly count the unit nowhere.
+        $released = '((blood_units.released_at IS NOT NULL AND blood_units.released_at <= ?)'
+            ." OR (blood_units.released_at IS NULL AND blood_units.status IN ({$statusList})))";
+        $held = 'EXISTS (SELECT 1 FROM request_allocations AS ra_hold'
+            .' WHERE ra_hold.unit_id = blood_units.id'
+            .' AND ra_hold.allocated_at <= ?'
+            .' AND (ra_hold.released_at IS NULL OR ra_hold.released_at > ?)'
+            .' AND (ra_hold.cancelled_at IS NULL OR ra_hold.cancelled_at > ?))';
+
+        $releasedBindings = [$at, ...$leftQuarantine];
+        $heldBindings = [$at, $at, $at];
+
+        $row = BloodUnit::query()
+            ->forFacility($facilityId)
+            ->whereNull('blood_units.direct_distribution_id')
+            ->where('blood_units.created_at', '<=', $at)
+            ->where(fn (Builder $query): Builder => $query
+                ->whereNull('blood_units.discarded_at')
+                ->orWhere('blood_units.discarded_at', '>', $at))
+            ->where(fn (Builder $query): Builder => $query
+                ->whereNull('blood_units.expired_at')
+                ->orWhere('blood_units.expired_at', '>', $at))
+            ->whereNotExists(fn ($query) => $query
+                ->selectRaw('1')
+                ->from('request_allocations as ra_issue')
+                ->whereColumn('ra_issue.unit_id', 'blood_units.id')
+                ->where('ra_issue.status', AllocationStatus::Released->value)
+                ->where('ra_issue.released_at', '<=', $at))
+            ->selectRaw(
+                "SUM(CASE WHEN NOT {$released} THEN 1 ELSE 0 END) as quarantined,"
+                ." SUM(CASE WHEN {$released} AND {$held} THEN 1 ELSE 0 END) as reserved,"
+                ." SUM(CASE WHEN {$released} AND NOT {$held} THEN 1 ELSE 0 END) as available,"
+                ." SUM(CASE WHEN {$released} AND NOT {$held} AND blood_units.expiry_date BETWEEN ? AND ? THEN 1 ELSE 0 END) as expiring_soon",
+                [
+                    ...$releasedBindings,
+                    ...$releasedBindings, ...$heldBindings,
+                    ...$releasedBindings, ...$heldBindings,
+                    ...$releasedBindings, ...$heldBindings, $operationalDate, $soonUntil,
+                ]
+            )
+            ->first();
+
+        return [
+            'available' => (int) ($row?->available ?? 0),
+            'expiring_soon' => (int) ($row?->expiring_soon ?? 0),
+            'reserved' => (int) ($row?->reserved ?? 0),
+            'quarantined' => (int) ($row?->quarantined ?? 0),
+        ];
+    }
+
+    /**
      * Issuable stock counted by component, blood type and expiry date — the daily stock sheet's cells.
      *
      * Available AND not past its date, the same rule the hospital availability
@@ -373,6 +555,32 @@ class InventoryRepository
                 'blood_type_code' => (string) $row->blood_type_code,
                 // Normalised: SQLite hands back a date string, Postgres may add a time.
                 'expiry_date' => CarbonImmutable::parse($row->expiry_date)->toDateString(),
+                'units' => (int) $row->units,
+            ])
+            ->all();
+    }
+
+    /**
+     * Issuable stock counted by blood type and component, for threshold monitoring.
+     *
+     * The same rule as stockReportRows(): available AND not past its date, so a
+     * threshold is judged against blood that can legally be issued rather than
+     * against a unit the nightly sweep simply has not reached yet.
+     *
+     * @return array<int, array{blood_type_id: int, component_id: int, units: int}>
+     */
+    public function issuableCountsByTypeAndComponent(int $facilityId, string $operationalDate): array
+    {
+        return BloodUnit::query()
+            ->forFacility($facilityId)
+            ->where('blood_units.status', BloodUnitStatus::Available->value)
+            ->whereDate('blood_units.expiry_date', '>=', $operationalDate)
+            ->groupBy('blood_units.blood_type_id', 'blood_units.component_id')
+            ->selectRaw('blood_units.blood_type_id, blood_units.component_id, COUNT(*) as units')
+            ->get()
+            ->map(fn ($row): array => [
+                'blood_type_id' => (int) $row->blood_type_id,
+                'component_id' => (int) $row->component_id,
                 'units' => (int) $row->units,
             ])
             ->all();
@@ -446,6 +654,72 @@ class InventoryRepository
             return new Collection;
         }
 
+        return $this->issuableUnits($facilityId, $bloodTypeId, $componentId, $operationalDate)
+            ->limit($limit)
+            ->lockForUpdate()
+            ->get();
+    }
+
+    /**
+     * The units staff may pick for a request line: the same set the walk
+     * above takes from, first-expiring first, unlocked. Reading holds nothing.
+     *
+     * @return Collection<int, BloodUnit>
+     */
+    public function candidateUnits(
+        int $facilityId,
+        int $bloodTypeId,
+        int $componentId,
+        string $operationalDate,
+        int $limit = 100
+    ): Collection {
+        return $this->issuableUnits($facilityId, $bloodTypeId, $componentId, $operationalDate)
+            ->limit($limit)
+            ->get();
+    }
+
+    /**
+     * Lock the named units of a facility, for a hand-picked allocation.
+     *
+     * Keyed by id. A unit of another facility is simply missing, which the
+     * caller reports as not in this centre's stock.
+     *
+     * @param  array<int, string>  $unitIds
+     * @return Collection<string, BloodUnit>
+     */
+    public function lockUnitsById(int $facilityId, array $unitIds): Collection
+    {
+        return BloodUnit::query()
+            ->forFacility($facilityId)
+            ->whereIn('id', $unitIds)
+            ->lockForUpdate()
+            ->get()
+            ->keyBy('id');
+    }
+
+    /**
+     * Those of these units some request already lays claim to.
+     *
+     * @param  array<int, string>  $unitIds
+     * @return array<int, string>
+     */
+    public function claimedUnitIds(array $unitIds): array
+    {
+        return RequestAllocation::query()
+            ->whereIn('unit_id', $unitIds)
+            ->whereIn('status', AllocationStatus::claimingValues())
+            ->pluck('unit_id')
+            ->all();
+    }
+
+    /**
+     * Issuable units of one blood type and component: available, in date and
+     * held for nobody, first-expiring first.
+     *
+     * @return Builder<BloodUnit>
+     */
+    private function issuableUnits(int $facilityId, int $bloodTypeId, int $componentId, string $operationalDate): Builder
+    {
         return BloodUnit::query()
             ->forFacility($facilityId)
             ->where('blood_type_id', $bloodTypeId)
@@ -458,10 +732,7 @@ class InventoryRepository
                     ->whereColumn('request_allocations.unit_id', 'blood_units.id')
                     ->whereIn('request_allocations.status', AllocationStatus::claimingValues());
             })
-            ->fefo()
-            ->limit($limit)
-            ->lockForUpdate()
-            ->get();
+            ->fefo();
     }
 
     /**
@@ -661,9 +932,17 @@ class InventoryRepository
                             ->toDateString(),
                     ])
             )
+            // The unit number or where it is kept, either case: a scanned or
+            // typed number arrives as printed, a location as someone recalls it.
             ->when(
                 isset($filters['search']),
-                fn (Builder $query): Builder => $query->where('id', 'like', '%'.$filters['search'].'%')
+                function (Builder $query) use ($filters): Builder {
+                    $term = '%'.mb_strtolower($filters['search']).'%';
+
+                    return $query->where(fn (Builder $match): Builder => $match
+                        ->whereRaw('LOWER(blood_units.id) LIKE ?', [$term])
+                        ->orWhereRaw('LOWER(blood_units.storage_location) LIKE ?', [$term]));
+                }
             );
     }
 }

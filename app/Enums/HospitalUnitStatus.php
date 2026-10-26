@@ -14,9 +14,15 @@ namespace App\Enums;
  * patient. Pending Return is what a crossmatched bag becomes when its tag ends
  * without a transfusion — it is out of the fridge, so it is not stock again
  * until staff confirm it is back, or discard it.
+ *
+ * Received is where every bag starts (project owner, 2026-10-11): it has
+ * arrived and is in the hospital's custody, but is not stock until inventory
+ * staff stock it in, naming where it is stored. Only then is it Available.
  */
 enum HospitalUnitStatus: string
 {
+    case Received = 'received';
+
     case Available = 'available';
 
     case TagAssigned = 'tag_assigned';
@@ -47,6 +53,7 @@ enum HospitalUnitStatus: string
     public function label(): string
     {
         return match ($this) {
+            self::Received => 'Awaiting stock-in',
             self::Available => 'Available',
             self::TagAssigned => 'Tag Assigned',
             self::TagCrossmatched => 'Tag Crossmatched',
@@ -69,6 +76,8 @@ enum HospitalUnitStatus: string
     public function transitions(): array
     {
         return match ($this) {
+            // Damaged on arrival is discarded before it is ever stocked.
+            self::Received => [self::Available, self::Expired, self::Discarded],
             self::Available => [self::TagAssigned, self::Expired, self::Discarded],
             self::TagAssigned => [self::TagCrossmatched, self::Available],
             self::TagCrossmatched => [self::Transfused, self::PendingReturn],

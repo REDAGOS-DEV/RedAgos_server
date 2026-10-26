@@ -44,7 +44,10 @@ class UpdateBloodCenterProfileRequest extends FormRequest
                     ->where('facility_id', $user?->facility_id)
                     ->ignore($user?->id),
             ],
-            'position' => ['sometimes', 'nullable', 'string', 'max:100'],
+            // The title, printed after the name on everything the staff member
+            // signs: RMT, MD, RN. Blood-centre accounts keep no job post beside
+            // it (project owner, 2026-10-22).
+            'credentials' => ['sometimes', 'nullable', 'string', 'max:40', 'regex:/^[\pL\d][\pL\d.,&()\/ -]*$/u'],
         ];
     }
 
@@ -54,6 +57,8 @@ class UpdateBloodCenterProfileRequest extends FormRequest
     public function messages(): array
     {
         return [
+            'credentials.regex' => 'Write the credentials as letters, for example RMT, or MD, FPCP.',
+            'credentials.max' => 'Keep the credentials to 40 characters.',
             'phone.regex' => 'Please enter a valid Philippine mobile number.',
             'phone.unique' => 'This phone number is already registered.',
             'employee_id.unique' => 'This employee ID is already used at this facility.',

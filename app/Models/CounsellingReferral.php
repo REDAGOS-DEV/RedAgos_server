@@ -23,6 +23,8 @@ class CounsellingReferral extends Model
         'contacted_at',
         'referred_at',
         'closed_at',
+        'contact_requested_at',
+        'contact_requested_by',
         'note',
         'updated_by',
     ];
@@ -41,6 +43,7 @@ class CounsellingReferral extends Model
             'contacted_at' => 'datetime',
             'referred_at' => 'datetime',
             'closed_at' => 'datetime',
+            'contact_requested_at' => 'datetime',
             // Free text about a person's infection follow-up: encrypted at
             // rest, as the questionnaire answers are.
             'note' => 'encrypted',
@@ -60,6 +63,15 @@ class CounsellingReferral extends Model
     public function facility(): BelongsTo
     {
         return $this->belongsTo(Facility::class);
+    }
+
+    /**
+     * The staff member who last asked the donor to contact the centre. Null
+     * for a request sent by itself, before requests were sent by hand.
+     */
+    public function contactRequester(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'contact_requested_by');
     }
 
     /**

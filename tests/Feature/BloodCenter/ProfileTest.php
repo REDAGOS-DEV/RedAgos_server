@@ -24,7 +24,9 @@ class ProfileTest extends TestCase
             ->getJson('/api/blood-center/profile')
             ->assertOk()
             ->assertJsonPath('profile.full_name', 'Maria Santos')
-            ->assertJsonPath('profile.position', 'Medical Technologist')
+            // No job post beside the title (project owner, 2026-10-22).
+            ->assertJsonMissingPath('profile.position')
+            ->assertJsonPath('profile.credentials', null)
             ->assertJsonPath('facility.name', 'My Center')
             ->assertJsonPath('account.roles', ['blood_center']);
     }
@@ -52,12 +54,12 @@ class ProfileTest extends TestCase
             ->patchJson('/api/blood-center/profile', [
                 'first_name' => 'Updated',
                 'employee_id' => 'EMP-001',
-                'position' => 'Registered Nurse',
+                'credentials' => 'RN',
             ])
             ->assertOk()
             ->assertJsonPath('profile.first_name', 'Updated')
             ->assertJsonPath('profile.employee_id', 'EMP-001')
-            ->assertJsonPath('profile.position', 'Registered Nurse');
+            ->assertJsonPath('profile.credentials', 'RN');
     }
 
     public function test_the_profile_endpoint_cannot_change_the_facility(): void

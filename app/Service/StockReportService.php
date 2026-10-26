@@ -101,6 +101,8 @@ class StockReportService
                 'id' => $facility->id,
                 'name' => $facility->name,
                 'logo_url' => $this->facilityLogoService->urlFor($facility),
+                // The centre's own left-hand logo; null means the DOH seal.
+                'seal_url' => $this->facilityLogoService->sealUrlFor($facility),
             ],
             'header' => config('blood_center.stock_report.header', []),
             'prepared_by' => $this->preparedBy($staff),
@@ -138,7 +140,7 @@ class StockReportService
 
         $pdf = Pdf::loadView('pdf.stock-inventory', [
             'report' => $report,
-            'seal' => $images ? $this->sealDataUri() : null,
+            'seal' => $images ? ($this->facilityLogoService->sealDataUriFor($facility) ?? $this->sealDataUri()) : null,
             'logo' => $images ? $this->facilityLogoService->dataUriFor($facility) : null,
         ])
             ->setPaper('a4', 'landscape')
@@ -324,13 +326,16 @@ class StockReportService
     }
 
     /**
-     * The sheet's "BY:" line: the signed-in staff member, and their post if recorded.
+     * The sheet's "BY:" line: the signed-in staff member and their title, if
+     * they have one ("ROWENA TAN, RMT"). Never their job post (project owner,
+     * 2026-10-22): the title is the only one a blood-centre account keeps.
      */
     private function preparedBy(User $staff): string
     {
         $name = strtoupper(trim($staff->first_name.' '.$staff->last_name));
+        $title = trim((string) $staff->credentials);
 
-        return $staff->position ? $name.', '.$staff->position : $name;
+        return $title === '' ? $name : $name.', '.$title;
     }
 
     /**

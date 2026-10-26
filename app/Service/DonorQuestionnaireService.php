@@ -43,7 +43,8 @@ class DonorQuestionnaireService
         private readonly DonorDirectoryRepository $donorDirectoryRepository,
         private readonly CollectionRepository $collectionRepository,
         private readonly AuditLogger $auditLogger,
-        private readonly EligibilityRuleEvaluator $evaluator
+        private readonly EligibilityRuleEvaluator $evaluator,
+        private readonly EligibilityService $eligibilityService
     ) {}
 
     /**
@@ -73,6 +74,127 @@ class DonorQuestionnaireService
     }
 
     /**
+     * The donor's questionnaire as the printed DOH form: answers, no review aids.
+     *
+     * Its own read, because the desk that scans the donor in prints the form
+     * that travels with them to the physician. The review markers and the
+     * server's advisory assessment stay on the physician's screen
+     * (show() above); the paper carries what the donor declared and nothing
+     * the centre made of it.
+     *
+     * @return array<string, mixed>
+     */
+    public function printable(User $staff, string $donorUuid, ?int $screeningId = null): array
+    {
+        $facility = $this->requireFacility($staff);
+
+        $donor = $this->donorDirectoryRepository->findDonor($donorUuid)
+            ?? throw $this->refuse(404, 'donor_not_found', 'No donor matches that identifier.');
+
+        $this->guardDonorHasPresented($donor->id, $facility);
+
+        [$screening, $source] = $this->resolveScreening($donor->id, $screeningId);
+
+        $this->auditLogger->record($staff, 'collection.questionnaire_printed', $donor, [
+            'facility_id' => $facility->id,
+            'screening_id' => $screening->id,
+            'question_version' => $screening->question_version,
+            'source' => $source,
+        ]);
+
+        $document = $this->present($screening, $source);
+
+        unset($document['computed_assessment'], $document['flagged_codes']);
+
+        $document['sections'] = array_map(
+            static fn (array $section): array => [
+                ...$section,
+                'questions' => array_map(
+                    static fn (array $question): array => array_diff_key($question, ['flagged' => true]),
+                    $section['questions']
+                ),
+            ],
+            $document['sections']
+        );
+
+        return ['data' => [
+            ...$document,
+            'facility' => ['name' => $facility->name],
+            'printed_at' => now()->toISOString(),
+        ]];
+    }
+
+    /**
+     * The current questionnaire, for a donor to answer on the counter's device.
+     *
+     * The same questions the app would put to this donor, gender-filtered the
+     * same way, with the consent statements they must accept. Nothing the donor
+     * declared before is in it.
+     *
+     * @return array<string, mixed>
+     */
+    public function counterForm(User $staff, string $donorUuid): array
+    {
+        $facility = $this->requireFacility($staff);
+
+        $donor = $this->donorDirectoryRepository->findDonor($donorUuid)
+            ?? throw $this->refuse(404, 'donor_not_found', 'No donor matches that identifier.');
+
+        $this->guardDonorHasPresented($donor->id, $facility);
+
+        $profile = $this->requireProfile($donor);
+        $current = $this->eligibilityRepository->currentValidScreening($donor->id);
+
+        return ['data' => [
+            ...$this->eligibilityService->questionnaireFor($profile),
+            'donor' => [
+                'full_name' => trim($donor->first_name.' '.$donor->last_name),
+                'donor_code' => 'DONOR-'.str_pad((string) $donor->id, 6, '0', STR_PAD_LEFT),
+                'gender' => $profile->gender,
+            ],
+            'prefill' => $this->eligibilityService->prefillFor($profile),
+            // A questionnaire that still stands is answered again only if the
+            // donor's health has changed; the form asks before it overwrites.
+            'current' => $this->reference($current),
+        ]];
+    }
+
+    /**
+     * Record the questionnaire a donor answered on the counter's device.
+     *
+     * The walk-in's only way to answer it: a donor registered at the counter
+     * has no sign-in. Gated on presentation like the read, so a counter cannot
+     * file answers for a donor who is not in front of it.
+     *
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    public function recordAtCounter(User $staff, string $donorUuid, array $payload, bool $force = false): array
+    {
+        $facility = $this->requireFacility($staff);
+
+        $donor = $this->donorDirectoryRepository->findDonor($donorUuid)
+            ?? throw $this->refuse(404, 'donor_not_found', 'No donor matches that identifier.');
+
+        $this->guardDonorHasPresented($donor->id, $facility);
+
+        $screening = $this->eligibilityService->recordAtCounter(
+            $staff,
+            $facility,
+            $this->requireProfile($donor),
+            $payload,
+            $force
+        );
+
+        return [
+            'message' => 'Questionnaire recorded. The screening physician can review it now.',
+            // The reference only, as the scan returns it. Whoever handed over
+            // the device does not get the answers back.
+            'data' => $this->reference($screening->fresh()),
+        ];
+    }
+
+    /**
      * The small reference the scan response carries, without any health data.
      *
      * Enough to draw the counter's summary strip and decide whether to warn
@@ -93,6 +215,7 @@ class DonorQuestionnaireService
                 'screened_on' => null,
                 'valid_until' => null,
                 'consent_captured' => false,
+                'completed_via' => null,
             ];
         }
 
@@ -105,7 +228,27 @@ class DonorQuestionnaireService
             'screened_on' => $screening->screened_at?->toDateString(),
             'valid_until' => $screening->valid_until?->toDateString(),
             'consent_captured' => $screening->hasConsent(),
+            'completed_via' => $this->completedVia($screening),
         ];
+    }
+
+    /**
+     * The reference for a donor found without a scan.
+     *
+     * Resolves the questionnaire the same way an unpinned read would, so the
+     * strip and the drawer can never disagree about which one is on file.
+     *
+     * @return array<string, mixed>
+     */
+    public function referenceForDonor(int $donorId): array
+    {
+        $token = $this->eligibilityRepository->usableQrToken($donorId);
+
+        $screening = $token?->screening_id !== null
+            ? $this->eligibilityRepository->screeningWithAnswers((int) $token->screening_id)
+            : null;
+
+        return $this->reference($screening ?? $this->eligibilityRepository->latestScreeningWithAnswers($donorId));
     }
 
     /**
@@ -145,7 +288,7 @@ class DonorQuestionnaireService
             ?? throw $this->refuse(
                 404,
                 'questionnaire_not_found',
-                'This donor has not completed the health questionnaire in the app.'
+                'This donor has not completed the health questionnaire yet.'
             );
 
         return [$latest, 'latest_screening'];
@@ -212,7 +355,13 @@ class DonorQuestionnaireService
             // answers, offered to staff as a prompt and nothing more.
             'computed_assessment' => $screening->computed_result,
 
-            'notice' => 'Declared by the donor in the RedAgos app. This is not the on-site screening.',
+            'completed_via' => $this->completedVia($screening),
+            'recorded_by' => $screening->takenAtCounter()
+                ? trim(($screening->recordedBy?->first_name ?? '').' '.($screening->recordedBy?->last_name ?? '')) ?: null
+                : null,
+            'notice' => $screening->takenAtCounter()
+                ? 'Declared by the donor at the counter, on a staff device. This is not the on-site screening.'
+                : 'Declared by the donor in the RedAgos portal. This is not the on-site screening.',
 
             'personal_data' => $this->personalData($screening),
             'sections' => $this->sections($screening, $questions, $answers, $flagged),
@@ -403,6 +552,20 @@ class DonorQuestionnaireService
                 ? "Consent text version {$version} is no longer on file."
                 : null,
         ];
+    }
+
+    /**
+     * Where the donor answered: the Donor Portal, or the counter's device.
+     */
+    private function completedVia(EligibilityScreening $screening): string
+    {
+        return $screening->takenAtCounter() ? 'counter' : 'donor_portal';
+    }
+
+    private function requireProfile(User $donor): DonorProfile
+    {
+        return $donor->donorProfile
+            ?? throw $this->refuse(404, 'donor_not_found', 'This account has no donor profile.');
     }
 
     private function currentVersion(): int

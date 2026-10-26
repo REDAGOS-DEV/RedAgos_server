@@ -28,6 +28,20 @@ class PasswordResetTest extends TestCase
         Notification::assertSentTo($user, ResetPasswordNotification::class);
     }
 
+    public function test_an_unconfirmed_address_is_not_sent_a_reset_link_but_hears_the_same(): void
+    {
+        // A counter donor's address was typed by staff. A reset link mailed to
+        // a mistyped one would hand the account to whoever owns it.
+        $user = User::factory()->unverified()->create(['email' => 'typed@example.com']);
+        Notification::fake();
+
+        $unconfirmed = $this->postJson('/api/forgot-password', ['email' => 'typed@example.com'])->assertOk();
+        $unknown = $this->postJson('/api/forgot-password', ['email' => 'nobody@example.com'])->assertOk();
+
+        Notification::assertNotSentTo($user, ResetPasswordNotification::class);
+        $this->assertSame($unknown->json('message'), $unconfirmed->json('message'));
+    }
+
     public function test_the_reset_link_points_at_the_frontend_application(): void
     {
         config(['app.frontend_url' => 'http://localhost:3000']);
@@ -116,7 +130,7 @@ class PasswordResetTest extends TestCase
 
     public function test_the_new_password_can_be_used_to_log_in(): void
     {
-        $user = User::factory()->create([
+        $user = User::factory()->donor()->create([
             'email' => 'donor@example.com',
             'password' => 'OldPassword123',
         ]);

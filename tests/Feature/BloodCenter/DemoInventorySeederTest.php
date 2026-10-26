@@ -23,6 +23,8 @@ class DemoInventorySeederTest extends TestCase
 
     private const CODES = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
 
+    private const PER_COMPONENT = 2;
+
     private Facility $facility;
 
     private User $staff;
@@ -32,6 +34,9 @@ class DemoInventorySeederTest extends TestCase
         parent::setUp();
 
         $this->seed(BloodComponentSeeder::class);
+
+        // The rule is the same at any count; 50 of everything is 1,200 donors per run.
+        $this->app->when(DemoInventorySeeder::class)->needs('$unitsPerComponent')->give(self::PER_COMPONENT);
 
         foreach (self::CODES as $code) {
             BloodType::factory()->code($code)->create();
@@ -83,6 +88,39 @@ class DemoInventorySeederTest extends TestCase
         $stocked = BloodUnit::query()->where('facility_id', $this->facility->id)->distinct()->pluck('component_id');
 
         $this->assertCount(7, $stocked);
+    }
+
+    public function test_every_blood_type_gets_the_same_count_of_every_component(): void
+    {
+        $this->assertSame(50, DemoInventorySeeder::UNITS_PER_COMPONENT);
+
+        $this->seed(DemoInventorySeeder::class);
+
+        $counts = BloodUnit::query()
+            ->where('facility_id', $this->facility->id)
+            ->where('status', BloodUnitStatus::Available)
+            ->selectRaw('blood_type_id, component_id, count(*) as units')
+            ->groupBy('blood_type_id', 'component_id')
+            ->pluck('units');
+
+        // Every pairing of 8 types and 7 components, each with the same count.
+        $this->assertCount(8 * 7, $counts);
+        $this->assertSame([self::PER_COMPONENT], $counts->map(fn ($n): int => (int) $n)->unique()->values()->all());
+    }
+
+    public function test_a_component_the_facility_did_not_configure_does_not_thin_the_rest(): void
+    {
+        FacilityBloodComponent::query()
+            ->where('facility_id', $this->facility->id)
+            ->where('component_id', BloodComponent::where('name', 'Platelet Concentrate')->value('id'))
+            ->delete();
+
+        $this->seed(DemoInventorySeeder::class);
+
+        $packedRbc = BloodComponent::where('name', 'Packed RBC')->value('id');
+
+        $this->assertSame(0, BloodUnit::whereHas('component', fn ($q) => $q->where('name', 'Platelet Concentrate'))->count());
+        $this->assertSame(8 * self::PER_COMPONENT, BloodUnit::where('component_id', $packedRbc)->count());
     }
 
     public function test_seeded_units_are_cleared_and_in_date(): void

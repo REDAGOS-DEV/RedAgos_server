@@ -4,19 +4,22 @@ namespace App\Notifications;
 
 use App\Enums\ScreeningOutcome;
 use App\Models\Donation;
+use App\Support\DonorNotificationPreferences;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
+use Illuminate\Support\Carbon;
 
 /**
- * Tell a donor deferred at the counter why, and that they are welcome back.
+ * Tell a donor deferred at the counter that they were, under which code, and
+ * that they are welcome back.
  *
- * The reason is the whole point: HelpPage already promises the donor can
- * "check the reason shown after your screening", and a deferral with no reason
- * is the thing most likely to stop someone returning. The text is the one an
- * authorized member of staff recorded — nothing here composes a clinical
- * explanation of its own.
+ * The deferral code, never the reason (project owner, 2026-10-24): the reason
+ * is confidential, and an email or a phone screen is read by more than the
+ * donor. The code is something to quote when they ask the centre, whose staff
+ * explain it in person. Deferrals recorded before codes existed carry no code,
+ * and their notice simply says the donor could not donate.
  *
  * Queued, because it is sent at the end of a request that has already
  * committed. An SMTP server that hangs would otherwise hold that request until
@@ -27,10 +30,14 @@ class DonorDeferred extends Notification implements ShouldQueue
 {
     use Queueable;
 
+    /**
+     * @param  string|null  $until  A temporary deferral's last day (Y-m-d), set at the counter.
+     */
     public function __construct(
         private readonly Donation $donation,
-        private readonly ?string $reason = null,
-        private readonly ?ScreeningOutcome $outcome = null
+        private readonly ?string $code = null,
+        private readonly ?ScreeningOutcome $outcome = null,
+        private readonly ?string $until = null
     ) {}
 
     /**
@@ -40,9 +47,8 @@ class DonorDeferred extends Notification implements ShouldQueue
      */
     public function via(object $notifiable): array
     {
-        return $notifiable->hasEmailAddress()
-            ? ['mail', 'database']
-            : ['database'];
+        // The email is the donor's choice in Settings; the in-app copy is always written.
+        return DonorNotificationPreferences::alwaysInAppChannels($notifiable, DonorNotificationPreferences::RESULTS_EMAIL);
     }
 
     /**
@@ -67,8 +73,8 @@ class DonorDeferred extends Notification implements ShouldQueue
             ->greeting('Thank you for coming in, '.$notifiable->first_name.'.')
             ->line('You were not able to donate at '.$this->venue().' today.');
 
-        if ($this->reason) {
-            $message->line('**Reason recorded:** '.$this->reason);
+        if ($this->code) {
+            $message->line('**Deferral code:** '.$this->code.'. Our staff can tell you what it means.');
         }
 
         // A donor who may never donate again must not be told a deferral is
@@ -81,7 +87,9 @@ class DonorDeferred extends Notification implements ShouldQueue
         }
 
         return $message
-            ->line('A deferral is common and is usually temporary. Our staff can tell you when it would be right to try again.')
+            ->line($this->until
+                ? 'A deferral is common and is usually temporary. Yours lasts until '.$this->untilLabel().'; you can book again after that date.'
+                : 'A deferral is common and is usually temporary. Our staff can tell you when it would be right to try again.')
             ->action('Book another appointment', $frontend.'/donor/appointments')
             ->line('Questions? Call us on '.config('donation.support.hotline_label').' ('.config('donation.support.hours').').');
     }
@@ -98,12 +106,13 @@ class DonorDeferred extends Notification implements ShouldQueue
         return [
             'category' => 'screening',
             'title' => 'You were deferred today',
-            'desc' => $this->reason
-                ? $this->reason
-                : 'You were not able to donate at '.$this->venue().' today.',
-            'meta' => $blocking
-                ? 'Please speak to our staff before booking again.'
-                : 'Deferrals are usually temporary.',
+            'desc' => 'You were not able to donate at '.$this->venue().' today.'
+                .($this->code ? ' Deferral code: '.$this->code.'.' : ''),
+            'meta' => match (true) {
+                $blocking => 'Please speak to our staff before booking again.',
+                $this->until !== null => 'Deferred until '.$this->untilLabel().'.',
+                default => 'Deferrals are usually temporary.',
+            },
             'icon' => 'alert-circle',
             'tone' => 'warning',
             // No rebooking action on a blocking deferral. The card is read
@@ -129,6 +138,11 @@ class DonorDeferred extends Notification implements ShouldQueue
     private function venue(): string
     {
         return $this->donation->facility?->name ?? 'a RedAgos blood centre';
+    }
+
+    private function untilLabel(): string
+    {
+        return Carbon::parse((string) $this->until)->format('j M Y');
     }
 
     private function shortDate(): string

@@ -28,15 +28,33 @@ class RecordCollectionRequest extends FormRequest
      */
     public function rules(): array
     {
+        return self::boxRules(
+            $this->user()?->facility_id,
+            // A donation's own barcode is never a collision. A correction
+            // keeps it, and a save retried after its response was lost is
+            // answered by the service as already recorded, not as somebody
+            // else's bag.
+            $this->correctingDonationId ?? $this->route('donation')
+        );
+    }
+
+    /**
+     * The "For Phlebotomist Use Only" box, shared with a drive's paper record
+     * (RecordPaperDonationRequest), which nests it under `collection.`.
+     *
+     * @return array<string, mixed>
+     */
+    public static function boxRules(mixed $facilityId, mixed $ignoreDonationId = null, string $prefix = ''): array
+    {
         return [
             // A whole-blood bag is 450 mL nominal; the range is wide enough for
             // a short draw or a double without asserting a clinical rule nobody
             // has owned. See the clinical-configuration boundary decision.
-            'volume_ml' => ['required', 'integer', 'min:100', 'max:1000'],
+            $prefix.'volume_ml' => ['required', 'integer', 'min:100', 'max:1000'],
 
             // The "For Phlebotomist Use Only" box of Section II. Record only:
             // the bag does not limit the component breakdown.
-            'blood_bag_type' => ['required', 'string', Rule::in(BloodBagType::values())],
+            $prefix.'blood_bag_type' => ['required', 'string', Rule::in(BloodBagType::values())],
 
             // The pre-printed barcode sticker: the same number is on the form,
             // every bag and tube, and the CUE slip. Each bag's unit number is
@@ -45,25 +63,32 @@ class RecordCollectionRequest extends FormRequest
             // component code. Unique per facility, checked here for a friendly
             // error; the unique index is what holds under a race, and the
             // service turns its violation into the same error.
-            'donation_barcode' => [
+            $prefix.'donation_barcode' => [
                 'required',
                 'string',
                 'max:30',
                 'regex:/^[A-Z0-9-]+$/',
                 Rule::unique('blood_collections', 'donation_barcode')
-                    ->where('facility_id', $this->user()?->facility_id)
-                    // A donation's own barcode is never a collision. A
-                    // correction keeps it, and a save retried after its
-                    // response was lost is answered by the service as
-                    // already recorded, not as somebody else's bag.
-                    ->ignore($this->correctingDonationId ?? $this->route('donation'), 'donation_id'),
+                    ->where('facility_id', $facilityId)
+                    ->ignore($ignoreDonationId, 'donation_id'),
             ],
 
             // No maximum draw duration: that is a clinical constant nobody has
             // owned. Only the order and "not in the future" are checked.
-            'started_at' => ['required', 'date', 'before_or_equal:now'],
-            'ended_at' => ['required', 'date', 'after_or_equal:started_at', 'before_or_equal:now'],
+            $prefix.'started_at' => ['required', 'date', 'before_or_equal:now'],
+            $prefix.'ended_at' => ['required', 'date', 'after_or_equal:'.$prefix.'started_at', 'before_or_equal:now'],
         ];
+    }
+
+    /**
+     * A scanned or typed barcode as it is stored: scanner control characters
+     * and whitespace stripped, uppercased.
+     */
+    public static function normaliseBarcode(mixed $barcode): mixed
+    {
+        return is_string($barcode)
+            ? strtoupper((string) preg_replace('/[\s\p{Cc}]+/u', '', $barcode))
+            : $barcode;
     }
 
     /**
@@ -75,11 +100,9 @@ class RecordCollectionRequest extends FormRequest
      */
     protected function prepareForValidation(): void
     {
-        $barcode = $this->input('donation_barcode');
-
-        if (is_string($barcode)) {
+        if (is_string($this->input('donation_barcode'))) {
             $this->merge([
-                'donation_barcode' => strtoupper((string) preg_replace('/[\s\p{Cc}]+/u', '', $barcode)),
+                'donation_barcode' => self::normaliseBarcode($this->input('donation_barcode')),
             ]);
         }
     }
@@ -89,15 +112,23 @@ class RecordCollectionRequest extends FormRequest
      */
     public function messages(): array
     {
+        return self::boxMessages();
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    public static function boxMessages(string $prefix = ''): array
+    {
         return [
-            'blood_bag_type.in' => 'A blood bag is single, double or triple.',
-            'donation_barcode.required' => 'Scan or type the donation barcode.',
-            'donation_barcode.unique' => 'This barcode is already recorded at this facility. Scan the sticker again.',
-            'donation_barcode.regex' => 'A donation barcode may contain only letters, numbers and dashes.',
-            'donation_barcode.max' => 'A donation barcode is at most 30 characters.',
-            'started_at.before_or_equal' => 'A collection cannot start in the future.',
-            'ended_at.before_or_equal' => 'A collection cannot end in the future.',
-            'ended_at.after_or_equal' => 'The time ended cannot be before the time started.',
+            $prefix.'blood_bag_type.in' => 'A blood bag is single, double or triple.',
+            $prefix.'donation_barcode.required' => 'Scan or type the donation barcode.',
+            $prefix.'donation_barcode.unique' => 'This barcode is already recorded at this facility. Scan the sticker again.',
+            $prefix.'donation_barcode.regex' => 'A donation barcode may contain only letters, numbers and dashes.',
+            $prefix.'donation_barcode.max' => 'A donation barcode is at most 30 characters.',
+            $prefix.'started_at.before_or_equal' => 'A collection cannot start in the future.',
+            $prefix.'ended_at.before_or_equal' => 'A collection cannot end in the future.',
+            $prefix.'ended_at.after_or_equal' => 'The time ended cannot be before the time started.',
         ];
     }
 }

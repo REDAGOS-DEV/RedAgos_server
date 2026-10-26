@@ -5,17 +5,20 @@ namespace App\Http\Controllers;
 use App\Http\Requests\ListDonationsRequest;
 use App\Http\Requests\RecordCollectionRequest;
 use App\Http\Requests\RecordScreeningRequest;
+use App\Http\Requests\SearchCounterDonorsRequest;
 use App\Http\Requests\StoreDonationRequest;
 use App\Http\Requests\UpdateDonationStatusRequest;
 use App\Http\Requests\VerifyDonorQrRequest;
 use App\Service\CollectionService;
+use App\Service\CounterDonorSearchService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 class BloodCenterCollectionController extends Controller
 {
     public function __construct(
-        private readonly CollectionService $collectionService
+        private readonly CollectionService $collectionService,
+        private readonly CounterDonorSearchService $counterDonorSearchService
     ) {}
 
     /**
@@ -35,6 +38,26 @@ class BloodCenterCollectionController extends Controller
     {
         return response()->json(
             $this->collectionService->verifyQrToken($request->user(), $request->validated('token'))
+        );
+    }
+
+    /**
+     * Bring a donor up at the counter from their record.
+     */
+    public function arrival(Request $request, string $donor): JsonResponse
+    {
+        return response()->json(
+            $this->collectionService->arrival($request->user(), $donor)
+        );
+    }
+
+    /**
+     * Find a walk-in donor by name, email or phone.
+     */
+    public function searchDonors(SearchCounterDonorsRequest $request): JsonResponse
+    {
+        return response()->json(
+            $this->counterDonorSearchService->search($request->user(), $request->validated('q'))
         );
     }
 

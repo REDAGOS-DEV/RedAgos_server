@@ -10,6 +10,7 @@ use App\Http\Requests\RecordPaymentRequest;
 use App\Http\Requests\RecordScreeningRequest;
 use App\Http\Requests\RecordSerologyRequest;
 use App\Http\Requests\UpdateBloodUnitRequest;
+use App\Http\Requests\VoidPaymentRequest;
 use App\Models\User;
 use App\Support\CorrectionValues;
 
@@ -37,6 +38,13 @@ enum CorrectionSubject: string
     case Dispatch = 'dispatch';
 
     case Payment = 'payment';
+
+    /**
+     * Not a field changed but the payment itself voided: an entry made in
+     * error, or money handed straight back, while its cash shift is still
+     * open. Approved like any Billing correction; refunds stay outside RedAgos.
+     */
+    case PaymentVoid = 'payment_void';
 
     /**
      * @return array<int, string>
@@ -70,6 +78,7 @@ enum CorrectionSubject: string
             self::UnitDetails => 'Unit details',
             self::Dispatch => 'Dispatch record',
             self::Payment => 'Payment',
+            self::PaymentVoid => 'Payment void',
         };
     }
 
@@ -86,7 +95,7 @@ enum CorrectionSubject: string
             self::Components => CorrectionTarget::Donation,
             self::UnitDetails => CorrectionTarget::BloodUnit,
             self::Dispatch => CorrectionTarget::Allocation,
-            self::Payment => CorrectionTarget::Payment,
+            self::Payment, self::PaymentVoid => CorrectionTarget::Payment,
         };
     }
 
@@ -103,7 +112,7 @@ enum CorrectionSubject: string
             self::Components => 'lab.record_components',
             self::UnitDetails => 'inventory.audit',
             self::Dispatch => 'requests.release',
-            self::Payment => 'billing.record_payment',
+            self::Payment, self::PaymentVoid => 'billing.record_payment',
         };
     }
 
@@ -112,7 +121,8 @@ enum CorrectionSubject: string
      *
      * A department's custom role inherits the department's abilities, so the
      * ability alone would let it file a correction that belongs to a named
-     * post. A supervisor files any of them.
+     * post. No management level files on anyone's behalf: a level grants no
+     * write a correction could be filed against.
      *
      * @return array<int, StaffRole>|null
      */
@@ -121,7 +131,7 @@ enum CorrectionSubject: string
         return match ($this) {
             self::UnitDetails => [StaffRole::ItDataClerk],
             self::Dispatch => [StaffRole::DispatchCoordinator, StaffRole::InventoryControlOfficer],
-            self::Payment => [StaffRole::BillingClerk, StaffRole::BillingSupervisor],
+            self::Payment, self::PaymentVoid => [StaffRole::BillingClerk, StaffRole::BillingSupervisor],
             default => null,
         };
     }
@@ -141,11 +151,15 @@ enum CorrectionSubject: string
 
         $roles = $this->filingRoles();
 
-        if ($roles === null || $user->is_supervisor) {
+        if ($roles === null) {
             return true;
         }
 
-        return $user->staff_role !== null && in_array($user->staff_role, $roles, true);
+        // Any of the user's roles will do.
+        return array_intersect(
+            array_map(fn (StaffRole $role): string => $role->value, $user->staffRoles()),
+            array_map(fn (StaffRole $role): string => $role->value, $roles)
+        ) !== [];
     }
 
     /**
@@ -158,7 +172,7 @@ enum CorrectionSubject: string
             self::Immunohematology, self::Serology => Department::Testing,
             self::Components => Department::Processing,
             self::UnitDetails, self::Dispatch => Department::Issuance,
-            self::Payment => Department::Billing,
+            self::Payment, self::PaymentVoid => Department::Billing,
         };
     }
 
@@ -186,6 +200,9 @@ enum CorrectionSubject: string
                 'payment_method' => CorrectionValues::STRING,
                 'reference_number' => CorrectionValues::STRING,
             ],
+            self::PaymentVoid => [
+                'void' => CorrectionValues::BOOLEAN,
+            ],
             default => [],
         };
     }
@@ -207,6 +224,7 @@ enum CorrectionSubject: string
             self::UnitDetails => UpdateBloodUnitRequest::class,
             self::Dispatch => CorrectDispatchRequest::class,
             self::Payment => RecordPaymentRequest::class,
+            self::PaymentVoid => VoidPaymentRequest::class,
         };
     }
 }

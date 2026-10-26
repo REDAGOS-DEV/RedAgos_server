@@ -19,6 +19,37 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | The Counter's Vital Signs (project owner, 2026-10-24)
+    |--------------------------------------------------------------------------
+    |
+    | The six readings the screening physician must record at the counter
+    | before accepting or deferring, and the range each is normal within
+    | (ScreeningVitals). A reading outside its range suggests the deferral
+    | code beside it, if the centre still offers that code.
+    |
+    | min/max may be a number, or one per sex. A donor whose sex is not
+    | recorded as male or female is held to the stricter of the two, so a
+    | reading that may be out of range is never passed over.
+    |
+    | vital_only_codes are offered only while a reading suggests them: with
+    | normal readings a donor can still be deferred, for a history reason
+    | (tattoo, medication, travel...) or Other, but not under these.
+    |
+    */
+
+    'vitals' => [
+        'systolic_bp' => ['label' => 'Systolic BP', 'unit' => 'mmHg', 'min' => 90, 'max' => 160, 'low_code' => 'R7', 'high_code' => 'R7'],
+        'diastolic_bp' => ['label' => 'Diastolic BP', 'unit' => 'mmHg', 'min' => 60, 'max' => 100, 'low_code' => 'R7', 'high_code' => 'R7'],
+        'pulse_bpm' => ['label' => 'Pulse', 'unit' => 'bpm', 'min' => 60, 'max' => 100, 'low_code' => null, 'high_code' => null],
+        'temperature_c' => ['label' => 'Temperature', 'unit' => '°C', 'min' => null, 'max' => 37.5, 'low_code' => null, 'high_code' => 'R3'],
+        'weight_kg' => ['label' => 'Weight', 'unit' => 'kg', 'min' => env('DONATION_MIN_WEIGHT_KG', 50), 'max' => null, 'low_code' => 'R8', 'high_code' => null],
+        'haemoglobin_g_dl' => ['label' => 'Haemoglobin', 'unit' => 'g/dL', 'min' => ['male' => 13.5, 'female' => 12.5], 'max' => 17.5, 'low_code' => 'R2-Low', 'high_code' => 'R2-High'],
+    ],
+
+    'vital_only_codes' => ['R2-Low', 'R2-High', 'R7', 'R8'],
+
+    /*
+    |--------------------------------------------------------------------------
     | The Four Independent Time Rules
     |--------------------------------------------------------------------------
     |

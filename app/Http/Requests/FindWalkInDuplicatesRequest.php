@@ -26,7 +26,8 @@ class FindWalkInDuplicatesRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'hospital_id' => ['required', 'integer', 'exists:facilities,id'],
+            'hospital_id' => ['required_without:hospital_name', 'nullable', 'integer', 'exists:facilities,id'],
+            'hospital_name' => ['required_without:hospital_id', 'nullable', 'string', 'max:150'],
             'patient_surname' => ['required_without:presented_reference', 'nullable', 'string', 'max:100'],
             'patient_first_name' => ['required_without:presented_reference', 'nullable', 'string', 'max:100'],
             'blood_type_id' => ['nullable', 'integer', 'exists:blood_types,id'],

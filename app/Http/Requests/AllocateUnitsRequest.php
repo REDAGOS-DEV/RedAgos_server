@@ -34,6 +34,10 @@ class AllocateUnitsRequest extends FormRequest
         return [
             'quantity' => ['sometimes', 'integer', 'min:1', 'max:100'],
             'request_item_id' => ['sometimes', 'integer'],
+            // The bags staff picked (project owner, 2026-10-19). Without them
+            // the oldest-dated units are taken.
+            'unit_ids' => ['sometimes', 'array', 'min:1', 'max:100'],
+            'unit_ids.*' => ['required', 'string', 'max:64', 'distinct'],
         ];
     }
 

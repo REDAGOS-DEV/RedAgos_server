@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\DonationStatus;
+use App\Enums\DonationType;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -18,10 +19,17 @@ class Donation extends Model
         'donor_id',
         'facility_id',
         'appointment_id',
+        // The drive's paper sheet it was typed from; null at the counter.
+        'paper_sheet_id',
+        // Walk-in, TS or NTS, as the counter picked it (DonationType).
+        'donation_type',
         'donation_date',
         'status',
         'volume_ml',
         'rejection_reason',
+        // When Processing last printed the final labels, and who did.
+        'labelled_at',
+        'labelled_by',
     ];
 
     /**
@@ -29,6 +37,7 @@ class Donation extends Model
      */
     protected $attributes = [
         'status' => DonationStatus::Registered->value,
+        'donation_type' => 'walk_in',
     ];
 
     protected function casts(): array
@@ -37,7 +46,17 @@ class Donation extends Model
             'donation_date' => 'datetime',
             'status' => DonationStatus::class,
             'volume_ml' => 'integer',
+            'labelled_at' => 'datetime',
+            'donation_type' => DonationType::class,
         ];
+    }
+
+    /**
+     * Whoever last printed the final labels.
+     */
+    public function labeller(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'labelled_by');
     }
 
     public function donorProfile(): BelongsTo
@@ -53,6 +72,14 @@ class Donation extends Model
     public function appointment(): BelongsTo
     {
         return $this->belongsTo(DonationAppointment::class, 'appointment_id');
+    }
+
+    /**
+     * The drive's paper sheet this donation was typed from, if it was.
+     */
+    public function paperSheet(): BelongsTo
+    {
+        return $this->belongsTo(PaperDonationSheet::class, 'paper_sheet_id');
     }
 
     /**

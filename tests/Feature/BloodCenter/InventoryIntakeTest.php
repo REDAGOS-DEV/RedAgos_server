@@ -49,10 +49,10 @@ class InventoryIntakeTest extends TestCase
             'blood_type_id' => $this->bloodType->id,
         ]);
 
-        $this->donation = Donation::factory()->create([
+        // Cleared and labelled: the only donation Stock Intake books in.
+        $this->donation = Donation::factory()->handedOver()->create([
             'facility_id' => $this->facilityId,
             'donor_id' => $this->donorProfile->donor_id,
-            'status' => 'completed',
         ]);
 
         // The laboratory's declaration of what this donation was separated
@@ -75,8 +75,8 @@ class InventoryIntakeTest extends TestCase
 
         $this->assertCount(1, $response->json('units'));
         $this->assertSame('O+', $response->json('units.0.blood_type.code'));
-        // Booked in held back: completing a donation no longer clears it.
-        $this->assertSame(BloodUnitStatus::Quarantined->value, $response->json('units.0.status'));
+        // Cleared and labelled, so straight into stock: there is no quarantine step.
+        $this->assertSame(BloodUnitStatus::Available->value, $response->json('units.0.status'));
     }
 
     public function test_blood_type_is_derived_and_never_taken_from_the_client(): void
@@ -172,7 +172,7 @@ class InventoryIntakeTest extends TestCase
     public function test_several_units_may_be_recorded_from_one_donation(): void
     {
         $payload = $this->payload();
-        $payload['units'][] = ['component_id' => $this->component->id, 'expiry_date' => $this->inDays(20)];
+        $payload['units'][] = ['component_id' => $this->component->id, 'storage_location' => 'Cold Storage A-1', 'expiry_date' => $this->inDays(20)];
 
         $response = $this->actingAs($this->staff)
             ->postJson('/api/blood-center/inventory', $payload)
@@ -189,7 +189,7 @@ class InventoryIntakeTest extends TestCase
         $payload = $this->payload();
 
         for ($i = 0; $i < 10; $i++) {
-            $payload['units'][] = ['component_id' => $this->component->id, 'expiry_date' => $this->inDays(20)];
+            $payload['units'][] = ['component_id' => $this->component->id, 'storage_location' => 'Cold Storage A-1', 'expiry_date' => $this->inDays(20)];
         }
 
         $this->actingAs($this->staff)
@@ -229,6 +229,45 @@ class InventoryIntakeTest extends TestCase
             ->assertJsonPath('code', 'donation_not_completed');
     }
 
+    /**
+     * Release is gone (project owner, 2026-10-22), so a bag that is not ready
+     * is refused rather than booked into a quarantine nobody can release.
+     */
+    public function test_a_donation_testing_has_not_cleared_is_refused(): void
+    {
+        $uncleared = Donation::factory()->create([
+            'facility_id' => $this->facilityId,
+            'donor_id' => $this->donorProfile->donor_id,
+            'status' => 'completed',
+            'labelled_at' => now(),
+        ]);
+        DonationComponent::factory()->create(['donation_id' => $uncleared->id, 'component_id' => $this->component->id]);
+
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/inventory', [...$this->payload(), 'donation_id' => $uncleared->id])
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'donation_not_cleared');
+
+        $this->assertSame(0, BloodUnit::where('donation_id', $uncleared->id)->count());
+    }
+
+    public function test_a_donation_processing_has_not_labelled_is_refused(): void
+    {
+        $unlabelled = Donation::factory()->handedOver()->create([
+            'facility_id' => $this->facilityId,
+            'donor_id' => $this->donorProfile->donor_id,
+            'labelled_at' => null,
+        ]);
+        DonationComponent::factory()->create(['donation_id' => $unlabelled->id, 'component_id' => $this->component->id]);
+
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/inventory', [...$this->payload(), 'donation_id' => $unlabelled->id])
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'labels_not_printed');
+
+        $this->assertSame(0, BloodUnit::where('donation_id', $unlabelled->id)->count());
+    }
+
     public function test_a_donor_without_a_blood_type_is_refused(): void
     {
         $this->donorProfile->update(['blood_type_id' => null]);
@@ -248,6 +287,20 @@ class InventoryIntakeTest extends TestCase
             ->postJson('/api/blood-center/inventory', $payload)
             ->assertStatus(422)
             ->assertJsonValidationErrors('units.0.expiry_date');
+    }
+
+    public function test_a_bag_without_a_storage_location_is_refused(): void
+    {
+        $payload = $this->payload();
+        unset($payload['units'][0]['storage_location']);
+        $payload['units'][] = ['component_id' => $this->component->id, 'storage_location' => '', 'expiry_date' => $this->inDays(20)];
+
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/inventory', $payload)
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['units.0.storage_location', 'units.1.storage_location']);
+
+        $this->assertDatabaseCount('blood_units', 0);
     }
 
     public function test_an_expiry_date_of_today_is_accepted(): void
@@ -333,6 +386,7 @@ class InventoryIntakeTest extends TestCase
         for ($i = 0; $i < 10; $i++) {
             $units[] = [
                 'component_id' => $this->component->id,
+                'storage_location' => 'Cold Storage A-1',
                 'expiry_date' => $this->inDays(30),
             ];
         }
@@ -377,14 +431,13 @@ class InventoryIntakeTest extends TestCase
 
     /**
      * inventory.create, not inventory.view: this is a worklist for the people
-     * who book stock in. Processing holds inventory.view but never books in.
+     * who book stock in. Processing hands units over but never books in.
      */
     public function test_a_department_that_cannot_record_stock_cannot_read_the_queue(): void
     {
         $lab = User::factory()->bloodCenterStaff()->create([
             'facility_id' => $this->facilityId,
             'staff_role' => StaffRole::ComponentTechnologist,
-            'is_supervisor' => false,
         ]);
 
         $this->actingAs($lab)

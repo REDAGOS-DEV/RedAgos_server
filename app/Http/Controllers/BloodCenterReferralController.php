@@ -6,6 +6,7 @@ use App\Http\Requests\ListCounsellingReferralsRequest;
 use App\Http\Requests\UpdateCounsellingReferralRequest;
 use App\Service\CounsellingReferralService;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 
 class BloodCenterReferralController extends Controller
 {
@@ -28,12 +29,30 @@ class BloodCenterReferralController extends Controller
     }
 
     /**
+     * How many referrals nobody has acted on yet, for the sidebar.
+     */
+    public function summary(Request $request): JsonResponse
+    {
+        return response()->json($this->counsellingReferralService->summary($request->user()));
+    }
+
+    /**
      * Move a referral on.
      */
     public function update(UpdateCounsellingReferralRequest $request, int $referral): JsonResponse
     {
         return response()->json(
             $this->counsellingReferralService->update($request->user(), $referral, $request->validated())
+        );
+    }
+
+    /**
+     * Ask the donor to contact the centre, by email and in the app.
+     */
+    public function requestContact(Request $request, int $referral): JsonResponse
+    {
+        return response()->json(
+            $this->counsellingReferralService->requestContact($request->user(), $referral)
         );
     }
 }

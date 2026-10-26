@@ -3,6 +3,7 @@
 namespace App\Http\Requests;
 
 use App\Enums\Department;
+use App\Enums\ManagementLevel;
 use App\Enums\StaffPrivilege;
 use App\Enums\StaffRole;
 use App\Support\AccountIdentity;
@@ -41,11 +42,17 @@ class StoreStaffRequest extends FormRequest
         // A typed role that names a predefined one is that role, so the
         // roster never holds a custom "Laboratory Supervisor" beside the real
         // one with different abilities.
-        if ($this->filled('custom_role') && ! $this->filled('staff_role')) {
+        if ($this->filled('custom_role')) {
             $typed = StaffRole::fromTyped((string) $this->input('custom_role'));
 
-            if ($typed !== null) {
+            if ($typed !== null && ! $this->filled('staff_role')) {
                 $this->merge(['staff_role' => $typed->value, 'custom_role' => null]);
+            } elseif ($typed !== null) {
+                // Beside a main role it is one more of their roles.
+                $this->merge([
+                    'additional_staff_roles' => array_values(array_unique([...(array) $this->input('additional_staff_roles', []), $typed->value])),
+                    'custom_role' => null,
+                ]);
             }
         }
 
@@ -65,7 +72,10 @@ class StoreStaffRequest extends FormRequest
             'email' => ['required', 'string', 'email:rfc', 'max:150', 'unique:users,email'],
             'phone' => ['nullable', 'string', 'regex:/^(?:\+63|63|0)9\d{9}$/', 'unique:users,phone'],
             // The title — RMT, RN, or anything typed. A label only.
-            'position' => ['nullable', 'string', 'max:100'],
+            // The title, printed after the name on everything the staff member
+            // signs: RMT, MD, RN. Blood-centre accounts keep no job post beside
+            // it (project owner, 2026-10-22).
+            'credentials' => ['nullable', 'string', 'max:40', 'regex:/^[\pL\d][\pL\d.,&()\/ -]*$/u'],
 
             // users carries unique(facility_id, employee_id), so the rule is
             // scoped the same way: two centres may both have a badge "001".
@@ -75,19 +85,30 @@ class StoreStaffRequest extends FormRequest
                     ->where('facility_id', $this->user()?->facility_id),
             ],
 
-            // A predefined role, or a custom one typed in its place. A
-            // non-supervisor needs one or the other (checked in after()); a
-            // custom role also needs a department, which a predefined role
-            // supplies itself.
+            // A predefined role, or a custom one typed in its place. An
+            // account with no management level needs one or the other
+            // (checked in after()); a custom role also needs a department,
+            // which a predefined role supplies itself.
             'department' => ['nullable', 'string', Rule::in(Department::values())],
             'staff_role' => ['nullable', 'string', Rule::in(StaffRole::values())],
+            // Their other roles, all in the main role's department (checked by
+            // StaffService, which names the role that does not fit).
+            'additional_staff_roles' => ['sometimes', 'nullable', 'array', 'max:10'],
+            'additional_staff_roles.*' => ['string', 'distinct', Rule::in(StaffRole::values())],
             'custom_role' => ['nullable', 'string', 'max:100'],
 
             // The Read / Write / Update / Delete cap. Omitted means all four.
             'staff_privileges' => ['sometimes', 'array', 'min:1'],
             'staff_privileges.*' => ['string', 'distinct', Rule::in(StaffPrivilege::values())],
 
-            'is_supervisor' => ['sometimes', 'boolean'],
+            // Admin or Supervisor, or null for an account that only does its
+            // role's work.
+            'management_level' => ['sometimes', 'nullable', Rule::enum(ManagementLevel::class)],
+
+            // Replaced by management_level. Refused rather than ignored, so a
+            // caller still sending it learns the account did not get a level.
+            'is_supervisor' => ['prohibited'],
+
             'password' => ['required', 'confirmed', Password::min(8)->mixedCase()->numbers()],
         ];
     }
@@ -105,12 +126,14 @@ class StoreStaffRequest extends FormRequest
                     return;
                 }
 
-                $role = StaffRole::tryFrom((string) $this->input('staff_role'));
+                // With several roles and no main one, the first is the main one.
+                $role = StaffRole::tryFrom((string) $this->input('staff_role'))
+                    ?? StaffRole::tryFrom((string) (((array) $this->input('additional_staff_roles', []))[0] ?? ''));
                 $department = Department::tryFrom((string) $this->input('department'));
 
                 if ($role === null && ! $this->filled('custom_role')) {
-                    if (! $this->boolean('is_supervisor')) {
-                        $validator->errors()->add('staff_role', 'Choose or type a role, or grant the supervisor level instead.');
+                    if (! $this->filled('management_level')) {
+                        $validator->errors()->add('staff_role', 'Choose or type a role, or give them the Admin or Supervisor level instead.');
                     }
 
                     return;
@@ -136,7 +159,10 @@ class StoreStaffRequest extends FormRequest
     public function messages(): array
     {
         return [
+            'credentials.regex' => 'Write the credentials as letters, for example RMT, or MD, FPCP.',
+            'credentials.max' => 'Keep the credentials to 40 characters.',
             'email.unique' => 'An account already exists for this email address.',
+            'is_supervisor.prohibited' => 'is_supervisor was replaced by management_level: admin or supervisor.',
             'phone.unique' => 'An account already exists for this phone number.',
             'phone.regex' => 'Please enter a valid Philippine mobile number.',
             'employee_id.unique' => 'Another staff member at this facility already has this employee ID.',

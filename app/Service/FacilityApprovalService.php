@@ -4,6 +4,9 @@ namespace App\Service;
 
 use App\Enums\FacilityStatus;
 use App\Enums\FacilityTypeName;
+use App\Enums\HospitalRole;
+use App\Enums\ManagementLevel;
+use App\Enums\RoleName;
 use App\Models\Facility;
 use App\Models\User;
 use App\Notifications\FacilityRegistrationDecision;
@@ -54,7 +57,7 @@ class FacilityApprovalService
             $locked->save();
 
             $this->grantRoleToStaff($locked);
-            $this->ensureSupervisor($locked);
+            $this->ensureAdmin($locked);
 
             return $locked;
         });
@@ -179,6 +182,13 @@ class FacilityApprovalService
 
         foreach ($this->bloodCenterRepository->staffForFacility($facility->id) as $staff) {
             $this->bloodCenterRepository->attachRole($staff, $role->value);
+
+            // A blood bank's registrants run it: they are its Head until they
+            // give colleagues narrower roles (project owner, 2026-10-11).
+            if ($role === RoleName::BloodBank && $staff->hospital_role === null) {
+                $staff->hospital_role = HospitalRole::Head;
+                $staff->save();
+            }
         }
     }
 
@@ -210,25 +220,25 @@ class FacilityApprovalService
      *
      * Without this the first account through the door holds the facility role
      * but not staff.manage, so an approved centre would have nobody able
-     * to create colleagues or assign them departments. Skipped when a
-     * supervisor already exists, so a facility that already has one does not
-     * gain a second.
+     * to create colleagues or assign them departments. Skipped when an Admin
+     * already exists, so a facility that already has one does not gain a
+     * second.
      */
-    private function ensureSupervisor(Facility $facility): void
+    private function ensureAdmin(Facility $facility): void
     {
         $staff = $this->bloodCenterRepository->staffForFacility($facility->id);
 
-        if ($staff->isEmpty() || $staff->contains(fn (User $member): bool => $member->is_supervisor)) {
+        if ($staff->isEmpty() || $staff->contains(fn (User $member): bool => $member->isCenterAdmin())) {
             return;
         }
 
         // registration_contact_user_id keeps its historical name and holds the
         // facility's primary account, so it is who to promote when there is one.
-        $supervisor = $staff->firstWhere('id', $facility->registration_contact_user_id)
+        $admin = $staff->firstWhere('id', $facility->registration_contact_user_id)
             ?? $staff->sortBy('id')->first();
 
-        $supervisor->is_supervisor = true;
-        $supervisor->save();
+        $admin->management_level = ManagementLevel::Admin;
+        $admin->save();
     }
 
     /**

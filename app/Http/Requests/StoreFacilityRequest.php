@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Enums\FacilityStatus;
 use App\Enums\FacilityTypeName;
 use App\Repository\FacilityRepository;
 use App\Support\AccountIdentity;
@@ -19,7 +20,7 @@ use Illuminate\Validation\Rules\Password;
  * applicant awaiting approval — into a flow that has neither.
  *
  * Nothing here can reach the approval trail, the facility type id, the role or
- * the supervisor flag. Those are derived server-side from the validated
+ * the management level. Those are derived server-side from the validated
  * facility_type and the authenticated administrator.
  */
 class StoreFacilityRequest extends FormRequest
@@ -130,7 +131,12 @@ class StoreFacilityRequest extends FormRequest
                 // facilities carries unique(facility_type_id, name), so this is
                 // scoped the same way rather than made globally unique: a blood
                 // bank and a blood centre may legitimately share a name.
-                Rule::unique('facilities', 'name')->where('facility_type_id', $this->scopedTypeId()),
+                // A hospital a walk-in named is not a facility yet: creating it
+                // properly upgrades that record (FacilityRepository), so it
+                // does not count as the name being taken.
+                Rule::unique('facilities', 'name')
+                    ->where('facility_type_id', $this->scopedTypeId())
+                    ->where(fn ($query) => $query->where('status', '!=', FacilityStatus::Unregistered->value)),
             ],
 
             'doh_license_number' => ['required', 'string', 'max:50', 'unique:facilities,doh_license_number'],

@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Service\StockThresholdService;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
@@ -24,6 +25,20 @@ class BloodComponent extends Model
             'price' => 'decimal:2',
             'shelf_life_days' => 'integer',
         ];
+    }
+
+    /**
+     * Drop stock thresholds when a component is retired.
+     *
+     * A retired component leaves every grid, so a threshold on it could be
+     * neither seen nor edited and would go on alerting. Fires on a soft delete
+     * and a force delete alike; deleting twice is harmless.
+     */
+    protected static function booted(): void
+    {
+        static::deleted(function (BloodComponent $component): void {
+            app(StockThresholdService::class)->retireComponent($component);
+        });
     }
 
     /**

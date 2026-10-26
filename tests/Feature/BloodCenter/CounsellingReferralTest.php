@@ -80,7 +80,10 @@ class CounsellingReferralTest extends TestCase
             ->assertOk()
             ->assertJsonPath('pending_count', 1)
             ->assertJsonPath('data.0.status', 'pending')
-            ->assertJsonPath('data.0.donor.uuid', $this->donor->uuid)
+            // By the donation, never the donor (TestingDonorBlindingTest).
+            ->assertJsonPath('data.0.donation.id', $this->donation->id)
+            ->assertJsonPath('data.0.donor.blinded', true)
+            ->assertJsonMissingPath('data.0.donor.uuid')
             ->assertJsonPath('data.0.reactive_markers.0.value', 'hcv')
             ->assertJsonPath('data.0.screened_by', trim($this->testing->first_name.' '.$this->testing->last_name));
     }
@@ -97,11 +100,16 @@ class CounsellingReferralTest extends TestCase
         ]);
     }
 
-    public function test_a_supervisor_may_read_the_list(): void
+    public function test_neither_management_level_may_read_the_list(): void
     {
-        $supervisor = User::factory()->bloodCenterSupervisor($this->facility)->create();
-
-        $this->actingAs($supervisor)->getJson('/api/blood-center/laboratory/referrals')->assertOk();
+        // The list names which marker a donor was reactive for. Monitoring
+        // the centre's numbers is not a reason to read it.
+        foreach ([
+            User::factory()->bloodCenterAdmin($this->facility)->create(),
+            User::factory()->bloodCenterSupervisor($this->facility)->create(),
+        ] as $manager) {
+            $this->actingAs($manager)->getJson('/api/blood-center/laboratory/referrals')->assertForbidden();
+        }
     }
 
     public function test_no_role_but_the_lab_supervisor_may_read_the_list(): void
@@ -135,7 +143,7 @@ class CounsellingReferralTest extends TestCase
         $referral = CounsellingReferral::firstOrFail();
 
         $this->actingAs($otherTesting)
-            ->patchJson("/api/blood-center/laboratory/referrals/{$referral->id}", ['status' => 'contacted'])
+            ->patchJson("/api/blood-center/laboratory/referrals/{$referral->id}", ['status' => 'referred'])
             ->assertNotFound();
     }
 
@@ -145,16 +153,17 @@ class CounsellingReferralTest extends TestCase
 
         $this->actingAs($this->testing)
             ->patchJson("/api/blood-center/laboratory/referrals/{$referral->id}", [
-                'status' => 'contacted',
-                'note' => 'Reached by phone; appointment set.',
+                'status' => 'referred',
+                'note' => 'Referred to the infectious disease clinic.',
             ])
             ->assertOk()
-            ->assertJsonPath('data.status', 'contacted')
-            ->assertJsonPath('data.note', 'Reached by phone; appointment set.');
+            ->assertJsonPath('data.status', 'referred')
+            ->assertJsonPath('data.status_label', 'Referred to doctor')
+            ->assertJsonPath('data.note', 'Referred to the infectious disease clinic.');
 
         $referral->refresh();
-        $this->assertSame(ReferralStatus::Contacted, $referral->status);
-        $this->assertNotNull($referral->contacted_at);
+        $this->assertSame(ReferralStatus::Referred, $referral->status);
+        $this->assertNotNull($referral->referred_at);
         $this->assertSame($this->testing->id, (int) $referral->updated_by);
 
         $this->assertDatabaseHas('audit_logs', [
@@ -169,7 +178,7 @@ class CounsellingReferralTest extends TestCase
 
         $this->actingAs($this->testing)
             ->patchJson("/api/blood-center/laboratory/referrals/{$referral->id}", [
-                'status' => 'contacted',
+                'status' => 'referred',
                 'note' => 'Referred to the social hygiene clinic.',
             ])
             ->assertOk();
@@ -188,14 +197,18 @@ class CounsellingReferralTest extends TestCase
             ->assertOk();
 
         $this->actingAs($this->testing)
-            ->patchJson("/api/blood-center/laboratory/referrals/{$referral->id}", ['status' => 'contacted'])
+            ->patchJson("/api/blood-center/laboratory/referrals/{$referral->id}", ['status' => 'referred'])
             ->assertStatus(409)
             ->assertJsonPath('code', 'referral_transition_invalid');
 
-        $this->actingAs($this->testing)
-            ->patchJson("/api/blood-center/laboratory/referrals/{$referral->id}", ['status' => 'pending'])
-            ->assertStatus(422)
-            ->assertJsonValidationErrors('status');
+        // Pending, referred to doctor, closed (project owner, 2026-10-26):
+        // there is no "contacted" step, and nothing goes back to pending.
+        foreach (['pending', 'contacted'] as $status) {
+            $this->actingAs($this->testing)
+                ->patchJson("/api/blood-center/laboratory/referrals/{$referral->id}", ['status' => $status])
+                ->assertStatus(422)
+                ->assertJsonValidationErrors('status');
+        }
     }
 
     public function test_closing_needs_a_note_and_is_final(): void

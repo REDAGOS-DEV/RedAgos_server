@@ -3,6 +3,7 @@
 namespace App\Support;
 
 use App\Enums\Department;
+use App\Enums\ManagementLevel;
 use App\Enums\StaffPrivilege;
 use App\Enums\StaffRole;
 use App\Models\User;
@@ -16,19 +17,24 @@ use App\Models\User;
  *     custom, typed role gets its department's full set (every predefined
  *     role of that department combined), less correction approval, which
  *     belongs to the department's named approver.
- *  2. Their privileges. The supervisor ticks Read / Write / Update / Delete
- *     per staff member, and only the abilities whose KIND is ticked survive.
+ *  2. Their privileges. The Admin ticks Read / Write / Update / Delete per
+ *     staff member, and only the abilities whose KIND is ticked survive.
  *     Privileges cap a role; they never widen it.
- *  3. The supervisor level (Center Admin), which holds everything and is not
- *     capped.
+ *  3. Their management level (ManagementLevel), which adds a fixed set on top
+ *     of whatever the role gives and is not capped. Both see the overview and
+ *     the reports (OVERVIEW). The Supervisor also watches every department's
+ *     monitoring pages (MONITORING); the Blood Center Admin instead keeps the
+ *     staff accounts and the centre's settings (ADMINISTRATION). Neither does
+ *     department work: until 2026-10-15 one supervisor flag held every
+ *     ability, and the project owner split it so that it no longer does.
  *
  * Declared here rather than in a database table on purpose: the matrix is
  * versioned with the code that depends on it and covered by a test.
  *
  * The matrix decides who may *reach* an endpoint. The clinical hard rules —
  * a reactive result can never be undone, a unit leaves quarantine only on both
- * clearance tokens — are enforced in the services, so that a supervisor, who
- * holds every ability, is bound by them too.
+ * clearance tokens — are enforced in the services, so that they bind everyone
+ * who reaches it.
  */
 final class DepartmentPermissions
 {
@@ -61,6 +67,11 @@ final class DepartmentPermissions
         'donations.collect',
         'donations.close',
 
+        // Type in a remote drive's paper records once they come back (project
+        // owner, 2026-10-17). Every Collection role and the head may: whoever
+        // ran the drive brings the sheets home.
+        'donations.record_paper',
+
         // Correct their own collection box, on the physician's approval.
         'corrections.request',
     ];
@@ -72,6 +83,11 @@ final class DepartmentPermissions
         'billing.view',
         'billing.create',
         'billing.record_payment',
+
+        // Meet a statement from the government subsidy. It is Billing's
+        // decision and is checked against the Billing Supervisor's dated
+        // programme register in BillingService.
+        'billing.subsidise',
 
         // Read-only: billing is raised against a fulfilled request, so it
         // must read the request it is billing for.
@@ -110,6 +126,11 @@ final class DepartmentPermissions
             // different act from looking them up.
             'donors.view_questionnaire',
 
+            // The Donation counter's printed form and its onsite form for
+            // walk-ins; see the receptionist's entry below.
+            'donors.print_questionnaire',
+            'donors.record_questionnaire',
+
             'appointments.view',
             'appointments.verify',
             'donations.view',
@@ -119,8 +140,21 @@ final class DepartmentPermissions
             'donations.screen',
             'donations.close',
 
+            // Defer a donor outside a visit, and lift that deferral, on the
+            // Deferrals page (project owner, 2026-10-18). The same authority
+            // as deferring at screening.
+            'donors.defer',
+
+            // Keep the centre's deferral codes and what each stands for
+            // (project owner, 2026-10-24). A deferral is recorded by code so
+            // the donor sees only the code.
+            'deferrals.configure',
+
+            // A drive's paper records; see CHAIRSIDE.
+            'donations.record_paper',
+
             // Donor/Collection's correction approver; their own screening
-            // corrections go to the Center Admin.
+            // corrections apply when filed (CorrectionService::request()).
             'corrections.request',
             'corrections.approve',
         ],
@@ -139,15 +173,38 @@ final class DepartmentPermissions
             'appointments.view',
             'appointments.verify',
 
+            // Book an appointment for a donor who phones in, and cancel one
+            // (project owner, 2026-10-17). Removing a booking entered by
+            // mistake is its own, delete-kind ability, so the Delete privilege
+            // still caps it.
+            'appointments.manage',
+            'appointments.delete',
+
             // Donor-facing scheduling includes the mobile drives.
             'drives.view',
             'drives.manage',
+
+            // The centre's booking days, hours and places (project owner,
+            // 2026-10-24); the Admin holds it too (ADMINISTRATION).
+            'booking.configure',
 
             'donations.view',
 
             // Opens the visit's donation record at check-in.
             'donations.register',
             'donations.close',
+
+            // A drive's paper records; see CHAIRSIDE.
+            'donations.record_paper',
+
+            // The desk that scans a booked donor in prints their completed
+            // questionnaire to travel with them to the physician (project
+            // owner, 2026-10-16), and hands a walk-in the counter's device to
+            // answer it. The printed form carries the answers only: the review
+            // markers and the server's assessment stay behind
+            // donors.view_questionnaire, which the receptionist still lacks.
+            'donors.print_questionnaire',
+            'donors.record_questionnaire',
         ],
 
         // Processing. Blind: none of these roles holds donors.view_identity,
@@ -161,13 +218,21 @@ final class DepartmentPermissions
             // laboratory side holds.
             'lab.update_status',
 
+            // Add a component to the catalogue and set this centre's shelf
+            // life for it, which decides every unit's expiry date. Processing
+            // makes the components, so Processing's head defines them; the
+            // price is Billing's (billing.prices).
+            'components.configure',
+
             // Processing's correction approver.
             'corrections.request',
             'corrections.approve',
 
-            // Read-only: processing hands units downstream, but inventory
-            // records belong to Issuance.
-            'inventory.view',
+            // No inventory.view (project owner, 2026-10-19): Processing hands
+            // units over and never works on stock, so Blood Inventory and
+            // Stock Thresholds are not its pages, and it gets no low-stock
+            // alerts. The Processed list says how many bags Issuance has
+            // booked in.
         ],
 
         // Declares the bags and their volumes but cannot complete: the final
@@ -178,7 +243,10 @@ final class DepartmentPermissions
             'corrections.request',
         ],
 
-        // Testing: the TTI panel and the ABO/Rh typing, one department.
+        // Testing: the TTI panel and the ABO/Rh typing, one department. Blind,
+        // its head included (project owner, 2026-10-25): no Testing role
+        // holds a donors.* read, so every laboratory payload names the bag,
+        // never the donor (see DonorBlinding).
         StaffRole::SerologyTechnologist->value => [
             'lab.view',
 
@@ -196,18 +264,26 @@ final class DepartmentPermissions
             'lab.record_serology',
             'lab.record_immunohematology',
 
-            // The counselling referral list: the only screen that names which
-            // marker a donor was reactive for. The supervisor alone, because
-            // the technologists who record the markers are blind to who the
-            // donor is, and the list exists to put a name to a result.
+            // The counselling referral list: the only screen that says which
+            // marker a donor was reactive for. The supervisor alone, and by
+            // barcode: Testing refers the donor to a doctor, and the contact
+            // request reaches the donor from the server, so nobody in Testing
+            // needs to know who they are.
             'lab.referrals',
-            'donors.view_identity',
+
+            // The second person on a reactive result (project owner,
+            // 2026-10-18): a technologist's reactive panel sets nothing off
+            // until the supervisor checks it against the bench record and
+            // verifies it, or returns it for re-entry.
+            'lab.verify_serology',
 
             // Testing's correction approver.
             'corrections.request',
             'corrections.approve',
 
-            'inventory.view',
+            // No inventory.view (project owner, 2026-10-18): Testing works on
+            // drawn donations, never on stock, so Blood Inventory and Stock
+            // Thresholds are not its pages, and it gets no low-stock alerts.
         ],
 
         // Issuance.
@@ -217,9 +293,15 @@ final class DepartmentPermissions
             'inventory.update',
             'inventory.discard',
 
-            // Release from quarantine. The service demands both clearance
-            // tokens, so holding this is never enough on its own.
-            'inventory.release_quarantine',
+            // Define the minimum stock per blood type and component. The
+            // officer who manages the shelf sets what it must never fall
+            // below; everyone with inventory.view can see the result.
+            'inventory.thresholds',
+
+            // Read the Daily Blood Stock Inventory. Issuance prepares it; its
+            // own ability rather than inventory.create so a Supervisor can
+            // read the sheet without being able to book stock in.
+            'inventory.stock_report',
 
             'requests.view',
             'requests.process',
@@ -236,7 +318,7 @@ final class DepartmentPermissions
             'billing.view',
 
             // Issuance's correction approver. Edits a unit directly (above),
-            // so their own dispatch corrections go to the Center Admin.
+            // and their own dispatch corrections apply when filed.
             'corrections.request',
             'corrections.approve',
         ],
@@ -272,11 +354,21 @@ final class DepartmentPermissions
         StaffRole::BillingClerk->value => self::BILLING_DESK,
 
         // The desk's head: everything a clerk does, and Billing's correction
-        // approver. Records payments too, so their own corrections go to the
-        // Center Admin.
+        // approver. Records payments too; their own corrections apply when
+        // filed.
         StaffRole::BillingSupervisor->value => [
             ...self::BILLING_DESK,
             'corrections.approve',
+
+            // Price each component. A commercial decision, and a non-zero
+            // price switches on the payment-before-release gate, so it is the
+            // Billing department's alone and only its head's.
+            'billing.prices',
+
+            // Financial Reports: collections, subsidies, receivables and
+            // billing by component and hospital (project owner, 2026-10-25).
+            // The department head's and management's, not the clerk's.
+            'reports.financial',
         ],
     ];
 
@@ -293,24 +385,32 @@ final class DepartmentPermissions
     private const KIND = [
         'reference.view' => 'read',
         'reports.view_own' => 'read',
+        'reports.financial' => 'read',
         'donors.view_contact' => 'read',
         'donors.view' => 'read',
         'donors.view_clinical' => 'read',
         'donors.view_identity' => 'read',
         'donors.view_questionnaire' => 'read',
+        'donors.print_questionnaire' => 'read',
         'appointments.view' => 'read',
         'drives.view' => 'read',
         'donations.view' => 'read',
         'lab.view' => 'read',
         'inventory.view' => 'read',
+        'inventory.stock_report' => 'read',
         'requests.view' => 'read',
         'billing.view' => 'read',
 
         'donors.manage' => 'write',
+        'donors.record_questionnaire' => 'write',
+        'donors.defer' => 'write',
         'drives.manage' => 'write',
+        'booking.configure' => 'update',
+        'appointments.manage' => 'write',
         'donations.register' => 'write',
         'donations.screen' => 'write',
         'donations.collect' => 'write',
+        'donations.record_paper' => 'write',
         'lab.record_serology' => 'write',
         'lab.record_immunohematology' => 'write',
         'lab.record_components' => 'write',
@@ -328,22 +428,90 @@ final class DepartmentPermissions
         'appointments.verify' => 'update',
         'lab.update_status' => 'update',
         'lab.referrals' => 'update',
+        'lab.verify_serology' => 'update',
         'inventory.update' => 'update',
-        'inventory.release_quarantine' => 'update',
+        'inventory.thresholds' => 'update',
+
+        // Settings a named post keeps, like the stock minimums above: setting
+        // a value rather than recording a new entry.
+        'components.configure' => 'update',
+        'billing.prices' => 'update',
+        'deferrals.configure' => 'update',
         'requests.approve' => 'update',
         'requests.release' => 'update',
+
+        // Decides that the government meets a statement: a settlement, not a
+        // new record.
+        'billing.subsidise' => 'update',
         'corrections.approve' => 'update',
 
         'donations.close' => 'delete',
         'inventory.discard' => 'delete',
+        'appointments.delete' => 'delete',
     ];
 
     /**
-     * Abilities held by a supervisor, which are every operational ability plus management.
+     * What both levels hold: the overview (the dashboard) and the reports,
+     * Financial Reports included (project owner, 2026-10-25).
      *
-     * Spelled out as a real list rather than short-circuited through
+     * @var array<int, string>
+     */
+    private const OVERVIEW = [
+        'reference.view',
+        'reports.view_own',
+        'reports.view_all',
+        'reports.financial',
+    ];
+
+    /**
+     * What the Supervisor level holds: the overview, and every department's
+     * view-only monitoring.
+     *
+     * Read abilities only, chosen by the pages they open: Blood Inventory and
+     * Stock Thresholds, the Daily Stock Report, Incoming Requests and the
+     * billing Statements. Each of those pages hides what its viewer cannot
+     * do. The clinical reads (donor identity, questionnaires, screening and
+     * laboratory detail) are left out: a supervisor monitors the centre's
+     * numbers, not a donor's record.
+     *
+     * @var array<int, string>
+     */
+    private const MONITORING = [
+        ...self::OVERVIEW,
+        'inventory.view',
+        'inventory.stock_report',
+        'requests.view',
+        'billing.view',
+    ];
+
+    /**
+     * What the Blood Center Admin holds: the overview, the staff accounts and
+     * their roles, the centre's own settings (its logo), and the Audit Log of
+     * what the centre's staff did (project owner, 2026-10-21). Nothing else.
+     *
+     * The department monitoring pages are the Supervisor's, and corrections
+     * are the departments' own: a head's correction to their own record
+     * applies when filed (project owner, 2026-10-15), so nothing escalates to
+     * the Admin. Shelf life is Processing's (components.configure) and price
+     * is Billing's (billing.prices).
+     *
+     * @var array<int, string>
+     */
+    private const ADMINISTRATION = [
+        ...self::OVERVIEW,
+        'staff.manage',
+        'center.configure',
+        'booking.configure',
+        'audit.view',
+    ];
+
+    /**
+     * Abilities only a management level grants. No staff role holds them,
+     * and the matrix test keeps it that way.
+     *
+     * Spelled out as real lists rather than short-circuited through
      * Gate::before(), which would also override DonationAppointmentPolicy and
-     * make a supervisor the owner of every donor's appointment.
+     * make an Admin the owner of every donor's appointment.
      *
      * @var array<int, string>
      */
@@ -351,31 +519,54 @@ final class DepartmentPermissions
         'staff.manage',
         'center.configure',
         'reports.view_all',
+        'audit.view',
     ];
 
     /**
      * Resolve the abilities a user holds.
      *
-     * A supervisor gets the full set, uncapped. Anyone else gets their role's
-     * set — predefined, or their department's for a custom role — capped by
-     * their privileges. A user with neither role holds nothing, which is the
-     * intended fail-closed state for a staff account awaiting assignment.
+     * Their roles' sets combined — each predefined role's, plus their
+     * department's for a custom role — capped by their one set of privileges,
+     * plus whatever their management level
+     * adds, uncapped. A user with neither a role nor a level holds nothing,
+     * which is the intended fail-closed state for a staff account awaiting
+     * assignment.
      *
      * @return array<int, string>
      */
     public static function for(User $user): array
     {
-        if ($user->is_supervisor) {
-            return self::all();
+        // Every role the account holds, combined: a person covering two posts
+        // in one department does both jobs (project owner, 2026-10-17). A
+        // custom role adds its department's set, less the named posts' own.
+        $abilities = [];
+
+        foreach ($user->staffRoles() as $role) {
+            $abilities = [...$abilities, ...self::forRole($role)];
         }
 
-        $abilities = match (true) {
-            $user->staff_role !== null => self::forRole($user->staff_role),
-            filled($user->custom_role) && $user->department !== null => self::forCustomRole($user->department),
-            default => [],
-        };
+        if (filled($user->custom_role) && $user->department !== null) {
+            $abilities = [...$abilities, ...self::forCustomRole($user->department)];
+        }
 
-        return self::cap($abilities, self::privilegesOf($user));
+        return array_values(array_unique([
+            ...self::cap($abilities, self::privilegesOf($user)),
+            ...self::forLevel($user->management_level),
+        ]));
+    }
+
+    /**
+     * Get the abilities a management level adds, or none without one.
+     *
+     * @return array<int, string>
+     */
+    public static function forLevel(?ManagementLevel $level): array
+    {
+        return match ($level) {
+            ManagementLevel::Admin => self::ADMINISTRATION,
+            ManagementLevel::Supervisor => self::MONITORING,
+            null => [],
+        };
     }
 
     /**
@@ -426,7 +617,7 @@ final class DepartmentPermissions
      */
     public static function all(): array
     {
-        $abilities = [...self::SHARED, ...self::MANAGEMENT];
+        $abilities = [...self::SHARED, ...self::MANAGEMENT, ...self::MONITORING, ...self::ADMINISTRATION];
 
         foreach (self::MATRIX as $roleAbilities) {
             $abilities = [...$abilities, ...$roleAbilities];
@@ -454,14 +645,23 @@ final class DepartmentPermissions
      * Abilities that belong to a named post rather than to a department.
      *
      * Approving is the named approver role's responsibility
-     * (Department::correctionApprover()), and auditing a unit is the IT
-     * clerk's. A typed role never inherits either.
+     * (Department::correctionApprover()), as is verifying a reactive serology
+     * result, and auditing a unit is the IT clerk's. The stock minimums, the component catalogue with its shelf
+     * lives, the prices and the deferral codes are each kept by their
+     * department's head, and the counselling referrals are the Laboratory
+     * Supervisor's. A typed role never inherits any of them.
      *
      * @var array<int, string>
      */
     private const NAMED_POST_ONLY = [
         'corrections.approve',
+        'lab.verify_serology',
+        'lab.referrals',
         'inventory.audit',
+        'inventory.thresholds',
+        'components.configure',
+        'billing.prices',
+        'deferrals.configure',
     ];
 
     /**
@@ -528,7 +728,7 @@ final class DepartmentPermissions
     }
 
     /**
-     * Get the departments, their roles, and the privileges as the staff form renders them.
+     * Get the departments, their roles, the management levels and the privileges as the staff form renders them.
      *
      * The labels and descriptions travel with each entry so the form describes
      * a role in the same words this file enforces it.
@@ -554,12 +754,19 @@ final class DepartmentPermissions
 
         return [
             'departments' => $departments,
+            'levels' => array_map(fn (ManagementLevel $level): array => [
+                'key' => $level->value,
+                'label' => $level->label(),
+                'description' => $level->description(),
+                'abilities' => self::forLevel($level),
+            ], ManagementLevel::cases()),
             'privileges' => array_map(fn (StaffPrivilege $privilege): array => [
                 'key' => $privilege->value,
                 'label' => $privilege->label(),
                 'description' => $privilege->description(),
             ], StaffPrivilege::cases()),
-            'titles' => ['RMT', 'RN'],
+            // Suggested credentials, printed after a staff member's name (users.credentials).
+            'titles' => ['RMT', 'RN', 'MD'],
         ];
     }
 }

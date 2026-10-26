@@ -109,7 +109,84 @@ class HospitalInventoryService
                 'within_3_days' => $this->repository->expiringWithinCount($facilityId, $today, 3),
             ],
             'overdue_active_tags' => $this->repository->overdueActiveTagCount($facilityId, $now),
+            // For the stock-in form: the configured fridges and freezers, and
+            // any place this blood bank has already stocked a bag into.
+            'storage_locations' => $this->storageLocations($facilityId),
             'as_of' => $now->toIso8601String(),
+        ];
+    }
+
+    /**
+     * Stock in bags that arrived: each becomes available, stored where staff said.
+     *
+     * Step two of receiving (project owner, 2026-10-11). Confirming receipt, or
+     * booking blood from outside RedAgos, leaves a bag awaiting stock-in; this
+     * is inventory staff putting it on a shelf. The location is optional, as at
+     * a centre's Stock Intake. Every bag must be this blood bank's, awaiting
+     * stock-in and in date; one that is not refuses the lot.
+     *
+     * @param  array<int, array{unit_id: string, storage_location?: string|null}>  $bags
+     * @return array<string, mixed>
+     */
+    public function stockIn(User $user, array $bags): array
+    {
+        $facilityId = $this->requireFacilityId($user);
+        $now = now()->startOfSecond()->toImmutable();
+        $locations = collect($bags)->mapWithKeys(fn (array $bag): array => [
+            $bag['unit_id'] => filled($bag['storage_location'] ?? null) ? trim((string) $bag['storage_location']) : null,
+        ]);
+
+        $stocked = DB::transaction(function () use ($user, $facilityId, $locations, $now): array {
+            $ordered = $this->repository->unitIdsInLockOrder($facilityId, $locations->keys()->all());
+
+            // A bag that is not this blood bank's is named, not skipped.
+            foreach ($locations->keys() as $unitId) {
+                if (! in_array($unitId, $ordered, true)) {
+                    throw $this->refuse(404, 'unit_not_found', "Blood unit {$unitId} is not in your blood bank.");
+                }
+            }
+
+            $done = [];
+
+            foreach ($ordered as $unitId) {
+                $unit = $this->lockUnit($unitId, $facilityId);
+
+                if ($unit->status !== HospitalUnitStatus::Received) {
+                    throw $this->refuse(409, 'not_awaiting_stock_in', "Blood unit {$unitId} is {$unit->status->label()}, not awaiting stock-in.");
+                }
+
+                $expiry = $unit->bloodUnit()->value('expiry_date');
+
+                if ($expiry !== null && CarbonImmutable::parse($expiry)->toDateString() < OperationalDay::todayAsDate()) {
+                    throw $this->refuse(409, 'bag_expired', "Blood unit {$unitId} is past its expiry date. Discard it rather than stocking it in.");
+                }
+
+                $unit->storage_location = $locations->get($unitId);
+                $unit->stocked_at = $now;
+                $unit->stocked_by = $user->id;
+                $this->advance($unit, HospitalUnitStatus::Available);
+
+                $this->audit($user, 'hospital_inventory.stocked', $unit, null, HospitalUnitStatus::Received, [
+                    'storage_location' => $unit->storage_location,
+                ]);
+
+                $done[] = $unitId;
+            }
+
+            return $done;
+        });
+
+        $count = count($stocked);
+
+        return [
+            'message' => $count === 1 ? 'Blood unit stocked in.' : "{$count} blood units stocked in.",
+            'stocked_count' => $count,
+            'units' => collect($stocked)
+                ->map(fn (string $unitId): ?HospitalUnit => $this->repository->findUnitForFacility($unitId, $facilityId))
+                ->filter()
+                ->map(fn (HospitalUnit $unit): array => $this->format($unit, $now))
+                ->values()
+                ->all(),
         ];
     }
 
@@ -164,13 +241,14 @@ class HospitalInventoryService
     }
 
     /**
-     * Put the bags a hospital just confirmed receipt of into its custody.
+     * Put the bags a hospital just confirmed receipt of into its custody, awaiting stock-in.
      *
      * Called by FulfillmentService::confirmReceipt() inside its transaction,
      * after the holds are stamped received. Only inserts, so it takes no lock
      * and leaves receipt's lock order (request, then allocations, then the
-     * requirement) as it was. Receipt is the only way stock reaches a hospital:
-     * nothing received before this existed is backfilled.
+     * requirement) as it was. The bags are in custody but not yet stock: they
+     * wait for inventory staff to stock them in (stockIn()). Nothing received
+     * before custody rows existed is backfilled.
      *
      * @param  Collection<int, RequestAllocation>  $allocations
      */
@@ -191,11 +269,11 @@ class HospitalInventoryService
         $bags = BloodUnit::query()->whereIn('id', $units->pluck('unit_id'))->get()->keyBy('id');
 
         foreach ($units as $unit) {
-            $this->auditLogger->record($user, 'hospital_inventory.stocked', $bags->get($unit->unit_id), [
+            $this->auditLogger->record($user, 'hospital_inventory.received', $bags->get($unit->unit_id), [
                 'facility_id' => $facilityId,
                 'hospital_unit_id' => $unit->id,
                 'request_allocation_id' => $unit->request_allocation_id,
-                'new_status' => HospitalUnitStatus::Available->value,
+                'new_status' => HospitalUnitStatus::Received->value,
             ]);
         }
 
@@ -207,8 +285,8 @@ class HospitalInventoryService
      *
      * Called by DirectDistributionService inside its transaction, once it has
      * booked the bags' blood_units rows. The bags have no dispatched hold, so
-     * their custody rows carry none; from here on they are hospital stock like
-     * any other. Only inserts, as stockReceived() does.
+     * their custody rows carry none; like any received bag they wait for
+     * inventory staff to stock them in. Only inserts, as stockReceived() does.
      *
      * @param  Collection<int, BloodUnit>  $bags
      */
@@ -229,11 +307,11 @@ class HospitalInventoryService
         $byId = $bags->keyBy('id');
 
         foreach ($units as $unit) {
-            $this->auditLogger->record($user, 'hospital_inventory.stocked', $byId->get($unit->unit_id), [
+            $this->auditLogger->record($user, 'hospital_inventory.received', $byId->get($unit->unit_id), [
                 'facility_id' => $facilityId,
                 'hospital_unit_id' => $unit->id,
                 'direct_distribution_id' => $delivery->id,
-                'new_status' => HospitalUnitStatus::Available->value,
+                'new_status' => HospitalUnitStatus::Received->value,
             ]);
         }
 
@@ -517,6 +595,27 @@ class HospitalInventoryService
     }
 
     /**
+     * Where a bag may be stocked into: the configured fridges and freezers, and those already used here.
+     *
+     * The configured list is the centre's (blood_center.storage_locations):
+     * generic equipment a hospital blood bank has too. Suggestions only; staff
+     * may type their own, or leave it blank.
+     *
+     * @return array<int, string>
+     */
+    private function storageLocations(int $facilityId): array
+    {
+        $all = array_values(array_unique([
+            ...(array) config('blood_center.storage_locations', []),
+            ...$this->repository->distinctStorageLocations($facilityId),
+        ]));
+
+        sort($all);
+
+        return $all;
+    }
+
+    /**
      * Lock one of the hospital's bags, or refuse as if it did not exist.
      */
     private function lockUnit(string $unitId, int $facilityId): HospitalUnit
@@ -715,7 +814,12 @@ class HospitalInventoryService
             'expiry_date' => $expiry?->toDateString(),
             'days_remaining' => $expiry ? OperationalDay::daysUntil($expiry) : null,
             'bag_expired' => $expiry !== null && $expiry->toDateString() < OperationalDay::todayAsDate(),
-            'stocked_at' => $unit->created_at?->toIso8601String(),
+            // Arrived (custody began), then stocked in. A bag shelved before
+            // stock-in existed has no stock-in of its own: it was stocked on arrival.
+            'received_at' => $unit->created_at?->toIso8601String(),
+            'stocked_at' => ($unit->stocked_at ?? ($unit->status === HospitalUnitStatus::Received ? null : $unit->created_at))?->toIso8601String(),
+            'stocked_by' => $unit->stockedBy === null ? null : trim($unit->stockedBy->first_name.' '.$unit->stockedBy->last_name),
+            'storage_location' => $unit->storage_location,
             // Where the bag came from: a RedAgos request it was received for,
             // or a delivery from outside RedAgos.
             'source' => [

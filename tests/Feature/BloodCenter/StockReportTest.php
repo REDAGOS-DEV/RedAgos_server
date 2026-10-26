@@ -50,7 +50,7 @@ class StockReportTest extends TestCase
         $this->issuance = User::factory()->bloodCenterStaff($this->facility, Department::Issuance)->create([
             'first_name' => 'John',
             'last_name' => 'Abarsolo',
-            'position' => 'RMT',
+            'credentials' => 'RMT',
         ]);
 
         foreach (['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'] as $code) {
@@ -342,7 +342,7 @@ class StockReportTest extends TestCase
 
     // --- Who may see it ------------------------------------------------------
 
-    public function test_only_issuance_and_supervisors_may_prepare_it(): void
+    public function test_only_issuance_and_the_supervisor_may_read_it(): void
     {
         foreach ([Department::Collection, Department::Testing, Department::Processing, Department::Billing] as $department) {
             $staff = User::factory()->bloodCenterStaff($this->facility, $department)->create();
@@ -353,6 +353,10 @@ class StockReportTest extends TestCase
 
         $supervisor = User::factory()->bloodCenterSupervisor($this->facility)->create();
         $this->report($supervisor)->assertOk();
+        $this->actingAs($supervisor)->get('/api/blood-center/inventory/stock-report/pdf')->assertOk();
+
+        // The Admin keeps staff accounts, not the department pages.
+        $this->report(User::factory()->bloodCenterAdmin($this->facility)->create())->assertForbidden();
     }
 
     public function test_another_centres_report_is_its_own(): void

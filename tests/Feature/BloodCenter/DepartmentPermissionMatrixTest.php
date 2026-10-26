@@ -3,6 +3,7 @@
 namespace Tests\Feature\BloodCenter;
 
 use App\Enums\Department;
+use App\Enums\ManagementLevel;
 use App\Enums\StaffRole;
 use App\Models\Facility;
 use App\Models\User;
@@ -15,7 +16,7 @@ class DepartmentPermissionMatrixTest extends TestCase
 {
     use LazilyRefreshDatabase;
 
-    private const MANAGEMENT = ['staff.manage', 'center.configure', 'reports.view_all'];
+    private const MANAGEMENT = ['staff.manage', 'center.configure', 'reports.view_all', 'audit.view'];
 
     public function test_every_declared_ability_is_registered_as_a_gate(): void
     {
@@ -91,7 +92,7 @@ class DepartmentPermissionMatrixTest extends TestCase
     public function test_every_ability_a_role_can_hold_has_a_privilege_kind(): void
     {
         foreach (DepartmentPermissions::all() as $ability) {
-            if (in_array($ability, ['staff.manage', 'center.configure', 'reports.view_all'], true)) {
+            if (in_array($ability, self::MANAGEMENT, true)) {
                 continue;
             }
 
@@ -150,11 +151,13 @@ class DepartmentPermissionMatrixTest extends TestCase
         );
     }
 
-    public function test_a_supervisor_is_never_capped(): void
+    public function test_a_management_level_is_never_capped(): void
     {
-        $supervisor = User::factory()->bloodCenterSupervisor()->withPrivileges(['read'])->create();
+        // Privileges cap a role. The Admin's staff.manage is an update-shaped
+        // power, but no Read tick takes it away.
+        $admin = User::factory()->bloodCenterAdmin()->withPrivileges(['read'])->create();
 
-        $this->assertEqualsCanonicalizing(DepartmentPermissions::all(), $supervisor->abilities());
+        $this->assertEqualsCanonicalizing(DepartmentPermissions::forLevel(ManagementLevel::Admin), $admin->abilities());
     }
 
     // --- Custom roles -----------------------------------------------------------
@@ -197,17 +200,135 @@ class DepartmentPermissionMatrixTest extends TestCase
         }
     }
 
-    public function test_a_supervisor_holds_every_ability_regardless_of_role(): void
+    // --- Management levels (project owner, 2026-10-15) --------------------------
+
+    public function test_the_supervisor_only_watches(): void
     {
-        $managementOnly = User::factory()->bloodCenterSupervisor()->create();
-        $working = User::factory()->bloodCenterSupervisor(null, StaffRole::BillingClerk)->create();
+        $supervisor = User::factory()->bloodCenterSupervisor()->create();
 
-        $this->assertEqualsCanonicalizing(DepartmentPermissions::all(), $managementOnly->abilities());
+        $this->assertEqualsCanonicalizing([
+            'reference.view',
+            'reports.view_own',
+            'reports.view_all',
+            'reports.financial',
+            'inventory.view',
+            'inventory.stock_report',
+            'requests.view',
+            'billing.view',
+        ], $supervisor->abilities());
 
-        // The role must not narrow the set: a supervisor working as a billing
-        // clerk still holds inventory.create, which a billing clerk never does.
-        $this->assertEqualsCanonicalizing(DepartmentPermissions::all(), $working->abilities());
-        $this->assertContains('inventory.create', $working->abilities());
+        // Every one of them a read.
+        foreach ($supervisor->abilities() as $ability) {
+            if ($ability !== 'reports.view_all') {
+                $this->assertSame('read', DepartmentPermissions::kindOf($ability), "[{$ability}] is not a read.");
+            }
+        }
+    }
+
+    public function test_the_admin_holds_the_overview_staff_and_settings_and_nothing_else(): void
+    {
+        $admin = User::factory()->bloodCenterAdmin()->create();
+        $abilities = $admin->abilities();
+
+        // Project owner, 2026-10-15: no Issuance or Billing pages, and no
+        // corrections, for the Admin. The Audit Log was added 2026-10-21, the
+        // booking schedule 2026-10-24.
+        $this->assertEqualsCanonicalizing([
+            'reference.view',
+            'reports.view_own',
+            'reports.view_all',
+            'reports.financial',
+            'staff.manage',
+            'center.configure',
+            'booking.configure',
+            'audit.view',
+        ], $abilities);
+
+        foreach ([
+            'inventory.view', 'inventory.stock_report', 'requests.view', 'billing.view',
+            'corrections.request', 'corrections.approve',
+            'donations.register', 'donations.screen', 'donations.collect', 'donations.record_paper', 'lab.record_serology',
+            'lab.record_components', 'lab.update_status', 'inventory.create', 'inventory.update',
+            'inventory.discard', 'inventory.thresholds',
+            'requests.approve', 'requests.release', 'billing.record_payment',
+            'components.configure', 'billing.prices', 'deferrals.configure', 'donors.view_identity', 'donors.view_clinical',
+        ] as $work) {
+            $this->assertNotContains($work, $abilities, "The Admin must not hold [{$work}].");
+        }
+    }
+
+    public function test_a_level_adds_to_a_role_and_the_role_stays_capped(): void
+    {
+        $working = User::factory()->bloodCenterSupervisor(null, StaffRole::BillingClerk)
+            ->withPrivileges(['read'])
+            ->create();
+
+        $abilities = $working->abilities();
+
+        // The level's monitoring, uncapped.
+        $this->assertContains('inventory.stock_report', $abilities);
+        $this->assertContains('reports.view_all', $abilities);
+
+        // The role's reads survive the cap; its writes do not.
+        $this->assertContains('billing.view', $abilities);
+        $this->assertNotContains('billing.record_payment', $abilities);
+        $this->assertNotContains('inventory.create', $abilities);
+    }
+
+    public function test_the_supervisor_is_refused_every_write_it_could_otherwise_reach(): void
+    {
+        $facility = Facility::factory()->approved()->create();
+        $supervisor = User::factory()->bloodCenterSupervisor($facility)->create();
+
+        $this->actingAs($supervisor)->getJson('/api/blood-center/inventory')->assertOk();
+        $this->actingAs($supervisor)->getJson('/api/blood-center/inventory/stock-report')->assertOk();
+        $this->actingAs($supervisor)->getJson('/api/blood-center/blood-requests')->assertOk();
+        $this->actingAs($supervisor)->getJson('/api/blood-center/billings')->assertOk();
+
+        $this->actingAs($supervisor)->postJson('/api/blood-center/inventory', [])->assertForbidden();
+        $this->actingAs($supervisor)->postJson('/api/blood-center/inventory/RA1-1-01/discard', ['reason' => 'x'])->assertForbidden();
+        $this->actingAs($supervisor)->postJson('/api/blood-center/blood-requests/1/reject', [])->assertForbidden();
+        $this->actingAs($supervisor)->postJson('/api/blood-center/billings/1/payments', [])->assertForbidden();
+        $this->actingAs($supervisor)->getJson('/api/blood-center/corrections')->assertForbidden();
+        $this->actingAs($supervisor)->getJson('/api/blood-center/laboratory/queue')->assertForbidden();
+        $this->actingAs($supervisor)->getJson('/api/blood-center/donors')->assertForbidden();
+    }
+
+    public function test_the_admin_reaches_administration_but_no_department_write(): void
+    {
+        $facility = Facility::factory()->approved()->create();
+        $admin = User::factory()->bloodCenterAdmin($facility)->create();
+
+        $this->actingAs($admin)->getJson('/api/blood-center/staff')->assertOk();
+
+        foreach ([
+            '/api/blood-center/corrections?scope=review',
+            '/api/blood-center/inventory',
+            '/api/blood-center/inventory/activity',
+            '/api/blood-center/inventory/thresholds',
+            '/api/blood-center/inventory/stock-report',
+            '/api/blood-center/blood-requests',
+            '/api/blood-center/billings',
+        ] as $page) {
+            $this->actingAs($admin)->getJson($page)->assertForbidden();
+        }
+
+        $this->actingAs($admin)->postJson('/api/blood-center/inventory', [])->assertForbidden();
+        $this->actingAs($admin)->getJson('/api/blood-center/blood-components')->assertForbidden();
+        $this->actingAs($admin)->getJson('/api/blood-center/component-prices')->assertForbidden();
+        $this->actingAs($admin)->putJson('/api/blood-center/inventory/thresholds', ['thresholds' => []])->assertForbidden();
+        $this->actingAs($admin)->getJson('/api/blood-center/pos/queue')->assertForbidden();
+    }
+
+    public function test_the_daily_stock_report_is_issuances_and_the_supervisors_only(): void
+    {
+        $this->assertSame([StaffRole::InventoryControlOfficer], DepartmentPermissions::rolesHolding('inventory.stock_report'));
+
+        $facility = Facility::factory()->approved()->create();
+        $lab = User::factory()->bloodCenterStaff($facility, StaffRole::ComponentTechnologist)->create();
+
+        // The laboratory sees the inventory, but not the sheet Issuance signs.
+        $this->actingAs($lab)->getJson('/api/blood-center/inventory/stock-report')->assertForbidden();
     }
 
     public function test_staff_without_a_role_hold_nothing(): void
@@ -249,17 +370,44 @@ class DepartmentPermissionMatrixTest extends TestCase
         $this->assertNotContains('inventory.create', $billing->abilities());
     }
 
-    public function test_processing_may_read_inventory_but_not_write_it(): void
+    /**
+     * Project owner, 2026-10-19: Processing hands units over and never works
+     * on stock, so neither its roles nor a custom Processing role read
+     * inventory, as Testing does not.
+     */
+    public function test_processing_cannot_read_or_write_inventory(): void
     {
+        $this->assertNotContains('inventory.view', DepartmentPermissions::forDepartment(Department::Processing));
+
         $facility = Facility::factory()->approved()->create();
         $staff = User::factory()->bloodCenterStaff($facility, StaffRole::ComponentTechnologist)->create();
 
         $this->actingAs($staff)
             ->getJson('/api/blood-center/inventory')
-            ->assertOk();
+            ->assertForbidden();
+
+        $this->actingAs($staff)
+            ->getJson('/api/blood-center/inventory/thresholds')
+            ->assertForbidden();
 
         $this->actingAs($staff)
             ->postJson('/api/blood-center/inventory', [])
+            ->assertForbidden();
+    }
+
+    /**
+     * Project owner, 2026-10-18: Testing works on drawn donations, never on
+     * stock, so neither its roles nor a custom Testing role read inventory.
+     */
+    public function test_testing_cannot_read_inventory(): void
+    {
+        $this->assertNotContains('inventory.view', DepartmentPermissions::forDepartment(Department::Testing));
+
+        $facility = Facility::factory()->approved()->create();
+        $supervisor = User::factory()->bloodCenterStaff($facility, StaffRole::LabSupervisor)->create();
+
+        $this->actingAs($supervisor)
+            ->getJson('/api/blood-center/inventory/thresholds')
             ->assertForbidden();
     }
 
@@ -298,13 +446,48 @@ class DepartmentPermissionMatrixTest extends TestCase
     }
 
     /**
-     * The referral list names which infection each donor carries. The
-     * technologists who record markers are blind to donor identity, so the
-     * list that puts a name to a result belongs to their supervisor alone.
+     * The referral list says which infection each donor carries. It is the
+     * Laboratory Supervisor's alone, by barcode: Testing refers the donor to a
+     * doctor (project owner, 2026-10-26), and no typed Testing role inherits it.
      */
     public function test_only_the_lab_supervisor_holds_the_counselling_referral_list(): void
     {
         $this->assertSame([StaffRole::LabSupervisor], DepartmentPermissions::rolesHolding('lab.referrals'));
+        $this->assertNotContains('lab.referrals', DepartmentPermissions::forCustomRole(Department::Testing));
+    }
+
+    /**
+     * Processing and Testing work the bag, not the person, Testing's
+     * Laboratory Supervisor included (project owner, 2026-10-25). No role
+     * there, predefined or typed, holds any read of a donor.
+     */
+    public function test_no_role_in_a_blind_department_reads_a_donor(): void
+    {
+        foreach ([Department::Processing, Department::Testing] as $department) {
+            foreach ([
+                'predefined' => DepartmentPermissions::forDepartment($department),
+                'typed' => DepartmentPermissions::forCustomRole($department),
+            ] as $kind => $abilities) {
+                $this->assertSame([], array_values(array_filter(
+                    $abilities,
+                    fn (string $ability): bool => str_starts_with($ability, 'donors.')
+                )), "{$department->value}, {$kind}");
+            }
+        }
+
+        // Collection's typed role still meets donors in person.
+        $this->assertContains('donors.view_identity', DepartmentPermissions::forCustomRole(Department::Collection));
+    }
+
+    /**
+     * A technologist's reactive result waits for a second person (project
+     * owner, 2026-10-18). That person is the supervisor's named post: no other
+     * role and no custom Testing role holds it.
+     */
+    public function test_only_the_lab_supervisor_verifies_a_reactive_result(): void
+    {
+        $this->assertSame([StaffRole::LabSupervisor], DepartmentPermissions::rolesHolding('lab.verify_serology'));
+        $this->assertNotContains('lab.verify_serology', DepartmentPermissions::forCustomRole(Department::Testing));
     }
 
     /**
@@ -347,6 +530,43 @@ class DepartmentPermissionMatrixTest extends TestCase
         }
     }
 
+    /**
+     * A drive's paper records are typed by whoever brings the sheets home
+     * (project owner, 2026-10-17): every Collection role, the head included,
+     * and nobody outside the department.
+     */
+    public function test_every_collection_role_and_no_other_types_paper_records(): void
+    {
+        $this->assertEqualsCanonicalizing(
+            [
+                StaffRole::ScreeningPhysician,
+                StaffRole::Phlebotomist,
+                StaffRole::ApheresisSpecialist,
+                StaffRole::MedicalReceptionist,
+            ],
+            DepartmentPermissions::rolesHolding('donations.record_paper')
+        );
+    }
+
+    /**
+     * The Donation desk prints a booked donor's completed questionnaire and
+     * hands a walk-in the counter's device to answer it (project owner,
+     * 2026-10-16). Printing is not reviewing: the receptionist still lacks the
+     * physician's read, which is the one carrying the review markers.
+     */
+    public function test_the_desk_and_the_physician_print_and_take_the_questionnaire_and_nobody_else(): void
+    {
+        foreach (['donors.print_questionnaire', 'donors.record_questionnaire'] as $ability) {
+            $this->assertEqualsCanonicalizing(
+                [StaffRole::ScreeningPhysician, StaffRole::MedicalReceptionist],
+                DepartmentPermissions::rolesHolding($ability),
+                "Only the desk and the physician may hold [{$ability}]."
+            );
+        }
+
+        $this->assertNotContains('donors.view_questionnaire', DepartmentPermissions::forRole(StaffRole::MedicalReceptionist));
+    }
+
     public function test_issuance_and_billing_hold_no_laboratory_ability(): void
     {
         foreach ([Department::Issuance, Department::Billing] as $department) {
@@ -377,7 +597,7 @@ class DepartmentPermissionMatrixTest extends TestCase
             DepartmentPermissions::forRole(StaffRole::ItDataClerk)
         );
 
-        foreach (['inventory.create', 'inventory.update', 'inventory.discard', 'inventory.release_quarantine'] as $direct) {
+        foreach (['inventory.create', 'inventory.update', 'inventory.discard'] as $direct) {
             $this->assertNotContains($direct, DepartmentPermissions::forRole(StaffRole::ItDataClerk));
         }
     }
@@ -406,21 +626,32 @@ class DepartmentPermissionMatrixTest extends TestCase
         $this->assertCount(5, $heads);
     }
 
-    public function test_the_billing_supervisor_is_the_billing_clerk_plus_approval(): void
+    public function test_the_billing_supervisor_is_the_billing_clerk_plus_approval_prices_and_financial_reports(): void
     {
         $this->assertEqualsCanonicalizing(
-            [...DepartmentPermissions::forRole(StaffRole::BillingClerk), 'corrections.approve'],
+            [...DepartmentPermissions::forRole(StaffRole::BillingClerk), 'corrections.approve', 'billing.prices', 'reports.financial'],
             DepartmentPermissions::forRole(StaffRole::BillingSupervisor)
         );
     }
 
+    public function test_each_department_head_alone_keeps_its_settings(): void
+    {
+        $this->assertSame([StaffRole::ComponentTechnologist], DepartmentPermissions::rolesHolding('components.configure'));
+        $this->assertSame([StaffRole::BillingSupervisor], DepartmentPermissions::rolesHolding('billing.prices'));
+        $this->assertSame([StaffRole::InventoryControlOfficer], DepartmentPermissions::rolesHolding('inventory.thresholds'));
+        $this->assertSame([StaffRole::ScreeningPhysician], DepartmentPermissions::rolesHolding('deferrals.configure'));
+    }
+
     public function test_a_custom_role_never_inherits_a_named_posts_abilities(): void
     {
-        foreach ([Department::Issuance, Department::Billing] as $department) {
+        foreach ([Department::Issuance, Department::Billing, Department::Processing, Department::Collection] as $department) {
             $abilities = User::factory()->bloodCenterCustomStaff(null, $department, 'Floor Officer')->create()->abilities();
 
             $this->assertNotContains('corrections.approve', $abilities);
             $this->assertNotContains('inventory.audit', $abilities);
+            $this->assertNotContains('components.configure', $abilities);
+            $this->assertNotContains('billing.prices', $abilities);
+            $this->assertNotContains('deferrals.configure', $abilities);
         }
 
         // Still the department's own working set, including filing a request.
@@ -465,7 +696,7 @@ class DepartmentPermissionMatrixTest extends TestCase
             ->assertJsonPath('data.staff_role_label', 'Serology / Molecular Medical Technologist')
             ->assertJsonPath('data.department', 'testing')
             ->assertJsonPath('data.department_label', 'Testing')
-            ->assertJsonPath('data.is_supervisor', false)
+            ->assertJsonPath('data.management_level', null)
             ->assertJsonPath('data.permissions', DepartmentPermissions::forRole(StaffRole::SerologyTechnologist));
     }
 
@@ -486,7 +717,7 @@ class DepartmentPermissionMatrixTest extends TestCase
 
         $this->assertSame(Department::values(), array_column($catalogue['departments'], 'department'));
         $this->assertSame(['read', 'write', 'update', 'delete'], array_column($catalogue['privileges'], 'key'));
-        $this->assertSame(['RMT', 'RN'], $catalogue['titles']);
+        $this->assertSame(['RMT', 'RN', 'MD'], $catalogue['titles']);
 
         $keys = [];
 

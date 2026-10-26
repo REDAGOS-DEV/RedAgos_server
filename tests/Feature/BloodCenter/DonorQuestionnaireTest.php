@@ -184,7 +184,7 @@ class DonorQuestionnaireTest extends TestCase
         $this->assertSame(29, $response->json('data.answered_count'));
         $this->assertSame(30, $response->json('data.question_count'));
         $this->assertSame(
-            'Declared by the donor in the RedAgos app. This is not the on-site screening.',
+            'Declared by the donor in the RedAgos portal. This is not the on-site screening.',
             $response->json('data.notice')
         );
     }

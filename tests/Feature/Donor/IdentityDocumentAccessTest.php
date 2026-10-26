@@ -90,12 +90,12 @@ class IdentityDocumentAccessTest extends TestCase
             ->assertForbidden();
     }
 
-    public function test_a_blood_center_supervisor_may_not_open_the_document(): void
+    public function test_a_blood_center_admin_may_not_open_the_document(): void
     {
-        // A supervisor holds every department ability. None of them is this one,
-        // which is why the abilities are registered as explicit gates rather
-        // than through Gate::before().
-        $this->actingAs(User::factory()->bloodCenterSupervisor()->create())
+        // No department ability or management level is this one, which is why
+        // the abilities are registered as explicit gates rather than through
+        // Gate::before().
+        $this->actingAs(User::factory()->bloodCenterAdmin()->create())
             ->get($this->url)
             ->assertForbidden();
     }

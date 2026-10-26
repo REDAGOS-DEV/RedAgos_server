@@ -29,12 +29,15 @@ use App\Support\OperationalDay;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
+use Illuminate\Hashing\BcryptHasher;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 
 /**
- * Available stock of every blood type, for a blood centre to work against.
+ * Available stock of every blood type, for a blood centre to work against:
+ * 50 units of every component in every blood type (UNITS_PER_COMPONENT).
  *
  * DEMO DATA. Not called from DatabaseSeeder: run it on purpose with
  * `php artisan db:seed --class=DemoInventorySeeder`.
@@ -58,33 +61,28 @@ class DemoInventorySeeder extends Seeder
     use WithoutModelEvents;
 
     /**
-     * How many donations each blood type gets, roughly the Philippine donor mix:
-     * O+ most common, the negatives rare.
-     *
-     * @var array<string, int>
+     * How many available units of each component every blood type gets.
      */
-    private const DONATIONS_PER_TYPE = [
-        'O+' => 5,
-        'B+' => 4,
-        'A+' => 3,
-        'AB+' => 2,
-        'O-' => 2,
-        'A-' => 1,
-        'B-' => 1,
-        'AB-' => 1,
-    ];
+    public const UNITS_PER_COMPONENT = 50;
 
     /**
-     * What each donation was drawn into and separated into, in rotation.
+     * @var array<int, string>
+     */
+    private const BLOOD_TYPES = ['O+', 'O-', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-'];
+
+    /**
+     * One round of donations: what each was drawn into and separated into.
+     *
+     * Every component appears exactly once, so each round adds one unit of
+     * each. A bag holds three components at most (BloodBagType), which is why
+     * a round takes three donations.
      *
      * @var array<int, array{0: string, 1: array<string, int>}>
      */
-    private const BREAKDOWNS = [
-        ['triple', ['Packed RBC' => 250, 'Fresh Frozen Plasma' => 200, 'Platelet Concentrate' => 50]],
-        ['double', ['Packed RBC' => 250, 'Fresh Frozen Plasma' => 200]],
+    private const ROUND = [
+        ['triple', ['Packed RBC' => 250, 'Platelet Concentrate' => 50, 'Fresh Frozen Plasma' => 200]],
+        ['triple', ['Washed RBC' => 200, 'Cryoprecipitate' => 20, 'Cryosupernate' => 180]],
         ['single', ['Whole Blood' => 450]],
-        ['triple', ['Packed RBC' => 250, 'Cryoprecipitate' => 20, 'Cryosupernate' => 180]],
-        ['double', ['Washed RBC' => 200, 'Fresh Frozen Plasma' => 200]],
     ];
 
     /**
@@ -121,7 +119,13 @@ class DemoInventorySeeder extends Seeder
         'Fernandez', 'Navarro', 'Torres', 'Flores', 'Gonzales', 'Lim', 'Tan', 'Rivera', 'Domingo', 'Salazar',
     ];
 
-    public function __construct(private readonly DonorService $donorService) {}
+    /**
+     * @param  int  $unitsPerComponent  Smaller in tests, where 50 of everything is slow.
+     */
+    public function __construct(
+        private readonly DonorService $donorService,
+        private readonly int $unitsPerComponent = self::UNITS_PER_COMPONENT
+    ) {}
 
     public function run(): void
     {
@@ -140,8 +144,24 @@ class DemoInventorySeeder extends Seeder
             return;
         }
 
-        foreach ($facilities as $facility) {
-            $this->seedFacility($facility, $bloodTypes, $components);
+        // Demo donors are registered with a random password nobody holds, so
+        // the hash needs no strength; at the configured cost, the 1,200 donors
+        // a centre needs for 50 of everything take minutes.
+        $hasher = Hash::driver();
+        $lowered = $hasher instanceof BcryptHasher;
+
+        if ($lowered) {
+            $hasher->setRounds(4);
+        }
+
+        try {
+            foreach ($facilities as $facility) {
+                $this->seedFacility($facility, $bloodTypes, $components);
+            }
+        } finally {
+            if ($lowered) {
+                $hasher->setRounds((int) config('hashing.bcrypt.rounds', 12));
+            }
         }
     }
 
@@ -173,39 +193,44 @@ class DemoInventorySeeder extends Seeder
         $sequence = 0;
         $created = 0;
 
-        foreach (self::DONATIONS_PER_TYPE as $code => $count) {
+        foreach (self::BLOOD_TYPES as $code) {
             if (! $bloodTypes->has($code)) {
                 continue;
             }
 
-            for ($n = 1; $n <= $count; $n++, $sequence++) {
-                [$bag, $breakdown] = self::BREAKDOWNS[$sequence % count(self::BREAKDOWNS)];
+            $n = 0;
 
-                // Only what this facility can put a date on.
-                $yield = [];
+            for ($round = 1; $round <= $this->unitsPerComponent; $round++) {
+                foreach (self::ROUND as [$bag, $breakdown]) {
+                    $n++;
+                    $sequence++;
 
-                foreach ($breakdown as $name => $volume) {
-                    $componentId = $components->get($name);
+                    // Only what this facility can put a date on.
+                    $yield = [];
 
-                    if ($componentId !== null && $shelfLife->has($componentId)) {
-                        $yield[$name] = ['id' => $componentId, 'volume' => $volume, 'days' => (int) $shelfLife->get($componentId)];
+                    foreach ($breakdown as $name => $volume) {
+                        $componentId = $components->get($name);
+
+                        if ($componentId !== null && $shelfLife->has($componentId)) {
+                            $yield[$name] = ['id' => $componentId, 'volume' => $volume, 'days' => (int) $shelfLife->get($componentId)];
+                        }
                     }
+
+                    if ($yield === []) {
+                        continue;
+                    }
+
+                    $donor = $this->demoDonor($facility, $code, $n, $sequence);
+
+                    if (Donation::query()->where('donor_id', $donor->id)->where('facility_id', $facility->id)->exists()) {
+                        continue;
+                    }
+
+                    $shortest = min(array_column($yield, 'days'));
+                    $daysAgo = max(1, min(self::DAYS_AGO[$sequence % count(self::DAYS_AGO)], $shortest - 1));
+
+                    $created += $this->seedDonation($facility, $staff, $donor, $bloodTypes->get($code), $code, $bag, $yield, $daysAgo, $sequence);
                 }
-
-                if ($yield === []) {
-                    continue;
-                }
-
-                $donor = $this->demoDonor($facility, $code, $n, $sequence);
-
-                if (Donation::query()->where('donor_id', $donor->id)->where('facility_id', $facility->id)->exists()) {
-                    continue;
-                }
-
-                $shortest = min(array_column($yield, 'days'));
-                $daysAgo = max(1, min(self::DAYS_AGO[$sequence % count(self::DAYS_AGO)], $shortest - 1));
-
-                $created += $this->seedDonation($facility, $staff, $donor, $bloodTypes->get($code), $code, $bag, $yield, $daysAgo, $sequence);
             }
         }
 
@@ -227,11 +252,12 @@ class DemoInventorySeeder extends Seeder
             return $existing;
         }
 
-        $typeIndex = array_search($code, array_keys(self::DONATIONS_PER_TYPE), true);
+        $typeIndex = array_search($code, self::BLOOD_TYPES, true);
 
         $this->donorService->register([
             'first_name' => self::FIRST_NAMES[$sequence % count(self::FIRST_NAMES)],
-            'last_name' => self::LAST_NAMES[($sequence * 7) % count(self::LAST_NAMES)],
+            // Shifted each time the first names come round, so all 400 pairings are used.
+            'last_name' => self::LAST_NAMES[($sequence * 7 + intdiv($sequence, count(self::FIRST_NAMES))) % count(self::LAST_NAMES)],
             'email' => $email,
             // 11 digits, unique per facility, type and slot.
             'phone' => sprintf('0998%d%02d%04d', $facility->id % 10, $typeIndex, $n),
@@ -265,7 +291,8 @@ class DemoInventorySeeder extends Seeder
             $drawnOn = OperationalDay::today()->subDays($daysAgo);
             // A morning at the centre, stored in the app's timezone like every
             // timestamp the counter writes.
-            $screenedAt = $drawnOn->setTime(8, 30)->addMinutes($sequence * 7)->setTimezone(config('app.timezone'));
+            // Spread over the working day, never past it into the next.
+            $screenedAt = $drawnOn->setTime(8, 30)->addMinutes(($sequence * 7) % 420)->setTimezone(config('app.timezone'));
             $startedAt = $screenedAt->addMinutes(20);
             $endedAt = $startedAt->addMinutes(12);
             $testedAt = $endedAt->addHours(5);

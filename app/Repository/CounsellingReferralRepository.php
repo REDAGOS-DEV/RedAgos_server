@@ -31,9 +31,12 @@ class CounsellingReferralRepository
         return CounsellingReferral::query()
             ->with([
                 'donorProfile.donor',
+                'donorProfile.bloodType',
                 'donation.collection',
                 'donation.serology.recorder',
+                'donation.serology.verifier',
                 'updater',
+                'contactRequester',
             ])
             ->where('facility_id', $facilityId)
             ->when(
@@ -76,9 +79,12 @@ class CounsellingReferralRepository
         return CounsellingReferral::query()
             ->with([
                 'donorProfile.donor',
+                'donorProfile.bloodType',
                 'donation.collection',
                 'donation.serology.recorder',
+                'donation.serology.verifier',
                 'updater',
+                'contactRequester',
             ])
             ->where('id', $referralId)
             ->where('facility_id', $facilityId)

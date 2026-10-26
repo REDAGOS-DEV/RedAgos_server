@@ -31,6 +31,7 @@ class EligibilityScreening extends Model
         'consented_at',
         'consent_version',
         'consent_text_hash',
+        'recorded_by',
     ];
 
     protected function casts(): array
@@ -75,6 +76,23 @@ class EligibilityScreening extends Model
     public function qrTokens(): HasMany
     {
         return $this->hasMany(DonorQrToken::class, 'screening_id');
+    }
+
+    /**
+     * The staff member whose device the donor answered on, for a
+     * questionnaire taken at the counter. Null for one answered in the app.
+     */
+    public function recordedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'recorded_by');
+    }
+
+    /**
+     * Whether the donor answered at the counter rather than in the Donor Portal.
+     */
+    public function takenAtCounter(): bool
+    {
+        return $this->recorded_by !== null;
     }
 
     /**

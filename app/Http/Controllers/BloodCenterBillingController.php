@@ -5,9 +5,15 @@ namespace App\Http\Controllers;
 use App\Http\Requests\ApplySubsidyRequest;
 use App\Http\Requests\ListBillingsRequest;
 use App\Http\Requests\RecordPaymentRequest;
+use App\Http\Requests\RecordSplitPaymentRequest;
+use App\Http\Requests\RemoveSubsidyRequest;
+use App\Http\Requests\SettleWeeklyBillRequest;
 use App\Models\Billing;
 use App\Models\BloodRequest;
+use App\Models\PaymentAttempt;
 use App\Service\BillingService;
+use App\Service\BillingTransactionService;
+use App\Service\PaymentCheckoutService;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -22,7 +28,9 @@ use Illuminate\Http\Request;
 class BloodCenterBillingController extends Controller
 {
     public function __construct(
-        private readonly BillingService $billingService
+        private readonly BillingService $billingService,
+        private readonly PaymentCheckoutService $checkout,
+        private readonly BillingTransactionService $transactions
     ) {}
 
     /**
@@ -42,13 +50,40 @@ class BloodCenterBillingController extends Controller
     }
 
     /**
+     * The centre's billing at a glance, counted on the server.
+     */
+    public function summary(Request $request): JsonResponse
+    {
+        return response()->json($this->transactions->summary($request->user()));
+    }
+
+    /**
+     * Record that the hospital settled a weekly bill outside RedAgos.
+     */
+    public function storeSettlement(SettleWeeklyBillRequest $request, int $bloodRequest): JsonResponse
+    {
+        return response()->json(
+            $this->billingService->settleWeekly($request->user(), $bloodRequest, $request->validated())
+        );
+    }
+
+    /**
      * Show the statement for one of this facility's incoming requests.
+     *
+     * With the request behind it and its live lines, whether a GCash checkout
+     * could be opened for it now, and the one that is open, if any — so the
+     * screen can offer the right action.
      */
     public function show(Request $request, int $bloodRequest): JsonResponse
     {
         $billing = $this->billingForFacility($bloodRequest, $request->user()->facility_id);
+        $open = PaymentAttempt::query()->where('billing_id', $billing->id)->open()->latest('id')->first();
 
-        return response()->json(['billing' => $this->billingService->format($billing)]);
+        return response()->json([
+            'billing' => $this->billingService->detail($billing),
+            'checkout' => $this->checkout->availability($billing, $request->user()->facility),
+            'open_attempt' => $open ? $this->checkout->format($open) : null,
+        ]);
     }
 
     /**
@@ -75,6 +110,19 @@ class BloodCenterBillingController extends Controller
     }
 
     /**
+     * Record one payment split across methods, every part or none.
+     */
+    public function storeSplitPayment(RecordSplitPaymentRequest $request, int $bloodRequest): JsonResponse
+    {
+        $billing = $this->billingForFacility($bloodRequest, $request->user()->facility_id);
+
+        return response()->json(
+            $this->billingService->recordSplitPayment($request->user(), $billing, $request->validated()),
+            201
+        );
+    }
+
+    /**
      * Meet a statement from the government subsidy instead of charging for it.
      */
     public function storeSubsidy(ApplySubsidyRequest $request, int $bloodRequest): JsonResponse
@@ -86,6 +134,22 @@ class BloodCenterBillingController extends Controller
                 $request->user(),
                 $billing,
                 $request->validated()['reason'] ?? null
+            )
+        );
+    }
+
+    /**
+     * Reverse a subsidy applied in error before any unit has left the centre.
+     */
+    public function removeSubsidy(RemoveSubsidyRequest $request, int $bloodRequest): JsonResponse
+    {
+        $billing = $this->billingForFacility($bloodRequest, $request->user()->facility_id);
+
+        return response()->json(
+            $this->billingService->removeSubsidy(
+                $request->user(),
+                $billing,
+                $request->validated()['reason']
             )
         );
     }
@@ -108,7 +172,7 @@ class BloodCenterBillingController extends Controller
             ?? throw $this->refuse(
                 404,
                 'billing_missing',
-                'No statement has been raised for this request yet.'
+                'No invoice has been raised for this request yet.'
             );
     }
 

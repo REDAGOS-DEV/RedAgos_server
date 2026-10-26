@@ -4,6 +4,7 @@ namespace Database\Seeders;
 
 use App\Enums\Department;
 use App\Enums\FacilityTypeName;
+use App\Enums\ManagementLevel;
 use App\Enums\RoleName;
 use App\Enums\StaffRole;
 use App\Models\Facility;
@@ -24,14 +25,15 @@ use Illuminate\Support\Str;
  * active accounts that all share one known password, so it refuses to run
  * anywhere but a local or testing environment — there is no override.
  *
- * The roster is the organisation chart: each department's head (the role that
+ * The roster is the organisation chart: the Blood Center Admin and the
+ * view-only Supervisor above it, then each department's head (the role that
  * approves its correction requests, Department::correctionApprover()) first,
- * then the rest, plus the Center Admin above them all. Heads are not flagged
- * in the data; they are read off the enum, so they cannot drift from it.
+ * then the rest. Heads are not flagged in the data; they are read off the
+ * enum, so they cannot drift from it.
  *
- * Seeds Sub-National Blood Center only. The Center Admin is created first so
- * it holds the lowest id, which DemoInventorySeeder attributes its records to,
- * and becomes the facility contact if none is set. Re-running is a no-op:
+ * Seeds Sub-National Blood Center only. The Admin is created first so it holds
+ * the lowest id, which DemoInventorySeeder attributes its records to, and
+ * becomes the facility contact if none is set. Re-running is a no-op:
  * accounts are keyed by email, and an existing one is left exactly as it is,
  * password included.
  */
@@ -45,7 +47,27 @@ class BloodCenterStaffSeeder extends Seeder
 
     private const DOMAIN = 'redagos.test';
 
-    private const SUPERVISOR = ['first' => 'Teresa', 'last' => 'Aquino', 'employee_id' => 'SUP-001'];
+    /**
+     * The two management accounts, Admin first.
+     *
+     * Teresa Aquino keeps the address, username and number she had when the
+     * one supervisor account was the Center Admin, so a database seeded then
+     * needs only her level changed (the migration made her an Admin).
+     *
+     * @var array<int, array{level: ManagementLevel, first: string, last: string, employee_id: string, email: string, username: string}>
+     */
+    private const MANAGEMENT = [
+        [
+            'level' => ManagementLevel::Admin,
+            'first' => 'Eduardo', 'last' => 'Ramos', 'employee_id' => 'ADM-001',
+            'email' => 'center.admin', 'username' => 'snbc-center-admin',
+        ],
+        [
+            'level' => ManagementLevel::Supervisor,
+            'first' => 'Teresa', 'last' => 'Aquino', 'employee_id' => 'SUP-001',
+            'email' => 'supervisor', 'username' => 'snbc-supervisor',
+        ],
+    ];
 
     /**
      * Employee-number prefix for each department.
@@ -103,23 +125,27 @@ class BloodCenterStaffSeeder extends Seeder
      * Every account the seeder creates, in the order it creates them.
      *
      * The one list the seeder, its test and the README all read, so the three
-     * cannot disagree. The Center Admin comes first.
+     * cannot disagree. The Admin comes first, then the Supervisor.
      *
-     * @return array<int, array{department: string, role: StaffRole|null, first_name: string, last_name: string, employee_id: string, email: string, username: string, position: string, head: bool}>
+     * @return array<int, array{department: string, role: StaffRole|null, level: ManagementLevel|null, first_name: string, last_name: string, employee_id: string, email: string, username: string, head: bool}>
      */
     public static function accounts(): array
     {
-        $accounts = [[
-            'department' => 'Management',
-            'role' => null,
-            'first_name' => self::SUPERVISOR['first'],
-            'last_name' => self::SUPERVISOR['last'],
-            'employee_id' => self::SUPERVISOR['employee_id'],
-            'email' => 'supervisor@'.self::DOMAIN,
-            'username' => 'snbc-supervisor',
-            'position' => 'Blood Center Supervisor',
-            'head' => false,
-        ]];
+        $accounts = [];
+
+        foreach (self::MANAGEMENT as $manager) {
+            $accounts[] = [
+                'department' => 'Management',
+                'role' => null,
+                'level' => $manager['level'],
+                'first_name' => $manager['first'],
+                'last_name' => $manager['last'],
+                'employee_id' => $manager['employee_id'],
+                'email' => $manager['email'].'@'.self::DOMAIN,
+                'username' => $manager['username'],
+                'head' => false,
+            ];
+        }
 
         foreach (self::ROSTER as $department => $posts) {
             $sequence = 0;
@@ -131,12 +157,12 @@ class BloodCenterStaffSeeder extends Seeder
                 $accounts[] = [
                     'department' => Department::from($department)->label(),
                     'role' => $role,
+                    'level' => null,
                     'first_name' => $first,
                     'last_name' => $last,
                     'employee_id' => sprintf('%s-%03d', self::PREFIX[$department], $sequence),
                     'email' => str_replace('_', '.', $roleValue).'@'.self::DOMAIN,
                     'username' => 'snbc-'.str_replace('_', '-', $roleValue),
-                    'position' => $role->label(),
                     'head' => Department::from($department)->correctionApprover() === $role,
                 ];
             }
@@ -173,15 +199,15 @@ class BloodCenterStaffSeeder extends Seeder
             foreach (self::accounts() as $account) {
                 [$user, $outcome] = $this->seedAccount($facility, $account);
 
-                // The Center Admin is first, so by the time anyone else exists
-                // the facility has its contact.
-                if ($account['role'] === null && $user !== null && $facility->registration_contact_user_id === null) {
+                // The Admin is first, so by the time anyone else exists the
+                // facility has its contact.
+                if ($account['level'] === ManagementLevel::Admin && $user !== null && $facility->registration_contact_user_id === null) {
                     $this->facilities->setPrimaryAccount($facility, $user);
                 }
 
                 $rows[] = [
                     $account['department'],
-                    $account['role']?->label() ?? 'Center Admin',
+                    $account['level']?->label() ?? $account['role']?->label(),
                     $account['head'] ? 'yes' : '',
                     $account['email'],
                     $account['username'],
@@ -239,11 +265,10 @@ class BloodCenterStaffSeeder extends Seeder
                 // The hashed cast hashes this on save.
                 'password' => self::PASSWORD,
                 'employee_id' => $account['employee_id'],
-                'position' => $account['position'],
             ],
             $facility,
             $role,
-            isSupervisor: $role === null,
+            $account['level'],
             // Passed explicitly: this seeder runs without model events, and
             // the saving hook that derives it from the role would not fire.
             department: $role?->department()

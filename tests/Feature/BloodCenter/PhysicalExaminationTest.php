@@ -16,6 +16,7 @@ use Database\Seeders\EligibilityQuestionSeeder;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Support\Facades\Notification;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Concerns\RecordsCounterVitals;
 use Tests\TestCase;
 
 /**
@@ -29,6 +30,7 @@ use Tests\TestCase;
 class PhysicalExaminationTest extends TestCase
 {
     use LazilyRefreshDatabase;
+    use RecordsCounterVitals;
 
     private Facility $facility;
 
@@ -88,7 +90,7 @@ class PhysicalExaminationTest extends TestCase
     private function record(array $overrides = [])
     {
         return $this->actingAs($this->officer)
-            ->postJson("/api/blood-center/donations/{$this->donationId}/screening", $this->examination($overrides));
+            ->postJson("/api/blood-center/donations/{$this->donationId}/screening", $this->withVitals($this->examination($overrides)));
     }
 
     // --- The eight new fields -----------------------------------------------
@@ -112,7 +114,7 @@ class PhysicalExaminationTest extends TestCase
         // What a centre writes down varies, and a blank is more honest than a
         // required field filled with a placeholder.
         $this->actingAs($this->officer)
-            ->postJson("/api/blood-center/donations/{$this->donationId}/screening", ['outcome' => 'accepted'])
+            ->postJson("/api/blood-center/donations/{$this->donationId}/screening", $this->withVitals(['outcome' => 'accepted']))
             ->assertCreated();
 
         $screening = DonationScreening::where('donation_id', $this->donationId)->firstOrFail();
@@ -228,12 +230,12 @@ class PhysicalExaminationTest extends TestCase
     {
         // The three differ in what the donor is told and what the next counter
         // sees. Inside the donation workflow they are one thing.
-        $this->record(['outcome' => $outcome, 'deferral_reason' => 'Recorded by the officer.'])
+        $this->record(['outcome' => $outcome, 'deferral_code' => 'R3'])
             ->assertCreated()
             ->assertJsonPath('data.status', 'rejected')
             ->assertJsonPath('data.screening.outcome', $outcome)
             ->assertJsonPath('data.screening.outcome_label', $label)
-            ->assertJsonPath('data.rejection_reason', 'Recorded by the officer.');
+            ->assertJsonPath('data.rejection_reason', 'R3');
     }
 
     #[DataProvider('deferralOutcomes')]
@@ -241,17 +243,18 @@ class PhysicalExaminationTest extends TestCase
     {
         // The old rule compared against one value, so a permanent deferral
         // would have slipped through unexplained.
-        $this->record(['outcome' => $outcome, 'deferral_reason' => null])
+        $this->record(['outcome' => $outcome, 'deferral_code' => null])
             ->assertStatus(422)
-            ->assertJsonValidationErrors('deferral_reason');
+            ->assertJsonValidationErrors('deferral_code');
     }
 
     public function test_an_accepted_outcome_keeps_no_deferral_reason(): void
     {
-        $this->record(['outcome' => 'accepted', 'deferral_reason' => 'Left over from a mis-click.'])
+        $this->record(['outcome' => 'accepted', 'deferral_code' => 'R1'])
             ->assertCreated();
 
         $this->assertNull(DonationScreening::where('donation_id', $this->donationId)->value('deferral_reason'));
+        $this->assertNull(DonationScreening::where('donation_id', $this->donationId)->value('deferral_code'));
     }
 
     public function test_the_superseded_outcome_values_are_refused(): void

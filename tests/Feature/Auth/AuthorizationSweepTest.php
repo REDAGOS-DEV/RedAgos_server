@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Auth;
 
+use App\Enums\ManagementLevel;
 use App\Enums\RoleName;
 use App\Enums\StaffRole;
 use App\Models\User;
@@ -73,6 +74,8 @@ class AuthorizationSweepTest extends TestCase
             'hospital inventory list' => ['get', '/api/hospital/inventory'],
             'hospital inventory summary' => ['get', '/api/hospital/inventory/summary'],
             'hospital inventory tag events' => ['get', '/api/hospital/inventory/tag-events'],
+            'hospital stock thresholds' => ['get', '/api/hospital/inventory/thresholds'],
+            'hospital save stock thresholds' => ['put', '/api/hospital/inventory/thresholds'],
             'hospital inventory show' => ['get', '/api/hospital/inventory/RA1-1-01'],
             'hospital inventory tag' => ['post', '/api/hospital/inventory/RA1-1-01/tag'],
             'hospital inventory crossmatch' => ['post', '/api/hospital/inventory/RA1-1-01/crossmatch'],
@@ -93,16 +96,70 @@ class AuthorizationSweepTest extends TestCase
             'hospital external source add' => ['post', '/api/hospital/external-blood-sources'],
             'centre billing show' => ['get', '/api/blood-center/billings/1'],
             'centre record payment' => ['post', '/api/blood-center/billings/1/payments'],
+            'centre statement list' => ['get', '/api/blood-center/billings/1/statements'],
+            'centre statement issue' => ['post', '/api/blood-center/billings/1/statements'],
+            'centre statement pdf' => ['get', '/api/blood-center/statements/1/pdf'],
+            'centre checkout' => ['post', '/api/blood-center/billings/1/checkout'],
+            'centre checkout attempts' => ['get', '/api/blood-center/billings/1/attempts'],
+            'centre checkout supersede' => ['post', '/api/blood-center/billings/1/attempts/1/supersede'],
+            'centre checkout reverify' => ['post', '/api/blood-center/billings/1/attempts/1/reverify'],
+            'centre checkout close' => ['post', '/api/blood-center/billings/1/attempts/1/close'],
+            'centre receipt pdf' => ['get', '/api/blood-center/receipts/1/pdf'],
+            'hospital billing' => ['get', '/api/hospital/blood-requests/1/billing'],
+            'hospital statement pdf' => ['get', '/api/hospital/statements/1/pdf'],
+            'hospital receipt pdf' => ['get', '/api/hospital/receipts/1/pdf'],
             'centre notifications' => ['get', '/api/blood-center/notifications'],
             'testing immunohematology' => ['post', '/api/blood-center/laboratory/donations/1/immunohematology'],
             'testing serology' => ['post', '/api/blood-center/laboratory/donations/1/serology'],
+            'testing serology results' => ['get', '/api/blood-center/laboratory/serology-results'],
+            'testing serology results export' => ['get', '/api/blood-center/laboratory/serology-results/export'],
             'testing referral list' => ['get', '/api/blood-center/laboratory/referrals'],
             'testing referral update' => ['patch', '/api/blood-center/laboratory/referrals/1'],
+            'testing referral contact request' => ['post', '/api/blood-center/laboratory/referrals/1/contact-request'],
+            'testing referral summary' => ['get', '/api/blood-center/laboratory/referrals/summary'],
+            'testing verify serology' => ['post', '/api/blood-center/laboratory/donations/1/serology/verify'],
+            'testing return serology' => ['post', '/api/blood-center/laboratory/donations/1/serology/return'],
+            'processed list' => ['get', '/api/blood-center/laboratory/processed'],
+            'processed list export' => ['get', '/api/blood-center/laboratory/processed/export'],
             'daily stock report' => ['get', '/api/blood-center/inventory/stock-report'],
             'daily stock report pdf' => ['get', '/api/blood-center/inventory/stock-report/pdf'],
+            'component shelf lives' => ['get', '/api/blood-center/blood-components'],
+            'add component' => ['post', '/api/blood-center/blood-components'],
+            'set shelf life' => ['patch', '/api/blood-center/blood-components/1'],
+            'component prices' => ['get', '/api/blood-center/component-prices'],
+            'save prices' => ['put', '/api/blood-center/component-prices'],
             'facility logo upload' => ['post', '/api/blood-center/facility/logo'],
-            'final bag labels' => ['get', '/api/blood-center/inventory/donations/1/labels'],
+            'final bag labels' => ['post', '/api/blood-center/laboratory/donations/1/labels'],
+            'processing dashboard' => ['get', '/api/blood-center/laboratory/processing-dashboard'],
             'facility logo removal' => ['delete', '/api/blood-center/facility/logo'],
+            'report left logo upload' => ['post', '/api/blood-center/facility/seal'],
+            'report left logo removal' => ['delete', '/api/blood-center/facility/seal'],
+            'donor email templates' => ['get', '/api/blood-center/facility/email-templates'],
+            'save donor email template' => ['put', '/api/blood-center/facility/email-templates/thank_you'],
+            'reset donor email template' => ['delete', '/api/blood-center/facility/email-templates/thank_you'],
+            'donor export' => ['get', '/api/blood-center/donors/export'],
+            'donor reminder preview' => ['get', '/api/blood-center/donors/eligibility-reminders'],
+            'donor reminders' => ['post', '/api/blood-center/donors/eligibility-reminders'],
+            'edit donor' => ['patch', '/api/blood-center/donors/00000000-0000-4000-8000-000000000000'],
+            'donor photo' => ['post', '/api/blood-center/donors/00000000-0000-4000-8000-000000000000/photo'],
+            'email donor' => ['post', '/api/blood-center/donors/00000000-0000-4000-8000-000000000000/email'],
+            'collection dashboard' => ['get', '/api/blood-center/collection/dashboard'],
+            'appointment list' => ['get', '/api/blood-center/appointments'],
+            'appointment export' => ['get', '/api/blood-center/appointments/export'],
+            'appointment options' => ['get', '/api/blood-center/appointments/options'],
+            'book appointment' => ['post', '/api/blood-center/appointments'],
+            'cancel appointment' => ['post', '/api/blood-center/appointments/1/cancel'],
+            'mark appointment collected' => ['post', '/api/blood-center/appointments/1/collected'],
+            'donation records' => ['get', '/api/blood-center/donation-records'],
+            'donation records export' => ['get', '/api/blood-center/donation-records/export'],
+            'delete appointment' => ['delete', '/api/blood-center/appointments/1'],
+            'counter donor search' => ['post', '/api/blood-center/collection/donor-search'],
+            'print questionnaire' => ['get', '/api/blood-center/donors/00000000-0000-4000-8000-000000000000/health-questionnaire/print'],
+            'onsite questionnaire form' => ['get', '/api/blood-center/donors/00000000-0000-4000-8000-000000000000/health-questionnaire/form'],
+            'record onsite questionnaire' => ['post', '/api/blood-center/donors/00000000-0000-4000-8000-000000000000/health-questionnaire'],
+            'deferral list' => ['get', '/api/blood-center/deferrals'],
+            'record deferral' => ['post', '/api/blood-center/deferrals'],
+            'lift deferral' => ['post', '/api/blood-center/deferrals/1/lift'],
         ];
     }
 
@@ -144,6 +201,15 @@ class AuthorizationSweepTest extends TestCase
             'reference data' => ['get', '/api/blood-center/reference-data', 'reference.view'],
             'inventory list' => ['get', '/api/blood-center/inventory', 'inventory.view'],
             'inventory summary' => ['get', '/api/blood-center/inventory/summary', 'inventory.view'],
+            'inventory activity' => ['get', '/api/blood-center/inventory/activity', 'inventory.view'],
+            'stock thresholds' => ['get', '/api/blood-center/inventory/thresholds', 'inventory.view'],
+            'save stock thresholds' => ['put', '/api/blood-center/inventory/thresholds', 'inventory.thresholds'],
+            'daily stock report' => ['get', '/api/blood-center/inventory/stock-report', 'inventory.stock_report'],
+            'component shelf lives' => ['get', '/api/blood-center/blood-components', 'components.configure'],
+            'add component' => ['post', '/api/blood-center/blood-components', 'components.configure'],
+            'set shelf life' => ['patch', '/api/blood-center/blood-components/1', 'components.configure'],
+            'component prices' => ['get', '/api/blood-center/component-prices', 'billing.prices'],
+            'save prices' => ['put', '/api/blood-center/component-prices', 'billing.prices'],
             'record units' => ['post', '/api/blood-center/inventory', 'inventory.create'],
             'update unit' => ['patch', '/api/blood-center/inventory/RA1-1-01', 'inventory.update'],
             'discard unit' => ['post', '/api/blood-center/inventory/RA1-1-01/discard', 'inventory.discard'],
@@ -161,18 +227,59 @@ class AuthorizationSweepTest extends TestCase
             'record walk-in' => ['post', '/api/blood-center/blood-requests/walk-in', 'requests.record'],
             'billing show' => ['get', '/api/blood-center/billings/1', 'billing.view'],
             'record payment' => ['post', '/api/blood-center/billings/1/payments', 'billing.record_payment'],
+            'statement list' => ['get', '/api/blood-center/billings/1/statements', 'billing.view'],
+            'issue statement' => ['post', '/api/blood-center/billings/1/statements', 'billing.record_payment'],
+            'statement pdf' => ['get', '/api/blood-center/statements/1/pdf', 'billing.view'],
+            'open checkout' => ['post', '/api/blood-center/billings/1/checkout', 'billing.record_payment'],
+            'checkout attempts' => ['get', '/api/blood-center/billings/1/attempts', 'billing.record_payment'],
+            'supersede checkout' => ['post', '/api/blood-center/billings/1/attempts/1/supersede', 'billing.record_payment'],
+            'reverify checkout' => ['post', '/api/blood-center/billings/1/attempts/1/reverify', 'billing.record_payment'],
+            'close checkout' => ['post', '/api/blood-center/billings/1/attempts/1/close', 'billing.record_payment'],
+            'receipt pdf' => ['get', '/api/blood-center/receipts/1/pdf', 'billing.record_payment'],
             'donor list' => ['get', '/api/blood-center/donors', 'donors.view_contact'],
             'donor lookup' => ['get', '/api/blood-center/donors/lookup', 'appointments.verify'],
             'donor history' => ['get', '/api/blood-center/donors/00000000-0000-4000-8000-000000000000/history', 'donors.view_clinical'],
+            'donor export' => ['get', '/api/blood-center/donors/export', 'donors.view'],
+            'donor reminder preview' => ['get', '/api/blood-center/donors/eligibility-reminders', 'donors.manage'],
+            'donor reminders' => ['post', '/api/blood-center/donors/eligibility-reminders', 'donors.manage'],
+            'edit donor' => ['patch', '/api/blood-center/donors/00000000-0000-4000-8000-000000000000', 'donors.manage'],
+            'donor photo' => ['post', '/api/blood-center/donors/00000000-0000-4000-8000-000000000000/photo', 'donors.manage'],
+            'email donor' => ['post', '/api/blood-center/donors/00000000-0000-4000-8000-000000000000/email', 'donors.manage'],
+            'collection dashboard' => ['get', '/api/blood-center/collection/dashboard', 'donations.view'],
+            'appointment list' => ['get', '/api/blood-center/appointments', 'appointments.view'],
+            'appointment export' => ['get', '/api/blood-center/appointments/export', 'appointments.view'],
+            'appointment options' => ['get', '/api/blood-center/appointments/options', 'appointments.manage'],
+            'book appointment' => ['post', '/api/blood-center/appointments', 'appointments.manage'],
+            'cancel appointment' => ['post', '/api/blood-center/appointments/1/cancel', 'appointments.manage'],
+            'mark appointment collected' => ['post', '/api/blood-center/appointments/1/collected', 'appointments.verify'],
+            'donation records' => ['get', '/api/blood-center/donation-records', 'donations.view'],
+            'donation records export' => ['get', '/api/blood-center/donation-records/export', 'donations.view'],
+            'delete appointment' => ['delete', '/api/blood-center/appointments/1', 'appointments.delete'],
+            'donor email templates' => ['get', '/api/blood-center/facility/email-templates', 'center.configure'],
             'open donation' => ['post', '/api/blood-center/donations', 'donations.register'],
             'record screening' => ['post', '/api/blood-center/donations/1/screening', 'donations.screen'],
             'record collection' => ['post', '/api/blood-center/donations/1/collection', 'donations.collect'],
             'close donation' => ['patch', '/api/blood-center/donations/1/status', 'donations.close'],
+            'paper sheets' => ['get', '/api/blood-center/paper-sheets', 'donations.record_paper'],
+            'paper sheet options' => ['get', '/api/blood-center/paper-sheets/options', 'donations.record_paper'],
+            'open paper sheet' => ['post', '/api/blood-center/paper-sheets', 'donations.record_paper'],
+            'paper sheet' => ['get', '/api/blood-center/paper-sheets/1', 'donations.record_paper'],
+            'delete paper sheet' => ['delete', '/api/blood-center/paper-sheets/1', 'donations.record_paper'],
+            'register paper donor' => ['post', '/api/blood-center/paper-sheets/donors', 'donations.record_paper'],
+            'record paper donation' => ['post', '/api/blood-center/paper-sheets/1/donations', 'donations.record_paper'],
+            'remove paper donation' => ['delete', '/api/blood-center/paper-sheets/1/donations/1', 'donations.record_paper'],
             'record immunohematology' => ['post', '/api/blood-center/laboratory/donations/1/immunohematology', 'lab.record_immunohematology'],
             'record serology' => ['post', '/api/blood-center/laboratory/donations/1/serology', 'lab.record_serology'],
+            'serology results' => ['get', '/api/blood-center/laboratory/serology-results', 'lab.record_serology'],
+            'serology results export' => ['get', '/api/blood-center/laboratory/serology-results/export', 'lab.record_serology'],
             'referral list' => ['get', '/api/blood-center/laboratory/referrals', 'lab.referrals'],
+            'referral contact request' => ['post', '/api/blood-center/laboratory/referrals/1/contact-request', 'lab.referrals'],
+            'referral summary' => ['get', '/api/blood-center/laboratory/referrals/summary', 'lab.referrals'],
+            'verify serology' => ['post', '/api/blood-center/laboratory/donations/1/serology/verify', 'lab.verify_serology'],
+            'return serology' => ['post', '/api/blood-center/laboratory/donations/1/serology/return', 'lab.verify_serology'],
+            'processed list' => ['get', '/api/blood-center/laboratory/processed', 'lab.record_components'],
+            'processed list export' => ['get', '/api/blood-center/laboratory/processed/export', 'lab.record_components'],
             'staff roles catalogue' => ['get', '/api/blood-center/staff/roles', 'staff.manage'],
-            'release from quarantine' => ['post', '/api/blood-center/inventory/quarantine/1/release', 'inventory.release_quarantine'],
             'correction list' => ['get', '/api/blood-center/corrections', 'corrections.request'],
             'request correction' => ['post', '/api/blood-center/donations/1/corrections', 'corrections.request'],
             'request unit correction' => ['post', '/api/blood-center/inventory/RA1-1-01/corrections', 'corrections.request'],
@@ -181,6 +288,20 @@ class AuthorizationSweepTest extends TestCase
             'payment list' => ['get', '/api/blood-center/billings/1/payments', 'billing.record_payment'],
             'approve correction' => ['post', '/api/blood-center/corrections/1/approve', 'corrections.approve'],
             'reject correction' => ['post', '/api/blood-center/corrections/1/reject', 'corrections.approve'],
+            // Last on purpose: every plain `throttle:N,1` route shares one
+            // per-user counter, so rows placed earlier push the tighter limits
+            // above (reminders at 10) into a 429 before their gate is reached.
+            'counter donor search' => ['post', '/api/blood-center/collection/donor-search', 'appointments.verify'],
+            'print questionnaire' => ['get', '/api/blood-center/donors/00000000-0000-4000-8000-000000000000/health-questionnaire/print', 'donors.print_questionnaire'],
+            'onsite questionnaire form' => ['get', '/api/blood-center/donors/00000000-0000-4000-8000-000000000000/health-questionnaire/form', 'donors.record_questionnaire'],
+            'record onsite questionnaire' => ['post', '/api/blood-center/donors/00000000-0000-4000-8000-000000000000/health-questionnaire', 'donors.record_questionnaire'],
+            'deferral list' => ['get', '/api/blood-center/deferrals', 'donors.view_clinical'],
+            'record deferral' => ['post', '/api/blood-center/deferrals', 'donors.defer'],
+            'lift deferral' => ['post', '/api/blood-center/deferrals/1/lift', 'donors.defer'],
+            'add deferral code' => ['post', '/api/blood-center/deferral-codes', 'deferrals.configure'],
+            'change deferral code' => ['patch', '/api/blood-center/deferral-codes/1', 'deferrals.configure'],
+            // Its limit is 60, above every row's before it.
+            'counter arrival' => ['get', '/api/blood-center/collection/arrival/00000000-0000-4000-8000-000000000000', 'appointments.verify'],
         ];
     }
 
@@ -237,16 +358,30 @@ class AuthorizationSweepTest extends TestCase
         );
     }
 
-    public function test_a_supervisor_reaches_every_department_gated_route(): void
+    /**
+     * The same check for the two management levels, which hold no role.
+     *
+     * Only the gate is under test, so anything other than 403 is a pass — a
+     * 404 or 422 past the gate is the middleware having let them through.
+     */
+    public function test_each_management_level_is_admitted_exactly_where_the_matrix_says(): void
     {
-        $supervisor = User::factory()->bloodCenterSupervisor()->create();
+        foreach (ManagementLevel::cases() as $level) {
+            $user = match ($level) {
+                ManagementLevel::Admin => User::factory()->bloodCenterAdmin()->create(),
+                ManagementLevel::Supervisor => User::factory()->bloodCenterSupervisor()->create(),
+            };
+            $holds = DepartmentPermissions::forLevel($level);
 
-        // Only the gate is under test, so anything other than 403 is a pass —
-        // a 404 or 422 past the gate is the middleware having let them through.
-        foreach (self::departmentGatedRoutes() as [$method, $uri]) {
-            $response = $this->actingAs($supervisor)->json($method, $uri);
+            foreach (self::departmentGatedRoutes() as $name => [$method, $uri, $ability]) {
+                $status = $this->actingAs($user)->json($method, $uri)->getStatusCode();
 
-            $this->assertNotSame(403, $response->getStatusCode(), "A supervisor was refused [{$uri}].");
+                if (in_array($ability, $holds, true)) {
+                    $this->assertNotSame(403, $status, "The {$level->value} holds [{$ability}] but was refused {$name}.");
+                } else {
+                    $this->assertSame(403, $status, "The {$level->value} lacks [{$ability}] but reached {$name}.");
+                }
+            }
         }
     }
 

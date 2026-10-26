@@ -104,21 +104,41 @@ class ImmunohematologyClearanceTest extends TestCase
             ->assertJsonValidationErrors('forward_group');
     }
 
-    public function test_grouping_and_screen_are_required(): void
+    public function test_only_the_forward_group_is_required(): void
     {
         $this->actingAs($this->technologist)
             ->postJson("/api/blood-center/laboratory/donations/{$this->donation->id}/immunohematology", [
                 'blood_type_id' => $this->bloodType->id,
             ])
             ->assertStatus(422)
-            ->assertJsonValidationErrors(['forward_group', 'reverse_group', 'antibody_screen']);
+            ->assertJsonValidationErrors('forward_group')
+            ->assertJsonMissingValidationErrors(['reverse_group', 'antibody_screen']);
     }
 
-    public function test_a_cleared_typing_is_locked_even_for_a_supervisor(): void
+    /**
+     * The Testing page records ABO and Rh only (project owner, 2026-10-22).
+     */
+    public function test_a_forward_typing_with_no_reverse_group_or_screen_is_cleared(): void
+    {
+        $payload = $this->concordantTyping($this->bloodType);
+        unset($payload['reverse_group'], $payload['antibody_screen']);
+
+        $this->actingAs($this->technologist)
+            ->postJson("/api/blood-center/laboratory/donations/{$this->donation->id}/immunohematology", $payload)
+            ->assertCreated()
+            ->assertJsonPath('clearance_hold', null)
+            ->assertJsonPath('data.immunohematology.reverse_group', null)
+            ->assertJsonPath('data.immunohematology.antibody_screen', null);
+
+        $this->assertTrue($this->cleared());
+    }
+
+    public function test_a_cleared_typing_is_locked_even_for_the_admin(): void
     {
         $this->type()->assertCreated();
 
-        $this->type(['notes' => 'Second look'], User::factory()->bloodCenterSupervisor($this->facility)->create())
+        // The Center Admin, working as the Laboratory Supervisor.
+        $this->type(['notes' => 'Second look'], User::factory()->bloodCenterAdmin($this->facility, StaffRole::LabSupervisor)->create())
             ->assertStatus(409)
             ->assertJsonPath('code', 'results_cleared');
     }

@@ -183,6 +183,7 @@ class TransfusionAllocationWriter
         foreach ($lines as $line) {
             $allocation->items()->create([
                 'transfusion_request_item_id' => $line['item']->id,
+                'blood_type_id' => $request->blood_type_id,
                 'component_id' => $line['item']->component_id,
                 'quantity' => $line['quantity'],
                 'indication_code' => $line['item']->indication_code,
@@ -190,7 +191,7 @@ class TransfusionAllocationWriter
             ]);
         }
 
-        $allocation->load(['items.component', 'targetFacility', 'requestingFacility', 'bloodType']);
+        $allocation->load(['items.component', 'items.bloodType', 'targetFacility', 'requestingFacility', 'bloodType']);
 
         $this->history->record(
             $allocation,

@@ -102,7 +102,7 @@ class RegistrationResubmissionTest extends TestCase
         $applicant = $applicant->fresh();
 
         $this->assertTrue($applicant->hasRole(RoleName::BloodCenter));
-        $this->assertTrue($applicant->is_supervisor);
+        $this->assertTrue($applicant->isCenterAdmin());
     }
 
     public function test_the_super_admin_can_resolve_a_legacy_pending_registration_by_rejecting_it(): void

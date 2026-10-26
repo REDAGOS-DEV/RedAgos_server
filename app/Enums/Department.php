@@ -49,8 +49,8 @@ enum Department: string
     /**
      * The role that approves correction requests for this department's records.
      *
-     * Every department's senior post. For an approver's own request the Center
-     * Admin (a supervisor) decides instead — see CorrectionService.
+     * Every department's senior post. The approver's own correction needs no
+     * other approval and is applied when filed — see CorrectionService.
      */
     public function correctionApprover(): StaffRole
     {

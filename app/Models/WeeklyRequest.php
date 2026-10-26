@@ -11,12 +11,14 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 /**
  * A hospital blood bank's scheduled restock, sent to one centre on one of its request days.
  *
- * A header over ordinary replenishment requests, one per blood type: a blood
- * request carries a single blood type, and a weekly restock covers several.
- * Each is approved, reserved, dispatched and received by the centre exactly
- * as any replenishment is, except that it goes out in one delivery and
- * whatever was not supplied is closed as unavailable when it does
- * (FulfillmentService::release).
+ * A header over the one replenishment request it was sent as, whose lines each
+ * name their own blood type. The centre approves, reserves, bills, dispatches
+ * and the hospital receives it exactly as any replenishment, except that it
+ * goes out in one delivery and whatever was not supplied is closed as
+ * unavailable when it does (FulfillmentService::release).
+ *
+ * Weekly requests sent before a line carried its own blood type were written
+ * as one request per type, which is why this still has many.
  */
 class WeeklyRequest extends Model
 {
@@ -62,11 +64,11 @@ class WeeklyRequest extends Model
     }
 
     /**
-     * Its replenishment requests, one per blood type.
+     * Its replenishment request: one, or one per blood type if sent before lines carried their own.
      */
     public function bloodRequests(): HasMany
     {
-        return $this->hasMany(BloodRequest::class)->orderBy('blood_type_id');
+        return $this->hasMany(BloodRequest::class)->orderBy('id');
     }
 
     /**
