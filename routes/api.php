@@ -1015,6 +1015,8 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         // Supervisor's and both management levels' (reports.financial).
         Route::get('/reports/financial', [BloodCenterFinancialReportController::class, 'show'])
             ->middleware(['can:reports.financial', 'throttle:30,1']);
+        Route::get('/reports/financial/pdf', [BloodCenterFinancialReportController::class, 'pdf'])
+            ->middleware(['can:reports.financial', 'throttle:20,1']);
 
         // The Testing department's reports: whoever records serology or the
         // typing (TestingReportService checks either ability).
