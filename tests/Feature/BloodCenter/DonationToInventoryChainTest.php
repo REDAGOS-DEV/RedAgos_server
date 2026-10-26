@@ -15,6 +15,7 @@ use App\Models\FacilityBloodComponent;
 use App\Models\User;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Testing\TestResponse;
+use Tests\Concerns\RecordsCounterVitals;
 use Tests\Concerns\RecordsTyping;
 use Tests\TestCase;
 
@@ -28,7 +29,7 @@ use Tests\TestCase;
  */
 class DonationToInventoryChainTest extends TestCase
 {
-    use LazilyRefreshDatabase, RecordsTyping;
+    use LazilyRefreshDatabase, RecordsCounterVitals, RecordsTyping;
 
     private Facility $facility;
 
@@ -97,7 +98,7 @@ class DonationToInventoryChainTest extends TestCase
             ->json('data.id');
 
         $this->actingAs($this->physician)
-            ->postJson("/api/blood-center/donations/{$donationId}/screening", ['outcome' => 'accepted'])
+            ->postJson("/api/blood-center/donations/{$donationId}/screening", $this->withVitals(['outcome' => 'accepted']))
             ->assertCreated();
 
         $this->actingAs($this->collection)
@@ -335,7 +336,7 @@ class DonationToInventoryChainTest extends TestCase
             ->json('data.id');
 
         $this->actingAs($this->physician)
-            ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'accepted']);
+            ->postJson("/api/blood-center/donations/{$id}/screening", $this->withVitals(['outcome' => 'accepted']));
 
         $this->actingAs($this->collection)
             ->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload());
@@ -367,7 +368,7 @@ class DonationToInventoryChainTest extends TestCase
             ->assertCreated()->json('data.id');
 
         $this->actingAs($this->physician)
-            ->postJson("/api/blood-center/donations/{$donationId}/screening", ['outcome' => 'accepted'])
+            ->postJson("/api/blood-center/donations/{$donationId}/screening", $this->withVitals(['outcome' => 'accepted']))
             ->assertCreated();
 
         $this->actingAs($this->collection)

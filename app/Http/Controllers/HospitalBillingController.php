@@ -39,7 +39,7 @@ class HospitalBillingController extends Controller
             ?? throw $this->refuse(404, 'request_not_found', 'Blood request not found.');
 
         $billing = $raised->billing()->first()
-            ?? throw $this->refuse(404, 'billing_missing', 'No statement has been raised for this request yet.');
+            ?? throw $this->refuse(404, 'billing_missing', 'No invoice has been raised for this request yet.');
 
         $receipts = PaymentReceipt::query()
             ->whereHas('payment', fn ($query) => $query->where('billing_id', $billing->id))

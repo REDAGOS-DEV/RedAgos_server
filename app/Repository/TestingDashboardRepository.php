@@ -128,7 +128,7 @@ class TestingDashboardRepository
      * Counselling referrals here: the open ones by status, how many of those
      * still have no contact request, and how many were closed since `$from`.
      *
-     * @return array{pending: int, contacted: int, referred: int, no_contact_request: int, closed_recently: int}
+     * @return array{pending: int, referred: int, no_contact_request: int, closed_recently: int}
      */
     public function referralCounts(int $facilityId, CarbonInterface $from): array
     {
@@ -139,7 +139,6 @@ class TestingDashboardRepository
 
         return [
             'pending' => $open->where('status', ReferralStatus::Pending)->count(),
-            'contacted' => $open->where('status', ReferralStatus::Contacted)->count(),
             'referred' => $open->where('status', ReferralStatus::Referred)->count(),
             'no_contact_request' => $open->whereNull('contact_requested_at')->count(),
             'closed_recently' => CounsellingReferral::query()

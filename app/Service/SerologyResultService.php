@@ -70,7 +70,8 @@ class SerologyResultService
     public function csv(User $staff, array $filters): StreamedResponse
     {
         $facility = $this->requireFacility($staff);
-        $query = $this->results->query($facility->id, $filters, $staff->can('donors.view_identity'));
+        $identity = $staff->can('donors.view_identity');
+        $query = $this->results->query($facility->id, $filters, $identity);
 
         // Counts and filters only. Which marker is never written to the audit
         // trail: the log is read far more widely than this list.
@@ -79,24 +80,28 @@ class SerologyResultService
             'filters' => array_intersect_key($filters, array_flip(['search', 'outcome'])),
         ]);
 
-        return response()->streamDownload(function () use ($query, $staff): void {
+        return response()->streamDownload(function () use ($query, $staff, $identity): void {
             $out = fopen('php://output', 'w');
             fwrite($out, "\xEF\xBB\xBF");
+            // A blind viewer's file (all of Testing, its head included) has no
+            // donor columns at all, rather than empty ones that read as a
+            // donor with no name.
             fputcsv($out, [
-                'DonationID', 'Bag', 'Donor', 'DonorID', 'BloodGroup',
+                'DonationID', 'Bag',
+                ...($identity ? ['Donor', 'DonorID'] : []),
+                'BloodGroup',
                 ...array_map(fn (SerologyMarker $marker): string => $this->shortLabel($marker), SerologyMarker::cases()),
                 'Overall', 'TestedAt', 'TestedBy', 'DonationStatus',
             ], escape: '');
 
-            $query->chunk(300, function ($rows) use ($out, $staff): void {
+            $query->chunk(300, function ($rows) use ($out, $staff, $identity): void {
                 foreach ($rows as $serology) {
                     $row = $this->format($serology, $staff);
 
                     fputcsv($out, array_map(fn ($v): string => $this->cell($v), [
                         $row['code'],
                         $row['bag']['barcode'] ?? '',
-                        $row['donor']['full_name'] ?? '',
-                        $row['donor']['donor_code'] ?? '',
+                        ...($identity ? [$row['donor']['full_name'] ?? '', $row['donor']['donor_code'] ?? ''] : []),
                         $row['donor']['blood_type'] ?? '',
                         ...array_map(fn (array $marker): string => (string) $marker['result_label'], $row['markers'] ?? []),
                         $row['awaiting_verification'] ? 'Reactive (awaiting verification)' : $row['outcome_label'],

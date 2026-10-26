@@ -44,8 +44,9 @@ class BloodCenterDeferralController extends Controller
      */
     public function lift(LiftDonorDeferralRequest $request, int $deferral): JsonResponse
     {
-        return response()->json(
-            $this->manualDeferralService->lift($request->user(), $deferral, $request->validated('reason'))
-        );
+        // A counter or paper screening's deferral when the source says so.
+        return response()->json($request->validated('source') === 'screening'
+            ? $this->manualDeferralService->liftScreening($request->user(), $deferral, $request->validated('reason'))
+            : $this->manualDeferralService->lift($request->user(), $deferral, $request->validated('reason')));
     }
 }

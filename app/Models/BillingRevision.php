@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use LogicException;
 
 /**
- * One issued Statement of Account: a frozen snapshot of a statement.
+ * One issued invoice: a frozen snapshot of a request's bill.
  *
  * The billing row is the live draft; a revision is what a payer was shown at
  * one moment — its lines, its total, what had been collected and what was due.

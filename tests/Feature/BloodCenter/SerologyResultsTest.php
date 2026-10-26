@@ -139,14 +139,16 @@ class SerologyResultsTest extends TestCase
         $donation = $this->drawn('BC-3003', 'Maria');
         $this->record($donation);
 
-        $blind = $this->rows($this->technologist)[0]['donor'];
-        $this->assertTrue($blind['blinded']);
-        $this->assertArrayNotHasKey('full_name', $blind);
-        $this->assertSame([], $this->rows($this->technologist, ['search' => 'Maria']));
+        // Blind throughout Testing, the supervisor included (project owner,
+        // 2026-10-25).
+        foreach ([$this->technologist, $this->supervisor] as $viewer) {
+            $blind = $this->rows($viewer)[0]['donor'];
+            $this->assertTrue($blind['blinded']);
+            $this->assertArrayNotHasKey('full_name', $blind);
+            $this->assertSame([], $this->rows($viewer, ['search' => 'Maria']));
+        }
 
-        // The supervisor, who works the referral list, holds the identity.
-        $this->assertSame('Maria Dela Cruz', $this->rows($this->supervisor)[0]['donor']['full_name']);
-        $this->assertSame([$donation->id], array_column($this->rows($this->supervisor, ['search' => 'maria']), 'donation_id'));
+        $this->assertSame([$donation->id], array_column($this->rows($this->supervisor, ['search' => 'BC-3003']), 'donation_id'));
     }
 
     public function test_each_row_says_whether_it_can_still_be_corrected(): void
@@ -251,7 +253,8 @@ class SerologyResultsTest extends TestCase
             ->assertOk()
             ->streamedContent();
 
-        $this->assertStringStartsWith("\xEF\xBB\xBFDonationID,Bag,Donor,DonorID,BloodGroup,HIV,HBsAg,HCV,Syphilis,Malaria,Overall,TestedAt,TestedBy,DonationStatus", $csv);
+        // Blind: no donor columns at all (TestingDonorBlindingTest).
+        $this->assertStringStartsWith("\xEF\xBB\xBFDonationID,Bag,BloodGroup,HIV,HBsAg,HCV,Syphilis,Malaria,Overall,TestedAt,TestedBy,DonationStatus", $csv);
         $this->assertStringContainsString('BC-5001', $csv);
         $this->assertStringNotContainsString('Pedro', $csv);
         $this->assertDatabaseHas('audit_logs', ['action' => 'laboratory.serology_exported', 'actor_id' => $this->technologist->id]);

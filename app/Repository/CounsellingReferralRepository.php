@@ -31,6 +31,7 @@ class CounsellingReferralRepository
         return CounsellingReferral::query()
             ->with([
                 'donorProfile.donor',
+                'donorProfile.bloodType',
                 'donation.collection',
                 'donation.serology.recorder',
                 'donation.serology.verifier',
@@ -78,6 +79,7 @@ class CounsellingReferralRepository
         return CounsellingReferral::query()
             ->with([
                 'donorProfile.donor',
+                'donorProfile.bloodType',
                 'donation.collection',
                 'donation.serology.recorder',
                 'donation.serology.verifier',

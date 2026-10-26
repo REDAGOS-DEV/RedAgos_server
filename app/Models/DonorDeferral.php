@@ -32,6 +32,9 @@ class DonorDeferral extends Model
         'donor_id',
         'facility_id',
         'outcome',
+        // The centre's deferral code; `reason` is what it stood for when this
+        // was recorded. No code on rows recorded before codes existed.
+        'reason_code',
         'reason',
         'deferred_on',
         'ends_on',

@@ -298,6 +298,10 @@ class AuthorizationSweepTest extends TestCase
             'deferral list' => ['get', '/api/blood-center/deferrals', 'donors.view_clinical'],
             'record deferral' => ['post', '/api/blood-center/deferrals', 'donors.defer'],
             'lift deferral' => ['post', '/api/blood-center/deferrals/1/lift', 'donors.defer'],
+            'add deferral code' => ['post', '/api/blood-center/deferral-codes', 'deferrals.configure'],
+            'change deferral code' => ['patch', '/api/blood-center/deferral-codes/1', 'deferrals.configure'],
+            // Its limit is 60, above every row's before it.
+            'counter arrival' => ['get', '/api/blood-center/collection/arrival/00000000-0000-4000-8000-000000000000', 'appointments.verify'],
         ];
     }
 

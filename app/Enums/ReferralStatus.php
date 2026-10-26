@@ -3,17 +3,21 @@
 namespace App\Enums;
 
 /**
- * How far the Testing department has got in following up a reactive donor.
+ * How far the Testing department has got with a reactive donor's referral.
  *
- * Forward only. A referral may skip a step — a donor who cannot be reached is
- * closed straight from pending — but never goes back, and `closed` is final.
- * Closing ends the follow-up; it does not lift the donor's deferral.
+ * Testing refers the donor to a doctor and does nothing more (project owner,
+ * 2026-10-26): pending, referred to a doctor, closed. Forward only. A
+ * referral may skip a step — a donor who cannot be reached is closed straight
+ * from pending — but never goes back, and `closed` is final. Closing ends the
+ * follow-up; it does not lift the donor's deferral.
+ *
+ * There was a "contacted" step between pending and referred; its rows went
+ * back to pending (2026_10_26_000001). The mail icon's contact request is
+ * kept, and stamped on the referral, apart from its status.
  */
 enum ReferralStatus: string
 {
     case Pending = 'pending';
-
-    case Contacted = 'contacted';
 
     case Referred = 'referred';
 
@@ -36,8 +40,7 @@ enum ReferralStatus: string
     {
         return match ($this) {
             self::Pending => 'Pending',
-            self::Contacted => 'Contacted',
-            self::Referred => 'Referred',
+            self::Referred => 'Referred to doctor',
             self::Closed => 'Closed',
         };
     }
@@ -65,7 +68,6 @@ enum ReferralStatus: string
     {
         return match ($this) {
             self::Pending => null,
-            self::Contacted => 'contacted_at',
             self::Referred => 'referred_at',
             self::Closed => 'closed_at',
         };
@@ -75,9 +77,8 @@ enum ReferralStatus: string
     {
         return match ($this) {
             self::Pending => 0,
-            self::Contacted => 1,
-            self::Referred => 2,
-            self::Closed => 3,
+            self::Referred => 1,
+            self::Closed => 2,
         };
     }
 }

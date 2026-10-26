@@ -11,6 +11,7 @@ use App\Models\BloodType;
 use App\Models\BloodUnit;
 use App\Models\CorrectionRequest;
 use App\Models\CounsellingReferral;
+use App\Models\DeferralCode;
 use App\Models\Donation;
 use App\Models\DonationAppointment;
 use App\Models\DonorDeferral;
@@ -181,6 +182,10 @@ class AuditLogService
             Donation::class => $this->code('DON', $id),
             DonationAppointment::class => $this->code('APT', $id),
             DonorDeferral::class => $this->code('DEF', $id),
+            // By its code, never its reason.
+            DeferralCode::class => is_string($context['code'] ?? null)
+                ? 'Deferral code '.$context['code']
+                : $this->fallbackRecord($log->auditable_type, $id),
             PaperDonationSheet::class => $this->code('PS', $id),
             CorrectionRequest::class => is_numeric($context['donation_id'] ?? null)
                 ? $this->code('DON', (string) $context['donation_id'])

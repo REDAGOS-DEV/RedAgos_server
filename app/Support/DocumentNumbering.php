@@ -9,7 +9,7 @@ use Illuminate\Support\Facades\DB;
 /**
  * Numbers for financial documents, and the transaction that issues them.
  *
- * Statements (SOA-) and receipts (AR-) are numbered per issuing facility from
+ * Invoices (INV-, SOA- before 2026-10-25) and receipts (AR-) are numbered per issuing facility from
  * facility_document_sequences, taken under a row lock as the last lock of the
  * issuing transaction. The unique constraints on the numbered tables are the
  * backstop; if one fires, the whole transaction is rolled back and run again,

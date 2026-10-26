@@ -133,7 +133,8 @@ class ReportPdfService
                     [
                         'title' => 'Most common deferral reasons',
                         'head' => ['Reason', 'Donors'],
-                        'rows' => array_map(fn (array $x): array => [$x['reason'], $x['count']], $r['deferrals']['top_reasons']),
+                        // The code, and its reason only for a reader allowed it (CollectionReportService).
+                        'rows' => array_map(fn (array $x): array => [$x['label'], $x['count']], $r['deferrals']['top_reasons']),
                         'empty' => 'No donors deferred in this period.',
                     ],
                 ],

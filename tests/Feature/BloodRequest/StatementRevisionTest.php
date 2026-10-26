@@ -63,7 +63,7 @@ class StatementRevisionTest extends TestCase
         $this->issue($request)
             ->assertCreated()
             ->assertJsonPath('created', true)
-            ->assertJsonPath('revision.document_number', "SOA-{$this->centre->id}-000001")
+            ->assertJsonPath('revision.document_number', "INV-{$this->centre->id}-000001")
             ->assertJsonPath('revision.revision_number', 1)
             ->assertJsonPath('revision.total_amount', '1000.00')
             ->assertJsonPath('revision.amount_due', '1000.00')
@@ -122,7 +122,7 @@ class StatementRevisionTest extends TestCase
         $this->issue($request)
             ->assertCreated()
             ->assertJsonPath('revision.revision_number', 2)
-            ->assertJsonPath('revision.document_number', "SOA-{$this->centre->id}-000002")
+            ->assertJsonPath('revision.document_number', "INV-{$this->centre->id}-000002")
             ->assertJsonPath('revision.total_amount', '1500.00');
 
         $first = BillingRevision::query()->where('revision_number', 1)->firstOrFail();
@@ -183,7 +183,7 @@ class StatementRevisionTest extends TestCase
         $this->actingAs($otherClerk)
             ->postJson("/api/blood-center/billings/{$theirs->id}/statements")
             ->assertCreated()
-            ->assertJsonPath('revision.document_number', "SOA-{$otherCentre->id}-000001");
+            ->assertJsonPath('revision.document_number', "INV-{$otherCentre->id}-000001");
     }
 
     public function test_a_number_that_keeps_colliding_is_refused_rather_than_failing(): void
@@ -197,7 +197,7 @@ class StatementRevisionTest extends TestCase
         DB::table('billing_revisions')->insert([
             'billing_id' => $elsewhere->id,
             'revision_number' => 1,
-            'document_number' => "SOA-{$this->centre->id}-000001",
+            'document_number' => "INV-{$this->centre->id}-000001",
             'issuing_facility_id' => $this->centre->id,
             'payer_facility_id' => $this->hospital->id,
             'currency' => 'PHP',

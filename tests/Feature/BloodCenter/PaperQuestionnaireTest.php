@@ -9,6 +9,7 @@ use App\Models\Facility;
 use App\Models\User;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Support\Facades\Notification;
+use Tests\Concerns\RecordsCounterVitals;
 use Tests\TestCase;
 
 /**
@@ -22,6 +23,7 @@ use Tests\TestCase;
 class PaperQuestionnaireTest extends TestCase
 {
     use LazilyRefreshDatabase;
+    use RecordsCounterVitals;
 
     private Facility $facility;
 
@@ -52,7 +54,7 @@ class PaperQuestionnaireTest extends TestCase
         $visit = $this->walkIn();
 
         $this->actingAs($this->physician)
-            ->postJson("/api/blood-center/donations/{$visit->id}/screening", ['outcome' => 'accepted', 'dhq_on_paper' => true])
+            ->postJson("/api/blood-center/donations/{$visit->id}/screening", $this->withVitals(['outcome' => 'accepted', 'dhq_on_paper' => true]))
             ->assertCreated();
 
         $this->assertDatabaseHas('donation_screenings', ['donation_id' => $visit->id, 'dhq_on_paper' => true]);
@@ -64,7 +66,7 @@ class PaperQuestionnaireTest extends TestCase
         $visit = $this->walkIn();
 
         $this->actingAs($this->physician)
-            ->postJson("/api/blood-center/donations/{$visit->id}/screening", ['outcome' => 'accepted'])
+            ->postJson("/api/blood-center/donations/{$visit->id}/screening", $this->withVitals(['outcome' => 'accepted']))
             ->assertCreated();
 
         $this->assertDatabaseHas('donation_screenings', ['donation_id' => $visit->id, 'dhq_on_paper' => false]);

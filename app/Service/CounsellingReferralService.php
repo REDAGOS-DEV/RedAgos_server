@@ -11,6 +11,7 @@ use App\Models\Facility;
 use App\Models\User;
 use App\Notifications\DonorContactRequested;
 use App\Repository\CounsellingReferralRepository;
+use App\Support\DonorBlinding;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -25,9 +26,11 @@ use Throwable;
  * Referrals are opened by LaboratoryService, never here — a referral exists
  * because a reactive reading was recorded, not because someone typed one in.
  *
- * This is the only surface that names which marker a donor was reactive for,
+ * This is the only surface that says which marker a donor was reactive for,
  * which is why it has its own ability (`lab.referrals`) and why every read of
- * the list is audited.
+ * the list is audited. It goes by barcode and names no donor (format()):
+ * Testing works blind, its head included, and refers the donor to a doctor
+ * (project owner, 2026-10-25).
  *
  * The donor is asked to contact the centre from here, by hand
  * (requestContact()), like a Donor Management email: once the Laboratory
@@ -106,11 +109,15 @@ class CounsellingReferralService
             'by_email' => $byEmail,
         ]);
 
+        // The bag, never the donor's name: Testing works blind (see format()).
+        $bag = $donation?->collection?->donation_barcode;
+        $whose = $bag === null ? 'the donor' : "the donor of bag {$bag}";
+
         return [
             'message' => $byEmail
-                ? "Contact request sent to {$donor->first_name} by email and in the app."
-                : "{$donor->first_name} has no email address, so the contact request was sent in the app only.",
-            'data' => $this->format($this->counsellingReferralRepository->findReferral($referralId, $facility->id)),
+                ? "Contact request sent to {$whose} by email and in the portal."
+                : ucfirst($whose).' has no email address, so the contact request was sent in the portal only.',
+            'data' => $this->format($this->counsellingReferralRepository->findReferral($referralId, $facility->id), $staff),
         ];
     }
 
@@ -126,7 +133,7 @@ class CounsellingReferralService
 
         $page = $this->counsellingReferralRepository
             ->paginateForFacility($facility->id, $filters, $perPage)
-            ->through(fn (CounsellingReferral $referral): array => $this->format($referral));
+            ->through(fn (CounsellingReferral $referral): array => $this->format($referral, $staff));
 
         $this->auditLogger->record($staff, 'referral.list_viewed', null, [
             'facility_id' => $facility->id,
@@ -211,14 +218,21 @@ class CounsellingReferralService
 
         return [
             'message' => 'Referral marked '.$target->label().'.',
-            'data' => $this->format($referral),
+            'data' => $this->format($referral, $staff),
         ];
     }
 
     /**
+     * One referral, named by its bag.
+     *
+     * Testing works blind, its head included (project owner, 2026-10-25): the
+     * donor block is DonorBlinding's, with no name, code, uuid or contact
+     * details. The contact request reaches the donor from the server, so the
+     * list says only whether it will go by email.
+     *
      * @return array<string, mixed>
      */
-    private function format(CounsellingReferral $referral): array
+    private function format(CounsellingReferral $referral, User $viewer): array
     {
         $donor = $referral->donorProfile?->donor;
         $profile = $referral->donorProfile;
@@ -244,16 +258,8 @@ class CounsellingReferralService
             'updated_by' => $referral->updater
                 ? $referral->updater->signatureName()
                 : null,
-            'donor' => $donor === null ? null : [
-                'uuid' => $donor->uuid,
-                'donor_code' => 'DONOR-'.str_pad((string) $donor->id, 6, '0', STR_PAD_LEFT),
-                'full_name' => trim($donor->first_name.' '.$donor->last_name),
-                'phone' => $donor->phone,
-                'email' => $donor->hasEmailAddress() ? $donor->email : null,
-                // Section I-C's contact person, for a donor who cannot be reached.
-                'contact_person' => $profile?->contact_person_name,
-                'contact_person_number' => $profile?->contact_person_number,
-            ],
+            'donor' => DonorBlinding::block($donor, $profile?->bloodType?->code, $viewer),
+            'contact_by_email' => $donor?->hasEmailAddress() ?? false,
             'donation' => $donation === null ? null : [
                 'id' => $donation->id,
                 'donation_date' => $donation->donation_date?->toISOString(),

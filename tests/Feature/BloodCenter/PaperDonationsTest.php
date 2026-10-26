@@ -252,14 +252,16 @@ class PaperDonationsTest extends TestCase
             'donor_uuid' => $this->donor->uuid,
             'screened_by_name' => 'Dr. Reyes',
             'outcome' => 'temporarily_deferred',
-            'deferral_reason' => 'Low haemoglobin',
+            'deferral_code' => 'R2-Low',
             'haemoglobin_g_dl' => 11.2,
         ])->assertCreated()->json('data');
 
         $this->assertSame('rejected', $deferred['status']);
         $this->assertSame('Deferred', $deferred['status_label']);
         $this->assertNull($deferred['bag']);
-        $this->assertSame('Low haemoglobin', Donation::find($deferred['id'])->rejection_reason);
+        // The code the paper gives, as the counter's would carry it.
+        $this->assertSame('R2-Low', Donation::find($deferred['id'])->rejection_reason);
+        $this->assertSame('Low haemoglobin', DonationScreening::where('donation_id', $deferred['id'])->value('deferral_reason'));
 
         // A deferred donor carries no phlebotomist box.
         $other = User::factory()->donor()->create();
@@ -267,7 +269,7 @@ class PaperDonationsTest extends TestCase
             'donor_uuid' => $other->uuid,
             'screened_by_name' => 'Dr. Reyes',
             'outcome' => 'permanently_deferred',
-            'deferral_reason' => 'Reason',
+            'deferral_code' => 'R1',
             'collection' => $this->drawn()['collection'],
         ])->assertUnprocessable()->assertJsonValidationErrors('collection');
 
@@ -397,7 +399,7 @@ class PaperDonationsTest extends TestCase
             'donor_uuid' => $other->uuid,
             'screened_by_name' => 'Dr. Reyes',
             'outcome' => 'temporarily_deferred',
-            'deferral_reason' => 'Recent tattoo',
+            'deferral_code' => 'R1',
         ])->assertCreated();
 
         Notification::assertNotSentTo($other, DonorDeferred::class);

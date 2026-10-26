@@ -170,7 +170,7 @@ enum StaffRole: string
             self::ComponentTechnologist => 'Separates whole blood into components and completes or rejects the donation. Works by barcode, blind to donor identity.',
             self::ProcessingAssistant => 'Declares bags and volumes and prepares labels. Cannot complete or release a donation.',
             self::SerologyTechnologist => 'Records the TTI panel and the ABO/Rh typing by barcode, blind to donor identity. Cannot undo a reactive result.',
-            self::LabSupervisor => 'Records and oversees testing, approves Testing corrections and works counselling referrals. Cannot delete a reactive result.',
+            self::LabSupervisor => 'Records and oversees testing by barcode, blind to donor identity, verifies reactive results, approves Testing corrections and refers reactive donors to a doctor. Cannot delete a reactive result.',
             self::InventoryControlOfficer => 'Books units in, manages stock, allocates to requests, and releases units from quarantine once testing has cleared them. Edits a unit directly and approves Issuance corrections.',
             self::DispatchCoordinator => 'Handles hospital orders and releases units for transport, and requests a correction to a dispatch record. No clinical or laboratory access.',
             self::ItDataClerk => 'Audits inventory records against scanned barcodes and requests a correction to a unit\'s storage location or expiry date. Cannot alter medical data, results or patient links.',

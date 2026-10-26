@@ -18,6 +18,10 @@ class LiftDonorDeferralRequest extends FormRequest
     {
         return [
             'reason' => ['required', 'string', 'max:1000'],
+            // Which kind the id is: one recorded on the Deferrals page (the
+            // default), or a counter or paper screening's (project owner,
+            // 2026-10-25).
+            'source' => ['sometimes', 'string', 'in:manual,screening'],
         ];
     }
 

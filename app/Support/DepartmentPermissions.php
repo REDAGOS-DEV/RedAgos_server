@@ -84,8 +84,9 @@ final class DepartmentPermissions
         'billing.create',
         'billing.record_payment',
 
-        // Meet a statement from the government subsidy. Issuance holds it
-        // too (below), for a centre with nobody at the billing desk.
+        // Meet a statement from the government subsidy. It is Billing's
+        // decision and is checked against the Billing Supervisor's dated
+        // programme register in BillingService.
         'billing.subsidise',
 
         // Read-only: billing is raised against a fulfilled request, so it
@@ -143,6 +144,11 @@ final class DepartmentPermissions
             // Deferrals page (project owner, 2026-10-18). The same authority
             // as deferring at screening.
             'donors.defer',
+
+            // Keep the centre's deferral codes and what each stands for
+            // (project owner, 2026-10-24). A deferral is recorded by code so
+            // the donor sees only the code.
+            'deferrals.configure',
 
             // A drive's paper records; see CHAIRSIDE.
             'donations.record_paper',
@@ -237,7 +243,10 @@ final class DepartmentPermissions
             'corrections.request',
         ],
 
-        // Testing: the TTI panel and the ABO/Rh typing, one department.
+        // Testing: the TTI panel and the ABO/Rh typing, one department. Blind,
+        // its head included (project owner, 2026-10-25): no Testing role
+        // holds a donors.* read, so every laboratory payload names the bag,
+        // never the donor (see DonorBlinding).
         StaffRole::SerologyTechnologist->value => [
             'lab.view',
 
@@ -255,12 +264,12 @@ final class DepartmentPermissions
             'lab.record_serology',
             'lab.record_immunohematology',
 
-            // The counselling referral list: the only screen that names which
-            // marker a donor was reactive for. The supervisor alone, because
-            // the technologists who record the markers are blind to who the
-            // donor is, and the list exists to put a name to a result.
+            // The counselling referral list: the only screen that says which
+            // marker a donor was reactive for. The supervisor alone, and by
+            // barcode: Testing refers the donor to a doctor, and the contact
+            // request reaches the donor from the server, so nobody in Testing
+            // needs to know who they are.
             'lab.referrals',
-            'donors.view_identity',
 
             // The second person on a reactive result (project owner,
             // 2026-10-18): a technologist's reactive panel sets nothing off
@@ -308,13 +317,6 @@ final class DepartmentPermissions
             // so release needs to read billing status without altering it.
             'billing.view',
 
-            // Meet the statement from the government subsidy at the point of
-            // issue (project owner, 2026-10-19): a subsidised centre may have
-            // no billing staff, and the units still need clearing to go. It
-            // takes no money, and the request still goes on the hospital's
-            // Statement of Account.
-            'billing.subsidise',
-
             // Issuance's correction approver. Edits a unit directly (above),
             // and their own dispatch corrections apply when filed.
             'corrections.request',
@@ -334,10 +336,6 @@ final class DepartmentPermissions
             'requests.record',
 
             'billing.view',
-
-            // Releases too, so may clear a statement by the subsidy, as the
-            // Inventory Control Officer may (project owner, 2026-10-19).
-            'billing.subsidise',
 
             // Correct a dispatch record, on the Inventory Control Officer's
             // approval.
@@ -366,6 +364,11 @@ final class DepartmentPermissions
             // price switches on the payment-before-release gate, so it is the
             // Billing department's alone and only its head's.
             'billing.prices',
+
+            // Financial Reports: collections, subsidies, receivables and
+            // billing by component and hospital (project owner, 2026-10-25).
+            // The department head's and management's, not the clerk's.
+            'reports.financial',
         ],
     ];
 
@@ -382,6 +385,7 @@ final class DepartmentPermissions
     private const KIND = [
         'reference.view' => 'read',
         'reports.view_own' => 'read',
+        'reports.financial' => 'read',
         'donors.view_contact' => 'read',
         'donors.view' => 'read',
         'donors.view_clinical' => 'read',
@@ -432,6 +436,7 @@ final class DepartmentPermissions
         // a value rather than recording a new entry.
         'components.configure' => 'update',
         'billing.prices' => 'update',
+        'deferrals.configure' => 'update',
         'requests.approve' => 'update',
         'requests.release' => 'update',
 
@@ -446,7 +451,8 @@ final class DepartmentPermissions
     ];
 
     /**
-     * What both levels hold: the overview (the dashboard) and the reports.
+     * What both levels hold: the overview (the dashboard) and the reports,
+     * Financial Reports included (project owner, 2026-10-25).
      *
      * @var array<int, string>
      */
@@ -454,6 +460,7 @@ final class DepartmentPermissions
         'reference.view',
         'reports.view_own',
         'reports.view_all',
+        'reports.financial',
     ];
 
     /**
@@ -640,18 +647,21 @@ final class DepartmentPermissions
      * Approving is the named approver role's responsibility
      * (Department::correctionApprover()), as is verifying a reactive serology
      * result, and auditing a unit is the IT clerk's. The stock minimums, the component catalogue with its shelf
-     * lives, and the prices are each kept by their department's head. A typed
-     * role never inherits any of them.
+     * lives, the prices and the deferral codes are each kept by their
+     * department's head, and the counselling referrals are the Laboratory
+     * Supervisor's. A typed role never inherits any of them.
      *
      * @var array<int, string>
      */
     private const NAMED_POST_ONLY = [
         'corrections.approve',
         'lab.verify_serology',
+        'lab.referrals',
         'inventory.audit',
         'inventory.thresholds',
         'components.configure',
         'billing.prices',
+        'deferrals.configure',
     ];
 
     /**

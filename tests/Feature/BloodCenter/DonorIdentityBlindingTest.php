@@ -83,13 +83,16 @@ class DonorIdentityBlindingTest extends TestCase
         $this->assertStringNotContainsString('Magbanua', $response->getContent());
     }
 
-    public function test_the_lab_supervisor_sees_who_it_is(): void
+    public function test_the_lab_supervisor_works_blind_too(): void
     {
-        $this->actingAs($this->staff(StaffRole::LabSupervisor))
+        // Testing's head included (project owner, 2026-10-25).
+        $response = $this->actingAs($this->staff(StaffRole::LabSupervisor))
             ->getJson("/api/blood-center/laboratory/donations/{$this->donation->id}")
             ->assertOk()
-            ->assertJsonPath('donor.blinded', false)
-            ->assertJsonPath('donor.full_name', 'Rosalinda Magbanua');
+            ->assertJsonPath('donor.blinded', true)
+            ->assertJsonPath('collection.donation_barcode', 'SEG-7781');
+
+        $this->assertStringNotContainsString('Magbanua', $response->getContent());
     }
 
     public function test_neither_management_level_reaches_the_laboratory_record(): void

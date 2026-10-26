@@ -197,7 +197,7 @@ class BillingTransactionService
                 'amount' => Money::toDecimal(-$this->sumOf(
                     BillingTransaction::query()
                         ->where('facility_id', $facilityId)
-                        ->where('type', TransactionType::Subsidy->value)
+                        ->whereIn('type', [TransactionType::Subsidy->value, TransactionType::SubsidyReversal->value])
                         ->whereBetween('occurred_at', [$monthStart, $now])
                 )),
             ],
@@ -312,7 +312,9 @@ class BillingTransactionService
             'charged' => Money::toDecimal($of(TransactionType::charges())),
             // Shown as positive money received, net of voids and corrections.
             'collected' => Money::toDecimal(-$of(TransactionType::collections())),
-            'subsidised' => Money::toDecimal(-$of([TransactionType::Subsidy])),
+            // A removed subsidy reverses the earlier subsidy in the journal;
+            // reports show the net funding actually applied.
+            'subsidised' => Money::toDecimal(-$of([TransactionType::Subsidy, TransactionType::SubsidyReversal])),
             'settled_outside' => Money::toDecimal(-$of([TransactionType::ExternalSettlement])),
         ];
     }

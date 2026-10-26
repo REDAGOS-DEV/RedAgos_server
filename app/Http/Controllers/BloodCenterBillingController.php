@@ -6,6 +6,7 @@ use App\Http\Requests\ApplySubsidyRequest;
 use App\Http\Requests\ListBillingsRequest;
 use App\Http\Requests\RecordPaymentRequest;
 use App\Http\Requests\RecordSplitPaymentRequest;
+use App\Http\Requests\RemoveSubsidyRequest;
 use App\Http\Requests\SettleWeeklyBillRequest;
 use App\Models\Billing;
 use App\Models\BloodRequest;
@@ -138,6 +139,22 @@ class BloodCenterBillingController extends Controller
     }
 
     /**
+     * Reverse a subsidy applied in error before any unit has left the centre.
+     */
+    public function removeSubsidy(RemoveSubsidyRequest $request, int $bloodRequest): JsonResponse
+    {
+        $billing = $this->billingForFacility($bloodRequest, $request->user()->facility_id);
+
+        return response()->json(
+            $this->billingService->removeSubsidy(
+                $request->user(),
+                $billing,
+                $request->validated()['reason']
+            )
+        );
+    }
+
+    /**
      * Resolve a statement that belongs to this facility, or refuse.
      */
     private function billingForFacility(int $requestId, ?int $facilityId): Billing
@@ -155,7 +172,7 @@ class BloodCenterBillingController extends Controller
             ?? throw $this->refuse(
                 404,
                 'billing_missing',
-                'No statement has been raised for this request yet.'
+                'No invoice has been raised for this request yet.'
             );
     }
 

@@ -73,17 +73,24 @@ class DonorDirectoryService
         $facility = $this->requireFacility($staff);
         $full = $staff->can('donors.view');
 
-        $page = $this->donorDirectoryRepository->browseForFacility($facility->id, $filters, $perPage);
+        // Every donor in RedAgos, whichever centre they gave at (project
+        // owner, 2026-10-25).
+        $page = $this->donorDirectoryRepository->browseNetwork($facility->id, $filters, $perPage);
 
         // Counts, deferrals and this centre's records for the whole page in a
         // fixed number of queries, rather than three more per row.
         $donors = $page->getCollection();
+        $ids = $donors->pluck('id')->all();
         $standings = $this->donorStandingResolver->forDonors($facility->id, $donors);
-        $records = $this->donorDirectoryRepository->facilityRecordsFor($facility->id, $donors->pluck('id')->all());
+        $records = $this->donorDirectoryRepository->facilityRecordsFor($facility->id, $ids);
+        $own = array_flip($this->donorDirectoryRepository->relatedDonorIds($facility->id, $ids));
 
-        return $page->through(fn (User $donor): array => $full
-            ? $this->summarise($donor, $standings[$donor->id], $records[$donor->id] ?? null)
-            : $this->contact($donor, $standings[$donor->id], $records[$donor->id] ?? null));
+        return $page->through(fn (User $donor): array => [
+            ...($full
+                ? $this->summarise($donor, $standings[$donor->id], $records[$donor->id] ?? null)
+                : $this->contact($donor, $standings[$donor->id], $records[$donor->id] ?? null)),
+            'scope' => isset($own[$donor->id]) ? 'own_facility' : 'cross_facility',
+        ]);
     }
 
     /**
@@ -161,9 +168,11 @@ class DonorDirectoryService
     /**
      * List this facility's donations for one donor, in detail.
      *
-     * Refuses outright rather than returning an empty list when the facility
-     * has no relationship with the donor: an empty array would read as "this
-     * donor has never donated", which is a different and false claim.
+     * This centre's alone, whoever opens the donor (project owner,
+     * 2026-10-25): another centre's bags, deferral reasons and results stay
+     * with it. A donor this centre has not dealt with gets an empty list,
+     * with `scope` saying why, so it never reads as "never donated"; the
+     * profile's totals count every centre.
      *
      * @return array<string, mixed>
      */
@@ -174,17 +183,12 @@ class DonorDirectoryService
         $donor = $this->donorDirectoryRepository->findDonor($uuid)
             ?? throw $this->refuse(404, 'donor_not_found', 'No donor matches that identifier.');
 
-        if (! $this->donorDirectoryRepository->facilityHasRelationship($donor->id, $facility->id)) {
-            throw $this->refuse(
-                403,
-                'donor_not_at_facility',
-                'Detailed records stay with the facility that created them. Only a summary is available for this donor.'
-            );
-        }
+        $isOwn = $this->donorDirectoryRepository->facilityHasRelationship($donor->id, $facility->id);
 
         $donations = $this->donorDirectoryRepository->donationsAtFacility($donor->id, $facility->id);
 
         return [
+            'scope' => $isOwn ? 'own_facility' : 'cross_facility',
             'donor' => $this->identity($donor),
             'donations' => $donations->map(fn (Donation $donation): array => [
                 'id' => $donation->id,
@@ -217,6 +221,7 @@ class DonorDirectoryService
                     'outcome_label' => $donation->screening->outcome?->label(),
                     'is_deferral' => $donation->screening->outcome?->isDeferral() ?? false,
                     'is_blocking' => $donation->screening->outcome?->isBlocking() ?? false,
+                    'deferral_code' => $donation->screening->deferral_code,
                     'deferral_reason' => $donation->screening->deferral_reason,
                     'screened_at' => $donation->screening->screened_at?->toISOString(),
                 ],
@@ -421,7 +426,10 @@ class DonorDirectoryService
     public function update(User $staff, string $uuid, array $payload): array
     {
         $facility = $this->requireFacility($staff);
-        $donor = $this->ownDonor($facility, $uuid);
+        // Any centre, now that Donor Management is global (project owner,
+        // 2026-10-25); editable() still locks a verified identity and the
+        // contact details a donor keeps themselves.
+        $donor = $this->anyDonor($uuid);
         $profile = $donor->donorProfile;
         $record = $this->donorDirectoryRepository->facilityRecord($facility->id, $donor->id);
         $editable = $this->editable($donor, $record);
@@ -530,7 +538,7 @@ class DonorDirectoryService
     public function updatePhoto(User $staff, string $uuid, UploadedFile $photo): array
     {
         $facility = $this->requireFacility($staff);
-        $donor = $this->ownDonor($facility, $uuid);
+        $donor = $this->anyDonor($uuid);
         $record = $this->donorDirectoryRepository->facilityRecord($facility->id, $donor->id);
 
         if (! $this->editable($donor, $record)['photo']) {
@@ -624,6 +632,16 @@ class DonorDirectoryService
     /**
      * A donor this centre has dealt with, or a refusal.
      */
+    private function anyDonor(string $uuid): User
+    {
+        return $this->donorDirectoryRepository->findDonor($uuid)
+            ?? throw $this->refuse(404, 'donor_not_found', 'No donor matches that identifier.');
+    }
+
+    /**
+     * A donor this centre has dealt with, for the one act that stays its own:
+     * the counter's sign-in slip, which replaces the donor's password.
+     */
     private function ownDonor(Facility $facility, string $uuid): User
     {
         $donor = $this->donorDirectoryRepository->findDonor($uuid)
@@ -659,15 +677,9 @@ class DonorDirectoryService
             ],
         ];
 
-        if (! $isOwn) {
-            // The standardised cross-facility view stops here. No address, no
-            // per-donation detail, and nothing naming where they donated.
-            $payload['restricted'] = true;
-            $payload['restriction_note'] = 'This donor has not donated at your facility. Detailed records stay with the facility that created them.';
-
-            return $payload;
-        }
-
+        // The full record for every centre (project owner, 2026-10-25): the
+        // cross-facility summary that stopped here is gone. Per-donation
+        // detail is still this centre's alone (history()).
         $profile = $donor->donorProfile;
         $record = $this->donorDirectoryRepository->facilityRecord($facility->id, $donor->id);
 

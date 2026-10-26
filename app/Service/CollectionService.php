@@ -8,6 +8,7 @@ use App\Enums\DonationStatus;
 use App\Enums\DonationType;
 use App\Enums\ScreeningOutcome;
 use App\Models\BloodCollection;
+use App\Models\DeferralCode;
 use App\Models\Donation;
 use App\Models\DonationAppointment;
 use App\Models\Facility;
@@ -19,6 +20,7 @@ use App\Repository\DonorDeferralRepository;
 use App\Repository\DonorDirectoryRepository;
 use App\Repository\EligibilityRepository;
 use App\Support\OperationalDay;
+use App\Support\ScreeningVitals;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Exceptions\HttpResponseException;
@@ -60,6 +62,7 @@ class CollectionService
         private readonly DonorDeferralRepository $donorDeferralRepository,
         private readonly DonorNotifier $donorNotifier,
         private readonly EligibilityRepository $eligibilityRepository,
+        private readonly DeferralCodeService $deferralCodes,
     ) {}
 
     /**
@@ -88,6 +91,55 @@ class CollectionService
             'in_progress' => collect($open->items())
                 ->map(fn (Donation $d): array => $this->formatDonation($d, $staff))
                 ->all(),
+        ];
+    }
+
+    /**
+     * Bring a donor up at the counter from their record: Donor Management's
+     * Start donation, or Donations' Continue on an open visit (project owner,
+     * 2026-10-24: the counter no longer searches for anyone itself).
+     *
+     * Answers as the QR scan does, so the counter carries on the same way:
+     * today's booking here, the visit already under way, the questionnaire
+     * on file and any standing deferral. Unlike the scan it checks nobody in;
+     * the counter's check-in step does that for a booked donor.
+     *
+     * Any RedAgos donor, now that Donor Management lists them all (project
+     * owner, 2026-10-25): a donor from another centre starts here as the QR
+     * scan would have let them.
+     *
+     * @return array<string, mixed>
+     */
+    public function arrival(User $staff, string $donorUuid): array
+    {
+        $facility = $this->requireFacility($staff);
+
+        $donor = $this->donorDirectoryRepository->findDonor($donorUuid)
+            ?? throw $this->refuse(404, 'donor_not_found', 'That donor was not found.');
+
+        $isOwn = $this->donorDirectoryRepository->facilityHasRelationship($donor->id, $facility->id);
+
+        $appointment = $this->collectionRepository->todaysAppointmentFor(
+            $donor->id,
+            $facility->id,
+            OperationalDay::todayAsDate()
+        );
+        $appointment?->loadMissing('mobileEvent');
+
+        $this->auditLogger->record($staff, 'donor.looked_up', $donor, [
+            'facility_id' => $facility->id,
+            'identifier_type' => 'record',
+            'scope' => $isOwn ? 'own_facility' : 'cross_facility',
+        ]);
+
+        return [
+            'data' => [
+                'donor' => $this->formatDonor($donor),
+                'appointment' => $appointment ? $this->formatAppointment($appointment) : null,
+                'open_donation' => $this->openDonationFor($donor->id, $facility->id, $staff),
+                'health_questionnaire' => $this->donorQuestionnaireService->referenceForDonor($donor->id),
+                'prior_deferral' => $this->formatPriorDeferral($donor->id),
+            ],
         ];
     }
 
@@ -336,7 +388,26 @@ class CollectionService
         $facility = $this->requireFacility($staff);
         $outcome = ScreeningOutcome::from($payload['outcome']);
 
-        $donation = DB::transaction(function () use ($staff, $facility, $donationId, $payload, $outcome, $correcting): Donation {
+        // A deferral is recorded under one of the centre's codes, or Other,
+        // before anything is locked: an unknown or retired code is the form's
+        // error.
+        $deferral = $outcome->permitsCollection()
+            ? null
+            : $this->deferralCodes->chosen($facility, $payload);
+
+        // A vital-sign code (R2-Low, R7...) only when a reading is out of its
+        // range (project owner, 2026-10-24); history codes and Other always.
+        if ($deferral['code'] ?? null) {
+            $found = $this->collectionRepository->findDonation($donationId, $facility->id);
+
+            if ($found !== null && ! ScreeningVitals::allows($deferral['code'], $payload, $this->sexOf($found))) {
+                throw ValidationException::withMessages([
+                    'deferral_code' => "{$deferral['code']} is for a vital sign out of range, and this donor's readings are within range.",
+                ]);
+            }
+        }
+
+        $donation = DB::transaction(function () use ($staff, $facility, $donationId, $payload, $outcome, $deferral, $correcting): Donation {
             $locked = $this->collectionRepository->lockDonation($donationId, $facility->id)
                 ?? throw $this->refuse(404, 'donation_not_found', 'That donation was not found at your facility.');
 
@@ -361,15 +432,11 @@ class CollectionService
                 );
             }
 
-            $deferralReason = isset($payload['deferral_reason'])
-                ? trim((string) $payload['deferral_reason'])
-                : null;
-
             $this->collectionRepository->upsertScreening($locked->id, [
                 'facility_id' => $facility->id,
                 // The authenticated staff member, never a name from the request.
                 'recorded_by' => $staff->id,
-                ...$this->screeningAttributes($payload, $outcome),
+                ...$this->screeningAttributes($payload, $outcome, $deferral),
                 // A paper DHQ leaves no answers in RedAgos; this says one was used.
                 'dhq_on_paper' => (bool) ($payload['dhq_on_paper'] ?? false),
                 'screened_at' => $payload['screened_at'] ?? now(),
@@ -384,7 +451,10 @@ class CollectionService
             }
 
             $locked->status = DonationStatus::Rejected;
-            $locked->rejection_reason = $deferralReason;
+            // The code (or "Other"), never the reason: the donation travels
+            // further than the screening, and the reason stays on the
+            // screening behind donors.view_clinical.
+            $locked->rejection_reason = $deferral['code'] ?? DeferralCode::OTHER;
             $locked->save();
 
             // The donor has been sent home, so their booking is finished too.
@@ -405,10 +475,12 @@ class CollectionService
                 // The outcome goes with it: a donor who may never donate again
                 // must not be sent an email inviting them to book another
                 // appointment.
+                // The code alone; "Other" has none, and the donor is told neither.
                 fn (User $donor): DonorDeferred => new DonorDeferred(
                     $donation,
-                    $donation->rejection_reason,
-                    $outcome
+                    $deferral['code'] ?? null,
+                    $outcome,
+                    $outcome === ScreeningOutcome::TemporarilyDeferred ? ($payload['deferred_until'] ?? null) : null
                 ),
                 'deferral notice'
             );
@@ -427,21 +499,25 @@ class CollectionService
      * payload. Shared with a drive's paper record (PaperDonationService), so
      * the counter and the paper write the same columns the same way.
      *
+     * The deferral comes resolved (DeferralCodeService::chosen()): the
+     * screening keeps the code and the reason it stands for today, or no code
+     * and the reason typed under Other.
+     *
      * @param  array<string, mixed>  $payload
+     * @param  array{code: string|null, reason: string}|null  $deferral
      * @return array<string, mixed>
      */
-    public function screeningAttributes(array $payload, ScreeningOutcome $outcome): array
+    public function screeningAttributes(array $payload, ScreeningOutcome $outcome, ?array $deferral = null): array
     {
-        $deferralReason = isset($payload['deferral_reason'])
-            ? trim((string) $payload['deferral_reason'])
-            : null;
-
         return [
             'outcome' => $outcome,
             // Asked of the outcome rather than compared to one value: all
             // three deferrals carry a reason, and only an accepted donor
             // has none.
-            'deferral_reason' => $outcome->permitsCollection() ? null : $deferralReason,
+            'deferral_code' => $outcome->permitsCollection() ? null : ($deferral['code'] ?? null),
+            'deferral_reason' => $outcome->permitsCollection() ? null : ($deferral['reason'] ?? null),
+            // Only the counter sends it, and only a temporary deferral keeps it.
+            'deferred_until' => $outcome === ScreeningOutcome::TemporarilyDeferred ? ($payload['deferred_until'] ?? null) : null,
 
             // Section I-D, asked in person before anything is measured.
             'sleep' => $this->trimmedOrNull($payload['sleep'] ?? null),
@@ -923,6 +999,9 @@ class CollectionService
                 ! $clinical => [
                     'outcome' => $screening->outcome?->value,
                     'outcome_label' => $screening->outcome?->label(),
+                    // The code is for any eyes; what it stands for is not.
+                    'deferral_code' => $screening->deferral_code,
+                    'deferred_until' => $screening->deferred_until?->toDateString(),
                     'dhq_on_paper' => (bool) $screening->dhq_on_paper,
                     'screened_at' => $screening->screened_at?->toISOString(),
                     'recorded_by' => $screening->screenerName(),
@@ -931,7 +1010,9 @@ class CollectionService
                 default => [
                     'outcome' => $screening->outcome?->value,
                     'outcome_label' => $screening->outcome?->label(),
+                    'deferral_code' => $screening->deferral_code,
                     'deferral_reason' => $screening->deferral_reason,
+                    'deferred_until' => $screening->deferred_until?->toDateString(),
                     'systolic_bp' => $screening->systolic_bp,
                     'diastolic_bp' => $screening->diastolic_bp,
                     'pulse_bpm' => $screening->pulse_bpm,
@@ -963,7 +1044,24 @@ class CollectionService
             'donor' => $donation->relationLoaded('donorProfile') && $donation->donorProfile?->donor
                 ? $this->formatDonor($donation->donorProfile->donor)
                 : null,
+            // The six readings the counter must record, and the range each is
+            // normal within for this donor (project owner, 2026-10-24). The
+            // form warns from these; recordScreening() checks again.
+            'vitals' => [
+                'ranges' => ScreeningVitals::ranges($this->sexOf($donation)),
+                'vital_only_codes' => ScreeningVitals::vitalOnlyCodes(),
+            ],
         ];
+    }
+
+    /**
+     * The donor's sex as the vital ranges read it: male, female or unknown.
+     */
+    private function sexOf(Donation $donation): ?string
+    {
+        $gender = $donation->donorProfile?->gender;
+
+        return in_array($gender, ['male', 'female'], true) ? $gender : null;
     }
 
     /**

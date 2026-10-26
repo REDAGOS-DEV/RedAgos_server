@@ -42,6 +42,16 @@ class BloodCenterCollectionController extends Controller
     }
 
     /**
+     * Bring a donor up at the counter from their record.
+     */
+    public function arrival(Request $request, string $donor): JsonResponse
+    {
+        return response()->json(
+            $this->collectionService->arrival($request->user(), $donor)
+        );
+    }
+
+    /**
      * Find a walk-in donor by name, email or phone.
      */
     public function searchDonors(SearchCounterDonorsRequest $request): JsonResponse

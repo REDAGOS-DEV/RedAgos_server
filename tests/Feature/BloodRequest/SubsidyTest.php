@@ -9,6 +9,8 @@ use App\Enums\Department;
 use App\Enums\StaffRole;
 use App\Models\Billing;
 use App\Models\BillingRevision;
+use App\Models\BillingTransaction;
+use App\Models\BillingProgram;
 use App\Models\BloodComponent;
 use App\Models\BloodRequest;
 use App\Models\BloodType;
@@ -19,6 +21,8 @@ use App\Models\Facility;
 use App\Models\FacilityBloodComponent;
 use App\Models\RequestAllocation;
 use App\Models\User;
+use App\Service\BillingLedger;
+use App\Service\StatementFigures;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Tests\TestCase;
 
@@ -162,6 +166,73 @@ class SubsidyTest extends TestCase
             ->assertJsonPath('code', 'billing_already_subsidised');
     }
 
+    public function test_a_configured_subsidy_must_be_inside_its_effective_dates(): void
+    {
+        $request = $this->reservedRequest();
+
+        BillingProgram::query()->create([
+            'facility_id' => $this->centre->id,
+            'name' => 'Expired allocation',
+            'kind' => BillingProgram::GOVERNMENT_SUBSIDY,
+            'effective_from' => now()->subMonth()->toDateString(),
+            'effective_to' => now()->subDay()->toDateString(),
+            'is_enabled' => true,
+            'created_by' => $this->billingStaff->id,
+            'updated_by' => $this->billingStaff->id,
+        ]);
+
+        $this->actingAs($this->billingStaff)
+            ->postJson("/api/blood-center/billings/{$request->id}/subsidy")
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'subsidy_not_active');
+    }
+
+    public function test_an_accidental_subsidy_can_be_removed_before_dispatch_with_an_audited_reversal(): void
+    {
+        $request = $this->reservedRequest();
+
+        $this->actingAs($this->billingStaff)
+            ->postJson("/api/blood-center/billings/{$request->id}/subsidy")
+            ->assertOk();
+
+        $this->actingAs($this->billingStaff)
+            ->deleteJson("/api/blood-center/billings/{$request->id}/subsidy", ['reason' => 'Applied to the wrong request.'])
+            ->assertOk()
+            ->assertJsonPath('billing.status', BillingStatus::Unpaid->value)
+            ->assertJsonPath('billing.total_amount', 1070)
+            ->assertJsonPath('billing.clears_release', false);
+
+        $rows = BillingTransaction::query()->where('request_id', $request->id)->orderBy('id')->get();
+        $this->assertSame(['charge', 'subsidy', 'subsidy_reversal'], $rows->pluck('type')->map->value->all());
+        $this->assertSame('1070.00', $rows->last()->amount);
+        $this->assertSame($rows[1]->id, $rows->last()->reverses_transaction_id);
+        $this->assertDatabaseHas('audit_logs', ['action' => 'billing.subsidy_removed', 'actor_id' => $this->billingStaff->id]);
+        $this->assertTrue(app(BillingLedger::class)->drift(app(StatementFigures::class))->isEmpty());
+    }
+
+    public function test_removing_a_subsidy_requires_a_reason_and_is_refused_after_dispatch(): void
+    {
+        $request = $this->reservedRequest();
+
+        $this->actingAs($this->billingStaff)
+            ->postJson("/api/blood-center/billings/{$request->id}/subsidy")
+            ->assertOk();
+
+        $this->actingAs($this->billingStaff)
+            ->deleteJson("/api/blood-center/billings/{$request->id}/subsidy")
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('reason');
+
+        $this->actingAs($this->inventoryStaff)
+            ->postJson("/api/blood-center/blood-requests/{$request->id}/release")
+            ->assertOk();
+
+        $this->actingAs($this->billingStaff)
+            ->deleteJson("/api/blood-center/billings/{$request->id}/subsidy", ['reason' => 'Applied in error.'])
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'subsidy_removal_after_dispatch');
+    }
+
     public function test_money_already_collected_survives_a_later_subsidy(): void
     {
         $request = $this->reservedRequest();
@@ -205,16 +276,13 @@ class SubsidyTest extends TestCase
         $this->assertDatabaseCount('payments', 0);
     }
 
-    // --- At the point of issue (project owner, 2026-10-19) ---------------------
-    // A subsidised centre may have no billing staff, so Issuance applies the
-    // subsidy as it issues, and the request still goes on the hospital's
-    // Statement of Account.
+    // --- Billing owns the subsidy (2026-10-25) ---------------------------------
 
-    public function test_issuance_applies_the_subsidy_and_the_hospital_gets_a_statement_of_account(): void
+    public function test_billing_applies_the_subsidy_and_the_hospital_gets_a_statement_of_account(): void
     {
         $request = $this->reservedRequest();
 
-        $this->actingAs($this->inventoryStaff)
+        $this->actingAs($this->billingStaff)
             ->postJson("/api/blood-center/billings/{$request->id}/subsidy", ['reason' => 'DOH-subsidised centre'])
             ->assertOk()
             ->assertJsonPath('billing.status', BillingStatus::Subsidised->value)
@@ -245,7 +313,7 @@ class SubsidyTest extends TestCase
     {
         $request = $this->reservedRequest(units: 2, quantity: 2, allocate: 1);
 
-        $this->actingAs($this->inventoryStaff)
+        $this->actingAs($this->billingStaff)
             ->postJson("/api/blood-center/billings/{$request->id}/subsidy")
             ->assertOk()
             ->assertJsonPath('statement.lines.0.quantity', 1);
@@ -267,20 +335,24 @@ class SubsidyTest extends TestCase
         $this->assertSame('0.00', $latest->amount_due);
     }
 
-    public function test_the_dispatch_coordinator_may_apply_it_too(): void
+    public function test_issuance_and_dispatch_cannot_apply_a_billing_subsidy(): void
     {
         $request = $this->reservedRequest();
+
+        $this->actingAs($this->inventoryStaff)
+            ->postJson("/api/blood-center/billings/{$request->id}/subsidy")
+            ->assertForbidden();
 
         $this->actingAs(User::factory()->bloodCenterStaff($this->centre, StaffRole::DispatchCoordinator)->create())
             ->postJson("/api/blood-center/billings/{$request->id}/subsidy")
-            ->assertOk();
+            ->assertForbidden();
     }
 
-    public function test_only_staff_who_release_or_bill_may_apply_it(): void
+    public function test_only_billing_staff_may_apply_it(): void
     {
         $request = $this->reservedRequest();
 
-        foreach ([StaffRole::ItDataClerk, Department::Collection, Department::Testing] as $post) {
+        foreach ([StaffRole::ItDataClerk, StaffRole::InventoryControlOfficer, StaffRole::DispatchCoordinator, Department::Collection, Department::Testing] as $post) {
             $this->actingAs(User::factory()->bloodCenterStaff($this->centre, $post)->create())
                 ->postJson("/api/blood-center/billings/{$request->id}/subsidy")
                 ->assertForbidden();

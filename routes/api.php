@@ -2,11 +2,13 @@
 
 use App\Http\Controllers\AdminPrivilegeController;
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\BloodCenterAccountStatementController;
 use App\Http\Controllers\BloodCenterAdminOverviewController;
 use App\Http\Controllers\BloodCenterAdminReportController;
 use App\Http\Controllers\BloodCenterAppointmentController;
 use App\Http\Controllers\BloodCenterAuditLogController;
 use App\Http\Controllers\BloodCenterBillingController;
+use App\Http\Controllers\BloodCenterBillingProgramController;
 use App\Http\Controllers\BloodCenterBillingTransactionController;
 use App\Http\Controllers\BloodCenterBookingScheduleController;
 use App\Http\Controllers\BloodCenterCheckoutController;
@@ -16,6 +18,7 @@ use App\Http\Controllers\BloodCenterCollectionReportController;
 use App\Http\Controllers\BloodCenterComponentController;
 use App\Http\Controllers\BloodCenterComponentPriceController;
 use App\Http\Controllers\BloodCenterCorrectionController;
+use App\Http\Controllers\BloodCenterDeferralCodeController;
 use App\Http\Controllers\BloodCenterDeferralController;
 use App\Http\Controllers\BloodCenterDonationRecordController;
 use App\Http\Controllers\BloodCenterDonorController;
@@ -23,6 +26,7 @@ use App\Http\Controllers\BloodCenterDonorQuestionnaireController;
 use App\Http\Controllers\BloodCenterDriveController;
 use App\Http\Controllers\BloodCenterEmailTemplateController;
 use App\Http\Controllers\BloodCenterFacilityController;
+use App\Http\Controllers\BloodCenterFinancialReportController;
 use App\Http\Controllers\BloodCenterForecastController;
 use App\Http\Controllers\BloodCenterInventoryController;
 use App\Http\Controllers\BloodCenterLaboratoryController;
@@ -256,6 +260,16 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             Route::put('/', [BloodCenterComponentPriceController::class, 'update']);
         });
 
+        // The Billing Supervisor schedules subsidy and discount programmes.
+        // These are centre-owned dates, never switches supplied by Issuance.
+        Route::prefix('billing-programs')->middleware('can:billing.prices')->group(function (): void {
+            Route::get('/', [BloodCenterBillingProgramController::class, 'index']);
+            Route::post('/', [BloodCenterBillingProgramController::class, 'store'])
+                ->middleware('throttle:20,1');
+            Route::put('/{program}', [BloodCenterBillingProgramController::class, 'update'])
+                ->whereNumber('program');
+        });
+
         // The facility's own logo, printed on its reports. The Blood Center
         // Admin's setting, held by no department. The facility is the
         // caller's own, resolved from the token.
@@ -481,6 +495,13 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
                 ->middleware('can:billing.subsidise')
                 ->whereNumber('bloodRequest');
 
+            // An accidental subsidy can be removed before dispatch. The
+            // service records a reversing journal row and restores the live
+            // balance; it never edits the original subsidy out of history.
+            Route::delete('/{bloodRequest}/subsidy', [BloodCenterBillingController::class, 'removeSubsidy'])
+                ->middleware('can:billing.subsidise')
+                ->whereNumber('bloodRequest');
+
             // Statements of Account: frozen revisions of the statement. Reading
             // them is billing.view, like the statement; issuing one consumes a
             // document number, so it is the Billing department's.
@@ -532,6 +553,16 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
 
         Route::get('/receipts', [BloodCenterReceiptController::class, 'index'])
             ->middleware('can:billing.record_payment');
+
+        // A hospital's Statement of Account for a period (project owner,
+        // 2026-10-25): its weekly invoices, its settlements and its balance,
+        // built from the journal on demand and never stored.
+        Route::get('/account-statements/hospitals', [BloodCenterAccountStatementController::class, 'hospitals'])
+            ->middleware('can:billing.view');
+        Route::get('/account-statements', [BloodCenterAccountStatementController::class, 'show'])
+            ->middleware(['can:billing.view', 'throttle:30,1']);
+        Route::get('/account-statements/pdf', [BloodCenterAccountStatementController::class, 'pdf'])
+            ->middleware(['can:billing.view', 'throttle:20,1']);
 
         // The same receipt as data, for the counter's 80mm print.
         Route::get('/receipts/{receipt}', [BloodCenterReceiptController::class, 'show'])
@@ -670,8 +701,24 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
                 ->middleware('can:donors.view_clinical');
             Route::post('/', [BloodCenterDeferralController::class, 'store'])
                 ->middleware(['can:donors.defer', 'throttle:30,1']);
+            // { reason, source? }: source "screening" lifts a counter or
+            // paper screening's deferral, listed here too (project owner,
+            // 2026-10-25); the id is then the screening's.
             Route::post('/{deferral}/lift', [BloodCenterDeferralController::class, 'lift'])
                 ->middleware(['can:donors.defer', 'throttle:30,1'])->whereNumber('deferral');
+        });
+
+        // The centre's deferral codes (project owner, 2026-10-24): a deferral
+        // is recorded by code so the record, and the donor, see only the
+        // code. Whoever records or reads a deferral may list them (the
+        // request checks which ability); only the Screening Physician keeps
+        // the list.
+        Route::prefix('deferral-codes')->group(function (): void {
+            Route::get('/', [BloodCenterDeferralCodeController::class, 'index']);
+            Route::post('/', [BloodCenterDeferralCodeController::class, 'store'])
+                ->middleware(['can:deferrals.configure', 'throttle:30,1']);
+            Route::patch('/{code}', [BloodCenterDeferralCodeController::class, 'update'])
+                ->middleware(['can:deferrals.configure', 'throttle:30,1'])->whereNumber('code');
         });
 
         // Mobile drives. The donor-facing GET /blood-drives is a read-only view
@@ -700,6 +747,12 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         // this centre's own donors (CounterDonorSearchService). Its own named
         // limiter (AppServiceProvider), so typing never spends the budget the
         // onsite questionnaire submits against.
+        // A donor brought up from their record (Donor Management's Start
+        // donation, Donations' Continue): what a QR scan answers, without the
+        // scan (project owner, 2026-10-24).
+        Route::get('/collection/arrival/{donor}', [BloodCenterCollectionController::class, 'arrival'])
+            ->middleware(['can:appointments.verify', 'throttle:60,1'])->whereUuid('donor');
+
         Route::post('/collection/donor-search', [BloodCenterCollectionController::class, 'searchDonors'])
             ->middleware(['can:appointments.verify', 'throttle:counter-donor-search']);
 
@@ -836,8 +889,9 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
                 ->middleware(['can:lab.record_serology', 'throttle:30,1']);
 
             // Its own ability rather than lab.record_serology: this is the one
-            // list that names which marker each donor was reactive for, and
-            // the technologists recording markers are blind to identity.
+            // list that says which marker each donor was reactive for. The
+            // Laboratory Supervisor's, by barcode: Testing refers the donor to
+            // a doctor and never learns who they are.
             Route::get('/referrals', [BloodCenterReferralController::class, 'index'])
                 ->middleware(['can:lab.referrals', 'throttle:60,1']);
 
@@ -955,6 +1009,11 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             ->middleware('can:booking.configure');
         Route::put('/booking-schedule', [BloodCenterBookingScheduleController::class, 'update'])
             ->middleware(['can:booking.configure', 'throttle:20,1']);
+
+        // Financial Reports (project owner, 2026-10-25): the Billing
+        // Supervisor's and both management levels' (reports.financial).
+        Route::get('/reports/financial', [BloodCenterFinancialReportController::class, 'show'])
+            ->middleware(['can:reports.financial', 'throttle:30,1']);
 
         // The weeks ahead, in the parts the viewer's department plans with;
         // the service decides which (DemandForecastService).

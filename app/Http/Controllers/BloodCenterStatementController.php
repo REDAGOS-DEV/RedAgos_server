@@ -33,7 +33,7 @@ class BloodCenterStatementController extends Controller
             ->whereKey($bloodRequest)
             ->first()?->billing()->first()
             ?? throw new HttpResponseException(response()->json([
-                'message' => 'No statement has been raised for this request yet.',
+                'message' => 'No invoice has been raised for this request yet.',
                 'code' => 'billing_missing',
             ], 404));
 
@@ -41,7 +41,7 @@ class BloodCenterStatementController extends Controller
     }
 
     /**
-     * Issue a Statement of Account, or show the current one again if nothing has changed.
+     * Issue an invoice, or show the current one again if nothing has changed.
      */
     public function store(Request $request, int $bloodRequest): JsonResponse
     {
@@ -51,7 +51,7 @@ class BloodCenterStatementController extends Controller
     }
 
     /**
-     * Download one issued statement as its printed Statement of Account.
+     * Download one issued invoice as its printed form.
      */
     public function pdf(Request $request, int $revision): Response
     {

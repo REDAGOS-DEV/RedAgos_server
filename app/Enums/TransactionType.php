@@ -24,6 +24,9 @@ enum TransactionType: string
 
     case Subsidy = 'subsidy';
 
+    /** An explicit reversal of a government subsidy decision. */
+    case SubsidyReversal = 'subsidy_reversal';
+
     case ExternalSettlement = 'external_settlement';
 
     case OpeningBalance = 'opening_balance';
@@ -65,6 +68,7 @@ enum TransactionType: string
             self::PaymentCorrection => 'Payment correction',
             self::PaymentVoid => 'Payment void',
             self::Subsidy => 'Government subsidy',
+            self::SubsidyReversal => 'Government subsidy removed',
             self::ExternalSettlement => 'Settled by hospital',
             self::OpeningBalance => 'Opening balance',
         };

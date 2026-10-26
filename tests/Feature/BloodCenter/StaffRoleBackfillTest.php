@@ -127,8 +127,9 @@ class StaffRoleBackfillTest extends TestCase
                 // Granted later by the project owner, not by this backfill:
                 // the stock minimums to Issuance's head, the component
                 // catalogue to Processing's (2026-10-15), and the government
-                // subsidy to Issuance at the point of issue (2026-10-19).
-                if (in_array($ability, ['reference.view', 'reports.view_own', 'requests.record', 'corrections.request', 'corrections.approve', 'inventory.thresholds', 'components.configure', 'billing.subsidise'], true)) {
+                // subsidy to Issuance at the point of issue (2026-10-19), and
+                // Financial Reports to Billing's head (2026-10-25).
+                if (in_array($ability, ['reference.view', 'reports.view_own', 'requests.record', 'corrections.request', 'corrections.approve', 'inventory.thresholds', 'components.configure', 'billing.subsidise', 'reports.financial'], true)) {
                     continue;
                 }
 

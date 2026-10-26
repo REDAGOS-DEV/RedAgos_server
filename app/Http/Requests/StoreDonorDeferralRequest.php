@@ -39,7 +39,11 @@ class StoreDonorDeferralRequest extends FormRequest
                 ScreeningOutcome::PermanentlyDeferred->value,
                 ScreeningOutcome::IndefiniteDeferral->value,
             ])],
-            'reason' => ['required', 'string', 'max:1000'],
+            // One of the centre's deferral codes; the service checks which
+            // (DeferralCodeService::chosen()) and copies its reason. Or
+            // "Other": the reason typed, with no code.
+            'deferral_code' => ['required_without:other_reason', 'nullable', 'string', 'max:16'],
+            'other_reason' => ['nullable', 'string', 'max:255', 'prohibits:deferral_code'],
             'deferred_on' => ['required', 'date_format:Y-m-d', "before_or_equal:{$today}"],
             // The form says "Ignored for permanent deferrals": dropped, not refused.
             'ends_on' => [
@@ -59,7 +63,8 @@ class StoreDonorDeferralRequest extends FormRequest
     {
         return [
             'donor_uuid.required' => 'Choose the donor to defer.',
-            'reason.required' => 'Give the reason for the deferral.',
+            'deferral_code.required_without' => 'Choose the deferral code, or Other and type the reason.',
+            'other_reason.prohibits' => 'Choose a code or Other, not both.',
             'deferred_on.before_or_equal' => 'A deferral cannot start in the future.',
             'ends_on.required' => 'A temporary deferral needs an Until date.',
             'ends_on.after_or_equal' => 'The Until date must be today or later, and not before the From date.',

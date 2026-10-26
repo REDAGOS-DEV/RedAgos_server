@@ -17,7 +17,7 @@ use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Response;
 
 /**
- * Issued Statements of Account: frozen revisions of a statement, and their printed form.
+ * Issued invoices: frozen revisions of a request's bill, and their printed form.
  *
  * The live statement (billings) keeps changing as units are reserved; what a
  * payer is shown must not. Each issue, checkout and payment is pinned to a
@@ -25,9 +25,12 @@ use Illuminate\Http\Response;
  * statement has changed, so printing twice does not consume a second number,
  * and a new one is frozen the moment the bill or the balance moves.
  *
- * The printed document is a Statement of Account, not an invoice or an
- * official receipt — decided by the project owner on 2026-10-10, pending
- * finance confirmation of the legal requirements.
+ * The printed document is an Invoice: one billable request (project owner,
+ * 2026-10-25, replacing the 2026-10-10 "Statement of Account" title). A
+ * Statement of Account is now the period summary of a hospital's invoices
+ * (AccountStatementService). Neither is a BIR document, and the invoice says so.
+ * Invoices issued before the change keep their SOA- numbers; issued numbers
+ * never change.
  */
 class StatementRevisionService
 {
@@ -72,7 +75,7 @@ class StatementRevisionService
         $revision = BillingRevision::query()->create([
             'billing_id' => $lockedBilling->id,
             'revision_number' => ($latest?->revision_number ?? 0) + 1,
-            'document_number' => DocumentNumbering::format('SOA', $issuingFacilityId, $sequence),
+            'document_number' => DocumentNumbering::format('INV', $issuingFacilityId, $sequence),
             'issuing_facility_id' => $issuingFacilityId,
             'payer_facility_id' => (int) $lockedRequest->facility_id,
             // The logo it is issued with, so a reprint after the centre changes
@@ -188,7 +191,7 @@ class StatementRevisionService
     }
 
     /**
-     * Render one revision as its printed Statement of Account.
+     * Render one revision as its printed Invoice.
      *
      * Rendered from the revision's own rows, never the live statement, so the
      * same revision prints the same document every time.
@@ -214,7 +217,7 @@ class StatementRevisionService
     }
 
     /**
-     * Everything the printed Statement of Account needs, read from the revision alone.
+     * Everything the printed Invoice needs, read from the revision alone.
      *
      * @return array<string, mixed>
      */

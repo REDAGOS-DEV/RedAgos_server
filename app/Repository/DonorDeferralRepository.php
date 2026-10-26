@@ -6,6 +6,7 @@ use App\Enums\ScreeningOutcome;
 use App\Models\CounsellingReferral;
 use App\Models\DonationScreening;
 use App\Models\DonorDeferral;
+use App\Support\OperationalDay;
 use App\Support\StandingDeferral;
 use Illuminate\Database\Eloquent\Builder;
 
@@ -71,6 +72,9 @@ class DonorDeferralRepository
                 ScreeningOutcome::IndefiniteDeferral->value,
             ])
             ->whereHas('donation', fn (Builder $q) => $q->where('donor_id', $donorId))
+            // Lifted from the Deferrals page (project owner, 2026-10-25): the
+            // screening keeps its outcome, but the deferral no longer stands.
+            ->whereNull('lifted_at')
             ->latest('screened_at')
             ->latest('id')
             ->get(['id', 'outcome', 'screened_at']);
@@ -84,7 +88,8 @@ class DonorDeferralRepository
     }
 
     /**
-     * A reactive serology result, which permanently defers the donor.
+     * A reactive serology result, which permanently defers the donor at every
+     * centre (project owner, 2026-10-26).
      */
     private function fromLaboratory(int $donorId): ?StandingDeferral
     {
@@ -130,10 +135,10 @@ class DonorDeferralRepository
      * A standing deferral, chosen exactly as standingDeferralFor() chooses it.
      * Failing that, a temporary deferral recorded by hand, until its end date.
      * Failing that, a temporary deferral when it is the donor's most recent
-     * screening: a screening records no end, so it holds until the donor is
-     * screened again. That is the cautious reading — it keeps them out of an
-     * eligibility reminder they may not yet be fit for — and staff can still
-     * contact them one by one.
+     * screening: until its Until date when the counter set one (project owner,
+     * 2026-10-24), otherwise until the donor is screened again. That is the
+     * cautious reading — it keeps them out of an eligibility reminder they may
+     * not yet be fit for — and staff can still contact them one by one.
      *
      * Outcome and date only, like the counter's notice. Donors with neither
      * are absent from the result.
@@ -153,7 +158,7 @@ class DonorDeferralRepository
             ->whereNotNull('donation_screenings.outcome')
             ->orderByDesc('donation_screenings.screened_at')
             ->orderByDesc('donation_screenings.id')
-            ->get(['donations.donor_id', 'donation_screenings.outcome', 'donation_screenings.screened_at'])
+            ->get(['donations.donor_id', 'donation_screenings.outcome', 'donation_screenings.screened_at', 'donation_screenings.deferred_until', 'donation_screenings.lifted_at'])
             ->groupBy('donor_id');
 
         $referrals = CounsellingReferral::query()
@@ -177,8 +182,11 @@ class DonorDeferralRepository
             $mine = $screenings->get($donorId, collect());
             $myManual = $manual->get($donorId, collect());
 
-            $blocking = $mine->firstWhere('outcome', ScreeningOutcome::PermanentlyDeferred)
-                ?? $mine->firstWhere('outcome', ScreeningOutcome::IndefiniteDeferral);
+            // A lifted one no longer stands; the latest screening still
+            // decides whether a temporary one does.
+            $standing = $mine->whereNull('lifted_at');
+            $blocking = $standing->firstWhere('outcome', ScreeningOutcome::PermanentlyDeferred)
+                ?? $standing->firstWhere('outcome', ScreeningOutcome::IndefiniteDeferral);
 
             $manualBlocking = $myManual->firstWhere('outcome', ScreeningOutcome::PermanentlyDeferred)
                 ?? $myManual->firstWhere('outcome', ScreeningOutcome::IndefiniteDeferral);
@@ -211,9 +219,12 @@ class DonorDeferralRepository
             }
 
             $latest = $mine->first();
+            $until = $latest?->deferred_until;
 
-            if ($latest?->outcome === ScreeningOutcome::TemporarilyDeferred) {
-                $result[$donorId] = new StandingDeferral($latest->outcome, $latest->screened_at);
+            if ($latest?->outcome === ScreeningOutcome::TemporarilyDeferred
+                && $latest->lifted_at === null
+                && ($until === null || $until->toDateString() >= OperationalDay::todayAsDate())) {
+                $result[$donorId] = new StandingDeferral($latest->outcome, $latest->screened_at, $until);
             }
         }
 

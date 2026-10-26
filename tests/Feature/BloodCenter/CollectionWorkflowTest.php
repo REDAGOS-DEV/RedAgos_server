@@ -23,6 +23,7 @@ use Illuminate\Notifications\SendQueuedNotifications;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Queue;
 use RuntimeException;
+use Tests\Concerns\RecordsCounterVitals;
 use Tests\TestCase;
 
 /**
@@ -35,6 +36,7 @@ use Tests\TestCase;
 class CollectionWorkflowTest extends TestCase
 {
     use LazilyRefreshDatabase;
+    use RecordsCounterVitals;
 
     private Facility $facility;
 
@@ -118,7 +120,7 @@ class CollectionWorkflowTest extends TestCase
     private function screenDonation(int $id): void
     {
         $this->actingAs($this->physician)
-            ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'accepted'])
+            ->postJson("/api/blood-center/donations/{$id}/screening", $this->withVitals(['outcome' => 'accepted']))
             ->assertCreated();
     }
 
@@ -163,7 +165,7 @@ class CollectionWorkflowTest extends TestCase
             ->json('data.id');
 
         $this->actingAs($physician)
-            ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'accepted'])
+            ->postJson("/api/blood-center/donations/{$id}/screening", $this->withVitals(['outcome' => 'accepted']))
             ->assertCreated();
 
         return $id;
@@ -183,7 +185,7 @@ class CollectionWorkflowTest extends TestCase
         $id = $this->openDonation();
 
         $this->actingAs($this->physician)
-            ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'accepted'])
+            ->postJson("/api/blood-center/donations/{$id}/screening", $this->withVitals(['outcome' => 'accepted']))
             ->assertCreated()
             ->assertJsonPath('data.status', 'screening');
 
@@ -375,7 +377,7 @@ class CollectionWorkflowTest extends TestCase
         $id = $this->openDonation();
 
         $this->actingAs($this->physician)
-            ->postJson("/api/blood-center/donations/{$id}/screening", [
+            ->postJson("/api/blood-center/donations/{$id}/screening", $this->withVitals([
                 'outcome' => 'accepted',
                 'systolic_bp' => 118,
                 'diastolic_bp' => 76,
@@ -383,7 +385,7 @@ class CollectionWorkflowTest extends TestCase
                 'temperature_c' => 36.6,
                 'weight_kg' => 65,
                 'haemoglobin_g_dl' => 14.2,
-            ])
+            ]))
             ->assertCreated()
             ->assertJsonPath('data.status', 'screening')
             ->assertJsonPath('data.screening.outcome', 'accepted')
@@ -395,7 +397,7 @@ class CollectionWorkflowTest extends TestCase
         $id = $this->openDonation();
 
         $this->actingAs($this->physician)
-            ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'accepted'])
+            ->postJson("/api/blood-center/donations/{$id}/screening", $this->withVitals(['outcome' => 'accepted']))
             ->assertCreated();
 
         // recorded_by is the authenticated staff member, never request input.
@@ -406,18 +408,24 @@ class CollectionWorkflowTest extends TestCase
         ]);
     }
 
-    public function test_a_deferring_screening_rejects_the_donation_and_records_the_reason(): void
+    public function test_a_deferring_screening_rejects_the_donation_and_records_the_code_and_its_reason(): void
     {
         $id = $this->openDonation();
 
         $this->actingAs($this->physician)
-            ->postJson("/api/blood-center/donations/{$id}/screening", [
+            ->postJson("/api/blood-center/donations/{$id}/screening", $this->withVitals([
                 'outcome' => 'temporarily_deferred',
-                'deferral_reason' => 'Haemoglobin below the accepted threshold.',
-            ])
+                'deferral_code' => 'r2-low',
+                // R2-Low only with a haemoglobin below range.
+                'haemoglobin_g_dl' => 11.0,
+            ]))
             ->assertCreated()
             ->assertJsonPath('data.status', 'rejected')
-            ->assertJsonPath('data.rejection_reason', 'Haemoglobin below the accepted threshold.');
+            // The donation carries the code as the centre wrote it; the
+            // screening keeps what it stands for.
+            ->assertJsonPath('data.rejection_reason', 'R2-Low')
+            ->assertJsonPath('data.screening.deferral_code', 'R2-Low')
+            ->assertJsonPath('data.screening.deferral_reason', 'Low haemoglobin');
     }
 
     public function test_a_deferral_must_say_why(): void
@@ -425,9 +433,9 @@ class CollectionWorkflowTest extends TestCase
         $id = $this->openDonation();
 
         $this->actingAs($this->physician)
-            ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'temporarily_deferred'])
+            ->postJson("/api/blood-center/donations/{$id}/screening", $this->withVitals(['outcome' => 'temporarily_deferred']))
             ->assertStatus(422)
-            ->assertJsonValidationErrors('deferral_reason');
+            ->assertJsonValidationErrors('deferral_code');
     }
 
     public function test_a_correction_edits_the_screening_rather_than_adding_a_second(): void
@@ -435,15 +443,15 @@ class CollectionWorkflowTest extends TestCase
         $id = $this->openDonation();
 
         $this->actingAs($this->physician)
-            ->postJson("/api/blood-center/donations/{$id}/screening", [
+            ->postJson("/api/blood-center/donations/{$id}/screening", $this->withVitals([
                 'outcome' => 'accepted',
                 'haemoglobin_g_dl' => 12.1,
-            ])->assertCreated();
+            ]))->assertCreated();
 
         // Saving over it is refused: a saved screening changes only through
         // an approved correction.
         $this->actingAs($this->physician)
-            ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'accepted', 'haemoglobin_g_dl' => 14.5])
+            ->postJson("/api/blood-center/donations/{$id}/screening", $this->withVitals(['outcome' => 'accepted', 'haemoglobin_g_dl' => 14.5]))
             ->assertStatus(409)
             ->assertJsonPath('code', 'correction_required');
 
@@ -453,7 +461,7 @@ class CollectionWorkflowTest extends TestCase
             ->postJson("/api/blood-center/donations/{$id}/corrections", [
                 'subject' => 'screening',
                 'reason' => 'Typed 12.1 for 14.5.',
-                'changes' => ['outcome' => 'accepted', 'haemoglobin_g_dl' => 14.5],
+                'changes' => $this->withVitals(['outcome' => 'accepted', 'haemoglobin_g_dl' => 14.5]),
             ])
             ->assertCreated()
             ->assertJsonPath('data.status', 'approved');
@@ -474,7 +482,7 @@ class CollectionWorkflowTest extends TestCase
             ->assertCreated();
 
         $this->actingAs($this->physician)
-            ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'temporarily_deferred', 'deferral_reason' => 'Changed my mind.'])
+            ->postJson("/api/blood-center/donations/{$id}/screening", $this->withVitals(['outcome' => 'temporarily_deferred', 'deferral_code' => 'R1']))
             ->assertStatus(409)
             ->assertJsonPath('code', 'screening_not_amendable');
     }
@@ -505,12 +513,12 @@ class CollectionWorkflowTest extends TestCase
             ])->json('data.id');
 
         $this->actingAs($this->physician)
-            ->postJson("/api/blood-center/donations/{$id}/screening", [
+            ->postJson("/api/blood-center/donations/{$id}/screening", $this->withVitals([
                 'outcome' => 'temporarily_deferred',
-                'deferral_reason' => 'Haemoglobin below the accepted threshold.',
-            ])
+                'deferral_code' => 'R1',
+            ]))
             ->assertCreated()
-            ->assertJsonPath('data.rejection_reason', 'Haemoglobin below the accepted threshold.');
+            ->assertJsonPath('data.rejection_reason', 'R1');
 
         // Without this the slot stays held and the donor sits in the day's
         // queue for good, having already been sent home.
@@ -552,10 +560,10 @@ class CollectionWorkflowTest extends TestCase
             ])->json('data.id');
 
         $this->actingAs($this->physician)
-            ->postJson("/api/blood-center/donations/{$id}/screening", [
+            ->postJson("/api/blood-center/donations/{$id}/screening", $this->withVitals([
                 'outcome' => 'temporarily_deferred',
-                'deferral_reason' => 'Haemoglobin below the accepted threshold.',
-            ])
+                'deferral_code' => 'R1',
+            ]))
             ->assertCreated();
 
         // Both close the booking as `completed`; only the donation says which.
@@ -646,28 +654,33 @@ class CollectionWorkflowTest extends TestCase
             ->assertJsonPath('total_donations', 1);
     }
 
-    public function test_a_deferred_donor_is_told_the_reason_that_was_recorded(): void
+    public function test_a_deferred_donor_is_told_the_code_never_the_reason(): void
     {
         Notification::fake();
 
         $id = $this->openDonation();
 
         $this->actingAs($this->physician)
-            ->postJson("/api/blood-center/donations/{$id}/screening", [
+            ->postJson("/api/blood-center/donations/{$id}/screening", $this->withVitals([
                 'outcome' => 'temporarily_deferred',
-                'deferral_reason' => 'Haemoglobin below the accepted threshold.',
-            ])
+                'deferral_code' => 'R2-Low',
+                'haemoglobin_g_dl' => 11.0,
+            ]))
             ->assertCreated();
 
-        // A deferral with no reason is the thing most likely to stop somebody
-        // coming back, and HelpPage already promises they can see one.
+        // The code is something to quote when they ask; the reason is the
+        // centre's to explain in person (project owner, 2026-10-24).
         Notification::assertSentTo(
             $this->donor,
             DonorDeferred::class,
             function (DonorDeferred $notification) {
                 $payload = $notification->toDatabase($this->donor);
+                $mail = $notification->toMail($this->donor)->render();
 
-                return $payload['desc'] === 'Haemoglobin below the accepted threshold.'
+                return str_contains($payload['desc'], 'Deferral code: R2-Low')
+                    && ! str_contains($payload['desc'], 'haemoglobin')
+                    && str_contains($mail, 'R2-Low')
+                    && ! str_contains($mail, 'Low haemoglobin')
                     && $payload['category'] === 'screening';
             }
         );
@@ -934,11 +947,11 @@ class CollectionWorkflowTest extends TestCase
         $id = $this->openDonation();
 
         $this->actingAs($this->physician)
-            ->postJson("/api/blood-center/donations/{$id}/screening", [
+            ->postJson("/api/blood-center/donations/{$id}/screening", $this->withVitals([
                 'outcome' => 'accepted',
                 'haemoglobin_g_dl' => 13.8,
                 'fingerprick_blood_type_id' => $bloodType->id,
-            ])
+            ]))
             ->assertCreated()
             ->assertJsonPath('data.screening.fingerprick_blood_type_id', $bloodType->id)
             ->assertJsonPath('data.screening.fingerprick_blood_type', $bloodType->code);
@@ -956,15 +969,15 @@ class CollectionWorkflowTest extends TestCase
         $id = $this->openDonation();
 
         $this->actingAs($this->physician)
-            ->postJson("/api/blood-center/donations/{$id}/screening", [
+            ->postJson("/api/blood-center/donations/{$id}/screening", $this->withVitals([
                 'outcome' => 'accepted',
                 'fingerprick_blood_type_id' => 999999,
-            ])
+            ]))
             ->assertStatus(422)
             ->assertJsonValidationErrors('fingerprick_blood_type_id');
 
         $this->actingAs($this->physician)
-            ->postJson("/api/blood-center/donations/{$id}/screening", ['outcome' => 'accepted'])
+            ->postJson("/api/blood-center/donations/{$id}/screening", $this->withVitals(['outcome' => 'accepted']))
             ->assertCreated()
             ->assertJsonPath('data.screening.fingerprick_blood_type', null);
     }

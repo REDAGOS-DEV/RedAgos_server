@@ -35,24 +35,48 @@ class DonorDirectoryRepository
     private const DONOR_CODE_PATTERN = '/^DONOR-(\d{1,10})$/i';
 
     /**
-     * Page the donors this facility has actually dealt with.
+     * Page every donor in RedAgos, as Donor Management lists them: global
+     * across the blood centres (project owner, 2026-10-25).
      *
-     * "Dealt with" means an appointment booked at, or a donation recorded at,
-     * this facility. A donor who has only ever used another centre is absent
-     * from this listing by design.
+     * The filters are the facility's own where they must be: status is this
+     * centre's record of the donor (facility_donors). The export, the
+     * eligibility reminders, drive announcements and the dashboard's pool
+     * keep facilityDonorQuery(): this centre's own donors only.
      *
      * @param  array<string, mixed>  $filters
      * @return LengthAwarePaginator<int, User>
      */
-    public function browseForFacility(int $facilityId, array $filters, int $perPage): LengthAwarePaginator
+    public function browseNetwork(int $facilityId, array $filters, int $perPage): LengthAwarePaginator
     {
-        return $this->facilityDonorQuery($facilityId, $filters)->paginate($perPage);
+        return $this->filtered($this->donorQuery(), $facilityId, $filters)->paginate($perPage);
+    }
+
+    /**
+     * Which of these donors this facility has dealt with (a booking, a
+     * donation or its own record), for the list's "other centre" mark.
+     *
+     * @param  array<int, int>  $donorIds
+     * @return array<int, int> the ids that are this centre's own
+     */
+    public function relatedDonorIds(int $facilityId, array $donorIds): array
+    {
+        if ($donorIds === []) {
+            return [];
+        }
+
+        return array_values(array_unique(array_map('intval', [
+            ...DonationAppointment::query()->where('facility_id', $facilityId)->whereIn('donor_id', $donorIds)->pluck('donor_id')->all(),
+            ...Donation::query()->where('facility_id', $facilityId)->whereIn('donor_id', $donorIds)->pluck('donor_id')->all(),
+            ...FacilityDonor::query()->where('facility_id', $facilityId)->whereIn('donor_id', $donorIds)->pluck('donor_id')->all(),
+        ])));
     }
 
     /**
      * The donors this facility has dealt with, filtered and sorted as the
-     * Donors page asks. Shared by the page, the export and the reminders, so
-     * "the list" means the same rows in all three.
+     * Donors page asks. The export and the eligibility reminders, drive
+     * announcements and the dashboard's pool: this centre's own donors, while
+     * the page itself lists everyone (browseNetwork(), project owner,
+     * 2026-10-25).
      *
      * "Dealt with" means an appointment booked here, a donation recorded here,
      * or a record of this centre's own (`facility_donors`: registered at its
@@ -73,7 +97,19 @@ class DonorDirectoryRepository
                     ->from('facility_donors')
                     ->whereColumn('facility_donors.donor_id', 'users.id')
                     ->where('facility_donors.facility_id', $facilityId))
-            )
+            );
+
+        return $this->filtered($query, $facilityId, $filters);
+    }
+
+    /**
+     * The Donors page's filters and sort, on either list.
+     *
+     * @param  array<string, mixed>  $filters
+     */
+    private function filtered(Builder $query, int $facilityId, array $filters): Builder
+    {
+        $query = $query
             ->when(
                 isset($filters['blood_type_id']),
                 fn (Builder $q): Builder => $q->whereHas(

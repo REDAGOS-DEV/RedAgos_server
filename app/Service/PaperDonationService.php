@@ -9,6 +9,7 @@ use App\Enums\ScreeningOutcome;
 use App\Models\BloodUnit;
 use App\Models\CorrectionRequest;
 use App\Models\CounsellingReferral;
+use App\Models\DeferralCode;
 use App\Models\Donation;
 use App\Models\DonationAppointment;
 use App\Models\DonationClearance;
@@ -68,6 +69,7 @@ class PaperDonationService
         private readonly EligibilityRuleEvaluator $evaluator,
         private readonly DonorNotifier $donorNotifier,
         private readonly AuditLogger $auditLogger,
+        private readonly DeferralCodeService $deferralCodes,
     ) {}
 
     /**
@@ -239,8 +241,15 @@ class PaperDonationService
         $drawn = $outcome->permitsCollection() && ! (bool) ($payload['draw_failed'] ?? false);
         $notToLab = $drawn && (bool) ($payload['not_to_lab'] ?? false);
 
+        // The code the drive's physician wrote on the paper, from the
+        // centre's list, or Other with the reason as written: the record
+        // carries it as the counter's would.
+        $deferral = $outcome->permitsCollection()
+            ? null
+            : $this->deferralCodes->chosen($facility, $payload);
+
         try {
-            [$donation, $sheet] = DB::transaction(function () use ($staff, $facility, $sheetId, $donor, $payload, $outcome, $drawn, $notToLab): array {
+            [$donation, $sheet] = DB::transaction(function () use ($staff, $facility, $sheetId, $donor, $payload, $outcome, $deferral, $drawn, $notToLab): array {
                 $sheet = $this->sheets->lock($sheetId, $facility->id) ?? throw $this->sheetNotFound();
 
                 if ($this->sheets->donorOnSheet($sheet->id, $donor->id)) {
@@ -297,7 +306,7 @@ class PaperDonationService
                     // Who typed it. The physician is the paper's name below.
                     'recorded_by' => $staff->id,
                     'screened_by_name' => $payload['screened_by_name'],
-                    ...$this->collectionService->screeningAttributes($payload, $outcome),
+                    ...$this->collectionService->screeningAttributes($payload, $outcome, $deferral),
                     // A drive works from the printed DHQ: there is no onsite
                     // questionnaire to have answered.
                     'dhq_on_paper' => true,
@@ -306,7 +315,8 @@ class PaperDonationService
 
                 if (! $outcome->permitsCollection()) {
                     $donation->status = DonationStatus::Rejected;
-                    $donation->rejection_reason = trim((string) $payload['deferral_reason']);
+                    // The code, as at the counter (CollectionService::recordScreening()).
+                    $donation->rejection_reason = $deferral['code'] ?? DeferralCode::OTHER;
                 } elseif (! $drawn) {
                     // Accepted, but no bag: the counter's "Collection
                     // unsuccessful", written as the paper reports it.
@@ -487,9 +497,10 @@ class PaperDonationService
         $donation->loadMissing('donorProfile.donor');
 
         if ($outcome->isDeferral()) {
+            // The code alone; "Other" has none, and the donor is told neither.
             $this->donorNotifier->send(
                 $donation,
-                fn (User $donor): DonorDeferred => new DonorDeferred($donation, $donation->rejection_reason, $outcome),
+                fn (User $donor): DonorDeferred => new DonorDeferred($donation, $donation->screening()->value('deferral_code'), $outcome),
                 'deferral notice'
             );
 

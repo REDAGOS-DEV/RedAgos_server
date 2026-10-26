@@ -92,7 +92,8 @@ class RecordPaperDonationRequest extends FormRequest
     {
         return [
             ...RecordCollectionRequest::boxMessages('collection.'),
-            'deferral_reason.required' => 'Give the reason the donor was deferred.',
+            'deferral_code.required' => 'Choose the deferral code written on the paper, or Other and type the reason.',
+            'other_reason.prohibits' => 'Choose a code or Other, not both.',
             'screened_by_name.required' => 'Give the name of the physician who screened the donor.',
             'collection.required' => 'Fill in the phlebotomist box, or mark the draw as not completed.',
             'collection.prohibited' => 'A donor who was not drawn has no phlebotomist box.',

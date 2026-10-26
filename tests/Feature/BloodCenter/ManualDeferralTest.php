@@ -5,6 +5,7 @@ namespace Tests\Feature\BloodCenter;
 use App\Enums\DonationStatus;
 use App\Enums\StaffRole;
 use App\Models\AuditLog;
+use App\Models\DeferralCode;
 use App\Models\Donation;
 use App\Models\DonorDeferral;
 use App\Models\Facility;
@@ -86,7 +87,7 @@ class ManualDeferralTest extends TestCase
         return [
             'donor_uuid' => $donor->uuid,
             'outcome' => 'permanently_deferred',
-            'reason' => 'Chronic condition',
+            'deferral_code' => 'R11',
             ...$overrides,
         ];
     }
@@ -160,10 +161,12 @@ class ManualDeferralTest extends TestCase
         $this->actingAs($this->physician)
             ->postJson('/api/blood-center/deferrals', $this->payload($donor, [
                 'outcome' => 'temporarily_deferred',
-                'reason' => 'Low haemoglobin',
+                'deferral_code' => 'R2-Low',
                 'ends_on' => $until,
             ]))
             ->assertCreated()
+            ->assertJsonPath('reason_code', 'R2-Low')
+            ->assertJsonPath('reason', 'Low haemoglobin')
             ->assertJsonPath('kind', 'temporary')
             ->assertJsonPath('ends_on', $until);
 
@@ -232,9 +235,10 @@ class ManualDeferralTest extends TestCase
     public function test_the_audit_trail_records_the_outcome_never_the_reason(): void
     {
         $donor = $this->donorOf();
+        DeferralCode::factory()->create(['facility_id' => $this->facility->id, 'code' => 'P1', 'reason' => 'Hepatitis B history']);
 
         $this->actingAs($this->physician)
-            ->postJson('/api/blood-center/deferrals', $this->payload($donor, ['reason' => 'Hepatitis B history']))
+            ->postJson('/api/blood-center/deferrals', $this->payload($donor, ['deferral_code' => 'P1']))
             ->assertCreated();
 
         $log = AuditLog::query()->where('action', 'donor.deferred')->sole();
@@ -333,6 +337,7 @@ class ManualDeferralTest extends TestCase
             'reason' => 'Chronic condition',
         ]);
         DonorDeferral::factory()->create(['reason' => 'Elsewhere']);
+        $active->update(['reason_code' => 'R1']);
 
         $this->actingAs($this->physician)
             ->getJson('/api/blood-center/deferrals')
@@ -350,6 +355,12 @@ class ManualDeferralTest extends TestCase
             ->assertOk()
             ->assertJsonCount(1, 'data')
             ->assertJsonPath('data.0.status', 'lifted');
+
+        $this->actingAs($this->physician)
+            ->getJson('/api/blood-center/deferrals?search=r1')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.reason_code', 'R1');
 
         $this->actingAs($this->physician)
             ->getJson('/api/blood-center/deferrals?search=DEF-'.str_pad((string) $active->id, 6, '0', STR_PAD_LEFT))

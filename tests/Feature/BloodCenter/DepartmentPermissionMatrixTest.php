@@ -210,6 +210,7 @@ class DepartmentPermissionMatrixTest extends TestCase
             'reference.view',
             'reports.view_own',
             'reports.view_all',
+            'reports.financial',
             'inventory.view',
             'inventory.stock_report',
             'requests.view',
@@ -236,6 +237,7 @@ class DepartmentPermissionMatrixTest extends TestCase
             'reference.view',
             'reports.view_own',
             'reports.view_all',
+            'reports.financial',
             'staff.manage',
             'center.configure',
             'booking.configure',
@@ -249,7 +251,7 @@ class DepartmentPermissionMatrixTest extends TestCase
             'lab.record_components', 'lab.update_status', 'inventory.create', 'inventory.update',
             'inventory.discard', 'inventory.thresholds',
             'requests.approve', 'requests.release', 'billing.record_payment',
-            'components.configure', 'billing.prices', 'donors.view_identity', 'donors.view_clinical',
+            'components.configure', 'billing.prices', 'deferrals.configure', 'donors.view_identity', 'donors.view_clinical',
         ] as $work) {
             $this->assertNotContains($work, $abilities, "The Admin must not hold [{$work}].");
         }
@@ -444,13 +446,37 @@ class DepartmentPermissionMatrixTest extends TestCase
     }
 
     /**
-     * The referral list names which infection each donor carries. The
-     * technologists who record markers are blind to donor identity, so the
-     * list that puts a name to a result belongs to their supervisor alone.
+     * The referral list says which infection each donor carries. It is the
+     * Laboratory Supervisor's alone, by barcode: Testing refers the donor to a
+     * doctor (project owner, 2026-10-26), and no typed Testing role inherits it.
      */
     public function test_only_the_lab_supervisor_holds_the_counselling_referral_list(): void
     {
         $this->assertSame([StaffRole::LabSupervisor], DepartmentPermissions::rolesHolding('lab.referrals'));
+        $this->assertNotContains('lab.referrals', DepartmentPermissions::forCustomRole(Department::Testing));
+    }
+
+    /**
+     * Processing and Testing work the bag, not the person, Testing's
+     * Laboratory Supervisor included (project owner, 2026-10-25). No role
+     * there, predefined or typed, holds any read of a donor.
+     */
+    public function test_no_role_in_a_blind_department_reads_a_donor(): void
+    {
+        foreach ([Department::Processing, Department::Testing] as $department) {
+            foreach ([
+                'predefined' => DepartmentPermissions::forDepartment($department),
+                'typed' => DepartmentPermissions::forCustomRole($department),
+            ] as $kind => $abilities) {
+                $this->assertSame([], array_values(array_filter(
+                    $abilities,
+                    fn (string $ability): bool => str_starts_with($ability, 'donors.')
+                )), "{$department->value}, {$kind}");
+            }
+        }
+
+        // Collection's typed role still meets donors in person.
+        $this->assertContains('donors.view_identity', DepartmentPermissions::forCustomRole(Department::Collection));
     }
 
     /**
@@ -600,10 +626,10 @@ class DepartmentPermissionMatrixTest extends TestCase
         $this->assertCount(5, $heads);
     }
 
-    public function test_the_billing_supervisor_is_the_billing_clerk_plus_approval_and_prices(): void
+    public function test_the_billing_supervisor_is_the_billing_clerk_plus_approval_prices_and_financial_reports(): void
     {
         $this->assertEqualsCanonicalizing(
-            [...DepartmentPermissions::forRole(StaffRole::BillingClerk), 'corrections.approve', 'billing.prices'],
+            [...DepartmentPermissions::forRole(StaffRole::BillingClerk), 'corrections.approve', 'billing.prices', 'reports.financial'],
             DepartmentPermissions::forRole(StaffRole::BillingSupervisor)
         );
     }
@@ -613,17 +639,19 @@ class DepartmentPermissionMatrixTest extends TestCase
         $this->assertSame([StaffRole::ComponentTechnologist], DepartmentPermissions::rolesHolding('components.configure'));
         $this->assertSame([StaffRole::BillingSupervisor], DepartmentPermissions::rolesHolding('billing.prices'));
         $this->assertSame([StaffRole::InventoryControlOfficer], DepartmentPermissions::rolesHolding('inventory.thresholds'));
+        $this->assertSame([StaffRole::ScreeningPhysician], DepartmentPermissions::rolesHolding('deferrals.configure'));
     }
 
     public function test_a_custom_role_never_inherits_a_named_posts_abilities(): void
     {
-        foreach ([Department::Issuance, Department::Billing, Department::Processing] as $department) {
+        foreach ([Department::Issuance, Department::Billing, Department::Processing, Department::Collection] as $department) {
             $abilities = User::factory()->bloodCenterCustomStaff(null, $department, 'Floor Officer')->create()->abilities();
 
             $this->assertNotContains('corrections.approve', $abilities);
             $this->assertNotContains('inventory.audit', $abilities);
             $this->assertNotContains('components.configure', $abilities);
             $this->assertNotContains('billing.prices', $abilities);
+            $this->assertNotContains('deferrals.configure', $abilities);
         }
 
         // Still the department's own working set, including filing a request.

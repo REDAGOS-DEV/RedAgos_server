@@ -304,14 +304,20 @@ class DonorRecordsTest extends TestCase
         $this->assertNull(User::where('uuid', $uuid)->value('email_verified_at'));
     }
 
-    public function test_a_centre_cannot_edit_a_donor_it_has_never_dealt_with(): void
+    public function test_any_centre_corrects_a_donor_but_not_what_the_donor_keeps(): void
     {
+        // Donor Management is global (project owner, 2026-10-25); the locks on
+        // a verified identity and the donor's own contact details still hold.
         $theirs = $this->donorWhoGave(now()->subYear()->toDateTimeString(), at: Facility::factory()->approved()->create());
 
         $this->actingAs($this->receptionist)
             ->patchJson("/api/blood-center/donors/{$theirs->uuid}", ['occupation' => 'Nurse'])
-            ->assertForbidden()
-            ->assertJsonPath('code', 'donor_not_at_facility');
+            ->assertOk();
+
+        $this->actingAs($this->receptionist)
+            ->patchJson("/api/blood-center/donors/{$theirs->uuid}", ['email' => 'someone.else@example.test'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('email');
     }
 
     public function test_a_photo_is_set_for_a_walk_in_but_not_for_a_portal_donor(): void

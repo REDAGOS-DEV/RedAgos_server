@@ -361,7 +361,7 @@ class DonorQuestionnaireService
                 : null,
             'notice' => $screening->takenAtCounter()
                 ? 'Declared by the donor at the counter, on a staff device. This is not the on-site screening.'
-                : 'Declared by the donor in the RedAgos app. This is not the on-site screening.',
+                : 'Declared by the donor in the RedAgos portal. This is not the on-site screening.',
 
             'personal_data' => $this->personalData($screening),
             'sections' => $this->sections($screening, $questions, $answers, $flagged),

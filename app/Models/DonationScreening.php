@@ -27,7 +27,17 @@ class DonationScreening extends Model
         // at the counter, where the physician records it themselves.
         'screened_by_name',
         'outcome',
+        // The centre's deferral code, and the reason it stood for when the
+        // screening was recorded (DeferralCodeService). Null on rows recorded
+        // before codes existed, which have only the typed reason.
+        'deferral_code',
         'deferral_reason',
+        // A temporary deferral's last day, set at the counter; null otherwise.
+        'deferred_until',
+        // The deferral lifted from the Deferrals page; the outcome stays.
+        'lifted_at',
+        'lifted_by',
+        'lift_reason',
 
         // Section I-D. Asked in person or observed by the screening officer at
         // the counter; never written from the donor's side of the app.
@@ -59,6 +69,8 @@ class DonationScreening extends Model
     {
         return [
             'outcome' => ScreeningOutcome::class,
+            'deferred_until' => 'date',
+            'lifted_at' => 'datetime',
             'screened_at' => 'datetime',
             'systolic_bp' => 'integer',
             'diastolic_bp' => 'integer',
@@ -94,6 +106,11 @@ class DonationScreening extends Model
     public function recorder(): BelongsTo
     {
         return $this->belongsTo(User::class, 'recorded_by');
+    }
+
+    public function lifter(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'lifted_by');
     }
 
     /**

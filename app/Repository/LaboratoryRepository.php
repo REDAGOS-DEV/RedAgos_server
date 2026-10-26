@@ -51,12 +51,14 @@ class LaboratoryRepository
      * is Component Processing's: what still has no breakdown. Without a stage
      * it is every donation the laboratory has not completed or rejected.
      *
+     * Drawn donations only, whatever the filter (see drawn()).
+     *
      * @param  array<string, mixed>  $filters
      * @return LengthAwarePaginator<int, Donation>
      */
     public function paginateQueue(int $facilityId, array $filters, int $perPage): LengthAwarePaginator
     {
-        return Donation::query()
+        return $this->drawn(Donation::query())
             ->with(self::WITH)
             ->where('facility_id', $facilityId)
             ->when(
@@ -123,6 +125,20 @@ class LaboratoryRepository
     }
 
     /**
+     * Constrain to donations a bag was drawn from: the only ones that reach the laboratory.
+     *
+     * A donor turned away at the counter left no bag, and their donation's
+     * rejection reason is the deferral code, which is Collection's clinical
+     * record. The laboratory reads its records blind (DonorBlinding), so a
+     * status filter or a donation id must not reach past the bags into the
+     * counter's visits.
+     */
+    private function drawn(Builder $query): Builder
+    {
+        return $query->whereHas('collection');
+    }
+
+    /**
      * Re-read one of this facility's donations under a row lock.
      */
     public function lockDonation(int $donationId, int $facilityId): ?Donation
@@ -135,11 +151,11 @@ class LaboratoryRepository
     }
 
     /**
-     * Find one of this facility's donations with everything the laboratory recorded.
+     * Find one of this facility's drawn donations with everything the laboratory recorded.
      */
     public function findDonation(int $donationId, int $facilityId): ?Donation
     {
-        return Donation::query()
+        return $this->drawn(Donation::query())
             ->with(self::WITH)
             ->where('id', $donationId)
             ->where('facility_id', $facilityId)

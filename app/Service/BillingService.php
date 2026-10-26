@@ -75,7 +75,8 @@ class BillingService
         private readonly StatementRevisionService $statements,
         private readonly PaymentReceiptService $receipts,
         private readonly BillingLedger $ledger,
-        private readonly CashSessionService $cashSessions
+        private readonly CashSessionService $cashSessions,
+        private readonly BillingProgramService $programs
     ) {}
 
     /**
@@ -96,7 +97,7 @@ class BillingService
             ->where('request_id', $request->id)
             ->lockForUpdate()
             ->first()
-            ?? throw $this->refuse(404, 'billing_missing', 'No statement has been raised for this request yet.');
+            ?? throw $this->refuse(404, 'billing_missing', 'No invoice has been raised for this request yet.');
 
         return [$request, $billing];
     }
@@ -214,7 +215,7 @@ class BillingService
     {
         return Billing::query()
             ->whereHas('request', fn (Builder $query) => $query->addressedTo($facilityId))
-            ->with(['request.requestingFacility', 'request.items.component', 'request.items.bloodType', 'request.bloodType'])
+            ->with(['request.requestingFacility', 'request.items.component', 'request.items.bloodType', 'request.bloodType', 'revisions:id,billing_id,revision_number,document_number'])
             ->when(
                 isset($filters['status']),
                 fn (Builder $query): Builder => $query->where('status', $filters['status'])
@@ -235,15 +236,18 @@ class BillingService
                     )
                 )
             )
+            // The request, its patient, or the invoice number it was issued under.
             ->when(
                 isset($filters['search']),
-                fn (Builder $query): Builder => $query->whereHas(
-                    'request',
-                    fn (Builder $request): Builder => $request->where(fn (Builder $match) => $match
-                        ->where('reference_number', 'like', '%'.$filters['search'].'%')
-                        ->orWhere('patient_surname', 'like', '%'.$filters['search'].'%')
-                        ->orWhere('patient_first_name', 'like', '%'.$filters['search'].'%'))
-                )
+                fn (Builder $query): Builder => $query->where(fn (Builder $either) => $either
+                    ->whereHas(
+                        'request',
+                        fn (Builder $request): Builder => $request->where(fn (Builder $match) => $match
+                            ->where('reference_number', 'like', '%'.$filters['search'].'%')
+                            ->orWhere('patient_surname', 'like', '%'.$filters['search'].'%')
+                            ->orWhere('patient_first_name', 'like', '%'.$filters['search'].'%'))
+                    )
+                    ->orWhereHas('revisions', fn (Builder $revision): Builder => $revision->where('document_number', 'like', '%'.$filters['search'].'%')))
             )
             ->latest('billing_date')
             ->paginate($perPage)
@@ -267,6 +271,8 @@ class BillingService
         $mixed = $request !== null && $request->blood_type_id === null;
 
         return $this->format($billing) + [
+            // The latest invoice issued for it, when the list loaded them.
+            'invoice_number' => $billing->relationLoaded('revisions') ? $billing->revisions->last()?->document_number : null,
             'request' => $request ? [
                 'id' => $request->id,
                 'reference_number' => $request->reference_number,
@@ -348,8 +354,8 @@ class BillingService
      * The request still goes on the hospital's Statement of Account (project
      * owner, 2026-10-19): a revision is issued as part of the subsidy, its
      * lines at the centre's prices less the government subsidy, nothing
-     * payable. Issuance applies it at the point of issue in a centre with no
-     * billing staff, so nobody else would issue that statement.
+     * payable. Billing applies it from its own statement or counter workflow;
+     * a configured programme is effective only within its dated window.
      *
      * @return array<string, mixed>
      */
@@ -364,7 +370,7 @@ class BillingService
                 throw $this->refuse(
                     409,
                     'billing_already_subsidised',
-                    'This statement is already covered by the government subsidy.'
+                    'This invoice is already covered by the government subsidy.'
                 );
             }
 
@@ -372,7 +378,7 @@ class BillingService
                 throw $this->refuse(
                     409,
                     'billing_void',
-                    'This statement has been voided and cannot be subsidised.'
+                    'This invoice has been voided and cannot be subsidised.'
                 );
             }
 
@@ -381,6 +387,19 @@ class BillingService
                     409,
                     'billing_not_collectible',
                     'This weekly order is billed by statement only; there is nothing collected in RedAgos to waive.'
+                );
+            }
+
+            // Existing centres keep their current subsidy behaviour until the
+            // Billing Supervisor creates its first programme. Once it does,
+            // only an enabled programme whose dates include today may clear a
+            // statement; Issuance cannot bypass this server-side rule.
+            $program = $this->programs->activeSubsidyFor((int) $actor->facility_id);
+            if ($this->programs->subsidyIsConfiguredFor((int) $actor->facility_id) && $program === null) {
+                throw $this->refuse(
+                    409,
+                    'subsidy_not_active',
+                    'No government subsidy programme is active today. Ask Billing to check its effective dates.'
                 );
             }
 
@@ -402,7 +421,7 @@ class BillingService
                 TransactionChannel::System,
                 -$charged,
                 $actor,
-                note: $reason ?? 'Covered by the government subsidy.'
+                note: trim(($program?->name ? "{$program->name}. " : '').($reason ?? 'Covered by the government subsidy.'))
             );
 
             // The hospital's Statement of Account, as subsidised.
@@ -415,6 +434,8 @@ class BillingService
                 'amount_waived' => Money::toFloat($charged),
                 'already_collected' => Money::toFloat($collected),
                 'statement_revision_id' => $revision->id,
+                'billing_program_id' => $program?->id,
+                'billing_program_name' => $program?->name,
                 'reason' => $reason,
             ], fn ($value): bool => $value !== null));
 
@@ -422,7 +443,91 @@ class BillingService
                 'message' => ($collected > 0
                     ? 'Statement covered by the government subsidy. Payments already recorded are unchanged.'
                     : 'Statement covered by the government subsidy.')
-                    ." It is on the hospital's Statement of Account {$revision->document_number}.",
+                    ." It is on the hospital's invoice {$revision->document_number}.",
+                'billing' => $this->format($statement->fresh()),
+                'statement' => $this->statements->format($revision),
+            ];
+        });
+    }
+
+    /**
+     * Remove a subsidy applied in error while every unit is still at the centre.
+     *
+     * The original journal row is deliberately preserved. A linked reversal
+     * restores the current value of the held units and a revised Statement of
+     * Account records that the hospital now owes the balance again.
+     *
+     * @return array<string, mixed>
+     */
+    public function removeSubsidy(User $actor, Billing $billing, string $reason): array
+    {
+        return DocumentNumbering::transaction(function () use ($actor, $billing, $reason): array {
+            [$request, $statement] = $this->lockForMutation((int) $billing->request_id, (int) $actor->facility_id);
+
+            if ($statement->status !== BillingStatus::Subsidised) {
+                throw $this->refuse(
+                    409,
+                    'billing_not_subsidised',
+                    'Only a statement covered by the government subsidy can have that subsidy removed.'
+                );
+            }
+
+            // Reopening a balance after a bag has been dispatched would alter
+            // the financial decision beneath an already completed handover.
+            if ($request->allocations()->released()->exists()) {
+                throw $this->refuse(
+                    409,
+                    'subsidy_removal_after_dispatch',
+                    'The subsidy cannot be removed after a unit has been dispatched. File a billing correction instead.'
+                );
+            }
+
+            $this->assertNoOpenCheckout($statement);
+
+            $subsidy = BillingTransaction::query()
+                ->where('billing_id', $statement->id)
+                ->where('type', TransactionType::Subsidy->value)
+                ->latest('id')
+                ->first()
+                ?? throw $this->refuse(
+                    409,
+                    'subsidy_history_missing',
+                    'The subsidy record is missing, so this statement cannot be reopened automatically.'
+                );
+
+            // Prices and held units may have changed since the subsidy was
+            // applied. Restore the live statement rather than a stale amount.
+            $restored = $this->figures->totalOf($this->figures->linesFor($request));
+            $collected = $this->collectedFor($statement);
+
+            $statement->total_amount = Money::toDecimal($restored);
+            $statement->status = $this->settlementFor($restored, $collected);
+            $statement->save();
+
+            $this->ledger->post(
+                $statement,
+                $request,
+                TransactionType::SubsidyReversal,
+                TransactionChannel::System,
+                $restored,
+                $actor,
+                reverses: $subsidy,
+                note: 'Government subsidy removed: '.$reason,
+            );
+
+            [$revision] = $this->statements->issueOrReuse($request, $statement, $actor, 'statement');
+
+            $this->auditLogger->record($actor, 'billing.subsidy_removed', $statement, [
+                'request_id' => $statement->request_id,
+                'restored_amount' => Money::toFloat($restored),
+                'already_collected' => Money::toFloat($collected),
+                'subsidy_transaction_id' => $subsidy->id,
+                'reason' => $reason,
+                'statement_revision_id' => $revision->id,
+            ]);
+
+            return [
+                'message' => 'Government subsidy removed. The statement balance has been restored.',
                 'billing' => $this->format($statement->fresh()),
                 'statement' => $this->statements->format($revision),
             ];
@@ -452,7 +557,7 @@ class BillingService
             throw $this->refuse(
                 409,
                 'billing_missing',
-                'No statement has been raised for this request, so it cannot be released.'
+                'No invoice has been raised for this request, so it cannot be released.'
             );
         }
 
@@ -503,7 +608,7 @@ class BillingService
             [$request, $billing] = $this->lockForMutation($requestId, (int) $staff->facility_id);
 
             if ($billing->status === BillingStatus::Void) {
-                throw $this->refuse(409, 'billing_void', 'This statement has been voided, so no statement can be issued for it.');
+                throw $this->refuse(409, 'billing_void', 'This invoice has been voided, so it cannot be issued.');
             }
 
             return $this->statements->issueOrReuse($request, $billing, $staff, 'statement');
@@ -838,7 +943,7 @@ class BillingService
     public function correctPayment(User $actor, BloodRequest $lockedRequest, Billing $lockedBilling, Payment $lockedPayment, array $changes, ?int $correctionRequestId = null): void
     {
         if ($lockedBilling->status === BillingStatus::Void) {
-            throw $this->refuse(409, 'billing_void', 'This statement has been voided, so its payments can no longer be corrected.');
+            throw $this->refuse(409, 'billing_void', 'This invoice has been voided, so its payments can no longer be corrected.');
         }
 
         if ($lockedPayment->source === PaymentSource::Gateway) {
@@ -1295,7 +1400,7 @@ class BillingService
             throw $this->refuse(
                 409,
                 'billing_settled_by_decision',
-                'This statement has been voided, so no payment can be recorded against it.'
+                'This invoice has been voided, so no payment can be recorded against it.'
             );
         }
 
@@ -1303,7 +1408,7 @@ class BillingService
             throw $this->refuse(
                 409,
                 'billing_settled_by_decision',
-                'This statement is covered by the government subsidy, so no payment can be recorded against it.'
+                'This invoice is covered by the government subsidy, so no payment can be recorded against it.'
             );
         }
 

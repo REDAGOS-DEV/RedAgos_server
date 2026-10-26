@@ -27,7 +27,6 @@ class UpdateCounsellingReferralRequest extends FormRequest
                 'required',
                 'string',
                 Rule::in([
-                    ReferralStatus::Contacted->value,
                     ReferralStatus::Referred->value,
                     ReferralStatus::Closed->value,
                 ]),
@@ -47,7 +46,7 @@ class UpdateCounsellingReferralRequest extends FormRequest
     public function messages(): array
     {
         return [
-            'status.in' => 'A referral may be marked contacted, referred or closed.',
+            'status.in' => 'A referral may be marked referred to a doctor, or closed.',
             'note.required' => 'Say how the referral ended before closing it.',
         ];
     }

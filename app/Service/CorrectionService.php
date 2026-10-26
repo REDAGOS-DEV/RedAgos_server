@@ -680,7 +680,7 @@ class CorrectionService
 
         if ($subject === CorrectionSubject::Payment) {
             if ($locked[1]->status === BillingStatus::Void) {
-                throw $this->refuse(409, 'billing_void', 'This statement has been voided, so its payments can no longer be corrected.');
+                throw $this->refuse(409, 'billing_void', 'This invoice has been voided, so its payments can no longer be corrected.');
             }
 
             // A gateway payment's figures are the provider's, not anybody's
@@ -699,7 +699,7 @@ class CorrectionService
 
         if ($subject === CorrectionSubject::PaymentVoid) {
             if ($locked[1]->status === BillingStatus::Void) {
-                throw $this->refuse(409, 'billing_void', 'This statement has been voided, so its payments can no longer be voided.');
+                throw $this->refuse(409, 'billing_void', 'This invoice has been voided, so its payments can no longer be voided.');
             }
 
             $this->billingService->assertVoidable($locked[2]);
@@ -810,7 +810,7 @@ class CorrectionService
 
         $snapshot = match ($subject) {
             CorrectionSubject::Screening => DonationScreening::query()->where('donation_id', $record->id)->first()?->only([
-                'outcome', 'deferral_reason', 'systolic_bp', 'diastolic_bp', 'pulse_bpm', 'temperature_c',
+                'outcome', 'deferral_code', 'deferral_reason', 'systolic_bp', 'diastolic_bp', 'pulse_bpm', 'temperature_c',
                 'weight_kg', 'haemoglobin_g_dl', 'fingerprick_blood_type_id', 'sleep', 'meal', 'meds', 'allergies',
                 'general_appearance', 'skin', 'heent', 'heart_and_lungs', 'notes',
             ]),

@@ -7,6 +7,7 @@ use App\Enums\DonationStatus;
 use App\Enums\DonationType;
 use App\Enums\DonorType;
 use App\Enums\ScreeningOutcome;
+use App\Models\DeferralCode;
 use App\Models\Donation;
 use App\Models\DonationAppointment;
 use App\Models\Facility;
@@ -56,6 +57,10 @@ class CollectionReportService
         $staff->loadMissing('facility');
         $facility = $staff->facility ?? throw $this->refuse(404, 'facility_missing', 'This account is not linked to a facility.');
 
+        // Every counter role reads this report; only the clinical record's
+        // holder reads what a deferral code stands for.
+        $clinical = $staff->can('donors.view_clinical');
+
         $tz = (string) config('blood_center.timezone', 'Asia/Manila');
         $first = CarbonImmutable::parse($fromDate, $tz)->startOfDay();
         $last = CarbonImmutable::parse($toDate, $tz)->startOfDay();
@@ -81,7 +86,7 @@ class CollectionReportService
             ->where('facility_id', $facility->id)
             ->whereBetween('donation_date', [$from, $to])
             ->with([
-                'screening:id,donation_id,outcome,deferral_reason',
+                'screening:id,donation_id,outcome,deferral_code,deferral_reason',
                 'donorProfile:donor_id,blood_type_id,gender,birth_date,last_donation_date',
                 'donorProfile.bloodType:id,code',
                 'appointment:id,event_id',
@@ -109,12 +114,11 @@ class CollectionReportService
                 $outcome = $visit->screening?->outcome;
                 $label = $outcome instanceof ScreeningOutcome ? $outcome->label() : 'Deferred';
                 $byOutcome[$label] = ($byOutcome[$label] ?? 0) + 1;
-                $reason = trim((string) $visit->screening?->deferral_reason) ?: 'No reason recorded';
-                $reasons[$reason] = ($reasons[$reason] ?? 0) + 1;
+                $this->tallyReason($reasons, $visit->screening?->deferral_code, $visit->screening?->deferral_reason, $clinical);
             }
         }
         $deferrals = array_sum($byOutcome);
-        arsort($reasons);
+        uasort($reasons, fn (array $a, array $b): int => $b['count'] <=> $a['count']);
         arsort($byGroup);
 
         // ── Appointments ──
@@ -149,11 +153,7 @@ class CollectionReportService
             ],
             'deferrals' => [
                 'by_type' => array_map(fn ($label, $n): array => ['type' => (string) $label, 'count' => $n], array_keys($byOutcome), $byOutcome),
-                'top_reasons' => array_map(
-                    fn ($reason, $n): array => ['reason' => (string) $reason, 'count' => $n],
-                    array_keys(array_slice($reasons, 0, self::REASONS, true)),
-                    array_slice($reasons, 0, self::REASONS, true)
-                ),
+                'top_reasons' => array_values(array_slice($reasons, 0, self::REASONS, true)),
             ],
             'appointments' => [
                 'booked' => $appointments->count(),
@@ -179,6 +179,32 @@ class CollectionReportService
             'opening_hours' => $this->openingHours($facility),
             'previous' => $this->previous($facility->id, $first, $last),
         ];
+    }
+
+    /**
+     * Count one deferral under its code (project owner, 2026-10-24).
+     *
+     * A coded deferral is counted by its code, with the reason it stood for
+     * when only the clinical record's holder is reading. One with no code (an
+     * "Other", or one recorded before codes existed) has only its typed
+     * reason: that holder sees it as typed, everyone else sees all of them as
+     * one Other line.
+     *
+     * @param  array<string, array{code: ?string, reason: ?string, label: string, count: int}>  $reasons
+     */
+    private function tallyReason(array &$reasons, ?string $code, ?string $typed, bool $clinical): void
+    {
+        $typed = trim((string) $typed) ?: null;
+        $other = DeferralCode::OTHER;
+
+        [$key, $reason, $label] = match (true) {
+            $code !== null => ["code:{$code}", $clinical ? $typed : null, $clinical && $typed !== null ? "{$code} · {$typed}" : $code],
+            $clinical => ['text:'.($typed ?? ''), $typed, $typed !== null ? "{$other} · {$typed}" : 'No reason recorded'],
+            default => ['other', null, $other],
+        };
+
+        $reasons[$key] ??= ['code' => $code, 'reason' => $reason, 'label' => $label, 'count' => 0];
+        $reasons[$key]['count']++;
     }
 
     /**

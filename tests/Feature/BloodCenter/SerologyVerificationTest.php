@@ -283,7 +283,8 @@ class SerologyVerificationTest extends TestCase
         $this->actingAs($this->supervisor)
             ->postJson("/api/blood-center/laboratory/referrals/{$referral->id}/contact-request")
             ->assertOk()
-            ->assertJsonPath('message', 'Ana has no email address, so the contact request was sent in the app only.');
+            // Never the donor's name: Testing works blind, its head included.
+            ->assertJsonPath('message', 'The donor has no email address, so the contact request was sent in the portal only.');
 
         Mail::assertNothingQueued();
         Notification::assertSentTo($this->donor, DonorContactRequested::class);

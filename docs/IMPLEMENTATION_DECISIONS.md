@@ -989,6 +989,8 @@ collected volume.
 
 ## Donor identity blinding
 
+> **PARTLY SUPERSEDED (2026-10-25)** by "Testing works blind, its head included": the Laboratory Supervisor no longer holds `donors.view_identity`, and the laboratory endpoints reach drawn donations only.
+
 **DECISION:** Laboratory and inventory payloads (`LaboratoryService::format`, the intake queue) carry the donor's name, code and uuid only to a viewer holding `donors.view_identity` — the receptionist, physician, chair roles, the Laboratory Supervisor and the Center Admin. Everyone else gets `{blinded: true, blood_type}` and works by donation barcode (formerly segment number) and donation id; the intake queue now carries the barcode for that reason (`App\Support\DonorBlinding`).
 
 Donor directory projections by role: `donors.view_contact` alone (Recruitment) gets a contact list — no blood type, birth date, history or deferrals; `donors.view` gets the registration record; the donation history (deferral reasons, final lab result, never the marker) needs `donors.view_clinical` (the physician). Collection payloads show screening vitals and reasons only to `donors.view_clinical`; everyone else sees the outcome.
@@ -2190,3 +2192,155 @@ Opened from View, the dialog offers Edit or Review when the row allows it. Every
   - Admin: the Audit Log actor.
 - Every user relation loaded with a column list includes `credentials`. Donor names never use `signatureName()`.
 - The stock report's "BY:" line is the upper-cased name, then the title if there is one. It never prints a post.
+
+## Deferral codes
+
+**SOURCE:** The project owner, 2026-10-24: deferral reasons are represented by codes (e.g. `R1`) because the reason must stay confidential from donors; a donor who sees a deferral record should see only the code. The codes and their reasons are to be managed, not hardcoded; authorised staff view and manage the reasons. Later the same day: haemoglobin is R2, in two types, "R2-Low = low haemoglobin and R2-High = High haemoglobin"; "the 'Others' reason should remain there without code needed"; and "when choosing a reason it must display code only no description besides it". Until then, reasons were typed free text at the counter and on a drive's paper record, and the Deferrals page offered a hardcoded client list plus "Other". The donor's `DonorDeferred` email and in-app card quoted the typed reason word for word.
+
+**DECISION:**
+- `deferral_codes` (migration `2026_10_24_000004`): per centre, `code` (kept as typed, e.g. `R2-Low`; unique per centre whatever the case, retired ones included; matched case-insensitively) and `reason`, with `retired_at`. A centre's first look seeds it with the reasons the Deferrals page used to offer (`DeferralCode::DEFAULTS`), so recording works from day one: R1 recent tattoo/piercing, R2-Low low haemoglobin, R2-High high haemoglobin, then R3–R12 as before.
+- Every deferral is recorded by code, or under "Other". The counter's screening, a drive's paper record and the Deferrals page take `deferral_code`, or `other_reason` (the reason typed, no code; 255 characters). One or the other: neither is a 422 on `deferral_code`, both a 422 on `other_reason`. The server resolves a code against the centre's active list (`DeferralCodeService::chosen()`; unknown or retired is a 422 on `deferral_code`).
+- Under Other the record keeps the typed reason and no code, `rejection_reason` reads "Other", and the donor's notice gives neither code nor reason. Staff see an "Other" chip with the reason folded; the collection report counts these as one "Other" line, or "Other · <reason>" for a `donors.view_clinical` reader.
+- Records copy the code and the reason as it reads that day: `donation_screenings.deferral_code` + `deferral_reason`, `donor_deferrals.reason_code` + `reason` (migration `2026_10_24_000005`). Rewording a code leaves past records as they were. Rows from before have no code and keep their typed reason.
+- The donation's `rejection_reason` holds the code (or "Other") for a deferral at screening, so it never carries clinical text beyond the clinical gate.
+- What the donor sees: `DonorDeferred` (mail and in-app) gives "Deferral code: R1" and never the reason. The portal's `GET /donors/deferral` is unchanged and still gives no reason and no code: a laboratory deferral has no code, so showing one would tell the donor which kind theirs is.
+- What staff see: the code wherever a deferral is shown; the reason only with `donors.view_clinical` (as before), and even then folded behind a "Reason" toggle (`DeferralCodeTag.vue`) because the screen may face the donor. The picker lists the codes alone, with no reason beside them, then Other.
+  - The Donations list now gives every reader the code (`screening.deferral_code`); the reason stays clinical-only.
+  - The collection report and its PDF count by code. Only a `donors.view_clinical` reader gets "R1 · Low haemoglobin"; other counter roles get "R1", and uncoded reasons (Other, and those from before codes) as one "Other" line. Before this, every counter role saw the typed reasons there.
+- Keeping the list: `deferrals.configure` (update kind, Screening Physician only, a named-post ability no custom role inherits). `GET /blood-center/deferral-codes` (any of `deferrals.configure`, `donors.view_clinical`, `donors.defer`, `donations.screen`, `donations.record_paper`; the reason only for the first two), `POST` and `PATCH /{id}` (`code`, `reason`, `retired`). Audited as `center.deferral_code_added` / `center.deferral_code_changed`, with the code and never the reason.
+- A code is never deleted, only retired, and is never renamed once a record carries it: a donor told "R1" must be able to ask about R1 later. An unused code may be corrected.
+- Client: Management → Deferral Codes (`deferral-codes.vue`, requires `deferrals.configure` or `donors.view_clinical`; editing needs the former). First placed under Donor; moved to Management by the owner the same day.
+
+## Counter: "On examination" removed
+
+**SOURCE:** The project owner, 2026-10-24, pointing at the counter's "On examination" box (general appearance, skin, HEENT, heart and lungs): "remove this".
+
+**DECISION:**
+- The Donation counter's screening step no longer shows or sends the four fields. `donation.vue` only; the screening's columns and `RecordScreeningRequest` keep them, optional as before.
+- A drive's paper record still types them under "More from the form", and records already holding them keep them.
+
+## Counter: required vital signs, and Defer donor through the deferral form
+
+**SOURCE:** The project owner, 2026-10-24: "Reuse the attached Deferral Form component when clicking Defer Donor in the Donation Counter": missing fields block both deferral and collection; normal results prevent deferral; an abnormal result allows it and suggests the code. Asked how a donor with normal readings is deferred for a history reason (tattoo, medication, travel), the owner chose "Allow, non-vital codes only". Haemoglobin ranges from the owner: "male is 13.5–17.5, female 12.5–17.5". The Until date: "Record Until on the screening".
+
+**DECISION:**
+- This supersedes, for the counter only, "nothing in this application decides whether a set of vitals qualifies a donor" (RecordScreeningRequest, DonationScreening, docs/BLOOD-CENTER.md's scope boundary). The physician still chooses the outcome; the ranges decide which deferral codes may be recorded.
+- The counter (`RecordScreeningRequest::rules()`, so corrections too) requires all six readings: systolic and diastolic BP, pulse, temperature, weight, haemoglobin. A drive's paper record keeps them optional.
+- Ranges are config, `donation.vitals`, read through `App\Support\ScreeningVitals`:
+  - Haemoglobin 13.5–17.5 g/dL for men and 12.5–17.5 for women (owner). A donor whose sex is not recorded as male or female is held to the stricter bound (13.5), so a possibly low reading is never passed over.
+  - Systolic 90–160 and diastolic 60–100 mmHg, pulse 60–100 bpm, temperature ≤ 37.5 °C, weight ≥ 50 kg (`DONATION_MIN_WEIGHT_KG`). These are the DOH donor-selection figures offered with the question and not changed by the owner. **To be confirmed by the centre's clinical owner** (see "Clinical configuration boundary").
+- Each range names the code it suggests: haemoglobin low R2-Low / high R2-High, either BP R7, weight R8, temperature R3, pulse none. `donation.vital_only_codes` (R2-Low, R2-High, R7, R8) are offered and accepted only while a reading suggests them; with normal readings the donor may still be deferred under any other code or Other. The server refuses a locked code with a 422 on `deferral_code`. R3 (recent illness or fever) is suggested by a fever but stays a history code.
+- The counter's donation carries `vitals.ranges` (set for the donor's sex) and `vitals.vital_only_codes`. The form shows each range under its reading, marks a reading out of range, and lists what is missing.
+- Defer donor opens the Deferrals page's form, now one component (`DeferralFormDialog.vue`) used by both pages. At the counter the donor is fixed, From is today, the locked codes are left out, and the first out-of-range reading's code is pre-selected. The old inline radios and code picker are gone.
+- `donation_screenings.deferred_until` (migration `2026_10_24_000006`): a temporary counter deferral's last day, required for one (`deferred_until`, today or later). `DonorDeferralRepository::deferralsFor()` holds such a deferral until that date, not until the next screening, so the Donors list and the donor's portal say "until". The donor's notice says so too ("Deferred until 23 Nov 2026"). Paper records and rows from before keep the old reading.
+
+## The Donation counter is reached from Donations and Donor Management
+
+**SOURCE:** The project owner, 2026-10-24: Donor Management gets an action that "proceed[s] directly to donations so that it will not search it [in the] donation counter", "only the eligible must proceed"; then "remove the donation counter and transfer the Scan the Donor Portal QR in the upper right of Donations, make it buttons and it popup to scan". Asked whether that meant the Donations button only or the sidebar link and the counter's own scan and search too, the owner chose the latter.
+
+**DECISION:**
+- The counter identifies nobody itself: its QR scan and walk-in search are gone. With no donor it says where a visit starts. The page and its route stay; the sidebar link is `hidden` (kept for the breadcrumb), and the Donations toolbar's Donation Counter button is gone.
+- Three ways in, each carrying the donor:
+  - **Donations → Scan QR** (upper right, beside Paper Records): a popup (`DonorQrScanDialog.vue`) scans and verifies the Donor Portal QR (`POST /collection/verify-qr`, which checks the donor in as before). The answer is handed to the counter in memory (`useCounterHandoff`), never in the address.
+  - **Donor Management → Start donation** (the heart on a row, and on the profile): only for an eligible donor; otherwise disabled with the reason (`startDonationBlock`).
+  - **Donations → Continue** on an open visit, row and detail.
+- The last two open `/blood-center/donation?donor=<uuid>`. The counter brings the donor up through `GET /collection/arrival/{donor}` (appointments.verify): the QR scan's answer without the scan (today's booking, the visit under way, the questionnaire reference, the standing deferral), checking nobody in. Only a donor this centre has dealt with; another is 404. Audited as `donor.looked_up` with `identifier_type: record`.
+- Next donor and Cancel visit return to Donations. The screening physician, phlebotomist and apheresis specialist (and a custom Collection role) now land on Donations after signing in, not on the counter.
+- A donor from another centre, or someone new to RedAgos, is first registered on Donor Management; the counter's exact email/phone search for them is gone with the rest.
+
+## Testing works blind, its head included
+
+**SOURCE:** The project owner, 2026-10-25, asked for an audit of Testing's donor blinding: Testing staff must never receive or render donor identity, contact information, donor code, uuid or clinical history, and must find and record a unit by its donation barcode. The brief first kept identity for the Laboratory Supervisor (counselling referrals and supervisory review). Mid-audit the owner changed that: "even the head of testing section should not see the name of the donor only the barcode".
+
+**DECISION (who reads a donor):** No Testing role reads a donor. `donors.view_identity` is gone from the Laboratory Supervisor, so `DonorBlinding` blinds every laboratory payload for the whole department: the queue, the donation detail, the record and verify responses, Serology Results and its CSV. A blind viewer's CSV has no Donor or DonorID column at all, and the results search covers the bag barcode and the DON- code only. This supersedes the supervisor half of "Donor identity blinding" and of "Serology results list" (blinding).
+
+**DECISION (typed roles):** A typed Testing role (a "Laboratory Assistant") used to inherit the Lab Supervisor's `donors.view_identity` and `lab.referrals` through `DepartmentPermissions::forCustomRole()`. It saw donor names on every Testing screen and the referral list with phone and email. `lab.referrals` is now in `NAMED_POST_ONLY`, and the supervisor holds no donor read to pass on. `DepartmentPermissionMatrixTest` pins that no Processing or Testing role, predefined or typed, holds any `donors.*` ability.
+
+**DECISION (counselling referrals):** The list goes by barcode. Each referral carries the blinded donor block (blood type only) and `contact_by_email`, whether the contact request will go by email. It carries no name, donor code, uuid, phone, email or contact person. The mail icon still reaches the donor, because the server sends the email and the in-app notice. Its confirmation names the bag, not the donor ("Contact request sent to the donor of bag SEG-7781 …").
+
+**DECISION (the laboratory reaches only bags):** `GET /laboratory/queue` and `GET /laboratory/donations/{id}` now cover drawn donations only (a `blood_collections` row; `LaboratoryRepository::drawn()`). Before this, `?status=rejected` (or `registered`, `screening`), or any donation id, reached the counter's visits. A visit turned away at screening carries its deferral code as its rejection reason, so a blind role could page through the donor's clinical history. Processing's "Rejected" chip no longer lists counter deferrals either, which never reached the laboratory.
+
+**DECISION (the page holds the line too):** `visibleDonor()` (`utils/donorLabel.ts`) takes every donation into the Testing page and Serology Results. Without `donors.view_identity` the viewer is shown the blood type only, whatever the payload carried.
+
+**TESTS:** `TestingDonorBlindingTest` covers the queue, the donation detail, Serology Results, its CSV, the barcode search, recording by barcode, a reactive result through verification, and the referral list. Each runs for the Serology Technologist, a typed Testing role and the Laboratory Supervisor, all blind. Run against the old code, it fails on each leak above.
+
+**KNOWN LIMITATIONS:**
+- A paper record's "not reaching the laboratory" reason is typed by Collection on a drawn donation, so a donation id still reaches it from the laboratory detail. It describes the bag, not the donor's history, and never appears in a queue.
+- Nobody in Testing can now phone a reactive donor from RedAgos: contact is by the server-sent email and in-app notice only. Whoever counsels the donor finds them through Collection, which holds identity.
+- Processing's Processed CSV still carries empty Donor and DonorID columns for its blind roles.
+
+## Donor Management lists every donor in RedAgos
+
+**SOURCE:** The project owner, 2026-10-25: "a donor management should be global in all blood center". Asked, the owner chose: a donor another centre knows opens as the full record; Export and Remind Eligible stay with the centre's own donors; each centre's donation history stays its own.
+
+**DECISION:**
+- The Donors page lists every donor in RedAgos (`DonorDirectoryRepository::browseNetwork()`), each row marked `scope` own_facility or cross_facility ("Other centre" in the list). Search, blood group and sort as before; status is still this centre's own record (facility_donors).
+- `facilityDonorQuery()` keeps meaning this centre's own donors (a booking, a donation or its own record here) for the export, the eligibility reminders, drive announcements and the Collection dashboard's pool. The page says so on Export and Remind Eligible, and a single email from the list or profile is refused for another centre's donor as before.
+- `GET /donors/{uuid}` is the full record for every centre; the cross-facility summary (`restricted: true`) is gone. `restricted` is now always false; `scope` still says whose donor it is.
+- `GET /donors/{uuid}/history` stays this centre's donations alone. For another centre's donor it returns an empty list with `scope: cross_facility` instead of a 403; the profile says how many donations are at other centres and that their details stay there.
+- Editing (`PATCH /donors/{uuid}`, the photo) is open to every centre; the existing locks still hold (a verified identity; the email, phone and photo a donor keeps themselves unless registered at this counter and unclaimed). The counter's sign-in slip stays with a centre the donor has dealt with, as it replaces the donor's password.
+- `GET /collection/arrival/{donor}` brings up any RedAgos donor, so Start donation works for another centre's eligible donor; the audit records the scope.
+- Unchanged: the Deferrals page's own-centre rule (`donors.defer` on a donor this centre has dealt with), and `donors/lookup`'s exact-identifier search, now answering with the full record.
+
+## The Deferrals page lists screening deferrals too
+
+**SOURCE:** The project owner, 2026-10-25, of a donor deferred at the counter: "why it doesnt appear in deferrals list?", then "add it directly to deferral list". Supersedes the 2026-10-18 choice that the page lists only deferrals recorded on it.
+
+**DECISION:**
+- `GET /blood-center/deferrals` lists the centre's deferrals of all three hand-made kinds, newest first: recorded on the page (`DEF-`), at the counter's screening and from a drive's paper record (`DON-`, the visit). Each row carries `source` (manual | counter | paper) and a unique `key`.
+- In force as the donor's standing reads it (`ScreeningDeferralRepository`): permanent and indefinite always; temporary until its Until date, or with none (a paper record, or one from before the counter set it) until the donor is screened again anywhere. The status filter and search (donor, DONOR-, DON-, deferral code, reason words) work on both.
+- A screening deferral was first listed as not liftable here; see the amendment below.
+- A laboratory (reactive serology) deferral stays off the page: the counter staff who read it are not told a result.
+- The two tables are merged by id, day and time, sorted, and only the page shown is loaded.
+- **Amended the same day** (owner: "it should still liftable"): a counter or paper screening's deferral is lifted from the page like one recorded there: `POST /deferrals/{id}/lift` with `source: screening` and the screening's id; a reason, `donors.defer`, this centre's screening, not already lifted or expired. `donation_screenings.lifted_at`, `lifted_by`, `lift_reason` (migration `2026_10_25_000001`). The screening keeps its outcome as the visit's record; `DonorDeferralRepository` stops counting a lifted one (standing, Donors list, portal, counter notice, booking, reminders). Audited as `donor.deferral_lifted` with `source: screening`.
+
+## Counselling referrals stay in Testing: referred to a doctor
+
+**SOURCE:** The project owner, 2026-10-25 to 2026-10-26.
+- They first asked for a confirmatory workflow, then for the follow-up to move to a doctor, then for a Counselling department.
+- On 2026-10-26 they withdrew all three: "revise the counselling back to the old one in Testing section", "only referred to doctor and permanently deferred in that center", and "the other section for the councelling should be remove".
+- Asked, they chose:
+  - the permanent deferral applies at **every centre**, as before;
+  - the referral's steps are **Pending → Referred to doctor → Closed**.
+
+**DECISION:**
+- The Counselling Referrals page stays in Testing's sidebar, worked by the Laboratory Supervisor (`lab.referrals`), by barcode, as "Testing works blind, its head included" describes.
+- A verified reactive result rejects the donation and opens the referral. The referral is the donor's permanent deferral at every centre (`DonorDeferralRepository`), as before.
+- **Steps:** `ReferralStatus` has three: pending, referred (labelled "Referred to doctor"), closed. The "contacted" step is gone; `2026_10_26_000001` moves any referral at "contacted" back to pending. The mail icon's contact request stays, stamped apart from the status. Closing still needs a note and lifts nothing.
+- **Nothing else is kept:** no confirmatory cases, SOP, counselling department or role, and no consent, route or provider fields. Those migrations were rolled back on the dev database. The `counselling.physician@redagos.test` account was kept with no role and no department; an Admin may reassign or remove it.
+
+## Invoices, Statements of Account and Financial Reports
+
+**SOURCE:** The project owner, 2026-10-25: "add invoice under billing and financial reports under management replace the demand forecast", with these definitions. An **invoice** is created for one billable blood request or service. A **Statement of Account** summarises a facility's invoices, payments and remaining balance over a period. A **receipt** is issued after a payment is received or verified, as proof of payment. Asked about the details, the owner chose:
+- Only what the hospital owes goes on its statement.
+- The statement is generated on demand, not numbered.
+- Demand Forecast leaves the sidebar but the page stays.
+- Financial Reports covers collections, subsidies, receivables, and billing by component and hospital, for the Billing Supervisor and both management levels.
+
+**DECISION (documents):**
+- **The per-request document is now an Invoice.** It replaces the 2026-10-10 "Statement of Account" title, which had avoided the word "invoice" as a BIR term; the owner decided otherwise.
+  - New revisions are numbered `INV-{facility}-{seq}` from the same per-facility counter.
+  - Revisions issued before keep their `SOA-` numbers, because issued numbers never change.
+  - The PDF, the screens and the hospital portal say "Invoice", and the PDF says it is not a BIR-registered invoice or an official receipt.
+  - Endpoints, JSON keys and table names keep "statement".
+- **A Statement of Account** is one hospital's weekly replenishment invoices, its settlements and its balance over a period (`AccountStatementService`).
+  - It is built from the billing journal on demand, never stored or numbered.
+  - It shows the opening balance (everything before the period), the activity with a running balance, the invoices the period touched or left open, and the closing balance.
+  - Patient Transfusion invoices stay off: the patient or watcher owes them (2026-10-10).
+  - Served by `GET /blood-center/account-statements`, `.../hospitals` and `.../pdf`, all behind `billing.view`.
+- **The billings list** now carries each row's latest `invoice_number` and is searchable by it.
+
+**DECISION (Financial Reports):**
+- `GET /blood-center/reports/financial?from&to` (`FinancialReportService`), for at most a year at a time.
+- Behind a new read ability, `reports.financial`. The Billing Supervisor holds it, and so do both management levels (it is in `OVERVIEW`). The Billing Clerk does not.
+- **Collections:** net of corrections and voids, by method, per day up to 62 days and per month beyond.
+- **Subsidies:** net of subsidies removed.
+- **Receivables:** what patients and hospitals owe today, aged 0–7, 8–30 and over 30 days from billing, plus the settlements recorded in the period.
+- **Billing by component and by hospital:** the invoices raised in the period, priced from their live lines.
+
+**Client:**
+- **Billing** shows Billing Counter, Invoices (`/blood-center/billing`, the former Statements list), Statements (`/blood-center/statements`, the new SOA), Receipts, Billing Transactions and Component Prices.
+- The per-request page moved from `/blood-center/statement/{id}` to `/blood-center/invoice/{id}`.
+- **Management** shows Financial Reports where Demand Forecast was. Demand Forecast stays at `/blood-center/forecast`, hidden from the sidebar, and is opened from Reports & Analytics.
+
+**TESTS:** `AccountStatementTest` and `FinancialReportTest`. `StatementRevisionTest` now expects `INV-` numbers. The permission matrix and backfill tests know `reports.financial`.

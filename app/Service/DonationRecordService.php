@@ -172,6 +172,9 @@ class DonationRecordService
                 'dhq_on_paper' => (bool) $screening->dhq_on_paper,
                 'screened_at' => $screening->screened_at?->toISOString(),
                 'recorded_by' => $screening->screenerName(),
+                // The code for everyone who sees the list; what it stands for
+                // only for the clinical record's holder.
+                'deferral_code' => $screening->deferral_code,
                 'deferral_reason' => $clinical ? $screening->deferral_reason : null,
             ],
             'collection' => $donation->collection === null ? null : [
