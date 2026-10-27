@@ -8,6 +8,7 @@ use App\Http\Controllers\BloodCenterAdminReportController;
 use App\Http\Controllers\BloodCenterAppointmentController;
 use App\Http\Controllers\BloodCenterAuditLogController;
 use App\Http\Controllers\BloodCenterBillingController;
+use App\Http\Controllers\BloodCenterBillingDashboardController;
 use App\Http\Controllers\BloodCenterBillingProgramController;
 use App\Http\Controllers\BloodCenterBillingTransactionController;
 use App\Http\Controllers\BloodCenterBookingScheduleController;
@@ -569,6 +570,11 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         Route::get('/receipts/{receipt}', [BloodCenterReceiptController::class, 'show'])
             ->middleware('can:billing.record_payment')
             ->whereNumber('receipt');
+
+        // The Billing department's dashboard: today at the counter, what is
+        // owed, the last 30 days of collections (BillingDashboardService).
+        Route::get('/billing-dashboard', [BloodCenterBillingDashboardController::class, 'show'])
+            ->middleware(['can:billing.record_payment', 'throttle:60,1']);
 
         // The billing journal. Its rows carry payment references, so it is
         // read behind the ability to record payments, like the payments list.
