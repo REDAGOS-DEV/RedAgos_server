@@ -6,6 +6,7 @@ use App\Enums\CorrectionSubject;
 use App\Support\AdminPrivileges;
 use App\Support\DepartmentPermissions;
 use App\Support\DonorAvatar;
+use App\Support\StaffAvatar;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -93,11 +94,14 @@ class UserResource extends JsonResource
                 fn () => $this->donorProfile?->bloodType?->code
             ),
             // A signed link, never the stored path: the photo lives on the
-            // private disk and is only reachable through donors.avatar.show.
-            'avatar_url' => $this->whenLoaded(
-                'donorProfile',
-                fn () => DonorAvatar::urlFor($this->resource)
-            ),
+            // private disk and is only reachable through donors.avatar.show,
+            // or staff.avatar.show for a staff member's own (on the user row).
+            'avatar_url' => $this->profile_image_path !== null
+                ? StaffAvatar::urlFor($this->resource)
+                : $this->whenLoaded(
+                    'donorProfile',
+                    fn () => DonorAvatar::urlFor($this->resource)
+                ),
             'facility' => $this->whenLoaded(
                 'facility',
                 fn () => $this->facility ? [

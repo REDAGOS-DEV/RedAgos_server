@@ -15,13 +15,13 @@ use App\Repository\EligibilityRepository;
 use App\Support\AccountIdentity;
 use App\Support\DonorAvatar;
 use App\Support\DonorNotificationPreferences;
+use App\Support\Uploads;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Throwable;
@@ -355,7 +355,7 @@ class DonorService
             ]);
         }
 
-        $newPath = $image->store(self::IDENTITY_DOCUMENT_DIRECTORY, 'local');
+        $newPath = $image->store(self::IDENTITY_DOCUMENT_DIRECTORY, Uploads::diskName());
 
         try {
             $previousPath = DB::transaction(function () use ($donor, $payload, $newPath): ?string {
@@ -388,13 +388,13 @@ class DonorService
                 return $previousPath;
             });
         } catch (Throwable $exception) {
-            Storage::disk('local')->delete($newPath);
+            Uploads::disk()->delete($newPath);
 
             throw $exception;
         }
 
         if ($previousPath !== null && $previousPath !== $newPath) {
-            Storage::disk('local')->delete($previousPath);
+            Uploads::disk()->delete($previousPath);
         }
 
         return [
@@ -553,12 +553,12 @@ class DonorService
         }
 
         $previousPath = $profile->profile_image_path;
-        $path = $avatar->store('avatars', 'local');
+        $path = $avatar->store('avatars', Uploads::diskName());
 
         $this->donorRepository->updateDonorProfile($profile, ['profile_image_path' => $path]);
 
-        if ($previousPath && Storage::disk('local')->exists($previousPath)) {
-            Storage::disk('local')->delete($previousPath);
+        if ($previousPath && Uploads::disk()->exists($previousPath)) {
+            Uploads::disk()->delete($previousPath);
         }
 
         return [
@@ -622,7 +622,7 @@ class DonorService
         // later rather than a reason to tell the donor their request did not work.
         if ($identityImagePath !== null) {
             try {
-                Storage::disk('local')->delete($identityImagePath);
+                Uploads::disk()->delete($identityImagePath);
             } catch (Throwable $exception) {
                 Log::warning('Could not delete identity document after account closure.', [
                     'donor_id' => $donor->id,

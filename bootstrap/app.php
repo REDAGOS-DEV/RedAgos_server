@@ -28,6 +28,16 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->api(append: [
             EnsurePasswordChanged::class,
         ]);
+
+        // Deployed, every request arrives through the host's proxy (Laravel
+        // Cloud runs behind Cloudflare), which ends HTTPS and passes the
+        // visitor's address on in X-Forwarded-*. Untrusted, every visitor would
+        // share the proxy's IP: one person's failed sign-ins would throttle
+        // everyone's (`throttle:5,1` on /login), the audit log would record the
+        // proxy, and absolute links would say http://. `*` trusts whichever
+        // proxy calls, which is safe because the deployed app is reachable only
+        // through it.
+        $middleware->trustProxies(at: '*');
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(

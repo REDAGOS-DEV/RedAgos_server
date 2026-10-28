@@ -253,6 +253,8 @@ final class AuditActions
         'hospital_inventory.expired' => ['hospital', 'edit', 'Unit expired'],
         'hospital_inventory.expiry_swept' => ['hospital', 'edit', 'Ran the expiry check'],
         'hospital_inventory.tag_sweep' => ['hospital', 'edit', 'Ran the tag expiry check'],
+        'hospital_inventory.report_generated' => ['hospital', 'create', 'Generated an inventory report'],
+        'hospital_inventory.report_downloaded' => ['hospital', 'export', 'Downloaded an inventory report'],
         'hospital_staff.created' => ['hospital', 'create', 'Added a staff account'],
         'hospital_staff.deleted' => ['hospital', 'delete', 'Removed a staff account'],
         'hospital_staff.restored' => ['hospital', 'edit', 'Restored a staff account'],

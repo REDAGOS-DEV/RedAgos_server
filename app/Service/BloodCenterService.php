@@ -11,7 +11,10 @@ use App\Models\Facility;
 use App\Models\User;
 use App\Repository\BloodCenterRepository;
 use App\Repository\BloodComponentRepository;
+use App\Support\StaffAvatar;
+use App\Support\Uploads;
 use Illuminate\Http\Exceptions\HttpResponseException;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\ValidationException;
 
@@ -51,6 +54,7 @@ class BloodCenterService
                 'credentials' => $user->credentials,
                 'email' => $user->email,
                 'phone' => $user->phone,
+                'avatar_url' => StaffAvatar::urlFor($user),
             ],
             'facility' => $user->facility ? [
                 'id' => $user->facility->id,
@@ -88,6 +92,31 @@ class BloodCenterService
         $user->save();
 
         return $this->profile($user->refresh());
+    }
+
+    /**
+     * Store the caller's new profile photo and return its signed URL.
+     *
+     * The old file is removed once the new path is saved, so a replaced photo
+     * does not linger on the disk.
+     *
+     * @return array<string, mixed>
+     */
+    public function updateAvatar(User $user, UploadedFile $avatar): array
+    {
+        $previousPath = $user->profile_image_path;
+        $path = $avatar->store('staff-avatars', Uploads::diskName());
+
+        $user->forceFill(['profile_image_path' => $path])->save();
+
+        if ($previousPath && Uploads::disk()->exists($previousPath)) {
+            Uploads::disk()->delete($previousPath);
+        }
+
+        return [
+            'message' => 'Profile photo updated successfully.',
+            'avatar_url' => StaffAvatar::urlFor($user),
+        ];
     }
 
     /**

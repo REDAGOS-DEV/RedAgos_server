@@ -17,6 +17,21 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Uploads Disk
+    |--------------------------------------------------------------------------
+    |
+    | The private disk for uploaded and generated files: donor and staff
+    | photos, identity documents, facility logos and seals, and hospital stock
+    | sheets (App\Support\Uploads). The `local` disk by default. On a host whose
+    | own disk is wiped on every deploy, such as Laravel Cloud, attach a private
+    | bucket and name its disk here, e.g. UPLOADS_DISK=uploads.
+    |
+    */
+
+    'uploads' => env('UPLOADS_DISK', 'local'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Filesystem Disks
     |--------------------------------------------------------------------------
     |

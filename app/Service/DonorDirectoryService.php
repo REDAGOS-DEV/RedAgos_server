@@ -19,6 +19,7 @@ use App\Support\AccountIdentity;
 use App\Support\DonorAvatar;
 use App\Support\DonorNotificationPreferences;
 use App\Support\DonorStanding;
+use App\Support\Uploads;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\QueryException;
@@ -26,7 +27,6 @@ use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
@@ -550,11 +550,11 @@ class DonorDirectoryService
         $profile = $donor->donorProfile;
         $previous = $profile->profile_image_path;
 
-        $profile->profile_image_path = $photo->store('avatars', 'local');
+        $profile->profile_image_path = $photo->store('avatars', Uploads::diskName());
         $profile->save();
 
-        if ($previous && Storage::disk('local')->exists($previous)) {
-            Storage::disk('local')->delete($previous);
+        if ($previous && Uploads::disk()->exists($previous)) {
+            Uploads::disk()->delete($previous);
         }
 
         $this->auditLogger->record($staff, 'donor.photo_updated', $donor, ['facility_id' => $facility->id]);

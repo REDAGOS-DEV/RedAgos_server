@@ -67,6 +67,7 @@ use App\Http\Controllers\HospitalInventoryController;
 use App\Http\Controllers\HospitalReferenceController;
 use App\Http\Controllers\HospitalReplenishmentScheduleController;
 use App\Http\Controllers\HospitalStaffController;
+use App\Http\Controllers\HospitalStockSheetController;
 use App\Http\Controllers\HospitalTransfusionRequestController;
 use App\Http\Controllers\HospitalWeeklyRequestController;
 use App\Http\Controllers\PasswordResetController;
@@ -170,6 +171,11 @@ Route::get('/donors/{user}/avatar', [DonorProfileController::class, 'showAvatar'
     ->middleware('signed:relative')
     ->name('donors.avatar.show');
 
+// A staff member's photo, signed the same way, for the portal header.
+Route::get('/staff/{user}/avatar', [BloodCenterProfileController::class, 'showAvatar'])
+    ->middleware('signed:relative')
+    ->name('staff.avatar.show');
+
 // Signed like the avatar above, so an <img> can load it without a bearer
 // token. A logo is the facility's public face on its printed reports, not
 // personal data, so an expiring link is enough.
@@ -219,10 +225,24 @@ Route::middleware(['auth:sanctum', 'role:blood_center'])->prefix('blood-center')
     Route::get('/profile', [BloodCenterProfileController::class, 'show']);
     Route::patch('/profile', [BloodCenterProfileController::class, 'update']);
     Route::put('/profile', [BloodCenterProfileController::class, 'update']);
+    Route::post('/profile/avatar', [BloodCenterProfileController::class, 'updateAvatar'])
+        ->middleware('throttle:10,1');
     Route::post('/password', [BloodCenterProfileController::class, 'updatePassword']);
     // The notices this person gets, and the few they may turn off.
     Route::get('/notification-preferences', [StaffNotificationPreferencesController::class, 'show']);
     Route::patch('/notification-preferences', [StaffNotificationPreferencesController::class, 'update']);
+});
+
+// Hospital blood bank — role only, outside the operational gate as the
+// centre's is: the staff member's own profile, photo and password (Settings,
+// project owner 2026-10-28). The same staff profile as the centre's, which
+// reads and writes only the signed-in user.
+Route::middleware(['auth:sanctum', 'role:blood_bank'])->prefix('hospital')->group(function (): void {
+    Route::get('/profile', [BloodCenterProfileController::class, 'show']);
+    Route::patch('/profile', [BloodCenterProfileController::class, 'update']);
+    Route::post('/profile/avatar', [BloodCenterProfileController::class, 'updateAvatar'])
+        ->middleware('throttle:10,1');
+    Route::post('/password', [BloodCenterProfileController::class, 'updatePassword']);
 });
 
 // Blood Center — operational. Everything that touches real data attaches here:
@@ -1095,6 +1115,18 @@ Route::middleware(['auth:sanctum', 'role:blood_bank', 'facility.operational'])
             Route::get('/summary', [HospitalInventoryController::class, 'summary'])
                 ->middleware('can:hospital.inventory.view');
             Route::get('/tag-events', [HospitalInventoryController::class, 'tagEvents'])
+                ->middleware('can:hospital.inventory.view');
+            Route::get('/activity', [HospitalInventoryController::class, 'activity'])
+                ->middleware('can:hospital.inventory.view');
+
+            // Inventory Reports: the paper form, filled from the shelf, each
+            // one kept as the PDF it was printed as (project owner, 2026-10-29).
+            Route::get('/reports', [HospitalStockSheetController::class, 'index'])
+                ->middleware('can:hospital.inventory.view');
+            Route::post('/reports', [HospitalStockSheetController::class, 'store'])
+                ->middleware(['can:hospital.inventory.view', 'throttle:20,1']);
+            Route::get('/reports/{report}/pdf', [HospitalStockSheetController::class, 'pdf'])
+                ->whereNumber('report')
                 ->middleware('can:hospital.inventory.view');
 
             // The hospital's own minimum stock per blood type and component:

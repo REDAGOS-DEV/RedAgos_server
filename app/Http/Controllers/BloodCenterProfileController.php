@@ -4,9 +4,13 @@ namespace App\Http\Controllers;
 
 use App\Http\Requests\UpdateBloodCenterPasswordRequest;
 use App\Http\Requests\UpdateBloodCenterProfileRequest;
+use App\Http\Requests\UpdateStaffAvatarRequest;
+use App\Models\User;
 use App\Service\BloodCenterService;
+use App\Support\Uploads;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class BloodCenterProfileController extends Controller
 {
@@ -32,6 +36,28 @@ class BloodCenterProfileController extends Controller
         return response()->json(
             $this->bloodCenterService->updateProfile($request->user(), $request->validated())
         );
+    }
+
+    /**
+     * Replace the authenticated staff member's profile photo.
+     */
+    public function updateAvatar(UpdateStaffAvatarRequest $request): JsonResponse
+    {
+        return response()->json(
+            $this->bloodCenterService->updateAvatar($request->user(), $request->file('avatar'))
+        );
+    }
+
+    /**
+     * Stream a staff member's profile photo from private storage.
+     */
+    public function showAvatar(string $user): StreamedResponse
+    {
+        $path = User::where('uuid', $user)->firstOrFail()->profile_image_path;
+
+        abort_if($path === null || ! Uploads::disk()->exists($path), 404);
+
+        return Uploads::disk()->response($path);
     }
 
     /**
