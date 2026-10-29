@@ -8,6 +8,7 @@ use App\Http\Controllers\BloodCenterAdminReportController;
 use App\Http\Controllers\BloodCenterAppointmentController;
 use App\Http\Controllers\BloodCenterAuditLogController;
 use App\Http\Controllers\BloodCenterBillingController;
+use App\Http\Controllers\BloodCenterBillingDashboardController;
 use App\Http\Controllers\BloodCenterBillingProgramController;
 use App\Http\Controllers\BloodCenterBillingTransactionController;
 use App\Http\Controllers\BloodCenterBookingScheduleController;
@@ -590,6 +591,11 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             ->middleware('can:billing.record_payment')
             ->whereNumber('receipt');
 
+        // The Billing department's dashboard: today at the counter, what is
+        // owed, the last 30 days of collections (BillingDashboardService).
+        Route::get('/billing-dashboard', [BloodCenterBillingDashboardController::class, 'show'])
+            ->middleware(['can:billing.record_payment', 'throttle:60,1']);
+
         // The billing journal. Its rows carry payment references, so it is
         // read behind the ability to record payments, like the payments list.
         Route::get('/billing-transactions', [BloodCenterBillingTransactionController::class, 'index'])
@@ -1035,6 +1041,8 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         // Supervisor's and both management levels' (reports.financial).
         Route::get('/reports/financial', [BloodCenterFinancialReportController::class, 'show'])
             ->middleware(['can:reports.financial', 'throttle:30,1']);
+        Route::get('/reports/financial/pdf', [BloodCenterFinancialReportController::class, 'pdf'])
+            ->middleware(['can:reports.financial', 'throttle:20,1']);
 
         // The Testing department's reports: whoever records serology or the
         // typing (TestingReportService checks either ability).
