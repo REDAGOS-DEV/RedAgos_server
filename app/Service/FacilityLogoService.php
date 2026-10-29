@@ -6,9 +6,9 @@ use App\Models\BillingRevision;
 use App\Models\Facility;
 use App\Models\PaymentReceipt;
 use App\Models\User;
+use App\Support\Uploads;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\UploadedFile;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\URL;
 
 /**
@@ -18,7 +18,7 @@ use Illuminate\Support\Facades\URL;
  * which defaults to the Department of Health seal. It is kept the same way
  * but printed on that report alone.
  *
- * Follows the donor-avatar pattern. The file lives on the private `local`
+ * Follows the donor-avatar pattern. The file lives on the private uploads
  * disk, so it is never reachable by guessing a path; the browser gets a
  * 30-minute signed URL, and a PDF gets the bytes inlined as a data URI
  * because dompdf is run with remote fetching off.
@@ -40,8 +40,6 @@ class FacilityLogoService
     // Apart from the logos, so a billing document's signed logo path can never name one.
     private const SEAL_DIRECTORY = 'facility-seals';
 
-    private const DISK = 'local';
-
     public function __construct(
         private readonly AuditLogger $auditLogger
     ) {}
@@ -56,7 +54,7 @@ class FacilityLogoService
         $facility = $this->requireFacility($staff);
         $previous = $facility->logo_path;
 
-        $path = $logo->store(self::DIRECTORY, self::DISK);
+        $path = $logo->store(self::DIRECTORY, Uploads::diskName());
 
         // Direct assignment rather than mass assignment: the path is decided
         // here, never taken from a request.
@@ -120,11 +118,11 @@ class FacilityLogoService
         $facility = $this->requireFacility($staff);
         $previous = $facility->seal_path;
 
-        $facility->seal_path = $seal->store(self::SEAL_DIRECTORY, self::DISK);
+        $facility->seal_path = $seal->store(self::SEAL_DIRECTORY, Uploads::diskName());
         $facility->save();
 
         if ($previous && $previous !== $facility->seal_path) {
-            Storage::disk(self::DISK)->delete($previous);
+            Uploads::disk()->delete($previous);
         }
 
         $this->auditLogger->record($staff, 'center.seal_updated', $facility, [
@@ -151,7 +149,7 @@ class FacilityLogoService
         $facility->save();
 
         if ($previous) {
-            Storage::disk(self::DISK)->delete($previous);
+            Uploads::disk()->delete($previous);
         }
 
         $this->auditLogger->record($staff, 'center.seal_removed', $facility, [
@@ -199,7 +197,7 @@ class FacilityLogoService
     {
         abort_unless($this->hasSeal($facility), 404);
 
-        return Storage::disk(self::DISK)->response($facility->seal_path, null, [
+        return Uploads::disk()->response($facility->seal_path, null, [
             'Cache-Control' => 'private, max-age=1800',
             'X-Content-Type-Options' => 'nosniff',
         ]);
@@ -280,7 +278,7 @@ class FacilityLogoService
             $path = $facility->logo_path;
         }
 
-        return Storage::disk(self::DISK)->response($path, null, [
+        return Uploads::disk()->response($path, null, [
             'Cache-Control' => 'private, max-age=1800',
             'X-Content-Type-Options' => 'nosniff',
         ]);
@@ -289,13 +287,13 @@ class FacilityLogoService
     private function hasLogo(Facility $facility): bool
     {
         return $facility->logo_path !== null
-            && Storage::disk(self::DISK)->exists($facility->logo_path);
+            && Uploads::disk()->exists($facility->logo_path);
     }
 
     private function hasSeal(Facility $facility): bool
     {
         return $facility->seal_path !== null
-            && Storage::disk(self::DISK)->exists($facility->seal_path);
+            && Uploads::disk()->exists($facility->seal_path);
     }
 
     /**
@@ -306,12 +304,12 @@ class FacilityLogoService
         return $path !== null
             && str_starts_with($path, self::DIRECTORY.'/')
             && ! str_contains($path, '..')
-            && Storage::disk(self::DISK)->exists($path);
+            && Uploads::disk()->exists($path);
     }
 
     private function dataUri(string $path): string
     {
-        $disk = Storage::disk(self::DISK);
+        $disk = Uploads::disk();
         $mime = $disk->mimeType($path) ?: 'image/png';
 
         return 'data:'.$mime.';base64,'.base64_encode((string) $disk->get($path));
@@ -325,8 +323,8 @@ class FacilityLogoService
         $printed = BillingRevision::query()->where('issuer_logo_path', $path)->exists()
             || PaymentReceipt::query()->where('snapshot->issuing_facility->logo_path', $path)->exists();
 
-        if (! $printed && Storage::disk(self::DISK)->exists($path)) {
-            Storage::disk(self::DISK)->delete($path);
+        if (! $printed && Uploads::disk()->exists($path)) {
+            Uploads::disk()->delete($path);
         }
     }
 

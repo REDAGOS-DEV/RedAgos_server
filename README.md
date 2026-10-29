@@ -116,9 +116,11 @@ php artisan migrate:fresh --seed
 
 Use `migrate:fresh --seed` only when you are okay deleting all existing local data.
 
+`DatabaseSeeder` always seeds the baseline (`BaselineSeeder`): roles, the eight blood types, every questionnaire version and the component catalogue. The sample centres, drives and test user below are added only in `local` and `testing`; anywhere else it seeds the baseline alone.
+
 ## Test Login Account
 
-The default `DatabaseSeeder` creates this local test user:
+The default `DatabaseSeeder` creates this test user, locally and in tests only:
 
 ```text
 Email: test@example.com
@@ -328,6 +330,66 @@ than a minute, the scheduler is not running.
 php artisan hospital:expire-tags    # end lapsed hospital tags by hand
 php artisan hospital:expire-units   # expire past-date hospital bags by hand
 ```
+
+## Deploying to Laravel Cloud
+
+The API runs on Laravel Cloud, the database on Supabase (Postgres), and the client on Cloudflare Pages at `https://redagos.pages.dev`.
+
+**Environment settings**
+
+| Setting | Value |
+|---|---|
+| Runtime | PHP 8.3, the version the suite runs on (Cloud defaults to 8.5) |
+| Build commands | `composer install --no-dev --optimize-autoloader` then `php artisan optimize` |
+| Deploy commands | `php artisan migrate --force` then `php artisan db:seed --class=BaselineSeeder --force` (safe on every deploy) |
+| App cluster → Scheduler | On. See [Scheduled Tasks](#scheduled-tasks): the tag sweep runs every minute |
+| App cluster → Background processes | One Laravel queue worker on the `database` connection. Every email is queued, so without it none is sent |
+| App cluster → Scale to zero | Off. Queued jobs do not wake a sleeping app |
+| Bucket | A private Laravel Object Storage bucket with the disk name `uploads`, not the default disk |
+
+No `npm` step: the API serves no built assets. Do not add a Cloud managed queue: it switches `QUEUE_CONNECTION` to `cloud` and needs a newer Laravel.
+
+**Environment variables**
+
+```dotenv
+APP_NAME=RedAgos
+APP_ENV=production
+APP_DEBUG=false
+APP_KEY=                      # php artisan key:generate --show, once; never change it afterwards
+APP_URL=https://<environment>.laravel.cloud
+APP_TIMEZONE=Asia/Manila
+FRONTEND_URL=https://redagos.pages.dev
+
+DB_CONNECTION=pgsql
+DB_HOST=<Supabase → Connect → Session pooler host>
+DB_PORT=5432
+DB_DATABASE=postgres
+DB_USERNAME=postgres.<project-ref>
+DB_PASSWORD=
+DB_SSLMODE=require
+
+QUEUE_CONNECTION=database
+CACHE_STORE=database
+UPLOADS_DISK=uploads
+LOG_LEVEL=info
+
+MAIL_MAILER=smtp              # a real provider: the Mailtrap sandbox never delivers
+MAIL_HOST=
+MAIL_PORT=587
+MAIL_USERNAME=
+MAIL_PASSWORD=
+MAIL_FROM_ADDRESS=            # on the provider's verified domain
+
+XENDIT_CHECKOUT_ENABLED=false
+```
+
+Use Supabase's **Session pooler** (port 5432). The direct host is IPv6-only, and the transaction pooler (6543) breaks Laravel's prepared statements. In Supabase, turn off the Data API (Project Settings → Data API): Laravel's tables are in `public`, which Supabase otherwise exposes over REST.
+
+**After the first deploy**
+
+1. Run `php artisan admin:create`, then `php artisan facility:create`, from the environment's Commands page. Never run plain `db:seed` expecting sample data: outside local and testing it seeds the baseline only.
+2. In Cloudflare Pages, set `API_BASE_URL=https://<environment>.laravel.cloud/api` and redeploy the client.
+3. Check: `/up` answers 200; signing in from `https://redagos.pages.dev` works; the sign-in row in the Audit Log shows your own IP rather than a proxy's, which proves `trustProxies` in `bootstrap/app.php` is doing its job; `php artisan schedule:list` lists the sweeps.
 
 ## Migration Guidelines
 

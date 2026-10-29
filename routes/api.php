@@ -8,6 +8,7 @@ use App\Http\Controllers\BloodCenterAdminReportController;
 use App\Http\Controllers\BloodCenterAppointmentController;
 use App\Http\Controllers\BloodCenterAuditLogController;
 use App\Http\Controllers\BloodCenterBillingController;
+use App\Http\Controllers\BloodCenterBillingDashboardController;
 use App\Http\Controllers\BloodCenterBillingProgramController;
 use App\Http\Controllers\BloodCenterBillingTransactionController;
 use App\Http\Controllers\BloodCenterBookingScheduleController;
@@ -67,6 +68,7 @@ use App\Http\Controllers\HospitalInventoryController;
 use App\Http\Controllers\HospitalReferenceController;
 use App\Http\Controllers\HospitalReplenishmentScheduleController;
 use App\Http\Controllers\HospitalStaffController;
+use App\Http\Controllers\HospitalStockSheetController;
 use App\Http\Controllers\HospitalTransfusionRequestController;
 use App\Http\Controllers\HospitalWeeklyRequestController;
 use App\Http\Controllers\PasswordResetController;
@@ -170,6 +172,11 @@ Route::get('/donors/{user}/avatar', [DonorProfileController::class, 'showAvatar'
     ->middleware('signed:relative')
     ->name('donors.avatar.show');
 
+// A staff member's photo, signed the same way, for the portal header.
+Route::get('/staff/{user}/avatar', [BloodCenterProfileController::class, 'showAvatar'])
+    ->middleware('signed:relative')
+    ->name('staff.avatar.show');
+
 // Signed like the avatar above, so an <img> can load it without a bearer
 // token. A logo is the facility's public face on its printed reports, not
 // personal data, so an expiring link is enough.
@@ -219,10 +226,24 @@ Route::middleware(['auth:sanctum', 'role:blood_center'])->prefix('blood-center')
     Route::get('/profile', [BloodCenterProfileController::class, 'show']);
     Route::patch('/profile', [BloodCenterProfileController::class, 'update']);
     Route::put('/profile', [BloodCenterProfileController::class, 'update']);
+    Route::post('/profile/avatar', [BloodCenterProfileController::class, 'updateAvatar'])
+        ->middleware('throttle:10,1');
     Route::post('/password', [BloodCenterProfileController::class, 'updatePassword']);
     // The notices this person gets, and the few they may turn off.
     Route::get('/notification-preferences', [StaffNotificationPreferencesController::class, 'show']);
     Route::patch('/notification-preferences', [StaffNotificationPreferencesController::class, 'update']);
+});
+
+// Hospital blood bank — role only, outside the operational gate as the
+// centre's is: the staff member's own profile, photo and password (Settings,
+// project owner 2026-10-28). The same staff profile as the centre's, which
+// reads and writes only the signed-in user.
+Route::middleware(['auth:sanctum', 'role:blood_bank'])->prefix('hospital')->group(function (): void {
+    Route::get('/profile', [BloodCenterProfileController::class, 'show']);
+    Route::patch('/profile', [BloodCenterProfileController::class, 'update']);
+    Route::post('/profile/avatar', [BloodCenterProfileController::class, 'updateAvatar'])
+        ->middleware('throttle:10,1');
+    Route::post('/password', [BloodCenterProfileController::class, 'updatePassword']);
 });
 
 // Blood Center — operational. Everything that touches real data attaches here:
@@ -569,6 +590,11 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         Route::get('/receipts/{receipt}', [BloodCenterReceiptController::class, 'show'])
             ->middleware('can:billing.record_payment')
             ->whereNumber('receipt');
+
+        // The Billing department's dashboard: today at the counter, what is
+        // owed, the last 30 days of collections (BillingDashboardService).
+        Route::get('/billing-dashboard', [BloodCenterBillingDashboardController::class, 'show'])
+            ->middleware(['can:billing.record_payment', 'throttle:60,1']);
 
         // The billing journal. Its rows carry payment references, so it is
         // read behind the ability to record payments, like the payments list.
@@ -1015,6 +1041,8 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         // Supervisor's and both management levels' (reports.financial).
         Route::get('/reports/financial', [BloodCenterFinancialReportController::class, 'show'])
             ->middleware(['can:reports.financial', 'throttle:30,1']);
+        Route::get('/reports/financial/pdf', [BloodCenterFinancialReportController::class, 'pdf'])
+            ->middleware(['can:reports.financial', 'throttle:20,1']);
 
         // The Testing department's reports: whoever records serology or the
         // typing (TestingReportService checks either ability).
@@ -1095,6 +1123,18 @@ Route::middleware(['auth:sanctum', 'role:blood_bank', 'facility.operational'])
             Route::get('/summary', [HospitalInventoryController::class, 'summary'])
                 ->middleware('can:hospital.inventory.view');
             Route::get('/tag-events', [HospitalInventoryController::class, 'tagEvents'])
+                ->middleware('can:hospital.inventory.view');
+            Route::get('/activity', [HospitalInventoryController::class, 'activity'])
+                ->middleware('can:hospital.inventory.view');
+
+            // Inventory Reports: the paper form, filled from the shelf, each
+            // one kept as the PDF it was printed as (project owner, 2026-10-29).
+            Route::get('/reports', [HospitalStockSheetController::class, 'index'])
+                ->middleware('can:hospital.inventory.view');
+            Route::post('/reports', [HospitalStockSheetController::class, 'store'])
+                ->middleware(['can:hospital.inventory.view', 'throttle:20,1']);
+            Route::get('/reports/{report}/pdf', [HospitalStockSheetController::class, 'pdf'])
+                ->whereNumber('report')
                 ->middleware('can:hospital.inventory.view');
 
             // The hospital's own minimum stock per blood type and component:

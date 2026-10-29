@@ -5,6 +5,8 @@ namespace App\Repository;
 use App\Enums\HospitalUnitStatus;
 use App\Enums\UnitTagStatus;
 use App\Enums\UntagReason;
+use App\Models\AuditLog;
+use App\Models\BloodUnit;
 use App\Models\HospitalUnit;
 use App\Models\TransfusionRequest;
 use App\Models\UnitTag;
@@ -59,18 +61,100 @@ class HospitalInventoryRepository
     ];
 
     /**
-     * List a hospital's bags, filtered and FEFO-ordered.
+     * List a hospital's bags, filtered, FEFO-ordered or newest arrival first.
      *
      * @param  array<string, mixed>  $filters
      * @return LengthAwarePaginator<int, HospitalUnit>
      */
     public function paginateUnits(int $facilityId, array $filters, int $perPage): LengthAwarePaginator
     {
-        return $this->filtered($facilityId, $filters)
-            ->with(self::LIST_RELATIONS)
-            ->fefo()
+        $query = $this->filtered($facilityId, $filters)->with(self::LIST_RELATIONS);
+
+        // Custody began when the row was written, so created_at is the arrival.
+        ($filters['sort'] ?? 'fefo') === 'recent'
+            ? $query->orderByDesc('hospital_units.created_at')->orderByDesc('hospital_units.id')
+            : $query->fefo();
+
+        return $query->paginate($perPage)->withQueryString();
+    }
+
+    /**
+     * What happened to this hospital's bags, newest first.
+     *
+     * Read from the audit trail as the centre's activity is, and scoped the
+     * same way: through the bag each row is about — here its custody row,
+     * whose unit_id is unique — never through the row's context. Only the
+     * hospital's own actions are listed, so the centre's history of the same
+     * bag (collected, issued) stays the centre's.
+     *
+     * @param  array<int, string>  $actions
+     * @return LengthAwarePaginator<int, AuditLog>
+     */
+    public function paginateActivity(int $facilityId, array $actions, ?string $unitId, int $perPage): LengthAwarePaginator
+    {
+        return AuditLog::query()
+            ->join('hospital_units', 'hospital_units.unit_id', '=', 'audit_logs.auditable_id')
+            ->join('blood_units', 'blood_units.id', '=', 'hospital_units.unit_id')
+            ->join('blood_types', 'blood_types.id', '=', 'blood_units.blood_type_id')
+            ->join('blood_components', 'blood_components.id', '=', 'blood_units.component_id')
+            ->leftJoin('direct_distributions', 'direct_distributions.id', '=', 'blood_units.direct_distribution_id')
+            ->where('audit_logs.auditable_type', BloodUnit::class)
+            ->where('hospital_units.facility_id', $facilityId)
+            ->whereIn('audit_logs.action', $actions)
+            ->when($unitId !== null, fn (Builder $query): Builder => $query->where('hospital_units.unit_id', $unitId))
+            ->with('actor:id,first_name,last_name,credentials')
+            ->select([
+                'audit_logs.id',
+                'audit_logs.actor_id',
+                'audit_logs.action',
+                'audit_logs.auditable_id',
+                'audit_logs.created_at',
+                'blood_types.code as blood_type_code',
+                'blood_components.name as component_name',
+                'direct_distributions.external_unit_number as external_unit_number',
+                'direct_distributions.quantity as delivery_quantity',
+            ])
+            ->orderByDesc('audit_logs.created_at')
+            ->orderByDesc('audit_logs.id')
             ->paginate($perPage)
             ->withQueryString();
+    }
+
+    /**
+     * The bags the inventory sheet lists: in date, on the shelf or tagged to a
+     * patient, first-expiring-first.
+     *
+     * @return Collection<int, HospitalUnit>
+     */
+    public function sheetUnits(int $facilityId, string $operationalDate): Collection
+    {
+        return HospitalUnit::query()
+            ->forFacility($facilityId)
+            ->whereIn('hospital_units.status', [
+                HospitalUnitStatus::Available->value,
+                HospitalUnitStatus::TagAssigned->value,
+                HospitalUnitStatus::TagCrossmatched->value,
+            ])
+            ->whereHas('bloodUnit', fn (Builder $bag): Builder => $bag->whereDate('expiry_date', '>=', $operationalDate))
+            ->with([
+                'bloodUnit:id,blood_type_id,component_id,expiry_date,direct_distribution_id',
+                'bloodUnit.bloodType:id,code',
+                'bloodUnit.component:id,code',
+                'bloodUnit.directDistribution:id,external_unit_number,quantity',
+            ])
+            ->fefo()
+            ->get();
+    }
+
+    /**
+     * Bags this hospital stocked in since a moment.
+     */
+    public function stockedSinceCount(int $facilityId, CarbonImmutable $since): int
+    {
+        return HospitalUnit::query()
+            ->forFacility($facilityId)
+            ->where('hospital_units.stocked_at', '>=', $since)
+            ->count();
     }
 
     /**
@@ -593,7 +677,12 @@ class HospitalInventoryRepository
             ->forFacility($facilityId)
             ->when(
                 isset($filters['status']),
-                fn (Builder $query): Builder => $query->where('hospital_units.status', $filters['status'])
+                fn (Builder $query): Builder => $filters['status'] === 'tagged'
+                    ? $query->whereIn('hospital_units.status', [
+                        HospitalUnitStatus::TagAssigned->value,
+                        HospitalUnitStatus::TagCrossmatched->value,
+                    ])
+                    : $query->where('hospital_units.status', $filters['status'])
             )
             ->when(
                 isset($filters['blood_type_id']),

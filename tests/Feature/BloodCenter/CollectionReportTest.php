@@ -52,6 +52,40 @@ class CollectionReportTest extends TestCase
             ->json();
     }
 
+    /**
+     * One part of an .xlsx, read through the zip's central directory without
+     * ext-zip, which is not on every PHP build. Checks the part's CRC, so a
+     * malformed archive fails here rather than in Excel.
+     */
+    private function xlsxPart(string $bytes, string $name): string
+    {
+        $end = strrpos($bytes, "PK\x05\x06");
+        $this->assertNotFalse($end, 'The workbook has no zip directory.');
+        $directory = unpack('ventries/Vsize/Voffset', substr($bytes, $end + 10, 10));
+
+        for ($i = 0, $at = $directory['offset']; $i < $directory['entries']; $i++) {
+            $entry = unpack('Vsignature/x6/vmethod/x4/Vcrc/Vcompressed/x4/vname/vextra/vcomment/x8/Vlocal', substr($bytes, $at, 46));
+            $this->assertSame(0x02014B50, $entry['signature']);
+            $entryName = substr($bytes, $at + 46, $entry['name']);
+            $at += 46 + $entry['name'] + $entry['extra'] + $entry['comment'];
+
+            if ($entryName !== $name) {
+                continue;
+            }
+
+            $local = unpack('Vsignature/x22/vname/vextra', substr($bytes, $entry['local'], 30));
+            $this->assertSame(0x04034B50, $local['signature']);
+            $data = substr($bytes, $entry['local'] + 30 + $local['name'] + $local['extra'], $entry['compressed']);
+            $contents = $entry['method'] === 8 ? gzinflate($data) : $data;
+            $this->assertIsString($contents);
+            $this->assertSame($entry['crc'], crc32($contents));
+
+            return $contents;
+        }
+
+        $this->fail("The workbook has no {$name}.");
+    }
+
     public function test_it_counts_donations_and_deferrals_with_their_reasons(): void
     {
         Donation::factory()->count(3)->create(['facility_id' => $this->centre->id, 'donation_date' => '2026-10-05 09:00', 'status' => DonationStatus::Completed]);
@@ -186,13 +220,18 @@ class CollectionReportTest extends TestCase
             ->assertHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
             ->assertDownload('redagos-snbc-record-2026-10-01-to-2026-10-20.xlsx');
 
-        $path = tempnam(sys_get_temp_dir(), 'snbc');
-        file_put_contents($path, $response->getContent());
-        $zip = new \ZipArchive;
-        $zip->open($path);
-        $sheet = (string) $zip->getFromName('xl/worksheets/sheet1.xml');
-        $zip->close();
-        @unlink($path);
+        $sheet = $this->xlsxPart((string) $response->getContent(), 'xl/worksheets/sheet1.xml');
+
+        // Where ext-zip is installed, it must read the same workbook.
+        if (class_exists(\ZipArchive::class)) {
+            $path = tempnam(sys_get_temp_dir(), 'snbc');
+            file_put_contents($path, $response->getContent());
+            $zip = new \ZipArchive;
+            $this->assertTrue($zip->open($path, \ZipArchive::CHECKCONS));
+            $this->assertSame($sheet, $zip->getFromName('xl/worksheets/sheet1.xml'));
+            $zip->close();
+            @unlink($path);
+        }
 
         foreach (['COLLECTION RECORD (SNBC RECORD)', $this->centre->name, 'TYPE OF DONOR', 'DONOR STATUS', 'October 2026', 'TOTAL'] as $text) {
             $this->assertStringContainsString(htmlspecialchars($text, ENT_XML1 | ENT_QUOTES), $sheet);

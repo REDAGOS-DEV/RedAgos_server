@@ -3,11 +3,10 @@
 namespace App\Support;
 
 use RuntimeException;
-use ZipArchive;
 
 /**
- * Just enough of the .xlsx format to hand out a formatted sheet, with PHP's
- * own zip extension: no package.
+ * Just enough of the .xlsx format to hand out a formatted sheet: no package,
+ * and no zip extension either (see zip()).
  *
  * One sheet of text and number cells, a fixed set of styles (STYLE_*), merged
  * ranges, column widths, row heights and frozen headings.
@@ -38,40 +37,30 @@ final class SimpleXlsx
      */
     public static function write(string $sheetName, array $rows, array $merges = [], array $widths = [], int $freezeBelowRow = 0, array $heights = []): string
     {
-        $path = tempnam(sys_get_temp_dir(), 'xlsx');
-        $zip = new ZipArchive;
-        if ($path === false || $zip->open($path, ZipArchive::OVERWRITE) !== true) {
-            throw new RuntimeException('The workbook could not be built.');
-        }
-
-        $zip->addFromString('[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-            .'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-            .'<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
-            .'<Default Extension="xml" ContentType="application/xml"/>'
-            .'<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
-            .'<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
-            .'<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
-            .'</Types>');
-        $zip->addFromString('_rels/.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-            .'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-            .'<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
-            .'</Relationships>');
-        $zip->addFromString('xl/workbook.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-            .'<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-            .'<sheets><sheet name="'.self::xml(mb_substr($sheetName, 0, 31)).'" sheetId="1" r:id="rId1"/></sheets></workbook>');
-        $zip->addFromString('xl/_rels/workbook.xml.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-            .'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-            .'<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
-            .'<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
-            .'</Relationships>');
-        $zip->addFromString('xl/styles.xml', self::styles());
-        $zip->addFromString('xl/worksheets/sheet1.xml', self::sheet($rows, $merges, $widths, $freezeBelowRow, $heights));
-        $zip->close();
-
-        $bytes = (string) file_get_contents($path);
-        @unlink($path);
-
-        return $bytes;
+        return self::zip([
+            '[Content_Types].xml' => '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                .'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                .'<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                .'<Default Extension="xml" ContentType="application/xml"/>'
+                .'<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+                .'<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+                .'<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+                .'</Types>',
+            '_rels/.rels' => '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                .'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                .'<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+                .'</Relationships>',
+            'xl/workbook.xml' => '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                .'<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+                .'<sheets><sheet name="'.self::xml(mb_substr($sheetName, 0, 31)).'" sheetId="1" r:id="rId1"/></sheets></workbook>',
+            'xl/_rels/workbook.xml.rels' => '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                .'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                .'<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+                .'<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+                .'</Relationships>',
+            'xl/styles.xml' => self::styles(),
+            'xl/worksheets/sheet1.xml' => self::sheet($rows, $merges, $widths, $freezeBelowRow, $heights),
+        ]);
     }
 
     public static function columnLetter(int $index): string
@@ -179,6 +168,45 @@ final class SimpleXlsx
             .'<xf numFmtId="0" fontId="6" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center"/></xf>'
             .'</cellXfs>'
             .'</styleSheet>';
+    }
+
+    /**
+     * The parts as a zip archive, written here rather than with ext-zip.
+     *
+     * The extension is not on every PHP build, and without it the export
+     * failed outright (2026-10-26). Each part is deflated with zlib; a
+     * workbook is a handful of small parts, so there is no zip64 and no data
+     * descriptor.
+     *
+     * @param  array<string, string>  $parts  contents by path inside the archive
+     */
+    private static function zip(array $parts): string
+    {
+        $now = now();
+        $time = ($now->hour << 11) | ($now->minute << 5) | intdiv($now->second, 2);
+        $date = (($now->year - 1980) << 9) | ($now->month << 5) | $now->day;
+
+        $body = '';
+        $directory = '';
+
+        foreach ($parts as $name => $contents) {
+            $deflated = gzdeflate($contents);
+            if ($deflated === false) {
+                throw new RuntimeException('The workbook could not be built.');
+            }
+
+            // Version 2.0, no flags, deflate, time, date, CRC, both sizes.
+            $fields = pack('vvvvvVVV', 20, 0, 8, $time, $date, crc32($contents), strlen($deflated), strlen($contents));
+            $offset = strlen($body);
+
+            $body .= pack('V', 0x04034B50).$fields.pack('vv', strlen($name), 0).$name.$deflated;
+            // Made by 2.0, then no extra, comment, disk, or attributes.
+            $directory .= pack('Vv', 0x02014B50, 20).$fields
+                .pack('vvvvvVV', strlen($name), 0, 0, 0, 0, 0, $offset).$name;
+        }
+
+        return $body.$directory
+            .pack('VvvvvVVv', 0x06054B50, 0, 0, count($parts), count($parts), strlen($directory), strlen($body), 0);
     }
 
     private static function xml(string $text): string

@@ -69,6 +69,39 @@ class HospitalInventoryListingTest extends TestCase
             ->assertJsonPath('data.0.active_tag', null);
     }
 
+    public function test_the_list_can_open_on_the_newest_arrival(): void
+    {
+        $first = $this->receiveOne(expiresInDays: 3);
+        $this->travel(1)->hours();
+        $second = $this->receiveOne(expiresInDays: 20);
+
+        $this->actingAs($this->requester)
+            ->getJson('/api/hospital/inventory?sort=recent')
+            ->assertOk()
+            ->assertJsonPath('data.0.unit_id', $second->unit_id)
+            ->assertJsonPath('data.1.unit_id', $first->unit_id);
+
+        $this->actingAs($this->requester)
+            ->getJson('/api/hospital/inventory?sort=newest')
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['sort']);
+    }
+
+    public function test_tagged_lists_both_tag_stages_and_nothing_else(): void
+    {
+        [$assigned, $crossmatched] = $this->receiveStock(3);
+        $this->tagUnit($assigned)->assertOk();
+        $this->tagUnit($crossmatched)->assertOk();
+        $this->act($crossmatched, 'crossmatch')->assertOk();
+
+        $listed = $this->actingAs($this->requester)
+            ->getJson('/api/hospital/inventory?status=tagged')
+            ->assertOk()
+            ->json('data');
+
+        $this->assertEqualsCanonicalizing([$assigned->unit_id, $crossmatched->unit_id], array_column($listed, 'unit_id'));
+    }
+
     public function test_a_patients_bags_are_those_received_for_them_and_those_tagged_to_them(): void
     {
         $this->stock($this->centre, $this->prbc, 1);
@@ -104,16 +137,22 @@ class HospitalInventoryListingTest extends TestCase
     {
         [$tagged] = $this->receiveStock(2);
         $this->receiveOne(expiresInDays: 2);
+        $this->receiveOne(expiresInDays: 6);
+        $this->receiveUnstocked(1);
         $this->tagUnit($tagged)->assertOk();
 
         $response = $this->actingAs($this->requester)
             ->getJson('/api/hospital/inventory/summary')
             ->assertOk()
-            ->assertJsonPath('totals.available', 2)
+            ->assertJsonPath('totals.available', 3)
             ->assertJsonPath('totals.tag_assigned', 1)
+            ->assertJsonPath('totals.received', 1)
             ->assertJsonPath('by_blood_type.0.code', 'O+')
-            ->assertJsonPath('by_blood_type.0.available', 2)
+            ->assertJsonPath('by_blood_type.0.available', 3)
             ->assertJsonPath('near_expiry.within_3_days', 1)
+            ->assertJsonPath('near_expiry.within_7_days', 2)
+            // Four stocked in this week; the bag awaiting stock-in is not one.
+            ->assertJsonPath('stocked_last_7_days', 4)
             ->assertJsonPath('overdue_active_tags', 0);
 
         $this->assertSame(HospitalUnitStatus::values(), array_keys($response->json('totals')));

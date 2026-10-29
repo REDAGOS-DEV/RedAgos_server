@@ -19,6 +19,7 @@ class ReportPdfService
     public function __construct(
         private readonly CollectionReportService $collectionReportService,
         private readonly AdminReportService $adminReportService,
+        private readonly FinancialReportService $financialReportService,
         private readonly FacilityLogoService $facilityLogoService
     ) {}
 
@@ -34,6 +35,13 @@ class ReportPdfService
         $report = $this->adminReportService->report($staff, $from, $to);
 
         return $this->render($staff, 'Centre Report', $report['period'], $this->centreSections($report), 'centre');
+    }
+
+    public function financial(User $staff, string $from, string $to): Response
+    {
+        $report = $this->financialReportService->build($staff, $from, $to);
+
+        return $this->render($staff, 'Financial Report', $report['period'], $this->financialSections($report), 'financial');
     }
 
     /**
@@ -239,6 +247,94 @@ class ReportPdfService
     }
 
     /**
+     * @param  array<string, mixed>  $r
+     * @return array<int, array<string, mixed>>
+     */
+    private function financialSections(array $r): array
+    {
+        $money = static fn ($value): string => '₱'.number_format((float) ($value ?? 0), 2);
+        $summary = $r['summary'];
+        $collections = $r['collections'];
+        $receivables = $r['receivables'];
+
+        return [
+            [
+                'title' => 'Summary',
+                'kpis' => [
+                    ['Invoiced', $money($summary['invoiced'])],
+                    ['Collected', $money($summary['collected'])],
+                    ['Subsidised', $money($summary['subsidised'])],
+                    ['Settled by hospitals', $money($summary['settled_by_hospitals'])],
+                    ['Outstanding today', $money($summary['outstanding'])],
+                    ['Invoices issued', $summary['invoices']],
+                    ['Payments recorded', $collections['payments']],
+                ],
+            ],
+            [
+                'title' => 'Collections',
+                'tables' => [
+                    [
+                        'title' => 'By payment method',
+                        'head' => ['Method', 'Payments', 'Amount'],
+                        'rows' => array_map(fn (array $row): array => [$row['label'], $row['payments'], $money($row['amount'])], $collections['by_method']),
+                        'foot' => ['Total collected', $collections['payments'], $money($collections['total'])],
+                    ],
+                    [
+                        'title' => 'Voids',
+                        'head' => ['Voided payments', 'Amount'],
+                        'rows' => [[$collections['voids']['count'], $money($collections['voids']['amount'])]],
+                    ],
+                    [
+                        'title' => 'Collections over time ('.$collections['granularity'].')',
+                        'head' => ['Period', 'Amount'],
+                        'rows' => array_map(fn (array $row): array => [$row['key'], $money($row['amount'])], $collections['series']),
+                        'empty' => 'No collections in this period.',
+                    ],
+                ],
+            ],
+            [
+                'title' => 'Subsidies',
+                'kpis' => [['Requests subsidised', $r['subsidies']['count']], ['Subsidy total', $money($r['subsidies']['amount'])]],
+            ],
+            [
+                'title' => 'Receivables (as of today)',
+                'tables' => [
+                    ...array_map(fn (string $kind, string $label): array => [
+                        'title' => $label.' ('.$money($receivables[$kind]['amount']).')',
+                        'head' => ['Age', 'Invoices', 'Amount'],
+                        'rows' => array_map(fn (array $age): array => [$age['label'], $age['count'], $money($age['amount'])], $receivables[$kind]['by_age']),
+                        'foot' => ['Total', $receivables[$kind]['count'], $money($receivables[$kind]['amount'])],
+                    ], ['patients', 'hospitals'], ['Patients', 'Hospitals']),
+                ],
+                'side_by_side' => true,
+            ],
+            [
+                'title' => 'Hospital settlements recorded in period',
+                'tables' => [[
+                    'head' => ['Settlements', 'Amount'],
+                    'rows' => [[$receivables['settlements']['count'], $money($receivables['settlements']['amount'])]],
+                ]],
+            ],
+            [
+                'title' => 'Invoices by hospital',
+                'tables' => [[
+                    'head' => ['Hospital', 'Invoices', 'Patient', 'Weekly', 'Billed', 'Outstanding'],
+                    'rows' => array_map(fn (array $row): array => [$row['name'], $row['invoices'], $row['patient_invoices'], $row['weekly_invoices'], $money($row['billed']), $money($row['outstanding'])], $r['by_hospital']),
+                    'empty' => 'No invoices in this period.',
+                ]],
+            ],
+            [
+                'title' => 'Invoices by component',
+                'tables' => [[
+                    'head' => ['Component', 'Units', 'Billed'],
+                    'rows' => array_map(fn (array $row): array => [$row['name'], $row['units'], $money($row['amount'])], $r['by_component']),
+                    'empty' => 'No invoices in this period.',
+                ]],
+            ],
+        ];
+    }
+
+    /**
      * @param  array<string, mixed>  $period
      */
     private function periodLabel(array $period): string
@@ -248,6 +344,6 @@ class ReportPdfService
 
         return $from->isSameDay($to)
             ? $from->format('j F Y')
-            : $from->format('j F Y').' to '.$to->format('j F Y').' ('.$period['days'].' days)';
+            : $from->format('j F Y').' to '.$to->format('j F Y').' ('.($period['days'] ?? $from->diffInDays($to) + 1).' days)';
     }
 }

@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Requests\DiscardBloodUnitRequest;
 use App\Http\Requests\ListHospitalInventoryRequest;
+use App\Http\Requests\ListInventoryActivityRequest;
 use App\Http\Requests\ListUnitTagEventsRequest;
 use App\Http\Requests\ReleaseUnitTagRequest;
 use App\Http\Requests\StockInHospitalUnitsRequest;
@@ -42,6 +43,20 @@ class HospitalInventoryController extends Controller
     {
         return response()->json(
             $this->hospitalInventoryService->summary($request->user())
+        );
+    }
+
+    /**
+     * What has happened to the caller's hospital stock, newest first.
+     */
+    public function activity(ListInventoryActivityRequest $request): JsonResponse
+    {
+        return response()->json(
+            $this->hospitalInventoryService->activity(
+                $request->user(),
+                $request->validated('unit_id'),
+                $request->integer('per_page', 10)
+            )
         );
     }
 

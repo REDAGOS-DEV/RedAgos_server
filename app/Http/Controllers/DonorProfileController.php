@@ -11,10 +11,10 @@ use App\Http\Requests\UpdateDonorProfileRequest;
 use App\Models\User;
 use App\Service\AuditLogger;
 use App\Service\DonorService;
+use App\Support\Uploads;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
-use Illuminate\Support\Facades\Storage;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class DonorProfileController extends Controller
@@ -69,9 +69,9 @@ class DonorProfileController extends Controller
     {
         $path = User::where('uuid', $user)->firstOrFail()->donorProfile?->profile_image_path;
 
-        abort_if($path === null || ! Storage::disk('local')->exists($path), 404);
+        abort_if($path === null || ! Uploads::disk()->exists($path), 404);
 
-        return Storage::disk('local')->response($path);
+        return Uploads::disk()->response($path);
     }
 
     /**
@@ -107,7 +107,7 @@ class DonorProfileController extends Controller
 
         $path = $profile->valid_id_image_path;
 
-        abort_if($path === null || ! Storage::disk('local')->exists($path), 404);
+        abort_if($path === null || ! Uploads::disk()->exists($path), 404);
 
         if ((int) $donor->id !== (int) $request->user()->id) {
             $this->auditLogger->record($request->user(), 'donor.identity_image_viewed', $profile, [
@@ -118,7 +118,7 @@ class DonorProfileController extends Controller
         // no-store keeps the document out of browser and proxy caches, where it
         // would outlive the session that was allowed to see it; nosniff stops a
         // mislabelled upload being reinterpreted as something executable.
-        return Storage::disk('local')->response($path, null, [
+        return Uploads::disk()->response($path, null, [
             'Cache-Control' => 'private, no-store',
             'X-Content-Type-Options' => 'nosniff',
         ]);

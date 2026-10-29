@@ -6,6 +6,7 @@ use App\Enums\BloodRequestStatus;
 use App\Enums\HospitalUnitStatus;
 use App\Enums\UnitTagStatus;
 use App\Enums\UntagReason;
+use App\Models\AuditLog;
 use App\Models\BloodUnit;
 use App\Models\DirectDistribution;
 use App\Models\HospitalUnit;
@@ -69,6 +70,23 @@ class HospitalInventoryService
         'patient_blood_type_id',
     ];
 
+    /**
+     * The audit actions that make up a hospital's inventory activity, and what
+     * each one is called on the page. The sweeps' run summaries are not about
+     * a bag, so they are not listed.
+     */
+    private const ACTIVITY_KINDS = [
+        'hospital_inventory.received' => 'received',
+        'hospital_inventory.stocked' => 'stocked',
+        'hospital_inventory.tagged' => 'tagged',
+        'hospital_inventory.crossmatched' => 'crossmatched',
+        'hospital_inventory.transfused' => 'transfused',
+        'hospital_inventory.untagged' => 'untagged',
+        'hospital_inventory.returned' => 'returned',
+        'hospital_inventory.discarded' => 'discarded',
+        'hospital_inventory.expired' => 'expired',
+    ];
+
     public function __construct(
         private readonly HospitalInventoryRepository $repository,
         private readonly AuditLogger $auditLogger
@@ -107,13 +125,46 @@ class HospitalInventoryService
             'by_blood_type' => $this->repository->countsByBloodType($facilityId),
             'near_expiry' => [
                 'within_3_days' => $this->repository->expiringWithinCount($facilityId, $today, 3),
+                'within_7_days' => $this->repository->expiringWithinCount($facilityId, $today, 7),
             ],
+            // What the shelf gained this week, for the dashboard's headline.
+            'stocked_last_7_days' => $this->repository->stockedSinceCount($facilityId, $now->subDays(7)),
             'overdue_active_tags' => $this->repository->overdueActiveTagCount($facilityId, $now),
             // For the stock-in form: the configured fridges and freezers, and
             // any place this blood bank has already stocked a bag into.
             'storage_locations' => $this->storageLocations($facilityId),
             'as_of' => $now->toIso8601String(),
         ];
+    }
+
+    /**
+     * What has happened to the caller's hospital stock, newest first.
+     *
+     * @return LengthAwarePaginator<int, array<string, mixed>>
+     */
+    public function activity(User $user, ?string $unitId, int $perPage): LengthAwarePaginator
+    {
+        $facilityId = $this->requireFacilityId($user);
+
+        return $this->repository
+            ->paginateActivity($facilityId, array_keys(self::ACTIVITY_KINDS), $unitId, $perPage)
+            ->through(fn (AuditLog $entry): array => [
+                'id' => $entry->id,
+                'kind' => self::ACTIVITY_KINDS[$entry->action],
+                'unit_id' => $entry->auditable_id,
+                // The number staff see: the sender's own for a bag from outside RedAgos.
+                'bag_number' => $entry->getAttribute('external_unit_number') === null
+                    ? $entry->auditable_id
+                    : (new DirectDistribution)->forceFill([
+                        'external_unit_number' => $entry->getAttribute('external_unit_number'),
+                        'quantity' => (int) $entry->getAttribute('delivery_quantity'),
+                    ])->bagNumberFor($entry->auditable_id),
+                'blood_type' => $entry->getAttribute('blood_type_code'),
+                'component' => $entry->getAttribute('component_name'),
+                // Null for the sweeps, which have no one behind them.
+                'actor' => $entry->actor?->signatureName(),
+                'at' => $entry->created_at?->toIso8601String(),
+            ]);
     }
 
     /**

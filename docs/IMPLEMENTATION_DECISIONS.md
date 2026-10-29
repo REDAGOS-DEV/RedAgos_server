@@ -2344,3 +2344,103 @@ Opened from View, the dialog offers Edit or Review when the row allows it. Every
 - **Management** shows Financial Reports where Demand Forecast was. Demand Forecast stays at `/blood-center/forecast`, hidden from the sidebar, and is opened from Reports & Analytics.
 
 **TESTS:** `AccountStatementTest` and `FinancialReportTest`. `StatementRevisionTest` now expects `INV-` numbers. The permission matrix and backfill tests know `reports.financial`.
+
+## Hospital Blood Bank Inventory dashboard and Stock Intake
+
+**SOURCE:** The owner, 2026-10-28: "Make the hospital blood bank Inventory UI like in blood center", then "the hospital stock intake make a separate page for it, do not put it in blood bank inventory".
+
+**DECIDED BY:** Claude, building it on 2026-10-28. The owner has not yet ruled on the headline choices below.
+
+**DECISION (layout):** `/hospital/inventory` takes the Blood Inventory dashboard's layout: five headline cards, the type cards with a ring, Expiring Soon, a paged Inventory List and Recent Activity. It keeps the hospital's own work: patient tags, the 24-hour countdowns on the server's clock, release, return and discard. The ended-tags history moved from a tab into a Tag History drawer.
+
+**DECISION (Stock Intake):** Stock-in left the inventory page for its own page, `/hospital/stock-intake`, under Stock and Supply. The page and its sidebar link need `hospital.inventory.stock_in`. Other roles still see bags awaiting stock-in through the inventory list's status filter.
+
+**DECISION (what each headline counts):**
+- *Total Available Units*: issuable bags, the same cells the type cards and the thresholds use. The added line is new `stocked_last_7_days`: bags whose `stocked_at` falls within 7 days.
+- *Critical Low Stock*: blood types below their critical level, as at the centre.
+- *Expiring Soon*: new `near_expiry.within_7_days`.
+- *Tagged to Patients*: `tag_assigned` plus `tag_crossmatched`.
+- *Pending Return*: `totals.pending_return`.
+
+**DECISION (list):** `GET /hospital/inventory` takes `status=tagged` (both tag stages) and `sort=recent` (newest arrival first, by the custody row's `created_at`). FEFO stays the default.
+
+**DECISION (activity):** `GET /hospital/inventory/activity` (`hospital.inventory.view`) reads `audit_logs` about a `BloodUnit`, joined through `hospital_units` (its `unit_id` is unique) for the hospital, never through the row's context. The whitelist is the `hospital_inventory.*` actions taken against a bag: received, stocked, tagged, crossmatched, transfused, untagged, returned, discarded and expired. The centre's history of the same bag is excluded. An optional `unit_id` gives one bag's history. `bag_number` is the sender's number for a bag from outside RedAgos.
+
+**TESTS:** `HospitalInventoryActivityTest`. `HospitalInventoryListingTest` covers the new sort, `tagged` and the summary's new figures. The authorization sweep knows the new route.
+
+## Hospital Inventory Report (the blood bank's inventory sheet)
+
+**SOURCE:** The owner, 2026-10-28: "add this template to hospital report", with a photo of the hospital's paper form, SPMC-F-BTS-38. The form has a CROSSMATCHED and an UNCROSSMATCHED table of twenty rows. Each cell holds a Whole Blood or Packed RBC bag and its expiry.
+
+**DECIDED BY:** The owner, asked the same day:
+- CROSSMATCHED: bags already tagged to a patient and ready to transfuse (`tag_crossmatched`).
+- UNCROSSMATCHED: untagged bags (`available`) plus tagged bags waiting for their crossmatch (`tag_assigned`), marked (T).
+- Crossmatched Whole Blood goes under TRANSFUSE AS PRBC. The form's crossmatched WB column prints empty.
+- A toggle between one sheet per blood type and all types on one sheet.
+
+**DECISION (what is listed):**
+- Bags in date only.
+- Components with code `WB` or `PRBC` only; the form has no column for anything else.
+- Not listed: bags awaiting stock-in, pending return, transfused, expired or discarded.
+- Order is first-expiring-first, filling each column top to bottom.
+
+**DECISION (layout):** `HospitalStockSheetService` lays the sheets out once. `GET /hospital/inventory/sheet?by=type|all` (`hospital.inventory.view`) returns them, and `/sheet/pdf` renders the same data (`pdf.hospital-inventory-sheet`, A4 portrait).
+- **Sheets:** with `type`, every blood type gets a sheet, an empty one included. With `all`, each cell also prints the bag's type.
+- **Overflow:** a column past twenty bags continues on a new page of the same sheet.
+- **Footer:** "Inventory done by" is whoever drew the sheet, and the date is today. "Checked by" is left for a signature.
+- **Document control line:** SPMC-F-BTS-38, effectivity and revision come from `config/hospital.php`, because they are the issuing hospital's own.
+
+**DECISION (audit):** Each PDF download is audited as `hospital_inventory.sheet_downloaded`.
+
+**Client:** `/hospital/inventory-report`, under a new Reports folder in the hospital sidebar.
+
+**TESTS:** `HospitalStockSheetTest`. The authorization sweep knows both routes.
+
+## Hospital portal on the blood center's UI
+
+**SOURCE:** The owner, 2026-10-28: "apply the UI of blood center to blood bank (side bar structure, setting, theme, etc)".
+
+**DECIDED BY:** Claude, the same day.
+
+**DECISION (shell):**
+- The hospital layout and sidebar are rebuilt on the centre's. A full-width top bar carries the menu button, the logo, the wordmark and a Hospital › Section › Page breadcrumb.
+- The rail sits under the bar: narrow by default, opened by the button or a hover, with each folder's pages on the agos line. It is a drawer below 1024px.
+- The hospital uses the centre's palette (`html.portal-bc`) and page finish (`.bc-shell`, `bc-ui.css`).
+- The theme moved from a header toggle into the account menu (Light / Dark / System).
+- The bell is now a dropdown over the hospital's own notifications, with its count shared with the inbox page.
+- The hospital's menu items and their abilities are unchanged.
+
+**DECISION (Settings):**
+- Rebuilt on the centre's page, with the tabs Profile, Security, Appearance, Account and Hospital.
+- New role-only routes `GET|PATCH /hospital/profile`, `POST /hospital/profile/avatar` and `POST /hospital/password` reuse `BloodCenterProfileController`, which acts on the signed-in user only.
+- The old page's sections called client methods and routes that never existed: profile, hospital information, notification and system preferences, two-factor, login activity and connected blood centres. Those sections are gone.
+- The hospital's record is shown read-only; RedAgos administrators keep it.
+- A new password follows the server's rules (8+ characters, mixed case, a number, confirmed). Changing it signs the user out everywhere, as the server ends every session.
+
+**TESTS:** `HospitalProfileTest`.
+
+**DECISION (other components, project owner 2026-10-28: "add other components"):** The form page still holds Whole Blood and Packed RBC only.
+- Every other catalogue component follows on "Other components" pages (`kind: other`), in the same CROSSMATCHED and UNCROSSMATCHED layout: one column per component, labelled by its code (or its name when it has no code), four to a page, in catalogue order.
+- Every component gets its column whether or not it is stocked, so the sheet reads the same each day. The last set is padded with blank columns, as the form keeps its grid.
+- A column past twenty bags continues on another page. A group's pages are numbered together.
+- The rule for which bags are listed is unchanged; only the component filter is gone. This supersedes "Components with code `WB` or `PRBC` only" above.
+
+**DECISION (set up, then generate; project owner 2026-10-28: "do not generate all sheets at the same time… configure first, what component, type, then click generate report"):**
+- The page draws nothing on arrival. It shows Report settings: the components, the blood types and the layout. Everything starts ticked, and the browser remembers the last choice.
+- Generate report draws the sheets. Download PDF prints exactly the settings last generated, and is disabled once a setting changes until the report is generated again.
+- `GET /hospital/inventory/sheet` and `/sheet/pdf` take `components` and `blood_types` as comma-separated ids, all of them when left out.
+- The form page prints only when Whole Blood or Packed RBC is chosen, and only the chosen other components get a column.
+- The response echoes the components and blood types covered, and the download's audit entry records them.
+
+**DECISION (archive and redesign; project owner 2026-10-29, from a mock-up):**
+- **Page:** a header card, then a card with two tabs, Report Settings and Generated Reports, then the report preview.
+  - Report Settings holds Blood Components and Blood Types as checkbox chips, each with Select All, and the layout as two radio cards.
+  - Chip labels follow the mock-up (Whole Blood, PLT, Cryo); the sheets still print the codes.
+- **Generated Reports (owner's choice):** every report generated is kept as the PDF it was printed as.
+  - `POST /hospital/inventory/reports` builds the sheets, renders the PDF, stores it on the private disk (`hospital-inventory-reports/{facility}/{uuid}.pdf`) and records a `hospital_inventory_reports` row with its layout, components, blood types, totals and pages. It answers with the row and the sheets.
+  - `GET /hospital/inventory/reports` lists them newest first. `GET /reports/{id}/pdf` serves the stored file byte for byte, scoped to the hospital.
+  - The preview's Download is that stored file, so the preview, the download and later re-downloads are one report.
+  - `GET /sheet` and `/sheet/pdf` are gone.
+  - Audit actions: `hospital_inventory.report_generated` and `hospital_inventory.report_downloaded` (the latter replaces `sheet_downloaded`).
+  - Reports are kept indefinitely; there is no retention rule yet.
+- **Migration:** `2026_10_29_000001_create_hospital_inventory_reports_table` has run on dev PostgreSQL.

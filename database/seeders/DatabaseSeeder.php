@@ -3,9 +3,6 @@
 namespace Database\Seeders;
 
 use App\Enums\AccountStatus;
-use App\Enums\RoleName;
-use App\Models\BloodType;
-use App\Models\Role;
 use App\Models\User;
 use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
@@ -18,28 +15,30 @@ class DatabaseSeeder extends Seeder
 
     /**
      * Seed the application's database.
+     *
+     * The baseline everywhere. The sample centres, drives and test account only
+     * locally and in tests: the account signs in with "password", and the
+     * centres and drives would show donors places and dates that are not real.
      */
     public function run(): void
     {
+        $this->call(BaselineSeeder::class);
+
+        if (! app()->environment(['local', 'testing'])) {
+            $this->command?->warn(
+                'Seeded the baseline only: the sample centres, drives and test account are for local and testing, '
+                .'not the ['.app()->environment().'] environment.'
+            );
+
+            return;
+        }
+
         $this->call([
-            EligibilityQuestionSeeder::class,
             FacilitySeeder::class,
-            BloodComponentSeeder::class,
             // After FacilitySeeder: drives hang off a facility, and the seeder
             // warns and skips if none exist yet.
             MobileEventSeeder::class,
         ]);
-
-        foreach (RoleName::cases() as $role) {
-            Role::firstOrCreate(['name' => $role->value]);
-        }
-
-        foreach (['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'] as $bloodType) {
-            BloodType::firstOrCreate([
-                'code' => $bloodType,
-                'label' => $bloodType,
-            ]);
-        }
 
         User::firstOrCreate(
             ['email' => 'test@example.com'],
