@@ -131,7 +131,7 @@ class StoreBloodRequestRequest extends FormRequest
             'blood_type_id.required' => 'Select the blood type required.',
             'urgency_level.in' => 'Urgency must be either routine or emergency.',
             'request_purpose.required' => 'Say whether this request is for a patient or to replenish stock.',
-            'request_purpose.in' => "Record a patient's need as a Patient Transfusion Request.",
+            'request_purpose.in' => "Record a patient's need as a Blood Request.",
             'items.required' => 'Add at least one blood component to this request.',
             'items.max' => 'A request cannot ask for more than six components.',
             'items.*.component_id.required' => 'Select the blood component required.',

@@ -161,7 +161,7 @@ class BloodRequestService
                 throw $this->refuse(
                     409,
                     'close_on_transfusion_request',
-                    "Close the remaining quantity on Patient Transfusion Request {$reference}."
+                    "Close the remaining quantity on blood request {$reference}."
                 );
             }
 

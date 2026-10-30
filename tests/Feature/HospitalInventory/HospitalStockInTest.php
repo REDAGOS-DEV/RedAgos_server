@@ -65,13 +65,13 @@ class HospitalStockInTest extends TestCase
 
         $this->stockIn([
             ['unit_id' => $first->unit_id, 'storage_location' => '  Ref 1 '],
-            ['unit_id' => $second->unit_id],
+            ['unit_id' => $second->unit_id, 'storage_location' => 'Freezer A'],
         ])
             ->assertOk()
             ->assertJsonPath('stocked_count', 2)
             ->assertJsonPath('units.0.status', HospitalUnitStatus::Available->value)
             ->assertJsonPath('units.0.storage_location', 'Ref 1')
-            ->assertJsonPath('units.1.storage_location', null)
+            ->assertJsonPath('units.1.storage_location', 'Freezer A')
             ->assertJsonPath('units.0.stocked_by', trim($this->requester->first_name.' '.$this->requester->last_name));
 
         $first->refresh();
@@ -93,7 +93,10 @@ class HospitalStockInTest extends TestCase
         $shelved = $this->receiveOne();
         $waiting = $this->receiveUnstocked()->first();
 
-        $this->stockIn([['unit_id' => $waiting->unit_id], ['unit_id' => $shelved->unit_id]])
+        $this->stockIn([
+            ['unit_id' => $waiting->unit_id, 'storage_location' => 'Ref 1'],
+            ['unit_id' => $shelved->unit_id, 'storage_location' => 'Ref 1'],
+        ])
             ->assertStatus(409)
             ->assertJsonPath('code', 'not_awaiting_stock_in');
 
@@ -106,7 +109,7 @@ class HospitalStockInTest extends TestCase
         $elsewhere = User::factory()->bloodBankStaff(Facility::factory()->bloodBank()->approved()->create())->create();
 
         $this->actingAs($elsewhere)
-            ->postJson('/api/hospital/inventory/stock-in', ['units' => [['unit_id' => $waiting->unit_id]]])
+            ->postJson('/api/hospital/inventory/stock-in', ['units' => [['unit_id' => $waiting->unit_id, 'storage_location' => 'Ref 1']]])
             ->assertNotFound()
             ->assertJsonPath('code', 'unit_not_found');
 
@@ -120,7 +123,7 @@ class HospitalStockInTest extends TestCase
         // The day after its expiry, before the nightly sweep has run.
         $this->travelTo(CarbonImmutable::parse('2026-10-04 02:00:00'));
 
-        $this->stockIn([['unit_id' => $unit->unit_id]])
+        $this->stockIn([['unit_id' => $unit->unit_id, 'storage_location' => 'Ref 1']])
             ->assertStatus(409)
             ->assertJsonPath('code', 'bag_expired');
 
@@ -159,10 +162,25 @@ class HospitalStockInTest extends TestCase
         $unit = $this->receiveUnstocked()->first();
 
         $this->stockIn([])->assertJsonValidationErrors('units');
-        $this->stockIn([['unit_id' => $unit->unit_id], ['unit_id' => $unit->unit_id]])
+        $this->stockIn([
+            ['unit_id' => $unit->unit_id, 'storage_location' => 'Ref 1'],
+            ['unit_id' => $unit->unit_id, 'storage_location' => 'Ref 1'],
+        ])
             ->assertJsonValidationErrors(['units.0.unit_id' => 'A bag is listed twice.']);
         $this->stockIn([['unit_id' => $unit->unit_id, 'storage_location' => str_repeat('x', 101)]])
             ->assertJsonValidationErrors('units.0.storage_location');
+    }
+
+    public function test_every_bag_needs_a_storage_location(): void
+    {
+        $unit = $this->receiveUnstocked()->first();
+
+        foreach ([['unit_id' => $unit->unit_id], ['unit_id' => $unit->unit_id, 'storage_location' => '   ']] as $bag) {
+            $this->stockIn([$bag])
+                ->assertJsonValidationErrors(['units.0.storage_location' => 'Every bag needs a storage location.']);
+        }
+
+        $this->assertSame(HospitalUnitStatus::Received, $unit->fresh()->status);
     }
 
     /**

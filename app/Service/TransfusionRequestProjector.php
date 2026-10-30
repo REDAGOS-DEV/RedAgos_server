@@ -39,6 +39,10 @@ class TransfusionRequestProjector
             $totals[$figure] = (int) $lines->sum($figure);
         }
 
+        // Dispatched and not yet confirmed, as a weekly request counts it: the
+        // listing's Receive action is offered while this is above zero.
+        $totals['awaiting_receipt'] = max(0, $totals['fulfilled'] - $totals['received']);
+
         $projection = [
             'id' => $request->id,
             'reference_number' => $request->reference_number,

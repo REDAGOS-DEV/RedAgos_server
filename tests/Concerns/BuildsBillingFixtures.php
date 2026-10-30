@@ -26,7 +26,7 @@ use Illuminate\Testing\TestResponse;
  */
 trait BuildsBillingFixtures
 {
-    use OpensCashShifts;
+    use OpensCashShifts, PlansSupply;
 
     protected Facility $centre;
 
@@ -109,6 +109,11 @@ trait BuildsBillingFixtures
             ->forStock($this->bloodType, $this->component, $askedFor ?? $units);
 
         $request = ($replenishment ? $factory->replenishment() : $factory)->create();
+
+        // A replenishment order is confirmed before anything is reserved for it.
+        if ($replenishment) {
+            $this->planSupply($request, $this->inventoryStaff);
+        }
 
         $this->stock($units);
 

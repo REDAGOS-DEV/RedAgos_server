@@ -7,9 +7,11 @@ use App\Http\Requests\CloseRequestLineRequest;
 use App\Http\Requests\ListBloodRequestsRequest;
 use App\Http\Requests\RejectBloodRequestRequest;
 use App\Http\Requests\ReleaseUnitsRequest;
+use App\Http\Requests\SaveSupplyPlanRequest;
 use App\Service\FulfillmentService;
 use App\Service\IncomingRequestService;
 use App\Service\RequestAllocationService;
+use App\Service\SupplyPlanService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
@@ -23,7 +25,8 @@ class BloodCenterRequestController extends Controller
     public function __construct(
         private readonly IncomingRequestService $incomingRequestService,
         private readonly RequestAllocationService $requestAllocationService,
-        private readonly FulfillmentService $fulfillmentService
+        private readonly FulfillmentService $fulfillmentService,
+        private readonly SupplyPlanService $supplyPlanService
     ) {}
 
     /**
@@ -89,6 +92,17 @@ class BloodCenterRequestController extends Controller
                 $validated['request_item_id'] ?? null,
                 $validated['unit_ids'] ?? null
             )
+        );
+    }
+
+    /**
+     * Confirm a replenishment order, or change how it will be met: what each
+     * line gets, pick-up or delivery, and when.
+     */
+    public function supplyPlan(SaveSupplyPlanRequest $request, int $bloodRequest): JsonResponse
+    {
+        return response()->json(
+            $this->supplyPlanService->save($request->user(), $bloodRequest, $request->validated())
         );
     }
 

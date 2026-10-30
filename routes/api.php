@@ -434,6 +434,14 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
                 ->middleware('can:requests.process')
                 ->whereNumber('bloodRequest');
 
+            // A replenishment order is confirmed before it is reserved
+            // (project owner, 2026-10-29): how many units of each line, pick-up
+            // or delivery, and when. Deciding what to supply is an approval;
+            // the Dispatch Coordinator, who arranges the hand-over, holds it.
+            Route::put('/{bloodRequest}/supply-plan', [BloodCenterRequestController::class, 'supplyPlan'])
+                ->middleware('can:requests.approve')
+                ->whereNumber('bloodRequest');
+
             // The units staff may pick for it (project owner, 2026-10-19):
             // reserving is choosing bags from the shelf, so the same ability.
             Route::get('/{bloodRequest}/units', [BloodCenterRequestController::class, 'units'])

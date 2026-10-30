@@ -2,7 +2,9 @@
 
 namespace App\Notifications;
 
+use App\Enums\HandoverMethod;
 use App\Models\BloodRequest;
+use Carbon\CarbonImmutable;
 use Illuminate\Bus\Queueable;
 use Illuminate\Notifications\Notification;
 
@@ -18,7 +20,7 @@ class BloodRequestDecided extends Notification
     use Queueable;
 
     /**
-     * @param  array<string, mixed>  $context  closed_short: component, quantity, note
+     * @param  array<string, mixed>  $context  closed_short: component, quantity, note; planned/replanned: the plan's summary
      */
     public function __construct(
         private readonly BloodRequest $request,
@@ -75,6 +77,8 @@ class BloodRequestDecided extends Notification
             'rejected' => 'Blood request rejected',
             'released' => 'Blood units dispatched',
             'closed_short' => 'Part of a blood request cannot be supplied',
+            'planned' => 'Replenishment order confirmed',
+            'replanned' => 'Replenishment order rescheduled',
             default => 'Blood request updated',
         };
     }
@@ -94,8 +98,35 @@ class BloodRequestDecided extends Notification
             'released' => "{$facility} has dispatched the units for request {$reference}. "
                 .'Confirm receipt once they arrive.',
             'closed_short' => $this->closedShortDescription($facility, $reference),
+            'planned' => "{$facility} confirmed order {$reference}: ".$this->planDescription(),
+            'replanned' => "{$facility} changed how order {$reference} is supplied: ".$this->planDescription(),
             default => "Request {$reference} has been updated.",
         };
+    }
+
+    /**
+     * What a centre's supply plan means for the hospital (project owner,
+     * 2026-10-29): how many units, and when to collect them or expect them.
+     */
+    private function planDescription(): string
+    {
+        $committed = (int) ($this->context['committed'] ?? 0);
+        $requested = (int) ($this->context['requested'] ?? 0);
+        $method = HandoverMethod::tryFrom((string) ($this->context['handover_method'] ?? ''));
+        $when = isset($this->context['scheduled_at'])
+            ? CarbonImmutable::parse((string) $this->context['scheduled_at'])
+                ->setTimezone((string) config('blood_center.timezone', 'Asia/Manila'))
+                ->format('D j M, g:i A')
+            : null;
+
+        $units = "{$committed} of {$requested} unit(s)";
+        $handover = match (true) {
+            $when === null => '',
+            $method === HandoverMethod::Pickup => ", ready for pick-up on {$when}",
+            default => ", delivered on {$when}",
+        };
+
+        return "{$units}{$handover}.";
     }
 
     /**

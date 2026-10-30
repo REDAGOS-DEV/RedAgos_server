@@ -1415,13 +1415,17 @@ stateDiagram-v2
 
 **DECISION (the Head keeps the staff):** `/hospital/staff` (index, store, update, destroy, restore) lets the Head add colleagues with a role and a first password (they verify their address before signing in), change a role or title, and remove or restore an account. A blood bank always keeps at least one active Head (409 `last_head`), checked under a facility lock. Another blood bank's account is a 404. Audited as `hospital_staff.created | role_changed | deleted | restored`.
 
-**DECISION (two-step receiving):** Confirming receipt, and booking a bag by direct distribution, now insert the custody row as `received` (audit `hospital_inventory.received`), not `available`. A `received` bag is in custody but not stock: it counts in no stock figure (types, near expiry, thresholds) and cannot be tagged. `POST /hospital/inventory/stock-in` takes `units[]` of `unit_id` and an optional `storage_location` (≤100 characters, a label only) and makes each `available`, stamping `stocked_at` and `stocked_by` (audit `hospital_inventory.stocked`, with the location). It is all or nothing: a bag not this blood bank's is 404, one not awaiting stock-in 409 `not_awaiting_stock_in`, one past its date 409 `bag_expired`. Bags are locked in custody-row id order, as the expiry sweep takes them. A `received` bag may be discarded (damaged on arrival), and the nightly sweep expires a `received` bag past its date as it does an available one, recording the real previous status. The stock-in form is offered the centre's configured locations (`blood_center.storage_locations`, generic fridges and freezers) and every location this blood bank has used, in the inventory summary's `storage_locations`. Bags already in stock keep no location: they were shelved before there was anywhere to say where. Migrations `add_hospital_role_to_users_table`, `assign_heads_to_hospital_accounts` and `add_stock_in_to_hospital_units_table`.
+**DECISION (two-step receiving):** Confirming receipt, and booking a bag by direct distribution, now insert the custody row as `received` (audit `hospital_inventory.received`), not `available`. A `received` bag is in custody but not stock: it counts in no stock figure (types, near expiry, thresholds) and cannot be tagged. `POST /hospital/inventory/stock-in` takes `units[]` of `unit_id` and a required `storage_location` (≤100 characters, a label only; required since 2026-10-30) and makes each `available`, stamping `stocked_at` and `stocked_by` (audit `hospital_inventory.stocked`, with the location). It is all or nothing: a bag not this blood bank's is 404, one not awaiting stock-in 409 `not_awaiting_stock_in`, one past its date 409 `bag_expired`. Bags are locked in custody-row id order, as the expiry sweep takes them. A `received` bag may be discarded (damaged on arrival), and the nightly sweep expires a `received` bag past its date as it does an available one, recording the real previous status. The stock-in form is offered the centre's configured locations (`blood_center.storage_locations`, generic fridges and freezers) and every location this blood bank has used, in the inventory summary's `storage_locations`. Bags already in stock keep no location: they were shelved before there was anywhere to say where. Migrations `add_hospital_role_to_users_table`, `assign_heads_to_hospital_accounts` and `add_stock_in_to_hospital_units_table`.
 
 **DECISION (the screens):** Blood Bank Inventory shows an *Awaiting stock-in* panel while any bag waits: each bag with a location field (new arrivals come ticked), a location for all the ticked bags, Stock in, and Discard. A bag's location shows under its number in the stock list. The request page's *Units on their way* offers Confirm Receipt only to roles that hold it, and says the units then wait for stock-in. The sidebar, the page search and each page's `requires` follow the role; a page a role cannot open sends it to the dashboard (`hospital-portal` middleware). The Head has a Staff page.
 
+**AMENDED (2026-10-30, the project owner: "revise storage location UI copy the UI of blood center and do not make it optional"):** Stock Intake (`/hospital/stock-intake`) picks each bag's storage location from a dropdown ("Select a location"), as the centre's Stock Intake does, and the bulk "Location for the scanned bags" is a dropdown too. Nothing is typed. Stock in stays disabled until every scanned bag has a location. The server agrees: `units.*.storage_location` is required ("Every bag needs a storage location.").
+
+**AMENDED (2026-10-30, the project owner: "In stock intake add button that can add new blood unit", then "remove these" for the source, requested-by, volume and time-received fields):** Stock Intake has an **Add blood unit** button (for `hospital.receiving.direct`: Inventory Staff and the Head). Its dialog asks only what the bag says: bag number as printed, number of units, component, blood type, expiry, and the collection date if on the label. It posts Direct Distribution's receipt without a request (`POST /hospital/direct-distributions`), sending no source, no `requested_for`, no volume and no `received_at` (the server stamps now). To allow that, `requested_for` and `external_blood_source_id` are no longer required by `ReceiveDirectDistributionRequest`, and migration `2026_10_30_000001` makes `direct_distributions.external_blood_source_id` nullable. The unique index over source and number still holds receipts that name a source. Without one, `receiptExists()` refuses a number this blood bank already received from any source, and a named receipt also checks this blood bank's unsourced ones. The Direct Distribution page still asks for both fields. The bags arrive `received`, are listed and marked on Stock Intake (shown "from outside RedAgos"), and still need a storage location. The receipt's message now says to stock them in from Stock Intake.
+
 **UNRESOLVED / TO CONFIRM:**
 - Hospital staff have no per-person Read/Write/Update/Delete privileges, as centre staff do; a role is the whole of what they may do.
-- The hospital's storage locations are suggestions, not a managed list.
+- The hospital picks storage locations from the centre's configured list plus those it has used before; it has no list of its own to manage.
 
 ## Blood Center Admin and view-only Supervisor
 
@@ -2444,3 +2448,43 @@ Opened from View, the dialog offers Edit or Review when the row allows it. Every
   - Audit actions: `hospital_inventory.report_generated` and `hospital_inventory.report_downloaded` (the latter replaces `sheet_downloaded`).
   - Reports are kept indefinitely; there is no retention rule yet.
 - **Migration:** `2026_10_29_000001_create_hospital_inventory_reports_table` has run on dev PostgreSQL.
+
+## Replenishment orders are confirmed before they are reserved
+
+**SOURCE:** the project owner, 2026-10-29: "Inventory Replenishment is not the same process like how patient request behave. The staff must configure the replenishment request like how many units it can only fulfill, pick up or to ship, when is the pick up or delivery and etc."
+
+**DECISION (a supply plan first):** A replenishment order (`request_purpose = replenishment`, weekly orders among them) is answered with a **supply plan** before anything is reserved for it.
+- `PUT /blood-center/blood-requests/{id}/supply-plan`, behind `requests.approve` (ICO and Dispatch Coordinator), sets:
+  - how many units of each open line the centre will supply (`blood_request_items.committed_quantity`);
+  - `pickup` or `delivery` (`HandoverMethod`) and when (`scheduled_at`);
+  - the delivery address or pick-up point (required for a delivery), a centre contact and phone, and notes for the hospital.
+- The hand-over is one `supply_plans` row per request. The commitments are on the lines, beside what was asked, which never changes.
+- A patient's request is refused (`not_replenishment`): it is still approved and reserved.
+
+**DECISION (the commitment caps reserving):**
+- `allocate` refuses a replenishment order with no plan (409 `supply_plan_required`). Orders sent before this change get the same refusal until they are confirmed.
+- `RequestStatusResolver` caps a line's `allocatable` at its commitment. Both the oldest-first walk and a hand-pick stop there; a pick beyond it is refused unit by unit.
+- A new figure, `unclaimed` (asked for and not yet held or sent, committed or not), is what closing a line closes. A weekly dispatch therefore still closes everything not sent, including what lay beyond the commitment.
+- The projection adds `committed_quantity` and `unclaimed_quantity` per line and per request, and `supply_plan`.
+
+**DECISION (changing the plan):**
+- The plan may change while the order is open and nothing has been dispatched (`supply_plan_locked` otherwise).
+- A line is never committed below what is already reserved for it, nor above what it asked.
+- Every open line must be given a figure, and committing nothing at all is refused: reject the order instead.
+- The time may be any moment from the start of today's operational day up to 60 days ahead.
+
+**DECISION (who hears):**
+- Each save writes a history event, `supply_planned` the first time and `supply_plan_changed` after, with the hand-over and "x of y unit(s)" as its note.
+- It is audited as `supply_plan.saved` with the plan before and after.
+- The requester is notified (`BloodRequestDecided` outcomes `planned` and `replanned`).
+- The hospital's weekly request reads **Confirmed** while it is planned and nothing is reserved, and its totals carry `committed`.
+
+**Client:**
+- **Incoming Requests, Inventory Replenishment tab:**
+  - An unconfirmed row offers **Confirm** in place of Approve.
+  - The review has a **Supply Plan** section with Confirm Order or Edit. Its availability table adds Will supply and To reserve.
+  - Reserving reads "Reserve Units".
+- **Request Fulfillment:** shows each order's hand-over. The handed-to field reads "Collected by" for a pick-up and "Driver or courier" for a delivery.
+- **Hospital portal:** the weekly request page shows the hand-over, the contact and the notes, and adds a Will supply column. The list shows when it arrives.
+
+**Migration:** `2026_10_29_000002_create_supply_plans_table` has run on dev PostgreSQL.

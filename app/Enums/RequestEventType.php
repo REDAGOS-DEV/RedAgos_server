@@ -26,6 +26,10 @@ enum RequestEventType: string
 
     case TransfusionCancelled = 'transfusion_cancelled';
 
+    case SupplyPlanned = 'supply_planned';
+
+    case SupplyPlanChanged = 'supply_plan_changed';
+
     case Allocated = 'allocated';
 
     case HoldsReturned = 'holds_returned';
@@ -52,11 +56,13 @@ enum RequestEventType: string
         return match ($this) {
             self::Submitted => 'Sent to the facility',
             self::WalkInRecorded => 'Walk-in recorded after hospital verification',
-            self::TransfusionCreated => 'Patient Transfusion Request created',
+            self::TransfusionCreated => 'Blood Request created',
             self::AllocationsAdded => 'Remaining units allocated to more facilities',
             self::AllocationWithdrawn => 'Allocation withdrawn by the hospital',
             self::RequirementClosed => 'Remaining quantity closed — no longer needed',
-            self::TransfusionCancelled => 'Patient Transfusion Request cancelled',
+            self::TransfusionCancelled => 'Blood Request cancelled',
+            self::SupplyPlanned => 'Order confirmed — supply and hand-over planned',
+            self::SupplyPlanChanged => 'Supply plan changed',
             self::Allocated => 'Approved — units reserved',
             self::HoldsReturned => 'Reserved units returned to stock',
             self::HoldExpired => 'Reserved units expired and were returned to stock',

@@ -79,7 +79,7 @@ class WeeklyRequestService
                 409,
                 'not_a_request_day',
                 "Today is not one of your request days for {$target->name} ({$schedule->weekdaysLabel()}). "
-                .'A patient who needs blood sooner is a Patient Transfusion Request.'
+                .'A patient who needs blood sooner is a blood request.'
             );
         }
 
@@ -321,6 +321,10 @@ class WeeklyRequestService
             ->values();
 
         $requested = (int) $requests->sum('quantity');
+        // Null until the centre has planned any of it.
+        $committed = $requests->every(fn (array $request): bool => $request['committed_quantity'] === null)
+            ? null
+            : (int) $requests->sum('committed_quantity');
         $fulfilled = (int) $requests->sum('fulfilled_quantity');
         $received = (int) $requests->sum('received_count');
         $notSupplied = (int) $requests
@@ -347,6 +351,7 @@ class WeeklyRequestService
             'is_open' => $requests->contains(fn (array $request): bool => $request['is_open']),
             'totals' => [
                 'requested' => $requested,
+                'committed' => $committed,
                 'fulfilled' => $fulfilled,
                 'received' => $received,
                 'awaiting_receipt' => max(0, $fulfilled - $received),
@@ -365,7 +370,11 @@ class WeeklyRequestService
     private function overallStatus(Collection $requests, int $requested, int $fulfilled): array
     {
         if ($requests->every(fn (array $request): bool => $request['status'] === BloodRequestStatus::Pending->value)) {
-            return ['submitted', 'Submitted'];
+            // The centre has said what it will supply and when, and reserved
+            // nothing yet (project owner, 2026-10-29).
+            return $requests->every(fn (array $request): bool => $request['supply_plan'] !== null)
+                ? ['confirmed', 'Confirmed']
+                : ['submitted', 'Submitted'];
         }
 
         if ($requests->contains(fn (array $request): bool => $request['is_open'])) {

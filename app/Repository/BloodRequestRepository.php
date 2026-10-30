@@ -56,6 +56,10 @@ class BloodRequestRepository
         'transfusionRequest.items.component:id,name',
         // A weekly request goes out in one delivery; both sides are told so.
         'weeklyRequest:id,reference_number,request_day',
+        // How the centre will meet a replenishment order, once it has planned it.
+        'supplyPlan',
+        'supplyPlan.planner:id,first_name,last_name,credentials',
+        'supplyPlan.updater:id,first_name,last_name,credentials',
     ];
 
     /**

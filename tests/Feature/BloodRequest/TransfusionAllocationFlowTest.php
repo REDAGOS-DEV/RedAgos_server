@@ -129,6 +129,12 @@ class TransfusionAllocationFlowTest extends TestCase
         $this->assertNotNull($requirement->fulfilled_at);
         $this->assertNotNull($requirement->closed_at);
 
+        // Everything dispatched waits for the blood bank to receive it.
+        $this->actingAs($this->requester)
+            ->getJson('/api/hospital/transfusion-requests')
+            ->assertOk()
+            ->assertJsonPath('data.0.totals.awaiting_receipt', 5);
+
         // Receipt is per allocation, confirmed as each delivery arrives.
         foreach ([$a, $b, $d] as $allocation) {
             $this->actingAs($this->requester)
@@ -140,6 +146,7 @@ class TransfusionAllocationFlowTest extends TestCase
             ->assertJsonPath('request.status', 'fulfilled')
             ->assertJsonPath('request.totals.fulfilled', 5)
             ->assertJsonPath('request.totals.received', 5)
+            ->assertJsonPath('request.totals.awaiting_receipt', 0)
             ->assertJsonPath('request.totals.remaining', 0);
 
         $events = $this->actingAs($this->requester)

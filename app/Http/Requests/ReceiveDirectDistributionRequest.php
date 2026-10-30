@@ -11,6 +11,10 @@ use Illuminate\Foundation\Http\FormRequest;
  * Request, or a typed batch — one identifier, how many bags, and who asked for
  * them — without one.
  *
+ * Who asked and the blood service may both be left out: a bag added on the
+ * hospital's Stock Intake records neither (project owner, 2026-10-30). The
+ * Direct Distribution page still asks for both.
+ *
  * The external unit number is normalised the way a scanned barcode is
  * (whitespace and control characters stripped, uppercased), so a scanned and a
  * typed copy of one bag are the same number.
@@ -53,11 +57,11 @@ class ReceiveDirectDistributionRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'transfusion_request_id' => ['nullable', 'integer', 'required_without:requested_for'],
-            'requested_for' => ['nullable', 'string', 'max:150', 'required_without:transfusion_request_id'],
+            'transfusion_request_id' => ['nullable', 'integer'],
+            'requested_for' => ['nullable', 'string', 'max:150'],
             // A bag scanned for a patient is one bag; only a typed batch says how many.
             'quantity' => ['nullable', 'integer', 'min:1', 'max:100'],
-            'external_blood_source_id' => ['required', 'integer', 'exists:external_blood_sources,id'],
+            'external_blood_source_id' => ['nullable', 'integer', 'exists:external_blood_sources,id'],
             'external_unit_number' => ['required', 'string', 'max:50', 'regex:/^[A-Z0-9-]+$/'],
             'blood_type_id' => ['required', 'integer', 'exists:blood_types,id'],
             'component_id' => ['required', 'integer', 'exists:blood_components,id'],
@@ -75,7 +79,7 @@ class ReceiveDirectDistributionRequest extends FormRequest
     {
         $validator->after(function (Validator $validator): void {
             if ($this->filled('transfusion_request_id') && (int) $this->input('quantity', 1) > 1) {
-                $validator->errors()->add('quantity', 'A bag received for a patient transfusion request is received one at a time.');
+                $validator->errors()->add('quantity', 'A bag received for a blood request is received one at a time.');
             }
         });
     }
@@ -86,11 +90,8 @@ class ReceiveDirectDistributionRequest extends FormRequest
     public function messages(): array
     {
         return [
-            'transfusion_request_id.required_without' => 'Choose the patient transfusion request, or say who the blood was requested for.',
-            'requested_for.required_without' => 'Say who requested the blood — the patient, ward or physician.',
             'quantity.min' => 'At least one unit must have been received.',
             'quantity.max' => 'Record at most 100 units at a time.',
-            'external_blood_source_id.required' => 'Choose the blood service that sent the bag.',
             'external_unit_number.required' => 'Scan or type the number printed on the bag.',
             'external_unit_number.regex' => 'A unit number may contain only letters, numbers and dashes.',
             'external_unit_number.max' => 'A unit number cannot be longer than 50 characters.',

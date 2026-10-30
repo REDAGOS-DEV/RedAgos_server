@@ -208,7 +208,9 @@ class FulfillmentService
         $closed = [];
 
         foreach ($this->resolver->freshFigures($request) as $itemId => $line) {
-            $short = (int) ($line['allocatable'] ?? 0);
+            // Everything not sent, including what lay beyond the centre's
+            // commitment on a planned order.
+            $short = (int) ($line['unclaimed'] ?? 0);
 
             if ($short < 1) {
                 continue;

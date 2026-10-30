@@ -82,6 +82,20 @@ class RequestAllocationService
             $request = $this->lockRequestForDecision($requestId, $facilityId);
             $from = $request->status;
 
+            // A replenishment order is planned before anything is held for it
+            // (project owner, 2026-10-29): what the centre will supply of each
+            // line, and how and when it reaches the hospital. The plan's
+            // commitments then cap the lines' allocatable figures.
+            $planned = $request->supplyPlan()->exists();
+
+            if ($request->isReplenishment() && ! $planned) {
+                throw $this->refuse(
+                    409,
+                    'supply_plan_required',
+                    'Confirm this order first: what you will supply of each line, and when it is picked up or delivered.'
+                );
+            }
+
             $figures = $this->resolver->freshFigures($request);
             $lines = $this->linesToFill($request, $requestItemId);
 
@@ -93,7 +107,9 @@ class RequestAllocationService
                 throw $this->refuse(
                     409,
                     'request_fully_allocated',
-                    'Every unit this request still needs from this facility is already held.'
+                    $planned
+                        ? 'Every unit you committed to supply on this order is already held.'
+                        : 'Every unit this request still needs from this facility is already held.'
                 );
             }
 
@@ -290,7 +306,7 @@ class RequestAllocationService
             // What is being closed, for the hospital's notice: read before the
             // close, which takes the line's allocatable to nothing.
             $item = $request->items()->with('component')->whereKey($itemId)->first();
-            $quantity = (int) ($this->resolver->freshFigures($request)->get($itemId)['allocatable'] ?? 0);
+            $quantity = (int) ($this->resolver->freshFigures($request)->get($itemId)['unclaimed'] ?? 0);
 
             $this->lineCloser->close($request, $itemId, LineClosureReason::Unavailable, $note, $user);
             $this->transfusionResolver->settleParentOf($request);
@@ -539,7 +555,9 @@ class RequestAllocationService
 
             if ($line === null) {
                 $first = $matching->first();
-                $errors[$field] = ["More {$first->component?->name} ({$first->bloodType?->code}) was picked than this request still needs."];
+                $errors[$field] = [$first->committed_quantity === null
+                    ? "More {$first->component?->name} ({$first->bloodType?->code}) was picked than this request still needs."
+                    : "More {$first->component?->name} ({$first->bloodType?->code}) was picked than you committed to supply."];
 
                 continue;
             }

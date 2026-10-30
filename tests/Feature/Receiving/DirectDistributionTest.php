@@ -263,10 +263,9 @@ class DirectDistributionTest extends TestCase
         $this->actingAs($this->requester)
             ->postJson('/api/hospital/direct-distributions', [])
             ->assertStatus(422)
-            ->assertJsonValidationErrors([
-                'transfusion_request_id', 'external_blood_source_id', 'external_unit_number',
-                'blood_type_id', 'component_id', 'expiry_date',
-            ]);
+            ->assertJsonValidationErrors(['external_unit_number', 'blood_type_id', 'component_id', 'expiry_date'])
+            // A bag added on Stock Intake names neither (project owner, 2026-10-30).
+            ->assertJsonMissingValidationErrors(['transfusion_request_id', 'requested_for', 'external_blood_source_id']);
 
         $this->receive('PRC_6/1')->assertStatus(422)->assertJsonValidationErrors(['external_unit_number']);
         $this->receive(str_repeat('A', 51))->assertStatus(422)->assertJsonValidationErrors(['external_unit_number']);
@@ -376,21 +375,52 @@ class DirectDistributionTest extends TestCase
             ->assertJsonPath('direct_distribution.units.0.bag_number', 'PRC-1300');
     }
 
-    public function test_a_batch_needs_who_requested_it_and_a_sensible_count(): void
+    public function test_a_batch_needs_a_sensible_count(): void
     {
-        $payload = $this->batchPayload('PRC-1400', 2);
-        unset($payload['requested_for']);
-
-        $this->actingAs($this->requester)
-            ->postJson('/api/hospital/direct-distributions', $payload)
-            ->assertStatus(422)
-            ->assertJsonValidationErrors(['requested_for', 'transfusion_request_id']);
-
         foreach ([0, 101] as $quantity) {
             $this->receiveBatch('PRC-1401', $quantity)->assertStatus(422)->assertJsonValidationErrors(['quantity']);
         }
 
         $this->assertDatabaseCount('direct_distributions', 0);
+    }
+
+    public function test_a_bag_added_on_stock_intake_names_no_source_and_no_one(): void
+    {
+        $payload = $this->batchPayload('PRC-1400', 2);
+        unset($payload['requested_for'], $payload['external_blood_source_id'], $payload['volume_ml']);
+
+        $this->actingAs($this->requester)
+            ->postJson('/api/hospital/direct-distributions', $payload)
+            ->assertCreated()
+            ->assertJsonPath('direct_distribution.source', null)
+            ->assertJsonPath('direct_distribution.requested_for', null)
+            ->assertJsonCount(2, 'direct_distribution.units');
+
+        $this->assertSame(2, HospitalUnit::query()->where('status', HospitalUnitStatus::Received)->count());
+
+        $this->actingAs($this->requester)
+            ->getJson('/api/hospital/inventory?status=received')
+            ->assertOk()
+            ->assertJsonPath('data.0.source.direct_distribution.source_name', null);
+    }
+
+    public function test_without_a_source_a_number_this_blood_bank_holds_is_refused(): void
+    {
+        $unsourced = fn (string $number): TestResponse => $this->actingAs($this->requester)->postJson(
+            '/api/hospital/direct-distributions',
+            collect($this->batchPayload($number, 1))->except('external_blood_source_id')->all()
+        );
+
+        // Named first, then typed without a source.
+        $this->receive('PRC-1800')->assertCreated();
+        $unsourced('PRC-1800')->assertStatus(409)->assertJsonPath('code', 'external_unit_already_received');
+
+        // Typed without a source first, then named.
+        $unsourced('PRC-1801')->assertCreated();
+        $this->receive('PRC-1801')->assertStatus(409)->assertJsonPath('code', 'external_unit_already_received');
+        $unsourced('prc-1801')->assertStatus(409);
+
+        $this->assertDatabaseCount('direct_distributions', 2);
     }
 
     public function test_a_bag_for_a_patient_request_is_received_one_at_a_time(): void
@@ -455,7 +485,7 @@ class DirectDistributionTest extends TestCase
     private function stockIn(HospitalUnit $unit): void
     {
         $this->actingAs($this->requester)
-            ->postJson('/api/hospital/inventory/stock-in', ['units' => [['unit_id' => $unit->unit_id]]])
+            ->postJson('/api/hospital/inventory/stock-in', ['units' => [['unit_id' => $unit->unit_id, 'storage_location' => 'Ref 1']]])
             ->assertOk();
     }
 
