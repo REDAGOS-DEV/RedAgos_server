@@ -156,6 +156,8 @@ class CollectionReportTest extends TestCase
         $this->assertSame(['new_to_centre' => 1, 'first_time' => 1, 'repeat_retained' => 1, 'lapsed' => 1], $total['type']);
         $this->assertSame(4, $total['kind']['walk_in']);
         $this->assertSame('2026-10', $profile['months'][0]['month']);
+        // Four donors have given here, whatever became of them.
+        $this->assertSame(4, $profile['donors_here']);
     }
 
     public function test_it_compares_with_the_period_before_and_maps_the_busiest_hours(): void

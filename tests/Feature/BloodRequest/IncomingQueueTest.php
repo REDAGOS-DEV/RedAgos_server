@@ -5,6 +5,7 @@ namespace Tests\Feature\BloodRequest;
 use App\Enums\BloodRequestStatus;
 use App\Enums\BloodUnitStatus;
 use App\Enums\Department;
+use App\Models\Billing;
 use App\Models\BloodComponent;
 use App\Models\BloodRequest;
 use App\Models\BloodType;
@@ -119,6 +120,27 @@ class IncomingQueueTest extends TestCase
             ->getJson('/api/blood-center/blood-requests')
             ->assertOk()
             ->assertJsonCount(4, 'data');
+    }
+
+    public function test_the_queue_can_be_split_by_whether_the_invoice_clears_release(): void
+    {
+        $paid = $this->incoming();
+        Billing::factory()->create(['request_id' => $paid->id]);
+        $owing = $this->incoming();
+        Billing::factory()->chargeable()->create(['request_id' => $owing->id]);
+        $notInvoiced = $this->incoming();
+
+        $cleared = $this->actingAs($this->staff)
+            ->getJson('/api/blood-center/blood-requests?release_cleared=1')
+            ->assertOk()
+            ->json('data.*.id');
+        $this->assertSame([$paid->id], $cleared);
+
+        $stillOwing = $this->actingAs($this->staff)
+            ->getJson('/api/blood-center/blood-requests?release_cleared=0')
+            ->assertOk()
+            ->json('data.*.id');
+        $this->assertEqualsCanonicalizing([$owing->id, $notInvoiced->id], $stillOwing);
     }
 
     public function test_the_search_finds_a_patient_or_the_hospital_in_any_case(): void

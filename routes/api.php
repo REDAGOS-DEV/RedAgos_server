@@ -82,6 +82,8 @@ use Illuminate\Support\Facades\Route;
 
 Route::post('/login', [AuthController::class, 'login'])
     ->middleware('throttle:5,1');
+Route::post('/login/google', [AuthController::class, 'googleLogin'])
+    ->middleware('throttle:5,1');
 Route::post('/donors/register', [DonorRegistrationController::class, 'register'])
     ->middleware('throttle:5,1');
 

@@ -7,6 +7,7 @@ use App\Enums\BloodUnitStatus;
 use App\Enums\Department;
 use App\Enums\PaymentSource;
 use App\Enums\PaymentStatus;
+use App\Enums\UrgencyLevel;
 use App\Models\BloodComponent;
 use App\Models\BloodRequest;
 use App\Models\BloodType;
@@ -21,6 +22,7 @@ use App\Models\User;
 use App\Notifications\BloodRequestSubmitted;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
 /**
@@ -412,12 +414,28 @@ class BillingAndNotificationTest extends TestCase
             ->getJson('/api/blood-center/notifications')
             ->assertOk()
             ->assertJsonCount(1, 'notifications')
-            ->assertJsonPath('notifications.0.category', 'request');
+            ->assertJsonPath('notifications.0.category', 'request')
+            // A routine weekly request is not an emergency.
+            ->assertJsonPath('notifications.0.urgent', false);
 
         $this->actingAs($this->inventoryStaff)
             ->postJson('/api/blood-center/notifications/mark-all-read')
             ->assertOk()
             ->assertJsonPath('unread_count', 0);
+    }
+
+    public function test_an_emergency_request_notification_is_marked_urgent(): void
+    {
+        $this->inventoryStaff->notifications()->create([
+            'id' => (string) Str::uuid(),
+            'type' => BloodRequestSubmitted::class,
+            'data' => ['category' => 'request', 'title' => 'Emergency blood request received', 'urgency_level' => UrgencyLevel::Emergency->value],
+        ]);
+
+        $this->actingAs($this->inventoryStaff)
+            ->getJson('/api/blood-center/notifications')
+            ->assertOk()
+            ->assertJsonPath('notifications.0.urgent', true);
     }
 
     public function test_a_requester_reads_only_their_own_notifications(): void

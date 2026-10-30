@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\GoogleLoginRequest;
 use App\Http\Requests\LoginRequest;
 use App\Service\AuthService;
 use Illuminate\Http\JsonResponse;
@@ -21,6 +22,16 @@ class AuthController extends Controller
     {
         return response()->json(
             $this->authService->login($request->validated())
+        );
+    }
+
+    /**
+     * Sign in with the credential Google Identity Services gave the browser.
+     */
+    public function googleLogin(GoogleLoginRequest $request): JsonResponse
+    {
+        return response()->json(
+            $this->authService->loginWithGoogle($request->validated('credential'))
         );
     }
 

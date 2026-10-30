@@ -2,6 +2,7 @@
 
 namespace App\Service;
 
+use App\Enums\UrgencyLevel;
 use App\Models\User;
 use App\Notifications\AppointmentScheduled;
 use Illuminate\Notifications\DatabaseNotification;
@@ -126,6 +127,9 @@ class DonorNotificationService
             'tone' => $data['tone'] ?? null,
             'action_label' => $data['action_label'] ?? null,
             'action_route' => $data['action_route'] ?? null,
+            // An emergency request, so the inbox can put it first (2026-10-31).
+            'urgent' => (bool) ($data['urgent'] ?? false)
+                || (isset($data['urgency_level']) && (UrgencyLevel::tryFrom((string) $data['urgency_level'])?->isPrioritised() ?? false)),
             'read' => $notification->read_at !== null,
             'created_at' => $notification->created_at?->toIso8601String(),
         ];
