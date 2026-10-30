@@ -73,8 +73,8 @@ class DirectDistributionService
         return [
             // In custody, awaiting stock-in like any arrived bag (project owner, 2026-10-11).
             'message' => $count === 1
-                ? "Bag {$delivery->external_unit_number} received. Stock it in from Blood Bank Inventory."
-                : "{$count} bags under {$delivery->external_unit_number} received. Stock them in from Blood Bank Inventory.",
+                ? "Bag {$delivery->external_unit_number} received. Stock it in from Stock Intake."
+                : "{$count} bags under {$delivery->external_unit_number} received. Stock them in from Stock Intake.",
             'direct_distribution' => $this->format($this->repository->findFor($delivery->id, $facilityId)),
         ];
     }
@@ -159,15 +159,18 @@ class DirectDistributionService
             throw $this->refuse(409, 'redagos_unit', 'This is a RedAgos bag. Receive it from the request it was dispatched for.');
         }
 
-        if ($this->repository->receiptExists((int) $payload['external_blood_source_id'], $number)) {
+        $sourceId = isset($payload['external_blood_source_id']) ? (int) $payload['external_blood_source_id'] : null;
+
+        if ($this->repository->receiptExists($facilityId, $sourceId, $number)) {
             throw $this->alreadyReceived();
         }
 
         $delivery = DirectDistribution::query()->create([
             'facility_id' => $facilityId,
             'transfusion_request_id' => $requirement?->id,
-            'requested_for' => $requirement === null ? trim((string) $payload['requested_for']) : null,
-            'external_blood_source_id' => (int) $payload['external_blood_source_id'],
+            // Optional since bags added on Stock Intake record no one (project owner, 2026-10-30).
+            'requested_for' => $requirement === null && filled($payload['requested_for'] ?? null) ? trim((string) $payload['requested_for']) : null,
+            'external_blood_source_id' => $sourceId,
             'external_unit_number' => $number,
             'quantity' => $quantity,
             'collection_date' => $payload['collection_date'] ?? null,
@@ -222,10 +225,10 @@ class DirectDistributionService
     private function requireOpenRequirement(int $transfusionRequestId, int $facilityId): TransfusionRequest
     {
         $requirement = $this->inventoryRepository->findTransfusionRequestFor($transfusionRequestId, $facilityId)
-            ?? throw $this->refuse(404, 'transfusion_request_not_found', 'That Patient Transfusion Request was not found.');
+            ?? throw $this->refuse(404, 'transfusion_request_not_found', 'That blood request was not found.');
 
         if ($requirement->status === BloodRequestStatus::Cancelled) {
-            throw $this->refuse(409, 'transfusion_request_closed', 'That Patient Transfusion Request was cancelled.');
+            throw $this->refuse(409, 'transfusion_request_closed', 'That blood request was cancelled.');
         }
 
         return $requirement;
@@ -290,7 +293,7 @@ class DirectDistributionService
      */
     private function alreadyReceived(): HttpResponseException
     {
-        return $this->refuse(409, 'external_unit_already_received', 'Blood under this identifier has already been received from that blood service.');
+        return $this->refuse(409, 'external_unit_already_received', 'Blood under this identifier has already been received.');
     }
 
     /**

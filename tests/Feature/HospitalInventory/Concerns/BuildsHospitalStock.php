@@ -33,7 +33,7 @@ trait BuildsHospitalStock
 
         $this->actingAs($this->requester)
             ->postJson('/api/hospital/inventory/stock-in', [
-                'units' => $units->map(fn (HospitalUnit $unit): array => ['unit_id' => $unit->unit_id])->values()->all(),
+                'units' => $units->map(fn (HospitalUnit $unit): array => ['unit_id' => $unit->unit_id, 'storage_location' => 'Ref 1'])->values()->all(),
             ])
             ->assertOk();
 

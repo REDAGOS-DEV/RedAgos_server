@@ -13,7 +13,7 @@ A step-by-step guide to the whole internal process, from the donor's QR code bei
 **Staff accounts already exist, but three things must be true for the flow to work:**
 
 1. **Each component has a shelf life** (Center Admin → Blood Components). The Stock Intake screen only offers a component that has one (Step 11).
-2. **The Blood Bank has saved its request days** for each center it orders from (Weekly Request page). A weekly request can only be sent on those days (Step 14).
+2. **The Blood Bank has saved its request days** for each center it orders from (Facility Settings → Request Days page). A weekly request can only be sent on those days (Step 14).
 3. **The scheduler is running** (`php artisan schedule:work` locally, cron in production). Without it, expired bags keep saying `available`, lapsed tags keep holding bags, and no low-stock notification is sent (see §5.3).
 
 > **Clinical sign-off is still outstanding** for the quarantine-and-release rules (Step 12). The rules are the project owner's decision; confirmation from the capstone adviser or the partner blood center has not been recorded.
@@ -51,7 +51,7 @@ A step-by-step guide to the whole internal process, from the donor's QR code bei
 | 17 | **Dispatch** | **Dispatch Coordinator**<br>`dispatch.coordinator@redagos.test`<br>or **ICO**<br>`inventory.control.officer@redagos.test` | Bags `issued`; request Partially Fulfilled / Fulfilled | 18 |
 | | **Hospital Blood Bank** (roles since 2026-10-11) | **Blood Bank Head** (every action; keeps the staff):<br>`user@redagos.ph` | | |
 | 18 | **Confirm receipt** | **Requesting Staff** or the **Head** | Bags enter the hospital's custody as `received` (awaiting stock-in) | 18b |
-| 18b | **Stock in** | **Inventory Staff** or the **Head** | Bags `available`, each with an optional storage location | 19 |
+| 18b | **Stock in** | **Inventory Staff** or the **Head** | Bags `available`, each with its storage location (required) | 19 |
 | 19 | **Tag, crossmatch, transfuse** | **Inventory Staff** or the **Head** | `tag_assigned` → `tag_crossmatched` → `transfused` | End |
 
 **About the heads and the emails.**
@@ -299,6 +299,8 @@ Only `available` bags that are **not past their date** count as stock. Quarantin
 
 ### Step 15. Review and reserve (Blood Center)
 
+*A replenishment order (Inventory Replenishment tab) is **confirmed first**.* The ICO or Dispatch Coordinator (`requests.approve`) chooses **Confirm** and sets **how many units of each line** the center will supply (from what is already reserved up to what was asked), **pick-up or delivery**, the **date and time**, the delivery address or pick-up point, a center contact and notes for the hospital. The hospital is notified and sees it on its Weekly Request page. Reserving is refused with `supply_plan_required` until then, and never takes more of a line than was committed. The plan can be changed (and the hospital is told again) until units are dispatched, never below what is already reserved for a line. Committing nothing is refused: reject the order instead.
+
 | | |
 |---|---|
 | **Log in as** | **Inventory Control Officer** to approve and reserve (Incoming Requests page). The **ICO or Dispatch Coordinator** may reject, return holds, or close a line. |
@@ -322,8 +324,8 @@ Only `available` bags that are **not past their date** count as stock. Quarantin
 | | |
 |---|---|
 | **Log in as** | **Dispatch / Transport Coordinator** or **ICO** (Request Fulfillment page, `requests.release`) |
-| **Actions** | Selects the reserved units and **releases** them for transport, recording who physically took them (`handed_to`; for a walk-in, the watcher). |
-| **Status changes** | Units `reserved` → **`issued`**. Allocations `allocated` → **`released`**. The request becomes **Partially Fulfilled** or **Fulfilled**: fulfillment is counted **at dispatch**, not at receipt. For a *weekly* request, any unsupplied remainder is closed automatically as unavailable ("Not supplied in this weekly delivery."). |
+| **Actions** | Selects the reserved units and **releases** them for transport, recording who physically took them (`handed_to`; for a walk-in, the watcher; on a confirmed replenishment, the hospital's collector for a pick-up or the driver for a delivery). The card shows a replenishment order's confirmed hand-over and time. |
+| **Status changes** | Units `reserved` → **`issued`**. Allocations `allocated` → **`released`**. The request becomes **Partially Fulfilled** or **Fulfilled**: fulfillment is counted **at dispatch**, not at receipt. For a *weekly* request, any unsupplied remainder, including what lay beyond the center's commitment, is closed automatically as unavailable ("Not supplied in this weekly delivery."). |
 | **Approvals** | Three checks, in order: the **billing statement clears**; **every unit has both clearance tokens** (`unit_not_cleared` otherwise); a weekly request goes out in **one delivery** (`weekly_release_all`). A correction to *when a unit left* or *who took it* is filed by the Dispatch Coordinator or ICO and approved by the **ICO** (the ICO's own goes to the Center Admin). It never changes status or receipt. |
 | **Hands off to** | The **Hospital Blood Bank** (Step 18). The requester is notified that units were released. |
 

@@ -77,7 +77,7 @@ class TransfusionRequestService
                 }
 
                 return [
-                    'message' => "Patient Transfusion Request {$request->reference_number} sent to "
+                    'message' => "Blood Request {$request->reference_number} sent to "
                         .count($allocations).' facilit'.(count($allocations) === 1 ? 'y' : 'ies').'.',
                     'request' => $this->projectFresh($request->id, $facilityId),
                 ];
@@ -118,7 +118,7 @@ class TransfusionRequestService
     public function track(User $user, string $reference): array
     {
         $request = $this->repository->findByReferenceFor($reference, $this->requireFacilityId($user))
-            ?? throw $this->refuse(404, 'request_not_found', 'No Patient Transfusion Request found for that reference number.');
+            ?? throw $this->refuse(404, 'request_not_found', 'No blood request found for that reference number.');
 
         return ['request' => $this->projector->project($request)];
     }
@@ -150,7 +150,7 @@ class TransfusionRequestService
     {
         $facilityId = $this->requireFacilityId($user);
         $request = $this->repository->findRaisedBy($id, $facilityId)
-            ?? throw $this->refuse(404, 'request_not_found', 'Patient Transfusion Request not found.');
+            ?? throw $this->refuse(404, 'request_not_found', 'Blood request not found.');
 
         $lines = $this->resolver->figures($request)
             ->filter(fn (array $line): bool => $line['unallocated'] > 0)
@@ -182,7 +182,7 @@ class TransfusionRequestService
                         ?? throw $this->refuse(404, 'facility_missing', 'This account is not linked to a facility.');
 
                     $request = $this->repository->lockRaisedBy($id, $facilityId)
-                        ?? throw $this->refuse(404, 'request_not_found', 'Patient Transfusion Request not found.');
+                        ?? throw $this->refuse(404, 'request_not_found', 'Blood request not found.');
 
                     if ($request->isClosed()) {
                         throw $this->refuse(
@@ -421,7 +421,7 @@ class TransfusionRequestService
         });
 
         return [
-            'message' => 'Patient Transfusion Request cancelled.',
+            'message' => 'Blood request cancelled.',
             'request' => $this->projectFresh($id, $facilityId),
         ];
     }
@@ -432,7 +432,7 @@ class TransfusionRequestService
     public function history(User $user, int $id): array
     {
         $request = $this->repository->findRaisedBy($id, $this->requireFacilityId($user))
-            ?? throw $this->refuse(404, 'request_not_found', 'Patient Transfusion Request not found.');
+            ?? throw $this->refuse(404, 'request_not_found', 'Blood request not found.');
 
         return [
             'request_id' => $request->id,
@@ -612,7 +612,7 @@ class TransfusionRequestService
     private function projectFresh(int $id, int $facilityId): array
     {
         $request = $this->repository->findRaisedBy($id, $facilityId)
-            ?? throw $this->refuse(404, 'request_not_found', 'Patient Transfusion Request not found.');
+            ?? throw $this->refuse(404, 'request_not_found', 'Blood request not found.');
 
         return $this->projector->project($request);
     }
@@ -634,7 +634,7 @@ class TransfusionRequestService
     {
         $allocations = $this->repository->lockAllocationsOf($id);
         $request = $this->repository->lockRaisedBy($id, $facilityId)
-            ?? throw $this->refuse(404, 'request_not_found', 'Patient Transfusion Request not found.');
+            ?? throw $this->refuse(404, 'request_not_found', 'Blood request not found.');
 
         $current = BloodRequest::query()
             ->where('transfusion_request_id', $id)
@@ -659,7 +659,7 @@ class TransfusionRequestService
     private function requireOwn(int $id, int $facilityId): void
     {
         if (! TransfusionRequest::query()->raisedBy($facilityId)->whereKey($id)->exists()) {
-            throw $this->refuse(404, 'request_not_found', 'Patient Transfusion Request not found.');
+            throw $this->refuse(404, 'request_not_found', 'Blood request not found.');
         }
     }
 

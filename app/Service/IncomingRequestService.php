@@ -70,7 +70,7 @@ class IncomingRequestService
             throw $this->refuse(
                 409,
                 'no_patient_request',
-                'This request is not part of a Patient Transfusion Request, so there is nothing for another centre to continue.'
+                'This request is not a share of a blood request, so there is nothing for another centre to continue.'
             );
         }
         $figures = $this->transfusionResolver->freshFigures($requirement);
@@ -396,8 +396,12 @@ class IncomingRequestService
                 // it against, which on a multi-component request is worse than
                 // no figure at all.
                 'requested' => $item->quantity,
+                // What this centre committed to supply, once it planned a
+                // replenishment order; outstanding is then measured against it.
+                'committed' => $figure['committed'] ?? null,
                 'available' => $available,
                 'outstanding' => $outstanding,
+                'unclaimed' => (int) ($figure['unclaimed'] ?? 0),
                 'can_fully_cover' => $available >= $outstanding,
                 'can_cover_now' => min($available, $outstanding),
                 'reserved' => (int) ($figure['reserved'] ?? 0),

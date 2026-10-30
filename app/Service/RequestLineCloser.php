@@ -62,7 +62,9 @@ class RequestLineCloser
         $lines = $this->resolver->freshFigures($request);
         $line = $lines->get($item->id);
 
-        if (($line['allocatable'] ?? 0) < 1) {
+        // What is not yet held or sent, committed or not: a planned line's
+        // remainder beyond the commitment is closed with the rest.
+        if (($line['unclaimed'] ?? 0) < 1) {
             throw $this->refuse(
                 409,
                 'nothing_to_close',
@@ -96,7 +98,7 @@ class RequestLineCloser
             $from,
             trim($reason->label().($note ? " — {$note}" : '')),
             item: $item,
-            meta: ['closure_reason' => $reason->value, 'closed_quantity' => $line['allocatable']],
+            meta: ['closure_reason' => $reason->value, 'closed_quantity' => $line['unclaimed']],
         );
 
         $this->auditLogger->record($user, 'request.line_closed', $request, [
@@ -104,7 +106,7 @@ class RequestLineCloser
             'reference_number' => $request->reference_number,
             'request_item_id' => $item->id,
             'closure_reason' => $reason->value,
-            'closed_quantity' => $line['allocatable'],
+            'closed_quantity' => $line['unclaimed'],
             'status' => $request->status->value,
         ]);
 

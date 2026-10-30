@@ -25,6 +25,11 @@ use Illuminate\Support\Collection;
  * released. Receipt is still stamped per unit by the hospital and reported as
  * a figure, but it no longer moves the status.
  *
+ * A planned replenishment line also carries what the centre committed to
+ * supply of it (SupplyPlanService). The commitment caps what may be reserved;
+ * it does not change what was asked for, and what lies beyond it is closed
+ * when the order is dispatched, as any unsupplied remainder is.
+ *
  * For a Patient Transfusion this is one facility allocation.
  * TransfusionRequestResolver adds the allocations' figures up into the
  * patient's requirement.
@@ -75,21 +80,31 @@ class RequestStatusResolver
             $fulfilled = $released->count();
             $received = $released->filter(fn (RequestAllocation $allocation): bool => $allocation->received_at !== null)->count();
             $closed = $item->closed_at !== null;
+            $committed = $item->committed_quantity;
 
             $open = max(0, $requested - $reserved - $fulfilled);
+
+            // Asked for and not yet held or sent: what closing the line closes.
+            $unclaimed = ($finished || $closed) ? 0 : $open;
 
             return [$item->id => [
                 'request_item_id' => $item->id,
                 'transfusion_request_item_id' => $item->transfusion_request_item_id,
                 'component_id' => $item->component_id,
                 'requested' => $requested,
+                // Null until the centre plans a replenishment order.
+                'committed' => $committed,
                 'reserved' => $reserved,
                 'fulfilled' => $fulfilled,
                 'received' => $received,
                 'remaining' => max(0, $requested - $fulfilled),
+                'unclaimed' => $unclaimed,
                 // What this facility may still hold for the line: nothing once
-                // the line is closed or the request refused or withdrawn.
-                'allocatable' => ($finished || $closed) ? 0 : $open,
+                // the line is closed or the request refused or withdrawn, and
+                // never beyond what it committed to.
+                'allocatable' => $committed === null
+                    ? $unclaimed
+                    : min($unclaimed, max(0, $committed - $reserved - $fulfilled)),
                 'closed' => $closed,
                 'resolved' => $this->isResolved($requested, $reserved, $fulfilled, $closed),
                 'status' => $this->lineStatus($requested, $reserved, $fulfilled, $closed),

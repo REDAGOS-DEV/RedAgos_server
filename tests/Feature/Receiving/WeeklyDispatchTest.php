@@ -14,6 +14,7 @@ use App\Models\HospitalUnit;
 use App\Models\WeeklyRequest;
 use App\Service\FulfillmentService;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Tests\Concerns\PlansSupply;
 use Tests\Feature\BloodRequest\Concerns\BuildsFulfilmentScenarios;
 use Tests\Feature\Receiving\Concerns\SendsWeeklyRequests;
 use Tests\TestCase;
@@ -29,7 +30,7 @@ use Tests\TestCase;
  */
 class WeeklyDispatchTest extends TestCase
 {
-    use BuildsFulfilmentScenarios, LazilyRefreshDatabase, SendsWeeklyRequests;
+    use BuildsFulfilmentScenarios, LazilyRefreshDatabase, PlansSupply, SendsWeeklyRequests;
 
     protected function setUp(): void
     {
@@ -241,10 +242,12 @@ class WeeklyDispatchTest extends TestCase
     }
 
     /**
-     * The weekly request's only blood request.
+     * The weekly request's only blood request, confirmed in full by the centre.
      */
     private function requestOf(WeeklyRequest $weekly): BloodRequest
     {
-        return BloodRequest::query()->where('weekly_request_id', $weekly->id)->sole();
+        $request = BloodRequest::query()->where('weekly_request_id', $weekly->id)->sole();
+
+        return $this->planSupply($request, $this->issuance);
     }
 }

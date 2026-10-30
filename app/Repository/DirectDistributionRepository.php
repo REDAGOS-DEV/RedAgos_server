@@ -33,13 +33,23 @@ class DirectDistributionRepository
     ];
 
     /**
-     * Whether a source already holds a bag under this number.
+     * Whether a bag under this number was already received.
+     *
+     * With a source, the source and number name the bag anywhere, and this
+     * blood bank's receipts that named no source count too. Without one, the
+     * number alone names it, at this blood bank.
      */
-    public function receiptExists(int $sourceId, string $externalUnitNumber): bool
+    public function receiptExists(int $facilityId, ?int $sourceId, string $externalUnitNumber): bool
     {
+        $unsourcedHere = fn (Builder $query): Builder => $query
+            ->whereNull('external_blood_source_id')
+            ->where('facility_id', $facilityId);
+
         return DirectDistribution::query()
-            ->where('external_blood_source_id', $sourceId)
             ->where('external_unit_number', $externalUnitNumber)
+            ->where(fn (Builder $query): Builder => $sourceId === null
+                ? $query->where('facility_id', $facilityId)
+                : $query->where('external_blood_source_id', $sourceId)->orWhere($unsourcedHere))
             ->exists();
     }
 

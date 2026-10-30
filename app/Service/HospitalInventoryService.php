@@ -172,11 +172,12 @@ class HospitalInventoryService
      *
      * Step two of receiving (project owner, 2026-10-11). Confirming receipt, or
      * booking blood from outside RedAgos, leaves a bag awaiting stock-in; this
-     * is inventory staff putting it on a shelf. The location is optional, as at
-     * a centre's Stock Intake. Every bag must be this blood bank's, awaiting
-     * stock-in and in date; one that is not refuses the lot.
+     * is inventory staff putting it on a shelf. Every bag needs its location,
+     * as at a centre's Stock Intake (project owner, 2026-10-30). Every bag must
+     * be this blood bank's, awaiting stock-in and in date; one that is not
+     * refuses the lot.
      *
-     * @param  array<int, array{unit_id: string, storage_location?: string|null}>  $bags
+     * @param  array<int, array{unit_id: string, storage_location: string}>  $bags
      * @return array<string, mixed>
      */
     public function stockIn(User $user, array $bags): array
@@ -184,7 +185,7 @@ class HospitalInventoryService
         $facilityId = $this->requireFacilityId($user);
         $now = now()->startOfSecond()->toImmutable();
         $locations = collect($bags)->mapWithKeys(fn (array $bag): array => [
-            $bag['unit_id'] => filled($bag['storage_location'] ?? null) ? trim((string) $bag['storage_location']) : null,
+            $bag['unit_id'] => trim((string) $bag['storage_location']),
         ]);
 
         $stocked = DB::transaction(function () use ($user, $facilityId, $locations, $now): array {
@@ -649,8 +650,8 @@ class HospitalInventoryService
      * Where a bag may be stocked into: the configured fridges and freezers, and those already used here.
      *
      * The configured list is the centre's (blood_center.storage_locations):
-     * generic equipment a hospital blood bank has too. Suggestions only; staff
-     * may type their own, or leave it blank.
+     * generic equipment a hospital blood bank has too. Stock Intake picks from
+     * this list, as the centre's does.
      *
      * @return array<int, string>
      */
@@ -733,10 +734,10 @@ class HospitalInventoryService
         }
 
         $requirement = $this->repository->findTransfusionRequestFor((int) $payload['transfusion_request_id'], $facilityId)
-            ?? throw $this->refuse(404, 'transfusion_request_not_found', 'That Patient Transfusion Request was not found.');
+            ?? throw $this->refuse(404, 'transfusion_request_not_found', 'That blood request was not found.');
 
         if ($requirement->status === BloodRequestStatus::Cancelled) {
-            throw $this->refuse(409, 'transfusion_request_closed', 'That Patient Transfusion Request was cancelled. Tag the bag to the patient directly instead.');
+            throw $this->refuse(409, 'transfusion_request_closed', 'That blood request was cancelled. Tag the bag to the patient directly instead.');
         }
 
         return $requirement;

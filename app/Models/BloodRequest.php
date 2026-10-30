@@ -153,6 +153,25 @@ class BloodRequest extends Model
     }
 
     /**
+     * Whether this request restocks the hospital's own shelves rather than serving a patient.
+     *
+     * A replenishment is planned before it is reserved: what the centre will
+     * supply, and how and when it reaches the hospital (supplyPlan()).
+     */
+    public function isReplenishment(): bool
+    {
+        return $this->request_purpose === RequestPurpose::Replenishment;
+    }
+
+    /**
+     * How the centre will meet this replenishment order: picked up or delivered, and when.
+     */
+    public function supplyPlan(): HasOne
+    {
+        return $this->hasOne(SupplyPlan::class, 'request_id');
+    }
+
+    /**
      * The representative and phone-verification record of a walk-in request.
      */
     public function walkIn(): HasOne

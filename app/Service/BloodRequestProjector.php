@@ -9,6 +9,7 @@ use App\Models\BloodRequestItem;
 use App\Models\BloodRequestWalkIn;
 use App\Models\Facility;
 use App\Models\RequestAllocation;
+use App\Models\SupplyPlan;
 use App\Models\TransfusionRequest;
 use App\Models\TransfusionRequestItem;
 use App\Models\User;
@@ -94,6 +95,13 @@ class BloodRequestProjector
             'outstanding_quantity' => $figures->isNotEmpty()
                 ? (int) $figures->sum('allocatable')
                 : max(0, $quantity - $allocatedCount),
+            // Not yet held or sent, whatever was committed: what a dispatch
+            // of a weekly order closes as not supplied.
+            'unclaimed_quantity' => (int) $figures->sum('unclaimed'),
+            // What the centre committed to supply, once it planned the order.
+            'committed_quantity' => $request->items->every(fn (BloodRequestItem $item): bool => $item->committed_quantity === null)
+                ? null
+                : (int) $request->items->sum('committed_quantity'),
             // Fulfilment is counted at dispatch: released units.
             'fulfilled_quantity' => $fulfilled,
             'remaining_quantity' => max(0, $quantity - $fulfilled),
@@ -103,6 +111,7 @@ class BloodRequestProjector
             'fulfilled_at' => $request->fulfilled_at?->toIso8601String(),
             'transfusion_request' => $this->transfusionRequest($request),
             'weekly_request' => $this->weeklyRequest($request),
+            'supply_plan' => $this->supplyPlan($request),
             'walk_in' => $this->walkIn($request),
         ];
 
@@ -174,6 +183,9 @@ class BloodRequestProjector
                         'code' => $item->component?->labelCode(),
                     ],
                     'quantity' => $item->quantity,
+                    // What the centre will supply of it; null until it plans
+                    // a replenishment order. Never changes `quantity`.
+                    'committed_quantity' => $item->committed_quantity,
                     'indication_code' => $item->indication_code?->value,
                     'indication_label' => $item->indication_code?->label(),
                     'indication_description' => $item->indication_code?->description(),
@@ -196,6 +208,7 @@ class BloodRequestProjector
                         'fulfilled_quantity' => $figure['fulfilled'],
                         'received_quantity' => $figure['received'],
                         'remaining_quantity' => $figure['remaining'],
+                        'unclaimed_quantity' => $figure['unclaimed'],
                         'allocatable_quantity' => $figure['allocatable'],
                         'line_status' => $status->value,
                         'line_status_label' => $status->label(),
@@ -275,6 +288,38 @@ class BloodRequestProjector
             'id' => (int) $request->weekly_request_id,
             'reference_number' => $weekly?->reference_number,
             'request_day' => $weekly?->request_day?->toDateString(),
+        ];
+    }
+
+    /**
+     * How the centre will meet a replenishment order, once it has planned it.
+     *
+     * Both sides read it: the centre to dispatch on time, the hospital to be
+     * ready to collect or receive. The commitments are on the lines.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function supplyPlan(BloodRequest $request): ?array
+    {
+        /** @var SupplyPlan|null $plan */
+        $plan = $request->relationLoaded('supplyPlan') ? $request->supplyPlan : null;
+
+        if ($plan === null) {
+            return null;
+        }
+
+        return [
+            'handover_method' => $plan->handover_method->value,
+            'handover_label' => $plan->handover_method->label(),
+            'scheduled_at' => $plan->scheduled_at->toIso8601String(),
+            'handover_address' => $plan->handover_address,
+            'contact_name' => $plan->contact_name,
+            'contact_phone' => $plan->contact_phone,
+            'notes' => $plan->notes,
+            'planned_by' => $this->personName($plan->relationLoaded('planner') ? $plan->planner : null),
+            'planned_at' => $plan->created_at?->toIso8601String(),
+            'updated_by' => $this->personName($plan->relationLoaded('updater') ? $plan->updater : null),
+            'updated_at' => $plan->updated_at?->toIso8601String(),
         ];
     }
 
