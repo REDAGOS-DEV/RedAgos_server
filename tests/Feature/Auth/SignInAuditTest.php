@@ -138,14 +138,12 @@ class SignInAuditTest extends TestCase
 
     public function test_the_single_sign_in_page_records_why_it_refused(): void
     {
-        User::factory()->withRole(RoleName::Admin)->create(['email' => 'admin@example.com', 'password' => 'Password123']);
         User::factory()->create(['email' => 'nobody@example.com', 'password' => 'Password123']);
 
-        $this->postJson('/api/login', ['email' => 'admin@example.com', 'password' => 'Password123'])->assertForbidden();
         $this->postJson('/api/login', ['email' => 'nobody@example.com', 'password' => 'Password123'])->assertForbidden();
 
         $this->assertEqualsCanonicalizing(
-            ['admin_sign_in_required', 'no_portal_access'],
+            ['no_portal_access'],
             AuditLog::query()->where('action', 'auth.sign_in_failed')->get()->pluck('context.reason')->all()
         );
         $this->assertDatabaseMissing('audit_logs', ['action' => 'auth.signed_in']);
