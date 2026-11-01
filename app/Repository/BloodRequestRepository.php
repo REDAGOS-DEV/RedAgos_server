@@ -52,7 +52,7 @@ class BloodRequestRepository
         'walkIn.verificationRecorder:id,first_name,last_name,credentials',
         // The patient requirement a facility allocation is a share of, so the
         // centre sees "you are asked for 1 of the 5 the patient needs".
-        'transfusionRequest:id,reference_number,status,closed_at',
+        'transfusionRequest:id,reference_number,status,closed_at,needed_by',
         'transfusionRequest.items:id,transfusion_request_id,component_id,quantity',
         'transfusionRequest.items.component:id,name',
         // A weekly request goes out in one delivery; both sides are told so.

@@ -252,6 +252,7 @@ class BloodRequestProjector
         return [
             'id' => $requirement->id,
             'reference_number' => $requirement->reference_number,
+            'needed_by' => $requirement->needed_by?->toIso8601String(),
             'status' => $requirement->status->value,
             'status_label' => $requirement->status->label(),
             'is_open' => ! $requirement->isClosed(),

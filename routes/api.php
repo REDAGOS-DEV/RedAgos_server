@@ -63,6 +63,7 @@ use App\Http\Controllers\FacilityNotificationController;
 use App\Http\Controllers\HospitalAvailabilityController;
 use App\Http\Controllers\HospitalBillingController;
 use App\Http\Controllers\HospitalBloodRequestController;
+use App\Http\Controllers\HospitalDashboardController;
 use App\Http\Controllers\HospitalDirectDistributionController;
 use App\Http\Controllers\HospitalInventoryController;
 use App\Http\Controllers\HospitalReferenceController;
@@ -1114,6 +1115,9 @@ Route::middleware(['auth:sanctum', 'role:admin', 'throttle:60,1'])
 Route::middleware(['auth:sanctum', 'role:blood_bank', 'facility.operational'])
     ->prefix('hospital')->group(function (): void {
         Route::get('/reference-data', [HospitalReferenceController::class, 'index']);
+
+        // The dashboard: any role; the service reads only what the role may see.
+        Route::get('/dashboard', [HospitalDashboardController::class, 'show']);
 
         Route::get('/availability', [HospitalAvailabilityController::class, 'index'])
             ->middleware('can:hospital.requests.view');
