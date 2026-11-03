@@ -406,6 +406,8 @@ class CollectionReportService
             'type_labels' => collect(DonorType::cases())->mapWithKeys(fn (DonorType $t): array => [$t->value => $t->label()])->all(),
             'lapsed_after_days' => self::LAPSED_AFTER_DAYS,
             'lapsed_donors' => $this->lapsedDonors($facilityId, $periodEnd),
+            // Everyone who has given here, so the lapsed can be read as a share (2026-10-30).
+            'donors_here' => $this->donorsHere($facilityId)->count(),
         ];
     }
 
@@ -415,11 +417,7 @@ class CollectionReportService
      */
     private function lapsedDonors(int $facilityId, CarbonImmutable $periodEnd): int
     {
-        $donors = Donation::query()
-            ->where('facility_id', $facilityId)
-            ->where(fn ($q) => $q->where('status', DonationStatus::Completed->value)->orWhereHas('collection'))
-            ->distinct()
-            ->pluck('donor_id');
+        $donors = $this->donorsHere($facilityId);
 
         return Donation::query()
             ->whereIn('donor_id', $donors)
@@ -430,6 +428,20 @@ class CollectionReportService
             ->get()
             ->filter(fn ($row): bool => CarbonImmutable::parse($row->last_at)->diffInDays($periodEnd) > self::LAPSED_AFTER_DAYS)
             ->count();
+    }
+
+    /**
+     * The donors who have given here at least once.
+     *
+     * @return Collection<int, int>
+     */
+    private function donorsHere(int $facilityId): Collection
+    {
+        return Donation::query()
+            ->where('facility_id', $facilityId)
+            ->where(fn ($q) => $q->where('status', DonationStatus::Completed->value)->orWhereHas('collection'))
+            ->distinct()
+            ->pluck('donor_id');
     }
 
     private function refuse(int $status, string $code, string $message): HttpResponseException

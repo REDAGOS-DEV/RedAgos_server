@@ -106,6 +106,37 @@ class TransfusionRequestTest extends TestCase
             ->assertJsonMissingPath('request.transfusion_request.allocations');
     }
 
+    public function test_the_time_the_blood_is_needed_reaches_the_centre(): void
+    {
+        $neededBy = now()->addHours(6)->startOfMinute();
+
+        $response = $this->actingAs($this->requester)
+            ->postJson('/api/hospital/transfusion-requests', [
+                ...$this->transfusionPayload([[$this->prbc, 1]], [[$this->centre, [[$this->prbc, 1]]]]),
+                'needed_by' => $neededBy->toIso8601String(),
+            ])
+            ->assertCreated();
+
+        $this->assertTrue($neededBy->equalTo($response->json('request.needed_by')));
+
+        $list = $this->actingAs($this->issuance)
+            ->getJson('/api/blood-center/blood-requests')
+            ->assertOk();
+
+        $this->assertTrue($neededBy->equalTo($list->json('data.0.transfusion_request.needed_by')));
+    }
+
+    public function test_the_time_needed_cannot_be_in_the_past(): void
+    {
+        $this->actingAs($this->requester)
+            ->postJson('/api/hospital/transfusion-requests', [
+                ...$this->transfusionPayload([[$this->prbc, 1]], [[$this->centre, [[$this->prbc, 1]]]]),
+                'needed_by' => now()->subHour()->toIso8601String(),
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('needed_by');
+    }
+
     public function test_asking_for_more_than_the_patient_needs_is_refused(): void
     {
         $this->actingAs($this->requester)

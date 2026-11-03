@@ -51,6 +51,7 @@ class TransfusionRequest extends Model
         'patient_sex',
         'blood_type_id',
         'urgency_level',
+        'needed_by',
         'internal_stock_checked_at',
         'request_date',
     ];
@@ -72,6 +73,7 @@ class TransfusionRequest extends Model
             'urgency_level' => UrgencyLevel::class,
             'request_source' => RequestSource::class,
             'patient_age' => 'integer',
+            'needed_by' => 'immutable_datetime',
             'internal_stock_checked_at' => 'immutable_datetime',
             'request_date' => 'immutable_datetime',
             'fulfilled_at' => 'immutable_datetime',

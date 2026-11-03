@@ -3,6 +3,7 @@
 namespace App\Repository;
 
 use App\Enums\AllocationStatus;
+use App\Enums\BillingStatus;
 use App\Enums\BloodRequestStatus;
 use App\Enums\UrgencyLevel;
 use App\Models\BloodRequest;
@@ -51,7 +52,7 @@ class BloodRequestRepository
         'walkIn.verificationRecorder:id,first_name,last_name,credentials',
         // The patient requirement a facility allocation is a share of, so the
         // centre sees "you are asked for 1 of the 5 the patient needs".
-        'transfusionRequest:id,reference_number,status,closed_at',
+        'transfusionRequest:id,reference_number,status,closed_at,needed_by',
         'transfusionRequest.items:id,transfusion_request_id,component_id,quantity',
         'transfusionRequest.items.component:id,name',
         // A weekly request goes out in one delivery; both sides are told so.
@@ -376,6 +377,15 @@ class BloodRequestRepository
                     fn (Builder $allocations): Builder => $allocations->where('status', AllocationStatus::Allocated->value)
                 )
             )
+            // Paid (or otherwise cleared) for release, or still owing
+            // (2026-10-31): Request Fulfillment holds the second, For Dispatch
+            // the first. A request with no invoice yet is still owing.
+            ->when(
+                isset($filters['release_cleared']),
+                fn (Builder $query): Builder => $filters['release_cleared']
+                    ? $query->whereHas('billing', fn (Builder $billing): Builder => $billing->whereIn('status', self::releaseClearing()))
+                    : $query->whereDoesntHave('billing', fn (Builder $billing): Builder => $billing->whereIn('status', self::releaseClearing()))
+            )
             // Only requests still being worked: not closed, not finished.
             ->when(
                 isset($filters['open']) && $filters['open'],
@@ -392,6 +402,19 @@ class BloodRequestRepository
                         ->whereNull('received_at')
                 )
             );
+    }
+
+    /**
+     * The invoice states that clear units for release.
+     *
+     * @return array<int, string>
+     */
+    private static function releaseClearing(): array
+    {
+        return array_values(array_map(
+            fn (BillingStatus $status): string => $status->value,
+            array_filter(BillingStatus::cases(), fn (BillingStatus $status): bool => $status->clearsRelease())
+        ));
     }
 
     /**

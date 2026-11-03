@@ -18,7 +18,8 @@ class AuthService
 {
     public function __construct(
         private readonly AuthRepository $authRepository,
-        private readonly AuditLogger $auditLogger
+        private readonly AuditLogger $auditLogger,
+        private readonly GoogleIdTokenVerifier $googleVerifier
     ) {}
 
     /**
@@ -47,10 +48,46 @@ class AuthService
             ]);
         }
 
+        return $this->openSession($user, $payload['role'] ?? null);
+    }
+
+    /**
+     * Sign in with Google (2026-10-30): the credential Google Identity Services
+     * gave the browser, checked with Google, for the account that already uses
+     * that address. Google signs nobody up; a donor registers first.
+     *
+     * @return array<string, mixed>
+     */
+    public function loginWithGoogle(string $credential): array
+    {
+        $email = $this->googleVerifier->verifiedEmail($credential);
+        $user = $this->authRepository->findByLogin($email);
+
+        if (! $user) {
+            throw new HttpResponseException(response()->json([
+                'message' => 'No RedAgos account uses this Google address. Register as a donor, or sign in with your password.',
+                'code' => 'google_account_not_found',
+            ], 404));
+        }
+
+        // Google has just confirmed the address, which is what the emailed
+        // link proves, so an unverified one does not stop this sign-in.
+        return $this->openSession($user, null, 'google');
+    }
+
+    /**
+     * The checks every sign-in passes, then the token.
+     *
+     * @return array<string, mixed>
+     */
+    private function openSession(User $user, ?string $role, string $via = 'password'): array
+    {
         try {
             $this->guardAccountStatus($user);
-            $this->guardEmailVerified($user);
-            $requestedRole = $this->guardRequestedRole($user, $payload['role'] ?? null);
+            if ($via !== 'google') {
+                $this->guardEmailVerified($user);
+            }
+            $requestedRole = $this->guardRequestedRole($user, $role);
         } catch (HttpResponseException $refused) {
             // The right password on an account that may not sign in (a
             // deactivated colleague, the wrong portal) is the attempt an
@@ -63,6 +100,7 @@ class AuthService
 
         $this->auditLogger->record($user, 'auth.signed_in', $user, array_filter([
             'portal' => $requestedRole?->value,
+            'via' => $via === 'password' ? null : $via,
         ]));
 
         return [
@@ -315,14 +353,10 @@ class AuthService
      *
      * Donors, blood-centre staff and hospital blood banks all sign in there,
      * and the client sends each to their own dashboard by the roles on the
-     * account. Two kinds of account are turned away:
-     *
-     *  - Administrators. They sign in only at the administrator page, which no
-     *    public page links to (project owner, 2026-10-21). That includes an
-     *    administrator who also holds another role: once signed in there, the
-     *    client lets them open their other portal.
-     *  - Accounts with no role at all, which would otherwise be handed a token
-     *    that can reach nothing.
+     * account. Administrators sign in there too (project owner, 2026-10-30;
+     * they had their own page before) and are sent to the admin portal.
+     * Accounts with no role at all are turned away: they would otherwise be
+     * handed a token that can reach nothing.
      *
      * Returns the account's role when it holds exactly one, so the audit row
      * and the token name say which portal it signed in to, as they do when a
@@ -330,13 +364,6 @@ class AuthService
      */
     private function guardUnifiedSignIn(User $user): ?RoleName
     {
-        if ($user->hasRole(RoleName::Admin)) {
-            throw new HttpResponseException(response()->json([
-                'message' => 'Administrators sign in from the administrator sign-in page.',
-                'code' => 'admin_sign_in_required',
-            ], 403));
-        }
-
         if ($user->roles->isEmpty()) {
             if ($this->hasUnactivatedFacility($user)) {
                 throw $this->facilityNotActivated();

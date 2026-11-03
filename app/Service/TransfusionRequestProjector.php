@@ -77,6 +77,7 @@ class TransfusionRequestProjector
                 ->unique()
                 ->values()
                 ->all(),
+            'needed_by' => $request->needed_by?->toIso8601String(),
             'internal_stock_checked_at' => $request->internal_stock_checked_at?->toIso8601String(),
             'request_date' => $request->request_date?->toIso8601String(),
             'fulfilled_at' => $request->fulfilled_at?->toIso8601String(),
