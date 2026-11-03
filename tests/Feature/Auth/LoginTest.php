@@ -342,7 +342,11 @@ class LoginTest extends TestCase
         }
     }
 
-    public function test_an_administrator_is_sent_to_the_admin_sign_in(): void
+    /**
+     * One sign-in for everyone, administrators included (project owner,
+     * 2026-10-30); the page naming `admin` still works.
+     */
+    public function test_an_administrator_signs_in_on_the_single_sign_in_page(): void
     {
         $admin = User::factory()->withRole(RoleName::Admin)->create([
             'email' => 'admin@example.com',
@@ -353,10 +357,10 @@ class LoginTest extends TestCase
             'email' => 'admin@example.com',
             'password' => 'Password123',
         ])
-            ->assertForbidden()
-            ->assertJsonPath('code', 'admin_sign_in_required');
+            ->assertOk()
+            ->assertJsonPath('user.email', 'admin@example.com');
 
-        $this->assertSame(0, $admin->tokens()->count());
+        $this->assertSame('admin-token', $admin->tokens()->sole()->name);
 
         $this->postJson('/api/login', [
             'email' => 'admin@example.com',
@@ -365,7 +369,7 @@ class LoginTest extends TestCase
         ])->assertOk();
     }
 
-    public function test_an_administrator_with_another_role_is_still_sent_to_the_admin_sign_in(): void
+    public function test_an_administrator_with_another_role_signs_in_on_the_single_sign_in_page(): void
     {
         $admin = User::factory()->withRole(RoleName::Admin)->donor()->create([
             'email' => 'admin@example.com',
@@ -375,11 +379,10 @@ class LoginTest extends TestCase
         $this->postJson('/api/login', [
             'email' => 'admin@example.com',
             'password' => 'Password123',
-        ])
-            ->assertForbidden()
-            ->assertJsonPath('code', 'admin_sign_in_required');
+        ])->assertOk();
 
-        $this->assertSame(0, $admin->tokens()->count());
+        // Several roles: no single portal names the token.
+        $this->assertSame('api-token', $admin->tokens()->sole()->name);
     }
 
     public function test_a_wrong_password_on_an_admin_account_still_answers_422(): void

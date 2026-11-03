@@ -93,4 +93,10 @@ return [
         ],
     ],
 
+    // Sign in with Google (2026-10-30). The Web client ID from Google Cloud
+    // Console; no secret is needed to check an ID token.
+    'google' => [
+        'client_id' => env('GOOGLE_CLIENT_ID'),
+    ],
+
 ];
