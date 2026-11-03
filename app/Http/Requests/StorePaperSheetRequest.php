@@ -34,7 +34,9 @@ class StorePaperSheetRequest extends FormRequest
                 'integer',
                 Rule::exists('mobile_events', 'id')
                     ->where('facility_id', $this->user()?->facility_id)
-                    ->whereNull('deleted_at'),
+                    ->whereNull('deleted_at')
+                    // A cancelled drive was never held, so it has no paper.
+                    ->whereNull('cancelled_at'),
             ],
             'drive_name' => ['required_without:mobile_event_id', 'nullable', 'string', 'max:150'],
             'location' => ['nullable', 'string', 'max:255'],

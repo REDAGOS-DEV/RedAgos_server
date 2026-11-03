@@ -567,13 +567,18 @@ class AppointmentService
     }
 
     /**
-     * Reject a registration once a drive has reached capacity.
+     * Reject a registration once a drive has reached capacity, or once it has
+     * stopped taking bookings.
+     *
+     * Read under the drive's own row lock (AppointmentRepository::lockDrive()),
+     * so concurrent bookings for one drive are counted one at a time, and none
+     * lands after the drive is cancelled or closed.
      */
     private function guardDriveCapacity(int $eventId): void
     {
-        $drive = $this->appointmentRepository->findUpcomingDrive($eventId);
+        $drive = $this->appointmentRepository->lockDrive($eventId);
 
-        if (! $drive) {
+        if (! $drive || ! $drive->acceptsRegistrations()) {
             throw ValidationException::withMessages([
                 'drive_id' => ['This blood drive is no longer available.'],
             ]);

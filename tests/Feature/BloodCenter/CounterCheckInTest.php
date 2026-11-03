@@ -5,6 +5,7 @@ namespace Tests\Feature\BloodCenter;
 use App\Enums\AppointmentStatus;
 use App\Enums\Department;
 use App\Enums\StaffRole;
+use App\Enums\ValidIdType;
 use App\Models\DonationAppointment;
 use App\Models\DonorProfile;
 use App\Models\DonorQrToken;
@@ -269,6 +270,30 @@ class CounterCheckInTest extends TestCase
         // have to reach the same donor rather than two.
         $this->assertSame('PHDL12345', DonorProfile::where('donor_id', $donor->id)->value('valid_id_number'));
         Notification::assertNothingSent();
+    }
+
+    public function test_a_walk_in_keeps_the_type_of_the_id_presented_and_its_shape_is_checked(): void
+    {
+        $payload = [
+            'first_name' => 'Juan',
+            'last_name' => 'Dela Cruz',
+            'valid_id_type' => ValidIdType::Umid->value,
+            'birth_date' => now()->subYears(30)->toDateString(),
+        ];
+
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/donors', [...$payload, 'valid_id_number' => '0003-1234567'])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['valid_id_number' => 'UMID number (CRN): 12 digits, e.g. 123456789012.']);
+
+        $response = $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/donors', [...$payload, 'valid_id_number' => '0003-1234567-8'])
+            ->assertCreated();
+
+        $profile = DonorProfile::where('donor_id', User::where('uuid', $response->json('data.uuid'))->value('id'))->firstOrFail();
+
+        $this->assertSame(ValidIdType::Umid, $profile->valid_id_type);
+        $this->assertSame('000312345678', $profile->valid_id_number);
     }
 
     public function test_a_walk_in_is_found_by_the_id_as_it_is_printed_on_the_card(): void

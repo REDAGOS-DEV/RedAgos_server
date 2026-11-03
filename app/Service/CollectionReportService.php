@@ -3,7 +3,6 @@
 namespace App\Service;
 
 use App\Enums\AppointmentStatus;
-use App\Enums\DonationStatus;
 use App\Enums\DonationType;
 use App\Enums\DonorType;
 use App\Enums\ScreeningOutcome;
@@ -138,8 +137,10 @@ class CollectionReportService
         $noShow = $count(AppointmentStatus::NoShow);
 
         // ── Drives ──
+        // A cancelled drive was never held.
         $drives = MobileEvent::query()
             ->where('facility_id', $facility->id)
+            ->notCancelled()
             ->whereBetween('event_date', [$first->toDateString(), $last->toDateString()])
             ->get(['id', 'name', 'event_date', 'max_capacity']);
 
@@ -344,7 +345,7 @@ class CollectionReportService
         $earlier = Donation::query()
             ->whereIn('donor_id', $given->pluck('donor_id')->unique()->values())
             ->where('donation_date', '<', $given->max('donation_date') ?? $periodEnd)
-            ->where(fn ($q) => $q->where('status', DonationStatus::Completed->value)->orWhereHas('collection'))
+            ->whereHas('collection')
             ->get(['id', 'donor_id', 'facility_id', 'donation_date'])
             ->groupBy('donor_id');
 
@@ -417,14 +418,14 @@ class CollectionReportService
     {
         $donors = Donation::query()
             ->where('facility_id', $facilityId)
-            ->where(fn ($q) => $q->where('status', DonationStatus::Completed->value)->orWhereHas('collection'))
+            ->whereHas('collection')
             ->distinct()
             ->pluck('donor_id');
 
         return Donation::query()
             ->whereIn('donor_id', $donors)
             ->where('donation_date', '<=', $periodEnd->endOfDay())
-            ->where(fn ($q) => $q->where('status', DonationStatus::Completed->value)->orWhereHas('collection'))
+            ->whereHas('collection')
             ->groupBy('donor_id')
             ->selectRaw('donor_id, max(donation_date) as last_at')
             ->get()

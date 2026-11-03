@@ -6,8 +6,11 @@ use App\Enums\IdentityStatus;
 use App\Enums\RoleName;
 use App\Enums\ValidIdType;
 use App\Models\AuditLog;
+use App\Models\Facility;
+use App\Models\FacilityDonor;
 use App\Models\User;
 use App\Notifications\DonorIdentityDecision;
+use App\Support\AccountIdentity;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
@@ -251,6 +254,115 @@ class DonorIdentityVerificationTest extends TestCase
             url("/api/admin/donor-identities/{$this->donor->uuid}/reject"),
             route('admin.donor-identities.reject', ['uuid' => $this->donor->uuid])
         );
+    }
+
+    /**
+     * A donor account with this name and date of birth.
+     */
+    private function donorNamed(string $first, string $last, ?string $born): User
+    {
+        $donor = User::factory()->donor()->create(['first_name' => $first, 'last_name' => $last]);
+        $donor->donorProfile->update(['birth_date' => $born]);
+
+        return $donor;
+    }
+
+    /**
+     * The possible matches the queue shows for the first pending submission.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function matchesInQueue(): array
+    {
+        return $this->actingAs($this->admin)
+            ->getJson('/api/admin/donor-identities')
+            ->assertOk()
+            ->json('data.0.possible_matches');
+    }
+
+    public function test_the_queue_shows_an_account_the_counter_already_registered_for_the_same_person(): void
+    {
+        $facility = Facility::factory()->approved()->create(['name' => 'Davao Blood Centre']);
+        $existing = $this->donorNamed('Ana', 'Cruz', '1990-04-12');
+        $existing->update(['email' => null]);
+        FacilityDonor::create(['facility_id' => $facility->id, 'donor_id' => $existing->id, 'registered_here' => true]);
+
+        $this->submit($this->donorNamed('Ana', 'Cruz', '1990-04-12'));
+
+        $matches = $this->matchesInQueue();
+
+        $this->assertCount(1, $matches);
+        $this->assertSame($existing->uuid, $matches[0]['uuid']);
+        $this->assertSame('name_and_birth_date', $matches[0]['likeness']);
+        $this->assertSame('Davao Blood Centre', $matches[0]['registered_at']);
+        $this->assertSame(AccountIdentity::donorCode($existing->id), $matches[0]['donor_code']);
+    }
+
+    public function test_names_match_regardless_of_case_and_surrounding_spaces(): void
+    {
+        $existing = $this->donorNamed(' ANA', 'cruz ', '1990-04-12');
+
+        $this->submit($this->donorNamed('Ana', 'Cruz', '1990-04-12'));
+
+        $this->assertSame([$existing->uuid], array_column($this->matchesInQueue(), 'uuid'));
+    }
+
+    public function test_a_birthday_with_one_of_the_names_is_a_match_and_ranks_below_the_full_name(): void
+    {
+        $maidenName = $this->donorNamed('Ana', 'Santos', '1990-04-12');
+        $misspelt = $this->donorNamed('Anna', 'Cruz', '1990-04-12');
+        $sameName = $this->donorNamed('Ana', 'Cruz', '1990-04-12');
+
+        $this->submit($this->donorNamed('Ana', 'Cruz', '1990-04-12'));
+
+        $matches = $this->matchesInQueue();
+
+        $this->assertSame([$sameName->uuid, $misspelt->uuid, $maidenName->uuid], array_column($matches, 'uuid'));
+        $this->assertSame(['name_and_birth_date', 'last_name_and_birth_date', 'first_name_and_birth_date'], array_column($matches, 'likeness'));
+    }
+
+    public function test_a_name_surname_or_birthday_alone_is_not_a_match(): void
+    {
+        // A namesake born on another day: a common name would otherwise list
+        // every one of them in the network.
+        $this->donorNamed('Ana', 'Cruz', '1985-01-30');
+        $this->donorNamed('Jose', 'Cruz', '1979-08-01');
+        $this->donorNamed('Maria', 'Reyes', '1990-04-12');
+
+        // Staff are not donor accounts, whatever their name.
+        User::factory()->bloodCenterStaff()->create(['first_name' => 'Ana', 'last_name' => 'Cruz']);
+
+        $this->submit($this->donorNamed('Ana', 'Cruz', '1990-04-12'));
+
+        $this->assertSame([], $this->matchesInQueue());
+    }
+
+    public function test_two_submissions_from_the_same_person_show_each_other_but_not_themselves(): void
+    {
+        $first = $this->donorNamed('Ana', 'Cruz', '1990-04-12');
+        $second = $this->donorNamed('Ana', 'Cruz', '1990-04-12');
+
+        $this->submit($first, 'N0123456789');
+        $this->submit($second, 'N9876543210');
+
+        $rows = collect($this->actingAs($this->admin)->getJson('/api/admin/donor-identities')->assertOk()->json('data'))
+            ->keyBy('uuid');
+
+        $this->assertSame([$second->uuid], array_column($rows[$first->uuid]['possible_matches'], 'uuid'));
+        $this->assertSame([$first->uuid], array_column($rows[$second->uuid]['possible_matches'], 'uuid'));
+    }
+
+    public function test_a_possible_match_carries_its_id_number_masked(): void
+    {
+        $existing = $this->donorNamed('Ana', 'Cruz', '1990-04-12');
+        $existing->donorProfile->update(['valid_id_number' => 'P1234567A']);
+
+        $this->submit($this->donorNamed('Ana', 'Cruz', '1990-04-12'));
+
+        $response = $this->actingAs($this->admin)->getJson('/api/admin/donor-identities')->assertOk();
+
+        $response->assertJsonPath('data.0.possible_matches.0.valid_id_number_masked', '•••••567A');
+        $this->assertStringNotContainsString('P1234567A', $response->getContent());
     }
 
     public function test_the_audit_trail_does_not_record_the_id_number(): void

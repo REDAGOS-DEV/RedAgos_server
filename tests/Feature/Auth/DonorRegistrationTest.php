@@ -2,8 +2,7 @@
 
 namespace Tests\Feature\Auth;
 
-use AppModelsSER;
-USE App\Enums\AccountStatus;
+use App\Enums\AccountStatus;
 use App\Enums\RoleName;
 use App\Models\BloodType;
 use App\Models\User;
@@ -175,6 +174,16 @@ class DonorRegistrationTest extends TestCase
         $this->postJson('/api/donors/register', $this->payload(['phone' => '+14155550123']))
             ->assertStatus(422)
             ->assertJsonValidationErrors('phone');
+    }
+
+    public function test_a_name_with_an_emoji_or_a_digit_is_rejected(): void
+    {
+        $this->postJson('/api/donors/register', $this->payload([
+            'first_name' => 'Juan 😀',
+            'last_name' => 'Dela Cruz 2',
+        ]))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['first_name', 'last_name']);
     }
 
     public function test_a_weak_password_is_rejected(): void

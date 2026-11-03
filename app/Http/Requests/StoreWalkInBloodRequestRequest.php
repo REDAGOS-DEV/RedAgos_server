@@ -5,6 +5,8 @@ namespace App\Http\Requests;
 use App\Enums\IndicationCode;
 use App\Enums\UrgencyLevel;
 use App\Enums\ValidIdType;
+use App\Rules\ValidIdNumber;
+use App\Support\AccountIdentity;
 use Illuminate\Validation\Rule;
 
 /**
@@ -25,6 +27,22 @@ use Illuminate\Validation\Rule;
  */
 class StoreWalkInBloodRequestRequest extends StoreBloodRequestRequest
 {
+    /**
+     * The watcher's ID number is kept as the donor's is: capitals, no
+     * separators, so it is checked and stored the same however it was typed.
+     */
+    protected function prepareForValidation(): void
+    {
+        $representative = $this->input('representative');
+
+        if (is_array($representative) && is_string($representative['id_number'] ?? null)) {
+            $this->merge(['representative' => [
+                ...$representative,
+                'id_number' => AccountIdentity::normalizeValidIdNumber($representative['id_number']),
+            ]]);
+        }
+    }
+
     /**
      * @return array<string, array<int, mixed>>
      */
@@ -66,7 +84,10 @@ class StoreWalkInBloodRequestRequest extends StoreBloodRequestRequest
             'representative.relationship' => ['required', 'string', 'max:60'],
             'representative.contact' => ['required', 'string', 'max:30'],
             'representative.id_type' => ['nullable', Rule::in(ValidIdType::values())],
-            'representative.id_number' => ['nullable', 'required_with:representative.id_type', 'string', 'max:50'],
+            'representative.id_number' => [
+                'nullable', 'required_with:representative.id_type', 'string', 'max:50',
+                new ValidIdNumber($this->input('representative.id_type')),
+            ],
 
             'duplicate_acknowledgement' => ['nullable', 'string', 'min:5', 'max:255'],
         ];

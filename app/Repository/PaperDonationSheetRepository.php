@@ -78,6 +78,7 @@ class PaperDonationSheetRepository
     {
         return MobileEvent::query()
             ->where('facility_id', $facilityId)
+            ->notCancelled()
             ->whereDate('event_date', '<=', OperationalDay::todayAsDate())
             ->orderByDesc('event_date')
             ->orderByDesc('id')

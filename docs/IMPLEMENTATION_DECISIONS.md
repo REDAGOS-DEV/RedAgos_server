@@ -2488,3 +2488,65 @@ Opened from View, the dialog offers Edit or Review when the row allows it. Every
 - **Hospital portal:** the weekly request page shows the hand-over, the contact and the notes, and adds a Will supply column. The list shows when it arrives.
 
 **Migration:** `2026_10_29_000002_create_supply_plans_table` has run on dev PostgreSQL.
+
+## Drive lifecycle (drive pre-registration, phase 1)
+
+**SOURCE:** the project owner, 2026-11-01: a Blood Donation Drive pre-registration enhancement, built in phases. Phase 1 is the drive's lifecycle and wording, before any registration link is exposed. Later phases (pre-registrations, self-registration, partners, reporting) are not built yet.
+
+**DECISION (two figures, never one):**
+- `mobile_events.max_capacity` keeps its meaning: the hard limit on active bookings (`scheduled` + `confirmed`). It is not renamed. The UI calls it **Registration capacity**, optional; blank is no limit.
+- New `mobile_events.expected_participants`: a planning estimate from the organisers. It is never enforced and lends the drive no places.
+
+**DECISION (lifecycle, all derived from timestamps):**
+- `published_at`: null is a **Draft**. Staff alone see it, donors cannot book it, and nobody is told about it. Publishing (`POST drives/{id}/publish`) shows it in the portal catalogue and runs `BloodDriveAnnouncer`, once.
+- A new drive is published on save unless the form says `publish: false`. Every drive before this was visible at once, and the migration backfills `published_at = created_at`.
+- `registration_closed_at`: staff stopped new bookings early (`POST drives/{id}/registration/close`, then `/open`). The drive stays published and its bookings stand.
+- `cancelled_at`, `cancelled_by`, `cancellation_reason` (`POST drives/{id}/cancel`, reason required): every `scheduled` booking is cancelled, its QR revoked (as a donor's own cancellation does), and each donor sent `DriveCancelled` (in-app always, mail per the appointment-email switch). Refused (409 `drive_in_progress`) while any donor is checked in.
+- `MobileEvent::status()`: Cancelled > Completed (day over) > Draft > Full > Open (today) / Upcoming. Registration closed is reported apart (`registration_open`, `registration_closed_at`).
+
+**DECISION (bookings):**
+- A drive takes a booking only when it is published, not cancelled, not closed to registration, and its day is not over (`MobileEvent::acceptsRegistrations()`, `scopeOpenForRegistration()`). The donor catalogue, the donor's booking, the desk's booking (`bookOnBehalf`) and its drive options all apply it. The catalogue therefore never shows Draft, Cancelled or a closed drive, and the donor client needs no change.
+- `AppointmentService::guardDriveCapacity()` now takes the drive's own row lock (`AppointmentRepository::lockDrive()`) before it counts. Locking the appointment rows alone let two donors both take an empty drive's last place. Edits and cancellation take the same lock (`MobileEventRepository::lockForFacility()`).
+
+**DECISION (editing):** `PATCH drives/{id}` takes the create form, less `publish`. A cancelled or past drive cannot change (409). Once anyone is booked, the date and hours are fixed (422 `drive_schedule_locked`): moving the drive is a cancellation and a new drive. Capacity never drops below the active bookings (422 `capacity_below_bookings`).
+
+**DECISION (the drive metric):** the Drives page's "Units collected · At drives this month" counted every bag the centre drew. It now counts only donations reached through a drive booking (`donation_appointments.event_id`) or a paper sheet (`donations.paper_sheet_id`), and only with a `blood_collections` row. No drive column was added to `donations`.
+
+**Also:** the dashboard's coming-up drives, the collection report's drives held, the staff reminders, and paper sheets' drive options and `mobile_event_id` rule leave cancelled drives out. Audit actions `drive.created`, `drive.updated` (field names), `drive.published`, `drive.registration_closed`, `drive.registration_reopened` and `drive.cancelled` (counts, not the reason) are filed under Appointments.
+
+**Migration:** `2026_11_01_000001_add_lifecycle_columns_to_mobile_events_table` has run on dev PostgreSQL.
+
+## Donor Management lists only people checked in
+
+**SOURCE:** The project owner, 2026-11-01: a Donor Portal registration is a global prospective donor only; a booking puts the person on the centre's Appointments or drive roster, not its donors; checking in at the centre or a drive makes them that centre's donor; only a collection record makes a donation, and someone screened and deferred attended but did not donate. Asked, the owner chose: Donor Management stays the same global list at every centre (2026-10-25), and checking in sets a donor the centre had marked Inactive back to Active.
+
+**DECISION (who is a centre's donor):** `DonorDirectoryRepository::attendedAt()` is the one definition. A person is a centre's donor once they came in person there: a booking checked in or finished (`AppointmentStatus::isArrival()`: confirmed or completed), a visit recorded there (a `donations` row from the counter or a drive's paper record, deferred or drawn), or registered at its counter (`facility_donors.registered_here`). A plain booking, a no-show, a cancellation, and a `facility_donors` row that only holds a status, a note or a reminder date do not count. `facilityDonorQuery()`, `relatedDonorIds()` and `facilityHasRelationship()` all read it, so the export, eligibility reminders, drive announcements, the Collection dashboard's pool, single emails, the sign-in slip, the Deferrals page's own-donor rule and every `scope` agree.
+
+**DECISION (the list):** `browseNetwork()` lists everyone who came in person at any centre, the same at every centre, still marked own or other centre. A Donor Portal account or a booking alone is on no list. The desk finds such a person by exact donor ID, valid ID number, email or mobile number: when a search with no other filter lists nobody, the Donors page asks `donors/lookup` (`unlistedLookup()`) and shows the match as "Not checked in", with Start donation if eligible. Opening the visit makes them the centre's donor.
+
+**DECISION (check-in):** No new table or column. The check-in itself is the relationship: QR scan or Check in (appointment → confirmed), opening a visit, a paper record, or the Appointments ✓ (completed). Each also calls `CollectionService::reactivateOnArrival()`, which sets an Inactive `facility_donors` status back to Active and audits `donor.reactivated` with `via` (qr, check_in, visit, paper, marked_collected).
+
+**DECISION (a donation):** blood was given only if a `blood_collections` row exists: `bloodGiven()` (the list's totals, last donation, donations here, eligibility), `CollectionDashboardRepository::stageOf()` and the collection report's donor profile and lapsed donors. `status = completed` alone no longer counts; the counter cannot reach it without a draw. An Appointments row reads Deferred only for a rejected visit with no collection, so a bag drawn and then rejected reads Collected. The Collection dashboard's "Appointments today" tile for completed bookings is labelled Completed, since it includes deferred visits; the visits row beside it splits Collected and Deferred.
+
+**DECISION (paper records):** the paper form's name search (`CounterDonorSearchService`) also reaches people booked at this centre (`facilityDonorQuery(..., withBookings: true)`), because a drive's paper record is typed for its roster before anyone on it counts as checked in.
+
+**TESTS:** `DonorDirectoryMembershipTest`: portal registration without booking, booking without check-in (and a no-show), checked in and deferred, checked in by QR and drawn, only a collection record counts, a status or note on someone who never came, cross-centre visibility and privacy, reactivation on check-in and on a walk-in visit, and the paper form finding booked people. Run against the old code, 7 of the 10 fail. `StaffAppointmentsTest` and `DonorDirectoryTest` now say a booking does not list the donor; `CollectionReportTest` gives its forced-completed visit the collection row a real draw has.
+
+**KNOWN LIMITATIONS:**
+- The dashboard's "New this week" still counts donor accounts created in the last 7 days among the centre's donors, not when they first checked in there.
+- A booking marked collected with the ✓ counts as an arrival but not as a donation: it has no collection record until the counter records one.
+- Unchecking a check-in by marking the booking a no-show takes the person off the centre's list again, unless they have another visit there.
+
+## Active / Inactive comes from the last donation
+
+**SOURCE:** The project owner, 2026-11-03: an active donor gives again within the year; an inactive one gave once and has not come back. Staff should not set it. Asked, the owner chose: the picker goes from both Register and Edit, and Active means a donation in the last 12 months.
+
+**DECISION (the rule):** `DonorStanding::activity()`: `active` when the last donation is on or after `activeSince()` (today less `ACTIVE_MONTHS`, 12), `inactive` when it is earlier, `null` when there is none. The last donation is the one the list's Last donation column shows (`DonorStandingResolver`: the last draw anywhere, else the date the donor declared), so the badge and the column cannot disagree. `DonorStanding::toArray()` carries it as `status`, so every list shape, the profile and the lookup have it. A one-time donor drawn two months ago is active: they cannot give again yet.
+
+**DECISION (removed):** `facility_donors.status` and `App\Enums\FacilityDonorStatus` are gone, along with the `status` rule on `StoreWalkInDonorRequest` and `UpdateDonorRecordRequest` (a status sent is ignored), the reminder refusal `donor_inactive`, and `CollectionService::reactivateOnArrival()` with its `donor.reactivated` audit action. This supersedes the 2026-11-01 "check-in reactivates" choice above: there is no mark left to undo.
+
+**DECISION (what Inactive does now):** nothing is withheld. Eligibility reminders and drive announcements reach every donor on the centre's list, since a lapsed donor is the one to call back. The list's `status` filter (`ListDonorsRequest`, `DonorDirectoryRepository::applyStatus()`) reads the same rule in SQL, and the reminders take it through like the page's other filters, so filtering Inactive and sending reminders mails the lapsed donors who are eligible. The export's Status column reads Active, Inactive or blank. The Collection dashboard's Inactive count is of lapsed donors, beside the eligibility split rather than taken out of it.
+
+**TESTS:** `DonorRecordsTest::test_status_is_worked_out_from_the_last_donation_and_filters_the_list` (11 and 13 months, a draw beating a later declared date, a declared date alone, never donated, and an edit's status ignored) and `test_a_lapsed_donor_is_still_reminded_and_the_status_filter_narrows_the_run`; `CollectionDashboardTest` counts a lapsed eligible donor in both eligible and inactive; `NotificationPreferencesTest` tells a lapsed donor about a drive. The reactivation tests in `DonorDirectoryMembershipTest` were removed.
+
+**Migration:** `2026_11_03_000001_drop_status_from_facility_donors_table` drops the column and its `(facility_id, status)` index. It has run on dev PostgreSQL, where all 10 records were Active.

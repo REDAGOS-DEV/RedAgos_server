@@ -36,7 +36,9 @@ class AppointmentRepository
     }
 
     /**
-     * List upcoming mobile blood drives with their registered counts.
+     * List upcoming mobile blood drives open for registration, with their
+     * registered counts. Drafts, cancelled drives and drives closed to new
+     * bookings are left out.
      *
      * @return Collection<int, MobileEvent>
      */
@@ -44,6 +46,7 @@ class AppointmentRepository
     {
         return MobileEvent::query()
             ->with('facility')
+            ->openForRegistration()
             ->withCount(['appointments as registered' => fn ($query) => $query->active()])
             ->whereDate('event_date', '>=', now()->toDateString())
             ->orderBy('event_date')
@@ -51,15 +54,30 @@ class AppointmentRepository
     }
 
     /**
-     * Find an upcoming drive by id, with its registered count loaded.
+     * Find an upcoming drive open for registration by id, with its registered
+     * count loaded.
      */
     public function findUpcomingDrive(int $eventId): ?MobileEvent
     {
         return MobileEvent::query()
+            ->openForRegistration()
             ->withCount(['appointments as registered' => fn ($query) => $query->active()])
             ->whereDate('event_date', '>=', now()->toDateString())
             ->whereKey($eventId)
             ->first();
+    }
+
+    /**
+     * Lock a drive's own row for the rest of the transaction.
+     *
+     * Every booking, edit and cancellation of one drive queues behind this
+     * lock. Locking its appointment rows alone is not enough: while a drive
+     * has no bookings there is nothing to lock, and two donors can both take
+     * the last place.
+     */
+    public function lockDrive(int $eventId): ?MobileEvent
+    {
+        return MobileEvent::query()->whereKey($eventId)->lockForUpdate()->first();
     }
 
     /**

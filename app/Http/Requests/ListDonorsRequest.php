@@ -2,7 +2,7 @@
 
 namespace App\Http\Requests;
 
-use App\Enums\FacilityDonorStatus;
+use App\Support\DonorStanding;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -21,7 +21,7 @@ class ListDonorsRequest extends FormRequest
         return [
             'search' => ['sometimes', 'string', 'max:150'],
             'blood_type_id' => ['sometimes', 'integer', 'exists:blood_types,id'],
-            'status' => ['sometimes', 'string', Rule::in(FacilityDonorStatus::values())],
+            'status' => ['sometimes', 'string', Rule::in([DonorStanding::ACTIVE, DonorStanding::INACTIVE])],
             'sort' => ['sometimes', 'string', Rule::in(['newest', 'oldest', 'name'])],
             'per_page' => ['sometimes', 'integer', 'min:1', 'max:100'],
         ];

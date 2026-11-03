@@ -3,6 +3,7 @@
 namespace App\Http\Requests;
 
 use App\Enums\AccountStatus;
+use App\Rules\PersonName;
 use App\Support\AdminPrivileges;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -20,7 +21,7 @@ class UpdateUserRequest extends FormRequest
         $uuid = $this->route('uuid');
 
         return [
-            'first_name' => ['sometimes', 'string', 'max:150'], 'last_name' => ['sometimes', 'string', 'max:150'],
+            'first_name' => ['sometimes', 'string', 'max:150', new PersonName], 'last_name' => ['sometimes', 'string', 'max:150', new PersonName],
             'email' => ['sometimes', 'email:rfc', 'max:150', Rule::unique('users', 'email')->ignore($uuid, 'uuid')],
             'phone' => ['nullable', 'string', 'max:20', Rule::unique('users', 'phone')->ignore($uuid, 'uuid')],
             'username' => ['sometimes', 'string', 'max:150', Rule::unique('users', 'username')->ignore($uuid, 'uuid')],

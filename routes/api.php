@@ -764,6 +764,20 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
 
             Route::post('/', [BloodCenterDriveController::class, 'store'])
                 ->middleware('can:drives.manage');
+
+            // A drive's lifecycle (drive pre-registration, phase 1): edit,
+            // publish a draft, close or reopen registration, cancel. The same
+            // hands that schedule it.
+            Route::patch('/{drive}', [BloodCenterDriveController::class, 'update'])
+                ->middleware('can:drives.manage')->whereNumber('drive');
+            Route::post('/{drive}/publish', [BloodCenterDriveController::class, 'publish'])
+                ->middleware('can:drives.manage')->whereNumber('drive');
+            Route::post('/{drive}/registration/close', [BloodCenterDriveController::class, 'closeRegistration'])
+                ->middleware('can:drives.manage')->whereNumber('drive');
+            Route::post('/{drive}/registration/open', [BloodCenterDriveController::class, 'reopenRegistration'])
+                ->middleware('can:drives.manage')->whereNumber('drive');
+            Route::post('/{drive}/cancel', [BloodCenterDriveController::class, 'cancel'])
+                ->middleware('can:drives.manage')->whereNumber('drive');
         });
 
         // The Donor/Collection dashboard. donations.view, which every role at

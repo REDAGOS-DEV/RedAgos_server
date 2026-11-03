@@ -301,8 +301,12 @@ class BloodCenterAppointmentService
         $status = $appointment->status;
 
         // A collected visit and a deferred one both close the appointment as
-        // completed; the donation behind it tells which.
-        $label = $status === AppointmentStatus::Completed && $appointment->donation?->status === DonationStatus::Rejected
+        // completed; the donation behind it tells which. Drawn is decided by
+        // the collection record alone (project owner, 2026-11-01), so a bag
+        // rejected after the draw still reads Collected.
+        $label = $status === AppointmentStatus::Completed
+            && $appointment->donation?->status === DonationStatus::Rejected
+            && $appointment->donation->collection === null
             ? 'Deferred'
             : $status->label();
 

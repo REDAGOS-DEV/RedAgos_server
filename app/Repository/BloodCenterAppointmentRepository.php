@@ -15,7 +15,7 @@ use Illuminate\Database\Eloquent\Collection;
  */
 class BloodCenterAppointmentRepository
 {
-    private const WITH = ['facility', 'donorProfile.donor', 'donorProfile.bloodType', 'mobileEvent', 'donation', 'bookedBy'];
+    private const WITH = ['facility', 'donorProfile.donor', 'donorProfile.bloodType', 'mobileEvent', 'donation.collection', 'bookedBy'];
 
     /**
      * The printed form of an appointment's id, e.g. APT-000123.
@@ -72,7 +72,9 @@ class BloodCenterAppointmentRepository
     }
 
     /**
-     * The centre's drives from today on, nearest first, with their registrations.
+     * The centre's drives from today on that take bookings, nearest first,
+     * with their registrations. The desk books by the portal's rules, so a
+     * draft, a cancelled drive or one closed to registration is not offered.
      *
      * @return Collection<int, MobileEvent>
      */
@@ -80,6 +82,7 @@ class BloodCenterAppointmentRepository
     {
         return MobileEvent::query()
             ->where('facility_id', $facilityId)
+            ->openForRegistration()
             ->whereDate('event_date', '>=', OperationalDay::todayAsDate())
             ->withCount(['appointments as registered' => fn ($query) => $query->active()])
             ->orderBy('event_date')

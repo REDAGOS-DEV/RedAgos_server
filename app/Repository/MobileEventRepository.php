@@ -2,9 +2,11 @@
 
 namespace App\Repository;
 
-use App\Enums\DonationStatus;
+use App\Enums\AppointmentStatus;
 use App\Models\Donation;
+use App\Models\DonationAppointment;
 use App\Models\MobileEvent;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 
@@ -45,12 +47,71 @@ class MobileEventRepository
     }
 
     /**
-     * Units actually drawn at this facility in the given month.
+     * One of the facility's drives, locked for the rest of the transaction.
      *
-     * Counts only donations that reached the bag: `registered` and `screening`
-     * are donors still in the chair, and `rejected` means nothing was taken.
+     * The same row lock bookings take (AppointmentRepository::lockDrive()), so
+     * an edit or cancellation and a booking for one drive never interleave.
      */
-    public function unitsCollectedInMonth(int $facilityId, Carbon $month): int
+    public function lockForFacility(int $eventId, int $facilityId): ?MobileEvent
+    {
+        return MobileEvent::query()
+            ->where('facility_id', $facilityId)
+            ->whereKey($eventId)
+            ->lockForUpdate()
+            ->first();
+    }
+
+    /**
+     * Reload a drive for the response, with its live registered count.
+     */
+    public function fresh(int $eventId): MobileEvent
+    {
+        return MobileEvent::query()
+            ->with('facility')
+            ->withCount(['appointments as registered' => fn ($query) => $query->active()])
+            ->whereKey($eventId)
+            ->firstOrFail();
+    }
+
+    /**
+     * How many of a drive's bookings are in each active status.
+     *
+     * @return array<string, int> keyed by AppointmentStatus value
+     */
+    public function activeCountsByStatus(int $eventId): array
+    {
+        return DonationAppointment::query()
+            ->where('event_id', $eventId)
+            ->active()
+            ->get(['id', 'status'])
+            ->countBy(fn (DonationAppointment $appointment): string => $appointment->status->value)
+            ->all();
+    }
+
+    /**
+     * A drive's bookings still waiting for their donor, with the donor's
+     * account for the notice that follows a cancellation.
+     *
+     * @return Collection<int, DonationAppointment>
+     */
+    public function scheduledAppointments(int $eventId): Collection
+    {
+        return DonationAppointment::query()
+            ->with('donorProfile.donor')
+            ->where('event_id', $eventId)
+            ->where('status', AppointmentStatus::Scheduled->value)
+            ->get();
+    }
+
+    /**
+     * Bags actually drawn at this facility's drives in the given month.
+     *
+     * A drive's donation is reached through the existing links only: its
+     * booking (`donation_appointments.event_id`) or the paper sheet it was
+     * typed from. "Drawn" means a collection was recorded; the donation's
+     * status alone is not proof that blood reached a bag.
+     */
+    public function unitsCollectedAtDrivesInMonth(int $facilityId, Carbon $month): int
     {
         return Donation::query()
             ->where('facility_id', $facilityId)
@@ -58,11 +119,10 @@ class MobileEventRepository
                 $month->copy()->startOfMonth(),
                 $month->copy()->endOfMonth(),
             ])
-            ->whereIn('status', [
-                DonationStatus::Collected->value,
-                DonationStatus::Tested->value,
-                DonationStatus::Completed->value,
-            ])
+            ->where(fn (Builder $query) => $query
+                ->whereNotNull('paper_sheet_id')
+                ->orWhereHas('appointment', fn (Builder $appointment) => $appointment->whereNotNull('event_id')))
+            ->whereHas('collection')
             ->count();
     }
 }

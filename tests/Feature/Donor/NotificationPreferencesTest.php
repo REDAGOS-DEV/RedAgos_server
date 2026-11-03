@@ -96,17 +96,20 @@ class NotificationPreferencesTest extends TestCase
         $this->assertSame([], $channels($this->donor(['drives_in_app' => false])));
     }
 
-    public function test_scheduling_a_drive_tells_the_centres_active_donors_only(): void
+    public function test_scheduling_a_drive_tells_every_donor_on_the_centres_list(): void
     {
         Notification::fake();
         $facility = Facility::factory()->approved()->create();
         $staff = User::factory()->bloodCenterStaff($facility, StaffRole::MedicalReceptionist)->create();
 
         $ours = $this->donor();
-        $inactive = $this->donor();
+        $lapsed = $this->donor();
         $elsewhere = $this->donor();
         FacilityDonor::create(['facility_id' => $facility->id, 'donor_id' => $ours->id, 'registered_here' => true]);
-        FacilityDonor::create(['facility_id' => $facility->id, 'donor_id' => $inactive->id, 'status' => 'inactive']);
+
+        // Inactive (no donation in 12 months) is still told: a drive is how they come back.
+        FacilityDonor::create(['facility_id' => $facility->id, 'donor_id' => $lapsed->id, 'registered_here' => true]);
+        DonorProfile::where('donor_id', $lapsed->id)->update(['last_donation_date' => now()->subYears(2)->toDateString()]);
         FacilityDonor::create(['facility_id' => Facility::factory()->approved()->create()->id, 'donor_id' => $elsewhere->id]);
 
         $this->actingAs($staff)
@@ -127,7 +130,8 @@ class NotificationPreferencesTest extends TestCase
                 && $data['action_route'] === '/donor/appointments'
                 && str_contains($data['desc'], '8:00 AM to 4:00 PM');
         });
-        Notification::assertNotSentTo([$inactive, $elsewhere], BloodDriveScheduled::class);
+        Notification::assertSentTo($lapsed, BloodDriveScheduled::class);
+        Notification::assertNotSentTo($elsewhere, BloodDriveScheduled::class);
         $this->assertSame(1, MobileEvent::count());
     }
 }

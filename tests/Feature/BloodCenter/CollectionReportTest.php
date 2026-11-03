@@ -7,6 +7,7 @@ use App\Enums\DonationStatus;
 use App\Enums\DonationType;
 use App\Enums\ScreeningOutcome;
 use App\Enums\StaffRole;
+use App\Models\BloodCollection;
 use App\Models\Donation;
 use App\Models\DonationAppointment;
 use App\Models\DonationScreening;
@@ -185,6 +186,8 @@ class CollectionReportTest extends TestCase
             ->assertJsonPath('data.donation_type_label', 'TS')
             ->json('data.id');
         Donation::query()->whereKey($id)->update(['status' => DonationStatus::Completed, 'donation_date' => '2026-10-05 02:00']);
+        // Drawn: only the collection record makes it a donation.
+        BloodCollection::query()->create(['donation_id' => $id, 'collected_by' => $receptionist->id, 'collection_datetime' => '2026-10-05 02:00']);
 
         $given = ['facility_id' => $this->centre->id, 'status' => DonationStatus::Completed];
         Donation::factory()->create($given + ['donation_date' => '2026-10-06 02:00', 'donation_type' => DonationType::NonTypeSpecific]);

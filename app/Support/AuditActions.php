@@ -133,6 +133,14 @@ final class AuditActions
         'appointment.deleted' => ['appointments', 'delete', 'Deleted an appointment'],
         'appointments.exported' => ['appointments', 'export', 'Exported appointments'],
 
+        // Drives are the centre's bookable places, filed with Appointments.
+        'drive.created' => ['appointments', 'create', 'Scheduled a blood drive'],
+        'drive.updated' => ['appointments', 'edit', 'Edited a blood drive'],
+        'drive.published' => ['appointments', 'edit', 'Published a blood drive'],
+        'drive.registration_closed' => ['appointments', 'edit', 'Closed registration for a blood drive'],
+        'drive.registration_reopened' => ['appointments', 'edit', 'Reopened registration for a blood drive'],
+        'drive.cancelled' => ['appointments', 'cancel', 'Cancelled a blood drive'],
+
         'collection.checked_in' => ['collection', 'edit', 'Checked in a donor'],
         'collection.no_show' => ['collection', 'edit', 'Marked a no-show'],
         'collection.qr_verified' => ['collection', 'view', 'Scanned a check-in QR code'],
@@ -344,7 +352,7 @@ final class AuditActions
             'staff' => 'staff',
             'center', 'facility' => 'settings',
             'donor', 'donors', 'eligibility' => 'donors',
-            'appointment', 'appointments' => 'appointments',
+            'appointment', 'appointments', 'drive' => 'appointments',
             'collection', 'paper' => 'collection',
             'laboratory', 'referral' => 'testing',
             'inventory', 'stock_threshold' => 'inventory',

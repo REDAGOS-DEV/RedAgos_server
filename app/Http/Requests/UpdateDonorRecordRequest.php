@@ -2,7 +2,7 @@
 
 namespace App\Http\Requests;
 
-use App\Enums\FacilityDonorStatus;
+use App\Rules\PersonName;
 use App\Support\AccountIdentity;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Support\Str;
@@ -46,8 +46,8 @@ class UpdateDonorRecordRequest extends FormRequest
         $uuid = (string) $this->route('uuid');
 
         return [
-            'first_name' => ['sometimes', 'required', 'string', 'max:150'],
-            'last_name' => ['sometimes', 'required', 'string', 'max:150'],
+            'first_name' => ['sometimes', 'required', 'string', 'max:150', new PersonName],
+            'last_name' => ['sometimes', 'required', 'string', 'max:150', new PersonName],
             'birth_date' => ['sometimes', 'required', 'date', 'before_or_equal:'.now()->subYears((int) config('donation.min_age_years'))->toDateString()],
             'gender' => ['sometimes', 'nullable', 'string', Rule::in(['male', 'female', 'other', 'prefer_not_to_say'])],
             'blood_type_id' => ['sometimes', 'nullable', 'integer', 'exists:blood_types,id'],
@@ -56,7 +56,6 @@ class UpdateDonorRecordRequest extends FormRequest
             'address' => ['sometimes', 'nullable', 'string', 'max:255'],
             'occupation' => ['sometimes', 'nullable', 'string', 'max:100'],
             'last_donation_date' => ['sometimes', 'nullable', 'date', 'before_or_equal:today'],
-            'status' => ['sometimes', 'required', 'string', Rule::in(FacilityDonorStatus::values())],
             'notes' => ['sometimes', 'nullable', 'string', 'max:2000'],
         ];
     }

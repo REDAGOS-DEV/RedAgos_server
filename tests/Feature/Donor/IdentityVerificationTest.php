@@ -124,7 +124,7 @@ class IdentityVerificationTest extends TestCase
 
         $this->postJson('/api/donors/register', $this->registrationPayload([
             'valid_id_type' => ValidIdType::DriversLicense->value,
-            'valid_id_number' => 'P1234-5678',
+            'valid_id_number' => 'N01-23-456789',
         ]))->assertCreated();
 
         // Same ID, written the way a different person would type it. Without
@@ -134,10 +134,48 @@ class IdentityVerificationTest extends TestCase
             'email' => 'maria@example.com',
             'phone' => '09171234568',
             'valid_id_type' => ValidIdType::DriversLicense->value,
-            'valid_id_number' => 'p1234 5678',
+            'valid_id_number' => 'n01 23 456789',
         ]))
             ->assertUnprocessable()
             ->assertJsonValidationErrors('valid_id_number');
+    }
+
+    public function test_an_id_number_must_have_its_types_shape(): void
+    {
+        Notification::fake();
+
+        // Twelve digits is a UMID's length, not a PhilSys number's sixteen.
+        $this->postJson('/api/donors/register', $this->registrationPayload([
+            'valid_id_type' => ValidIdType::PhilSys->value,
+            'valid_id_number' => '1234-5678-9012',
+        ]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['valid_id_number' => 'PhilSys number: 16 digits, e.g. 1234567890123456.']);
+
+        $this->actingAs($this->donor)
+            ->postJson('/api/donors/identity', $this->submission([
+                'valid_id_type' => ValidIdType::Passport->value,
+                'valid_id_number' => 'P12345678',
+            ]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['valid_id_number' => 'Passport number: 1 letter, 7 digits and 1 letter, e.g. P1234567A.']);
+    }
+
+    public function test_an_id_number_typed_with_spaces_and_hyphens_is_stored_bare(): void
+    {
+        Storage::fake('local');
+
+        $this->actingAs($this->donor)
+            ->postJson('/api/donors/identity', $this->submission([
+                'valid_id_type' => ValidIdType::PhilHealth->value,
+                'valid_id_number' => '12-345678901 2',
+            ]))
+            ->assertOk();
+
+        $profile = $this->donor->donorProfile->fresh();
+
+        $this->assertSame('123456789012', $profile->valid_id_number);
+        $this->assertSame(ValidIdType::PhilHealth, $profile->valid_id_type);
     }
 
     public function test_a_punctuation_only_id_number_is_stored_as_null_and_does_not_collide(): void

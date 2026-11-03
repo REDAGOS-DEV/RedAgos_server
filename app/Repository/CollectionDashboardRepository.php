@@ -81,12 +81,15 @@ class CollectionDashboardRepository
 
     /**
      * registered, screening, collected, deferred, or closed (ended another way).
+     *
+     * Collected only on a collection record (project owner, 2026-11-01): a
+     * deferred visit is a visit, not a donation.
      */
     public function stageOf(Donation $visit): string
     {
         return match (true) {
             $visit->screening?->outcome instanceof ScreeningOutcome && $visit->screening->outcome->isDeferral() => 'deferred',
-            (bool) $visit->collection_exists || $visit->status === DonationStatus::Completed => 'collected',
+            (bool) $visit->collection_exists => 'collected',
             $visit->status === DonationStatus::Registered => 'registered',
             $visit->status === DonationStatus::Screening => 'screening',
             default => 'closed',
@@ -109,7 +112,7 @@ class CollectionDashboardRepository
 
     /**
      * This facility's drives on or between two dates, with how many donors
-     * still hold a place on each.
+     * still hold a place on each. A cancelled drive is not coming.
      *
      * @return Collection<int, MobileEvent>
      */
@@ -117,6 +120,7 @@ class CollectionDashboardRepository
     {
         return MobileEvent::query()
             ->where('facility_id', $facilityId)
+            ->notCancelled()
             ->whereBetween('event_date', [$fromDate, $toDate])
             ->withCount(['appointments as registered' => fn (Builder $q) => $q->whereIn('status', AppointmentStatus::activeValues())])
             ->orderBy('event_date')

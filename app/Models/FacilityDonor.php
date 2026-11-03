@@ -2,20 +2,18 @@
 
 namespace App\Models;
 
-use App\Enums\FacilityDonorStatus;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
- * One blood centre's own record of a donor: their status there, its staff's
- * notes, and whether the centre registered them. See the migration.
+ * One blood centre's own record of a donor: its staff's notes, whether the
+ * centre registered them, and when it last reminded them. See the migration.
  */
 class FacilityDonor extends Model
 {
     protected $fillable = [
         'facility_id',
         'donor_id',
-        'status',
         'notes',
         'registered_here',
         'eligibility_reminded_at',
@@ -26,14 +24,12 @@ class FacilityDonor extends Model
      * @var array<string, mixed>
      */
     protected $attributes = [
-        'status' => 'active',
         'registered_here' => false,
     ];
 
     protected function casts(): array
     {
         return [
-            'status' => FacilityDonorStatus::class,
             'registered_here' => 'boolean',
             'eligibility_reminded_at' => 'datetime',
         ];

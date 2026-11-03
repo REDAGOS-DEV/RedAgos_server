@@ -53,6 +53,8 @@ class MobileEventSeeder extends Seeder
                     'location' => $location,
                     'event_date' => $today->copy()->addDays($offsetDays),
                     'max_capacity' => $capacity,
+                    // Donors only see published drives.
+                    'published_at' => $today,
                 ]
             );
         }

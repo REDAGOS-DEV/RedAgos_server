@@ -7,6 +7,7 @@ use App\Enums\AccountStatus;
 use App\Enums\RoleName;
 use App\Models\Role;
 use App\Models\User;
+use App\Rules\PersonName;
 use App\Service\UserService;
 use App\Support\AdminPrivileges;
 use Illuminate\Console\Command;
@@ -70,8 +71,8 @@ class CreateAdminUser extends Command
         }
 
         $validator = Validator::make($attributes, [
-            'first_name' => ['required', 'string', 'max:150'],
-            'last_name' => ['required', 'string', 'max:150'],
+            'first_name' => ['required', 'string', 'max:150', new PersonName],
+            'last_name' => ['required', 'string', 'max:150', new PersonName],
             'email' => ['required', 'email:rfc', 'max:150', 'unique:users,email'],
             'username' => ['required', 'string', 'max:150', 'unique:users,username'],
             'password' => ['required', Password::min(8)->mixedCase()->numbers()],

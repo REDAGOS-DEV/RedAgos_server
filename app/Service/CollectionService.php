@@ -102,11 +102,12 @@ class CollectionService
      * Answers as the QR scan does, so the counter carries on the same way:
      * today's booking here, the visit already under way, the questionnaire
      * on file and any standing deferral. Unlike the scan it checks nobody in;
-     * the counter's check-in step does that for a booked donor.
+     * the counter's check-in step does that for a booked donor, and opening
+     * the visit for anyone, which is what makes them this centre's donor.
      *
-     * Any RedAgos donor, now that Donor Management lists them all (project
-     * owner, 2026-10-25): a donor from another centre starts here as the QR
-     * scan would have let them.
+     * Any RedAgos donor (project owner, 2026-10-25): Donor Management lists
+     * every centre's donors, and finds one with only a Donor Portal account
+     * or a booking by an exact identifier.
      *
      * @return array<string, mixed>
      */

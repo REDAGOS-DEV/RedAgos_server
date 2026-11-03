@@ -3,7 +3,6 @@
 namespace App\Service;
 
 use App\Enums\AccountStatus;
-use App\Enums\FacilityDonorStatus;
 use App\Enums\IdentityStatus;
 use App\Enums\RoleName;
 use App\Enums\ScreeningOutcome;
@@ -56,7 +55,7 @@ class DonorDirectoryService
     ) {}
 
     /**
-     * Page the donors this facility has dealt with.
+     * Page Donor Management's list: the same at every centre.
      *
      * Two shapes, by role. A holder of donors.view (the counter and the
      * screening physician) gets the registration summary. Anyone reaching the
@@ -73,22 +72,21 @@ class DonorDirectoryService
         $facility = $this->requireFacility($staff);
         $full = $staff->can('donors.view');
 
-        // Every donor in RedAgos, whichever centre they gave at (project
-        // owner, 2026-10-25).
-        $page = $this->donorDirectoryRepository->browseNetwork($facility->id, $filters, $perPage);
+        // Everyone checked in at any centre, whichever it was (project owner,
+        // 2026-10-25 and 2026-11-01). A Donor Portal account or a booking
+        // alone is found only by an exact identifier (lookup()).
+        $page = $this->donorDirectoryRepository->browseNetwork($filters, $perPage);
 
-        // Counts, deferrals and this centre's records for the whole page in a
-        // fixed number of queries, rather than three more per row.
+        // Counts and deferrals for the whole page in a fixed number of
+        // queries, rather than more per row.
         $donors = $page->getCollection();
-        $ids = $donors->pluck('id')->all();
         $standings = $this->donorStandingResolver->forDonors($facility->id, $donors);
-        $records = $this->donorDirectoryRepository->facilityRecordsFor($facility->id, $ids);
-        $own = array_flip($this->donorDirectoryRepository->relatedDonorIds($facility->id, $ids));
+        $own = array_flip($this->donorDirectoryRepository->relatedDonorIds($facility->id, $donors->pluck('id')->all()));
 
         return $page->through(fn (User $donor): array => [
             ...($full
-                ? $this->summarise($donor, $standings[$donor->id], $records[$donor->id] ?? null)
-                : $this->contact($donor, $standings[$donor->id], $records[$donor->id] ?? null)),
+                ? $this->summarise($donor, $standings[$donor->id])
+                : $this->contact($donor, $standings[$donor->id])),
             'scope' => isset($own[$donor->id]) ? 'own_facility' : 'cross_facility',
         ]);
     }
@@ -304,6 +302,7 @@ class DonorDirectoryService
                     // What the donor says, for a donation RedAgos has no
                     // record of. A recorded draw always wins over it.
                     'last_donation_date' => $payload['last_donation_date'] ?? null,
+                    'valid_id_type' => $payload['valid_id_type'] ?? null,
                     'valid_id_number' => trim($payload['valid_id_number']),
                 ]);
 
@@ -312,7 +311,6 @@ class DonorDirectoryService
                 // contact details they typed until the donor claims the account.
                 $this->donorDirectoryRepository->saveFacilityRecord($facility->id, $user->id, [
                     'registered_here' => true,
-                    'status' => $payload['status'] ?? FacilityDonorStatus::Active->value,
                     'notes' => $this->cleanNotes($payload['notes'] ?? null),
                     'updated_by' => $staff->id,
                 ]);
@@ -456,10 +454,6 @@ class DonorDirectoryService
         }
 
         $recordChanges = [];
-
-        if (array_key_exists('status', $payload) && $payload['status'] !== ($record?->status?->value ?? FacilityDonorStatus::Active->value)) {
-            $recordChanges['status'] = $payload['status'];
-        }
 
         if (array_key_exists('notes', $payload) && $this->cleanNotes($payload['notes']) !== $record?->notes) {
             $recordChanges['notes'] = $this->cleanNotes($payload['notes']);
@@ -695,7 +689,6 @@ class DonorDirectoryService
             'photo_url' => DonorAvatar::urlFor($donor),
 
             // This centre's own record.
-            'status' => $this->statusOf($record),
             'notes' => $record?->notes,
             'registered_here' => $record?->registered_here ?? false,
             'eligibility_reminded_at' => $record?->eligibility_reminded_at?->toISOString(),
@@ -769,7 +762,7 @@ class DonorDirectoryService
      *
      * @return array<string, mixed>
      */
-    private function contact(User $donor, DonorStanding $standing, ?FacilityDonor $record): array
+    private function contact(User $donor, DonorStanding $standing): array
     {
         return [
             'uuid' => $donor->uuid,
@@ -780,7 +773,6 @@ class DonorDirectoryService
             'phone' => $donor->phone,
             'email' => $donor->email,
             ...$standing->toArray(withDeferral: false),
-            'status' => $this->statusOf($record),
             'contact_only' => true,
         ];
     }
@@ -790,7 +782,7 @@ class DonorDirectoryService
      *
      * @return array<string, mixed>
      */
-    private function summarise(User $donor, DonorStanding $standing, ?FacilityDonor $record): array
+    private function summarise(User $donor, DonorStanding $standing): array
     {
         $profile = $donor->donorProfile;
 
@@ -800,13 +792,7 @@ class DonorDirectoryService
             'address' => $profile?->address,
             'occupation' => $profile?->occupation,
             ...$standing->toArray(withDeferral: true),
-            'status' => $this->statusOf($record),
         ];
-    }
-
-    private function statusOf(?FacilityDonor $record): string
-    {
-        return ($record?->status ?? FacilityDonorStatus::Active)->value;
     }
 
     /**
