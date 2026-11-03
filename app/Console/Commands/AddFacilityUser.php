@@ -491,9 +491,9 @@ class AddFacilityUser extends Command
                 'position' => $attributes['position'],
             ], $facility, $role, $level, privileges: $privileges);
 
-            // Verified on creation, with no link mailed: the operator at the
+            // Verified on creation, with no code mailed: the operator at the
             // terminal is vouching for the account in person. This is the same
-            // state the emailed link leaves behind, so the account is active
+            // state the emailed code leaves behind, so the account is active
             // rather than merely verified.
             $this->authRepository->markVerified($staff);
 

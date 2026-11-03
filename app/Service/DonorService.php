@@ -122,7 +122,7 @@ class DonorService
             $this->donorRepository->attachRole($donor, $role);
 
             if ($verified) {
-                // The same state the emailed link leaves behind, so a
+                // The same state the emailed code leaves behind, so a
                 // console-created donor is indistinguishable from one that
                 // verified itself.
                 $this->authRepository->markVerified($donor);
@@ -431,10 +431,9 @@ class DonorService
 
         $email = Str::lower(trim($payload['email']));
 
-        // A verification link is signed against sha1() of the address it was
-        // issued for, so changing the address silently invalidates any link
-        // still in the donor's inbox and leaves the new address unproven.
-        // Revoke the verification and issue a link for the new address.
+        // A verification code belongs to the address it was mailed to, so a
+        // new address is unproven until a code sent to it comes back. Revoke
+        // the verification and mail a code to the new address.
         $emailChanged = $email !== $donor->email;
 
         DB::transaction(function () use ($donor, $profile, $bloodTypeId, $payload, $email, $emailChanged): void {
@@ -457,14 +456,14 @@ class DonorService
             ] + $this->personalDataAttributes($payload));
         });
 
-        // Sent after the commit so a rolled-back update never mails a live link.
+        // Sent after the commit so a rolled-back update never mails a live code.
         if ($emailChanged) {
             $donor->sendEmailVerificationNotification();
         }
 
         return [
             'message' => $emailChanged
-                ? 'Donor profile updated successfully. Please check your new email address to verify it.'
+                ? 'Donor profile updated successfully. Enter the code we sent to your new email address to verify it.'
                 : 'Donor profile updated successfully.',
             'data' => $this->profile($donor->refresh()),
         ];

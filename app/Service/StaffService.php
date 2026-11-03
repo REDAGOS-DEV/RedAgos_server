@@ -64,7 +64,7 @@ class StaffService
     /**
      * Create a colleague at the caller's facility.
      *
-     * The account is created unverified and mailed a verification link, exactly
+     * The account is created unverified and mailed a verification code, exactly
      * as self-registration leaves an applicant. That is deliberate: the
      * operational gate already refuses an unverified account with
      * email_unverified while still letting it sign in to change its own

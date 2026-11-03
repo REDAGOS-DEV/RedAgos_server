@@ -111,7 +111,7 @@ class FacilityManagementService
                 }
 
                 if ($verified) {
-                    // The same state the emailed link leaves behind, so a
+                    // The same state the emailed code leaves behind, so a
                     // console-created account is indistinguishable from one
                     // that verified itself.
                     $this->authRepository->markVerified($primary);
@@ -127,7 +127,7 @@ class FacilityManagementService
 
         if (! $verified) {
             // Sent after the commit so a rolled-back creation never mails a live
-            // verification link.
+            // verification code.
             $primary->sendEmailVerificationNotification();
         }
 

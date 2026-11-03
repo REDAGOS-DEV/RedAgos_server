@@ -328,16 +328,21 @@ class DonorRegistrationTest extends TestCase
             ->assertJsonPath('code', 'email_not_verified');
     }
 
-    public function test_a_newly_registered_donor_can_log_in_once_the_link_is_followed(): void
+    public function test_a_newly_registered_donor_can_log_in_once_the_code_is_entered(): void
     {
         Notification::fake();
 
         $this->postJson('/api/donors/register', $this->payload())->assertCreated();
 
         $donor = User::where('email', 'juan@example.com')->firstOrFail();
-        $actionUrl = (new VerifyEmailNotification)->toMail($donor)->actionUrl;
+        $code = null;
+        Notification::assertSentTo($donor, VerifyEmailNotification::class, function ($notification) use (&$code) {
+            $code = $notification->code;
 
-        $this->postJson('/api/email/verify'.substr($actionUrl, strpos($actionUrl, '?')))
+            return true;
+        });
+
+        $this->postJson('/api/email/verify', ['email' => 'juan@example.com', 'code' => $code])
             ->assertOk();
 
         $this->postJson('/api/login', [

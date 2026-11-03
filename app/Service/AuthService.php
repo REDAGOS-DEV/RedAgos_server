@@ -196,33 +196,36 @@ class AuthService
     }
 
     /**
-     * Mark a user's email address as verified from a signed verification link.
+     * Mark an address as verified with the code mailed to it.
+     *
+     * Every failure gets the same answer: an unknown address, one already
+     * verified, no code, an expired or used-up code and a wrong guess all look
+     * alike, so this cannot be used to learn which addresses are registered.
+     * The try is counted before the code is compared, so the right code
+     * typed after the last allowed try is refused too.
      *
      * @param  array<string, mixed>  $payload
-     * @return array<string, mixed>
      */
-    public function verifyEmail(array $payload): array
+    public function verifyEmail(array $payload): void
     {
-        $user = $this->authRepository->findById($payload['id']);
+        $user = $this->authRepository->findByEmail(Str::lower(trim($payload['email'])));
+        $pending = $user?->emailVerificationCode;
 
-        if (! $user || ! hash_equals(sha1($user->getEmailForVerification()), (string) $payload['hash'])) {
-            throw new HttpResponseException(response()->json([
-                'message' => 'This verification link is invalid.',
-                'code' => 'invalid_verification_link',
-            ], 403));
-        }
-
-        if ($user->hasVerifiedEmail()) {
-            return ['already_verified' => true];
+        if (! $user
+            || $user->hasVerifiedEmail()
+            || ! $pending?->isLiveFor($user)
+            || ! $pending->claimAttempt()
+            || ! $pending->matches((string) $payload['code'])) {
+            throw ValidationException::withMessages([
+                'code' => ['That code is incorrect or has expired.'],
+            ]);
         }
 
         $this->authRepository->markVerified($user);
-
-        return ['already_verified' => false];
     }
 
     /**
-     * Re-send the verification email when the address is still unverified.
+     * Mail a new code when the address is still unverified.
      */
     public function resendVerificationEmail(User $user): void
     {
@@ -234,11 +237,11 @@ class AuthService
     }
 
     /**
-     * Re-send the verification email to an address supplied by a guest.
+     * Mail a new code to an address supplied by a guest.
      *
      * Sign-in is refused until the address is verified, so the authenticated
      * resend endpoint is unreachable for exactly the people who need it most —
-     * someone who registered and never received the mail. This is the way back
+     * someone who registered and never received the code. This is the way back
      * in for them.
      *
      * It deliberately reports nothing about the address: unknown, already
@@ -294,11 +297,20 @@ class AuthService
      *
      * Verification is part of registration now, not something deferred until
      * the first booking attempt, so an unverified account has no business
-     * holding a token at all. The `code` lets the client offer a resend
-     * instead of showing the generic credentials error.
+     * holding a token at all. The `code` tells the client to ask for the
+     * verification code, then sign in again.
+     *
+     * A code is mailed here when there is none still worth typing: a donor
+     * back after the one from registration expired, or staff signing in for
+     * the first time days after their account was made. A live one is left
+     * alone, so trying again does not bury it under another email.
+     *
+     * The address is returned because the sign-in may have been by username
+     * and the code screen names the inbox. That is safe: this is only reached
+     * once the password has checked out.
      *
      * A donor given a sign-in slip at the counter is let through without one:
-     * staff checked their ID in person, which proves more than a link in an
+     * staff checked their ID in person, which proves more than a code in an
      * inbox, and the donor may have no address at all. They confirm it from
      * the portal later, which online booking still asks for.
      */
@@ -308,9 +320,14 @@ class AuthService
             return;
         }
 
+        if (! $user->emailVerificationCode?->isLiveFor($user)) {
+            $user->sendEmailVerificationNotification();
+        }
+
         throw new HttpResponseException(response()->json([
-            'message' => 'Please verify your email address before signing in. Check your inbox for the verification link.',
+            'message' => 'Please verify your email address before signing in. Enter the code we sent to your inbox.',
             'code' => 'email_not_verified',
+            'email' => $user->email,
         ], 403));
     }
 

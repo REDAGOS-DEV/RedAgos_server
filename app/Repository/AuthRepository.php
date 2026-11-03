@@ -55,14 +55,6 @@ class AuthRepository
     }
 
     /**
-     * Find a user by primary key regardless of verification state.
-     */
-    public function findById(int|string $id): ?User
-    {
-        return User::find($id);
-    }
-
-    /**
      * Issue a personal access token and return its plain text value.
      */
     public function issueToken(User $user, string $name): string
@@ -131,7 +123,8 @@ class AuthRepository
     }
 
     /**
-     * Mark the user as verified and activated.
+     * Mark the user as verified and activated, and drop the code that did it
+     * (or any still pending, when verified some other way).
      */
     public function markVerified(User $user): User
     {
@@ -140,6 +133,8 @@ class AuthRepository
             'account_status' => AccountStatus::Active,
             'activated_at' => $user->activated_at ?? now(),
         ])->save();
+
+        $user->emailVerificationCode()->delete();
 
         return $user;
     }

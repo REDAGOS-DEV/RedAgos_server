@@ -323,11 +323,11 @@ class DonorDirectoryService
             throw $exception;
         }
 
-        // No verification link (project owner, 2026-10-21). Staff typed the
-        // address, and a link mailed to a mistyped one would let its owner
+        // No verification code (project owner, 2026-10-21). Staff typed the
+        // address, and a code mailed to a mistyped one would let its owner
         // confirm it and reset the password. The donor signs in with the
         // counter's slip (issueSignIn()) and confirms the address from the
-        // portal, where only they can ask for the link.
+        // portal, where only they can ask for the code.
 
         $this->auditLogger->record($staff, $auditAction, $donor, [
             'facility_id' => $facility->id,
@@ -492,7 +492,7 @@ class DonorDirectoryService
             throw $exception;
         }
 
-        // A corrected address is left unconfirmed and no link is mailed, for
+        // A corrected address is left unconfirmed and no code is mailed, for
         // the same reason as at registration: the donor confirms it from the
         // portal.
         $donor->refresh()->load('donorProfile.bloodType');

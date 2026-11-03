@@ -221,6 +221,14 @@ class User extends Authenticatable implements MustVerifyEmail
     }
 
     /**
+     * The code last mailed to verify this account's address, if any.
+     */
+    public function emailVerificationCode(): HasOne
+    {
+        return $this->hasOne(EmailVerificationCode::class);
+    }
+
+    /**
      * The facility this staff account belongs to.
      *
      * Null for donors and administrators. Every facility-scoped query resolves
@@ -290,18 +298,18 @@ class User extends Authenticatable implements MustVerifyEmail
     }
 
     /**
-     * Send the SPA-addressed email verification notification.
+     * Mail a fresh verification code, replacing any code sent before it.
      */
     public function sendEmailVerificationNotification(): void
     {
-        // A donor registered at the counter may hold no address. Notifying them
-        // would build a signed URL around a null and fail at the mailer, so the
-        // send is skipped rather than guarded at every call site.
+        // A donor registered at the counter may hold no address. There is
+        // nowhere to mail a code, so the send is skipped rather than guarded
+        // at every call site.
         if ($this->email === null) {
             return;
         }
 
-        $this->notify(new VerifyEmailNotification);
+        $this->notify(new VerifyEmailNotification(EmailVerificationCode::issue($this)));
     }
 
     /**

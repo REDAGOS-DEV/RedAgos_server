@@ -59,9 +59,9 @@ return [
     | Frontend URL
     |--------------------------------------------------------------------------
     |
-    | The origin of the Nuxt SPA that consumes this API. Email verification and
-    | password reset links are addressed to this host rather than to the API,
-    | because the user completes both flows in the browser application.
+    | The origin of the Nuxt SPA that consumes this API. Password reset links
+    | are addressed to this host rather than to the API, because the user
+    | completes that flow in the browser application.
     |
     */
 

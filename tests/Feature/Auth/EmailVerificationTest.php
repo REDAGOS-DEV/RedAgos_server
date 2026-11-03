@@ -3,45 +3,40 @@
 namespace Tests\Feature\Auth;
 
 use App\Enums\AccountStatus;
+use App\Models\EmailVerificationCode;
 use App\Models\User;
 use App\Notifications\VerifyEmailNotification;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Notification;
-use Illuminate\Support\Facades\URL;
 use Tests\TestCase;
 
+/**
+ * An address is verified with a six-digit code mailed to it (2026-11-03), typed
+ * back into the portal, in place of the signed link.
+ */
 class EmailVerificationTest extends TestCase
 {
     use LazilyRefreshDatabase;
 
-    /**
-     * Build the signed verification query string the SPA forwards to the API.
-     *
-     * `absolute: false` mirrors VerifyEmailNotification: the route validates
-     * with `signed:relative`, because the request never arrives on the host the
-     * link was signed for.
-     */
-    private function signedQuery(User $user, ?string $hash = null): string
-    {
-        $url = URL::temporarySignedRoute(
-            'verification.verify',
-            Carbon::now()->addMinutes(60),
-            [
-                'id' => $user->getKey(),
-                'hash' => $hash ?? sha1($user->getEmailForVerification()),
-            ],
-            absolute: false
-        );
+    private const REFUSAL = 'That code is incorrect or has expired.';
 
-        return substr($url, strpos($url, '?'));
+    private function verify(string $email, string $code)
+    {
+        return $this->postJson('/api/email/verify', ['email' => $email, 'code' => $code]);
     }
 
-    public function test_a_signed_link_verifies_the_address_and_activates_the_account(): void
+    /** A six-digit code that is not the one given. */
+    private function wrong(string $code): string
     {
-        $user = User::factory()->unverified()->create();
+        return str_pad((string) (((int) $code + 1) % 1_000_000), 6, '0', STR_PAD_LEFT);
+    }
 
-        $this->postJson('/api/email/verify'.$this->signedQuery($user))
+    public function test_the_code_verifies_the_address_and_activates_the_account(): void
+    {
+        $user = User::factory()->unverified()->create(['email' => 'pending@example.com']);
+        $code = EmailVerificationCode::issue($user);
+
+        $this->verify('pending@example.com', $code)
             ->assertOk()
             ->assertJsonPath('message', 'Email address verified successfully.');
 
@@ -52,70 +47,156 @@ class EmailVerificationTest extends TestCase
         $this->assertNotNull($user->activated_at);
     }
 
-    public function test_verifying_an_already_verified_address_is_idempotent(): void
+    public function test_the_address_is_matched_whatever_its_case_or_spacing(): void
     {
-        $user = User::factory()->create();
+        $user = User::factory()->unverified()->create(['email' => 'pending@example.com']);
+        $code = EmailVerificationCode::issue($user);
 
-        $this->postJson('/api/email/verify'.$this->signedQuery($user))
-            ->assertNoContent();
+        $this->verify('  PENDING@Example.com ', $code)->assertOk();
+
+        $this->assertTrue($user->fresh()->hasVerifiedEmail());
     }
 
-    public function test_an_unsigned_request_is_rejected(): void
+    public function test_a_code_works_once(): void
     {
-        $user = User::factory()->unverified()->create();
+        $user = User::factory()->unverified()->create(['email' => 'pending@example.com']);
+        $code = EmailVerificationCode::issue($user);
 
-        $this->postJson('/api/email/verify?id='.$user->id.'&hash='.sha1($user->email))
-            ->assertForbidden();
+        $this->verify('pending@example.com', $code)->assertOk();
+
+        $this->assertNull($user->fresh()->emailVerificationCode);
+        $this->verify('pending@example.com', $code)
+            ->assertStatus(422)
+            ->assertJsonPath('errors.code.0', self::REFUSAL);
+    }
+
+    public function test_a_wrong_code_is_refused_and_counted(): void
+    {
+        $user = User::factory()->unverified()->create(['email' => 'pending@example.com']);
+        $code = EmailVerificationCode::issue($user);
+
+        $this->verify('pending@example.com', $this->wrong($code))
+            ->assertStatus(422)
+            ->assertJsonPath('errors.code.0', self::REFUSAL);
+
+        $this->assertFalse($user->fresh()->hasVerifiedEmail());
+        $this->assertSame(1, $user->emailVerificationCode->attempts);
+    }
+
+    public function test_a_code_stops_working_after_five_wrong_tries(): void
+    {
+        $user = User::factory()->unverified()->create(['email' => 'pending@example.com']);
+        $code = EmailVerificationCode::issue($user);
+
+        foreach (range(1, EmailVerificationCode::MAX_ATTEMPTS) as $try) {
+            $this->verify('pending@example.com', $this->wrong($code))->assertStatus(422);
+        }
+
+        // Even the right code: a sixth guess is never compared.
+        $this->verify('pending@example.com', $code)
+            ->assertStatus(422)
+            ->assertJsonPath('errors.code.0', self::REFUSAL);
 
         $this->assertFalse($user->fresh()->hasVerifiedEmail());
     }
 
-    public function test_a_tampered_signature_is_rejected(): void
+    public function test_an_expired_code_is_refused(): void
     {
-        $user = User::factory()->unverified()->create();
-        $query = $this->signedQuery($user);
+        $user = User::factory()->unverified()->create(['email' => 'pending@example.com']);
+        $code = EmailVerificationCode::issue($user);
 
-        $this->postJson('/api/email/verify'.$query.'tampered')
-            ->assertForbidden();
+        $this->travel(11)->minutes();
+
+        $this->verify('pending@example.com', $code)->assertStatus(422);
 
         $this->assertFalse($user->fresh()->hasVerifiedEmail());
     }
 
-    public function test_an_expired_link_is_rejected(): void
+    public function test_only_the_latest_code_works(): void
     {
-        $user = User::factory()->unverified()->create();
-        $query = $this->signedQuery($user);
+        $user = User::factory()->unverified()->create(['email' => 'pending@example.com']);
+        $first = EmailVerificationCode::issue($user);
+        $latest = EmailVerificationCode::issue($user);
 
-        $this->travel(61)->minutes();
+        if ($first !== $latest) {
+            $this->verify('pending@example.com', $first)->assertStatus(422);
+        }
 
-        $this->postJson('/api/email/verify'.$query)->assertForbidden();
+        $this->verify('pending@example.com', $latest)->assertOk();
+    }
+
+    public function test_a_code_cannot_verify_an_address_changed_after_it_was_sent(): void
+    {
+        $user = User::factory()->unverified()->create(['email' => 'old@example.com']);
+        $code = EmailVerificationCode::issue($user);
+
+        $user->forceFill(['email' => 'new@example.com'])->save();
+
+        $this->verify('new@example.com', $code)->assertStatus(422);
 
         $this->assertFalse($user->fresh()->hasVerifiedEmail());
     }
 
-    public function test_a_signed_link_carrying_the_wrong_hash_is_rejected(): void
+    public function test_every_failure_gives_the_same_answer(): void
     {
-        $user = User::factory()->unverified()->create();
+        $verified = User::factory()->create(['email' => 'verified@example.com']);
+        $code = EmailVerificationCode::issue($verified);
+        $pending = User::factory()->unverified()->create(['email' => 'pending@example.com']);
+        $pendingCode = EmailVerificationCode::issue($pending);
 
-        $this->postJson('/api/email/verify'.$this->signedQuery($user, sha1('someone-else@example.com')))
-            ->assertForbidden()
-            ->assertJsonPath('code', 'invalid_verification_link');
+        $answers = [
+            $this->verify('nobody@example.com', '123456'),
+            $this->verify('verified@example.com', $code),
+            $this->verify('pending@example.com', $this->wrong($pendingCode)),
+        ];
 
-        $this->assertFalse($user->fresh()->hasVerifiedEmail());
+        foreach ($answers as $answer) {
+            $answer->assertStatus(422)->assertExactJson([
+                'message' => self::REFUSAL,
+                'errors' => ['code' => [self::REFUSAL]],
+            ]);
+        }
     }
 
-    public function test_a_signed_link_for_an_unknown_user_is_rejected(): void
+    public function test_the_code_must_be_six_digits(): void
     {
-        $user = User::factory()->unverified()->create();
-        $query = $this->signedQuery($user);
-        $user->forceDelete();
+        $this->verify('pending@example.com', '12345')
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('code');
 
-        $this->postJson('/api/email/verify'.$query)
-            ->assertForbidden()
-            ->assertJsonPath('code', 'invalid_verification_link');
+        $this->verify('pending@example.com', '12345a')
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('code');
     }
 
-    public function test_an_authenticated_user_can_request_another_verification_email(): void
+    public function test_only_a_hash_of_the_code_is_stored(): void
+    {
+        $user = User::factory()->unverified()->create();
+        $code = EmailVerificationCode::issue($user);
+
+        $stored = $user->emailVerificationCode;
+
+        $this->assertNotSame($code, $stored->code_hash);
+        $this->assertStringNotContainsString($code, json_encode($stored->toArray()));
+    }
+
+    public function test_the_mail_carries_the_code(): void
+    {
+        $user = User::factory()->unverified()->create();
+        Notification::fake();
+
+        $user->sendEmailVerificationNotification();
+
+        Notification::assertSentTo($user, VerifyEmailNotification::class, function (VerifyEmailNotification $notification) use ($user) {
+            $html = (string) $notification->toMail($user)->render();
+
+            return preg_match('/^\d{6}$/', $notification->code) === 1
+                && str_contains($html, $notification->code)
+                && ! str_contains($html, '/auth/verify-email');
+        });
+    }
+
+    public function test_an_authenticated_user_can_request_another_code(): void
     {
         $user = User::factory()->unverified()->create();
         Notification::fake();
@@ -125,6 +206,21 @@ class EmailVerificationTest extends TestCase
             ->assertNoContent();
 
         Notification::assertSentTo($user, VerifyEmailNotification::class);
+    }
+
+    public function test_a_new_code_replaces_the_one_before_it(): void
+    {
+        $user = User::factory()->unverified()->create(['email' => 'pending@example.com']);
+        Notification::fake();
+
+        $this->actingAs($user)->postJson('/api/email/verification-notification')->assertNoContent();
+        $this->actingAs($user)->postJson('/api/email/verification-notification')->assertNoContent();
+
+        $codes = Notification::sent($user, VerifyEmailNotification::class)->map->code;
+        $this->assertCount(2, $codes);
+        $this->assertSame(1, EmailVerificationCode::query()->where('user_id', $user->id)->count());
+
+        $this->verify('pending@example.com', $codes->last())->assertOk();
     }
 
     public function test_resending_to_an_already_verified_user_sends_nothing_but_still_succeeds(): void
@@ -144,7 +240,7 @@ class EmailVerificationTest extends TestCase
         $this->postJson('/api/email/verification-notification')->assertUnauthorized();
     }
 
-    public function test_a_guest_can_request_another_verification_email_by_address(): void
+    public function test_a_guest_can_request_another_code_by_address(): void
     {
         $user = User::factory()->unverified()->create(['email' => 'pending@example.com']);
         Notification::fake();
@@ -153,7 +249,7 @@ class EmailVerificationTest extends TestCase
             ->assertOk()
             ->assertJsonPath(
                 'message',
-                'If that address is registered and still unverified, a new verification link is on its way.'
+                'If that address is registered and still unverified, a new code is on its way.'
             );
 
         Notification::assertSentTo($user, VerifyEmailNotification::class);
@@ -204,66 +300,12 @@ class EmailVerificationTest extends TestCase
             ->assertHeader('Retry-After');
     }
 
-    public function test_the_verification_link_points_at_the_frontend_application(): void
+    public function test_verifying_is_throttled(): void
     {
-        config(['app.frontend_url' => 'http://localhost:3000']);
-        $user = User::factory()->unverified()->create();
-        Notification::fake();
+        foreach (range(1, 10) as $attempt) {
+            $this->verify('pending@example.com', '000000')->assertStatus(422);
+        }
 
-        $user->sendEmailVerificationNotification();
-
-        Notification::assertSentTo($user, VerifyEmailNotification::class, function ($notification) use ($user) {
-            $actionUrl = $notification->toMail($user)->actionUrl;
-
-            return str_starts_with($actionUrl, 'http://localhost:3000/auth/verify-email?')
-                && str_contains($actionUrl, 'signature=')
-                && str_contains($actionUrl, 'expires=');
-        });
-    }
-
-    public function test_the_emailed_link_query_string_verifies_when_forwarded_to_the_api(): void
-    {
-        config(['app.frontend_url' => 'http://localhost:3000']);
-        $user = User::factory()->unverified()->create();
-
-        $actionUrl = (new VerifyEmailNotification)->toMail($user)->actionUrl;
-        $query = substr($actionUrl, strpos($actionUrl, '?'));
-
-        $this->postJson('/api/email/verify'.$query)->assertOk();
-
-        $this->assertTrue($user->fresh()->hasVerifiedEmail());
-    }
-
-    /**
-     * The link must survive arriving on a different host than it was signed for.
-     *
-     * This is the case every other test here missed. They post to the same host
-     * APP_URL names, so an absolute signature matched and the suite stayed
-     * green — while no real request ever does that. The SPA posts to its own
-     * origin and the dev proxy forwards with the Host rewritten to
-     * 127.0.0.1:8000, and through a tunnel TLS terminates upstream so the
-     * request arrives as http. Both changed `$request->url()`, both made the
-     * absolute signature fail, and every donor was told their brand-new link
-     * had expired.
-     */
-    public function test_the_emailed_link_verifies_when_the_api_is_reached_on_another_host(): void
-    {
-        config([
-            'app.url' => 'https://api.redagos.test',
-            'app.frontend_url' => 'https://app.redagos.test',
-        ]);
-
-        $user = User::factory()->unverified()->create();
-
-        $actionUrl = (new VerifyEmailNotification)->toMail($user)->actionUrl;
-        $query = substr($actionUrl, strpos($actionUrl, '?'));
-
-        // What the proxy hands Laravel: the right path, a different scheme and
-        // host entirely. Passed as an absolute URL so the test request really
-        // carries that host — `$request->url()` is what the signature is
-        // checked against, and it is the whole point of this test.
-        $this->postJson('http://127.0.0.1:8000/api/email/verify'.$query)->assertOk();
-
-        $this->assertTrue($user->fresh()->hasVerifiedEmail());
+        $this->verify('pending@example.com', '000000')->assertStatus(429);
     }
 }
