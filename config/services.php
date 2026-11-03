@@ -99,4 +99,26 @@ return [
         'client_id' => env('GOOGLE_CLIENT_ID'),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Semaphore (SMS to donors' Philippine mobile numbers)
+    |--------------------------------------------------------------------------
+    |
+    | An empty api_key switches SMS off everywhere: no notice picks the SMS
+    | channel, so local and test runs never spend credit. sender_name must be
+    | one approved on the Semaphore account; left empty, Semaphore uses the
+    | account's default.
+    |
+    | log_only turns SMS on without Semaphore: each text is written to the
+    | application log instead of sent, like MAIL_MAILER=log. For trying the
+    | notices before a sender name is approved; no credit is spent.
+    |
+    */
+    'semaphore' => [
+        'api_key' => env('SEMAPHORE_API_KEY'),
+        'sender_name' => env('SEMAPHORE_SENDER_NAME'),
+        'base_url' => env('SEMAPHORE_API_BASE_URL', 'https://api.semaphore.co/api/v4'),
+        'log_only' => (bool) env('SEMAPHORE_LOG_ONLY', false),
+    ],
+
 ];

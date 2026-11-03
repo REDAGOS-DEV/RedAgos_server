@@ -33,8 +33,8 @@ class AppointmentScheduled extends Notification implements ShouldQueue
      */
     public function via(object $notifiable): array
     {
-        // The email is the donor's choice in Settings; the in-app copy is always written.
-        return DonorNotificationPreferences::alwaysInAppChannels($notifiable, DonorNotificationPreferences::APPOINTMENTS_EMAIL);
+        // The email (and the text, under the same switch) is the donor's choice in Settings; the in-app copy is always written.
+        return DonorNotificationPreferences::alwaysInAppChannels($notifiable, DonorNotificationPreferences::APPOINTMENTS_EMAIL, sms: true);
     }
 
     /**
@@ -68,6 +68,16 @@ class AppointmentScheduled extends Notification implements ShouldQueue
                 ? "You can reschedule or cancel from your appointments screen up to {$windowHours} hours beforehand."
                 : 'You can reschedule or cancel from your appointments screen any time before your appointment.')
             ->line('Questions? Call us on '.config('donation.support.hotline_label').' ('.config('donation.support.hours').').');
+    }
+
+    /**
+     * Build the text message: the booking in one line, plain ASCII so it stays one SMS where it can.
+     */
+    public function toSms(object $notifiable): string
+    {
+        return 'RedAgos: Your appointment is booked for '.$this->shortDate().', '.$this->time()
+            .' at '.$this->venue().'. Ref #'.$this->appointment->id
+            .'. Bring a valid ID and your donor QR code.';
     }
 
     /**

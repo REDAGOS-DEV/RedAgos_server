@@ -30,7 +30,7 @@ class DriveCancelled extends Notification implements ShouldQueue
      */
     public function via(object $notifiable): array
     {
-        return DonorNotificationPreferences::alwaysInAppChannels($notifiable, DonorNotificationPreferences::APPOINTMENTS_EMAIL);
+        return DonorNotificationPreferences::alwaysInAppChannels($notifiable, DonorNotificationPreferences::APPOINTMENTS_EMAIL, sms: true);
     }
 
     /**
@@ -63,6 +63,16 @@ class DriveCancelled extends Notification implements ShouldQueue
             ->line('Your appointment at this drive is cancelled. You do not need to do anything.')
             ->action('Book another appointment', $frontend.'/donor/appointments')
             ->line('Questions? Call us on '.config('donation.support.hotline_label').' ('.config('donation.support.hours').').');
+    }
+
+    /**
+     * Build the text message. The reason stays in the email and the in-app copy, to keep this one SMS.
+     */
+    public function toSms(object $notifiable): string
+    {
+        return 'RedAgos: '.$this->centre().' has cancelled '.$this->drive->name
+            .' on '.$this->drive->event_date->format('j M Y')
+            .'. Your appointment there is cancelled. You can book another in the RedAgos portal.';
     }
 
     /**

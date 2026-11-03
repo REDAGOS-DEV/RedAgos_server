@@ -39,8 +39,8 @@ class DonationRecorded extends Notification implements ShouldQueue
      */
     public function via(object $notifiable): array
     {
-        // The email is the donor's choice in Settings; the in-app copy is always written.
-        return DonorNotificationPreferences::alwaysInAppChannels($notifiable, DonorNotificationPreferences::RESULTS_EMAIL);
+        // The email (and the text, under the same switch) is the donor's choice in Settings; the in-app copy is always written.
+        return DonorNotificationPreferences::alwaysInAppChannels($notifiable, DonorNotificationPreferences::RESULTS_EMAIL, sms: true);
     }
 
     /**
@@ -76,6 +76,16 @@ class DonationRecorded extends Notification implements ShouldQueue
             ->action('View my donation history', $frontend.'/donor/history')
             ->line('Rest, keep drinking fluids, and avoid heavy lifting for the next few hours.')
             ->line('Questions? Call us on '.config('donation.support.hotline_label').' ('.config('donation.support.hours').').');
+    }
+
+    /**
+     * Build the text message. Like the email, it says nothing about testing.
+     */
+    public function toSms(object $notifiable): string
+    {
+        return 'RedAgos: Thank you, '.$notifiable->first_name.'! Your donation at '.$this->venue()
+            .' on '.$this->shortDate().' is recorded.'
+            .($this->nextEligibleDate ? ' You can donate again from '.$this->nextEligibleDate->format('j M Y').'.' : '');
     }
 
     /**

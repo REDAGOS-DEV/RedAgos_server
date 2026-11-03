@@ -374,14 +374,27 @@ UPLOADS_DISK=uploads
 LOG_LEVEL=info
 
 MAIL_MAILER=smtp              # a real provider: the Mailtrap sandbox never delivers
-MAIL_HOST=
+MAIL_HOST=smtp.gmail.com
 MAIL_PORT=587
-MAIL_USERNAME=
-MAIL_PASSWORD=
-MAIL_FROM_ADDRESS=            # on the provider's verified domain
+MAIL_USERNAME=                # the Gmail address
+MAIL_PASSWORD=                # its 16-character app password, no spaces
+MAIL_FROM_ADDRESS=            # the same Gmail address; Gmail rewrites any other
+MAIL_FROM_NAME=RedAgos
+
+SEMAPHORE_API_KEY=            # empty turns SMS off
+SEMAPHORE_SENDER_NAME=        # an approved sender name; empty uses the account's default
 
 XENDIT_CHECKOUT_ENABLED=false
 ```
+
+Gmail needs 2-Step Verification on the account, then an app password from `myaccount.google.com/apppasswords`. It sends about 500 messages a day. Semaphore is prepaid: one credit per 160-character text, and new sender names wait for approval.
+
+**Email and SMS check**
+
+1. From the environment's Commands page, run `php artisan mail:test you@example.com`. It sends directly and prints the SMTP error if any.
+2. Run it again with `--queued`. Arriving proves the queue worker runs; if it never arrives, the Background processes worker is missing.
+3. Run `php artisan sms:test 09XXXXXXXXX`. It prints the credit balance and Semaphore's message id. A text that starts with "TEST" is dropped by Semaphore, so the command refuses one.
+4. In the portal, book an appointment for a donor whose phone is a mobile: the confirmation arrives by email and SMS. Donation recorded, deferral and drive cancelled are texted too, each under its email switch in the donor's Settings.
 
 Use Supabase's **Session pooler** (port 5432). The direct host is IPv6-only, and the transaction pooler (6543) breaks Laravel's prepared statements. In Supabase, turn off the Data API (Project Settings → Data API): Laravel's tables are in `public`, which Supabase otherwise exposes over REST.
 
