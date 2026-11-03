@@ -44,6 +44,8 @@ class ListBloodRequestsRequest extends FormRequest
             'to' => ['sometimes', 'date_format:Y-m-d', 'after_or_equal:from'],
             'awaiting_release' => ['sometimes', 'boolean'],
             'awaiting_receipt' => ['sometimes', 'boolean'],
+            // 1: the invoice clears release; 0: no invoice yet, or money still owed.
+            'release_cleared' => ['sometimes', 'boolean'],
             'open' => ['sometimes', 'boolean'],
             'per_page' => ['sometimes', 'integer', 'min:1', 'max:100'],
         ];

@@ -18,7 +18,8 @@ class AuthService
 {
     public function __construct(
         private readonly AuthRepository $authRepository,
-        private readonly AuditLogger $auditLogger
+        private readonly AuditLogger $auditLogger,
+        private readonly GoogleIdTokenVerifier $googleVerifier
     ) {}
 
     /**
@@ -47,10 +48,46 @@ class AuthService
             ]);
         }
 
+        return $this->openSession($user, $payload['role'] ?? null);
+    }
+
+    /**
+     * Sign in with Google (2026-10-30): the credential Google Identity Services
+     * gave the browser, checked with Google, for the account that already uses
+     * that address. Google signs nobody up; a donor registers first.
+     *
+     * @return array<string, mixed>
+     */
+    public function loginWithGoogle(string $credential): array
+    {
+        $email = $this->googleVerifier->verifiedEmail($credential);
+        $user = $this->authRepository->findByLogin($email);
+
+        if (! $user) {
+            throw new HttpResponseException(response()->json([
+                'message' => 'No RedAgos account uses this Google address. Register as a donor, or sign in with your password.',
+                'code' => 'google_account_not_found',
+            ], 404));
+        }
+
+        // Google has just confirmed the address, which is what the emailed
+        // link proves, so an unverified one does not stop this sign-in.
+        return $this->openSession($user, null, 'google');
+    }
+
+    /**
+     * The checks every sign-in passes, then the token.
+     *
+     * @return array<string, mixed>
+     */
+    private function openSession(User $user, ?string $role, string $via = 'password'): array
+    {
         try {
             $this->guardAccountStatus($user);
-            $this->guardEmailVerified($user);
-            $requestedRole = $this->guardRequestedRole($user, $payload['role'] ?? null);
+            if ($via !== 'google') {
+                $this->guardEmailVerified($user);
+            }
+            $requestedRole = $this->guardRequestedRole($user, $role);
         } catch (HttpResponseException $refused) {
             // The right password on an account that may not sign in (a
             // deactivated colleague, the wrong portal) is the attempt an
@@ -63,6 +100,7 @@ class AuthService
 
         $this->auditLogger->record($user, 'auth.signed_in', $user, array_filter([
             'portal' => $requestedRole?->value,
+            'via' => $via === 'password' ? null : $via,
         ]));
 
         return [
@@ -158,33 +196,36 @@ class AuthService
     }
 
     /**
-     * Mark a user's email address as verified from a signed verification link.
+     * Mark an address as verified with the code mailed to it.
+     *
+     * Every failure gets the same answer: an unknown address, one already
+     * verified, no code, an expired or used-up code and a wrong guess all look
+     * alike, so this cannot be used to learn which addresses are registered.
+     * The try is counted before the code is compared, so the right code
+     * typed after the last allowed try is refused too.
      *
      * @param  array<string, mixed>  $payload
-     * @return array<string, mixed>
      */
-    public function verifyEmail(array $payload): array
+    public function verifyEmail(array $payload): void
     {
-        $user = $this->authRepository->findById($payload['id']);
+        $user = $this->authRepository->findByEmail(Str::lower(trim($payload['email'])));
+        $pending = $user?->emailVerificationCode;
 
-        if (! $user || ! hash_equals(sha1($user->getEmailForVerification()), (string) $payload['hash'])) {
-            throw new HttpResponseException(response()->json([
-                'message' => 'This verification link is invalid.',
-                'code' => 'invalid_verification_link',
-            ], 403));
-        }
-
-        if ($user->hasVerifiedEmail()) {
-            return ['already_verified' => true];
+        if (! $user
+            || $user->hasVerifiedEmail()
+            || ! $pending?->isLiveFor($user)
+            || ! $pending->claimAttempt()
+            || ! $pending->matches((string) $payload['code'])) {
+            throw ValidationException::withMessages([
+                'code' => ['That code is incorrect or has expired.'],
+            ]);
         }
 
         $this->authRepository->markVerified($user);
-
-        return ['already_verified' => false];
     }
 
     /**
-     * Re-send the verification email when the address is still unverified.
+     * Mail a new code when the address is still unverified.
      */
     public function resendVerificationEmail(User $user): void
     {
@@ -196,11 +237,11 @@ class AuthService
     }
 
     /**
-     * Re-send the verification email to an address supplied by a guest.
+     * Mail a new code to an address supplied by a guest.
      *
      * Sign-in is refused until the address is verified, so the authenticated
      * resend endpoint is unreachable for exactly the people who need it most —
-     * someone who registered and never received the mail. This is the way back
+     * someone who registered and never received the code. This is the way back
      * in for them.
      *
      * It deliberately reports nothing about the address: unknown, already
@@ -256,11 +297,20 @@ class AuthService
      *
      * Verification is part of registration now, not something deferred until
      * the first booking attempt, so an unverified account has no business
-     * holding a token at all. The `code` lets the client offer a resend
-     * instead of showing the generic credentials error.
+     * holding a token at all. The `code` tells the client to ask for the
+     * verification code, then sign in again.
+     *
+     * A code is mailed here when there is none still worth typing: a donor
+     * back after the one from registration expired, or staff signing in for
+     * the first time days after their account was made. A live one is left
+     * alone, so trying again does not bury it under another email.
+     *
+     * The address is returned because the sign-in may have been by username
+     * and the code screen names the inbox. That is safe: this is only reached
+     * once the password has checked out.
      *
      * A donor given a sign-in slip at the counter is let through without one:
-     * staff checked their ID in person, which proves more than a link in an
+     * staff checked their ID in person, which proves more than a code in an
      * inbox, and the donor may have no address at all. They confirm it from
      * the portal later, which online booking still asks for.
      */
@@ -270,9 +320,14 @@ class AuthService
             return;
         }
 
+        if (! $user->emailVerificationCode?->isLiveFor($user)) {
+            $user->sendEmailVerificationNotification();
+        }
+
         throw new HttpResponseException(response()->json([
-            'message' => 'Please verify your email address before signing in. Check your inbox for the verification link.',
+            'message' => 'Please verify your email address before signing in. Enter the code we sent to your inbox.',
             'code' => 'email_not_verified',
+            'email' => $user->email,
         ], 403));
     }
 
@@ -315,14 +370,10 @@ class AuthService
      *
      * Donors, blood-centre staff and hospital blood banks all sign in there,
      * and the client sends each to their own dashboard by the roles on the
-     * account. Two kinds of account are turned away:
-     *
-     *  - Administrators. They sign in only at the administrator page, which no
-     *    public page links to (project owner, 2026-10-21). That includes an
-     *    administrator who also holds another role: once signed in there, the
-     *    client lets them open their other portal.
-     *  - Accounts with no role at all, which would otherwise be handed a token
-     *    that can reach nothing.
+     * account. Administrators sign in there too (project owner, 2026-10-30;
+     * they had their own page before) and are sent to the admin portal.
+     * Accounts with no role at all are turned away: they would otherwise be
+     * handed a token that can reach nothing.
      *
      * Returns the account's role when it holds exactly one, so the audit row
      * and the token name say which portal it signed in to, as they do when a
@@ -330,13 +381,6 @@ class AuthService
      */
     private function guardUnifiedSignIn(User $user): ?RoleName
     {
-        if ($user->hasRole(RoleName::Admin)) {
-            throw new HttpResponseException(response()->json([
-                'message' => 'Administrators sign in from the administrator sign-in page.',
-                'code' => 'admin_sign_in_required',
-            ], 403));
-        }
-
         if ($user->roles->isEmpty()) {
             if ($this->hasUnactivatedFacility($user)) {
                 throw $this->facilityNotActivated();

@@ -5,6 +5,7 @@ namespace App\Http\Requests;
 use App\Enums\FacilityStatus;
 use App\Enums\FacilityTypeName;
 use App\Repository\FacilityRepository;
+use App\Rules\PersonName;
 use App\Support\AccountIdentity;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Support\Str;
@@ -167,8 +168,8 @@ class StoreFacilityRequest extends FormRequest
     {
         return [
             'primary_account' => ['required', 'array'],
-            'primary_account.first_name' => ['required', 'string', 'max:150'],
-            'primary_account.last_name' => ['required', 'string', 'max:150'],
+            'primary_account.first_name' => ['required', 'string', 'max:150', new PersonName],
+            'primary_account.last_name' => ['required', 'string', 'max:150', new PersonName],
             'primary_account.position' => ['required', 'string', 'max:100'],
             'primary_account.email' => ['required', 'string', 'email:rfc', 'max:150', 'unique:users,email'],
             'primary_account.phone' => ['required', 'string', 'regex:/^(?:\+63|63|0)9\d{9}$/', 'unique:users,phone'],

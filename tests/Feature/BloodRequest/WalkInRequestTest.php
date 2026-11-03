@@ -236,6 +236,18 @@ class WalkInRequestTest extends TestCase
             ->assertJsonValidationErrors(['representative.name', 'representative.relationship', 'representative.contact']);
     }
 
+    public function test_the_watchers_id_number_must_have_its_types_shape(): void
+    {
+        $payload = $this->walkInPayload();
+        $payload['representative']['id_type'] = 'sss_id';
+        $payload['representative']['id_number'] = '12-3456789';
+
+        $this->actingAs($this->issuance)
+            ->postJson('/api/blood-center/blood-requests/walk-in', $payload)
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['representative.id_number' => 'SSS number: 10 digits, e.g. 1234567890.']);
+    }
+
     public function test_the_patient_must_be_named(): void
     {
         $payload = $this->walkInPayload();
@@ -388,7 +400,7 @@ class WalkInRequestTest extends TestCase
 
         $context = json_encode(AuditLog::query()->where('action', 'request.walk_in_recorded')->firstOrFail()->context);
 
-        foreach (['Pedro Dela Cruz', '09171234567', '1234-5678-9012', 'Ana Lim', '(082) 222-1234'] as $personal) {
+        foreach (['Pedro Dela Cruz', '09171234567', '1234567890123456', 'Ana Lim', '(082) 222-1234'] as $personal) {
             $this->assertStringNotContainsString($personal, (string) $context);
         }
     }
@@ -451,6 +463,7 @@ class WalkInRequestTest extends TestCase
 
         $this->assertSame('Pedro Dela Cruz', $walkIn->representative_name);
         $this->assertSame('philsys', $walkIn->representative_id_type->value);
+        $this->assertSame('1234567890123456', $walkIn->representative_id_number);
 
         $this->assertDatabaseMissing('blood_request_events', ['note' => 'Pedro Dela Cruz']);
         $this->assertDatabaseMissing('audit_logs', ['context' => json_encode(['representative_name' => 'Pedro Dela Cruz'])]);

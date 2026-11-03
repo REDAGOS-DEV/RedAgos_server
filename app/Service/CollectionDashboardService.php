@@ -3,7 +3,6 @@
 namespace App\Service;
 
 use App\Enums\AppointmentStatus;
-use App\Enums\FacilityDonorStatus;
 use App\Models\Facility;
 use App\Models\MobileEvent;
 use App\Models\User;
@@ -83,9 +82,10 @@ class CollectionDashboardService
     /**
      * Every donor on this centre's list, by where they stand.
      *
-     * Inactive donors are counted once, as inactive, whatever their
-     * eligibility: they are out of the pool until a centre marks them active.
-     * The blood-group split is of the donors who could be called in today.
+     * Each donor is counted once by eligibility. Inactive (no donation in
+     * DonorStanding::ACTIVE_MONTHS months) is counted beside that, like new
+     * this week: a lapsed donor who is eligible is one to call back. The
+     * blood-group split is of the donors who could be called in today.
      *
      * @return array<string, mixed>
      */
@@ -100,7 +100,6 @@ class CollectionDashboardService
             ->reorder()
             ->chunkById(self::POOL_CHUNK, function ($donors) use ($facility, $weekAgo, &$pool, &$byType): void {
                 $standings = $this->donorStandingResolver->forDonors($facility->id, $donors);
-                $records = $this->donorDirectoryRepository->facilityRecordsFor($facility->id, $donors->pluck('id')->all());
 
                 foreach ($donors as $donor) {
                     $pool['total']++;
@@ -109,10 +108,8 @@ class CollectionDashboardService
                         $pool['new_this_week']++;
                     }
 
-                    if (($records[$donor->id] ?? null)?->status === FacilityDonorStatus::Inactive) {
+                    if ($standings[$donor->id]->activity() === DonorStanding::INACTIVE) {
                         $pool['inactive']++;
-
-                        continue;
                     }
 
                     $eligibility = $standings[$donor->id]->eligibility();

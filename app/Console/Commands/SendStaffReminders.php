@@ -88,7 +88,7 @@ class SendStaffReminders extends Command
             ->whereIn('status', AppointmentStatus::activeValues())
             ->whereDate('appointment_datetime', $today)
             ->count();
-        $drivesToday = MobileEvent::query()->where('facility_id', $centre->id)->whereDate('event_date', $today)->pluck('name')->all();
+        $drivesToday = MobileEvent::query()->where('facility_id', $centre->id)->notCancelled()->whereDate('event_date', $today)->pluck('name')->all();
 
         if ($appointments > 0 || $drivesToday !== []) {
             $recipients = $to([StaffNotificationTopics::class, 'receivesMorningBriefing']);
@@ -108,7 +108,7 @@ class SendStaffReminders extends Command
             $sent += $recipients->count();
         }
 
-        foreach (MobileEvent::query()->where('facility_id', $centre->id)->whereDate('event_date', $today->copy()->addDay())->get() as $drive) {
+        foreach (MobileEvent::query()->where('facility_id', $centre->id)->notCancelled()->whereDate('event_date', $today->copy()->addDay())->get() as $drive) {
             $recipients = $to([StaffNotificationTopics::class, 'receivesDriveReminders']);
             Notification::send($recipients, new DriveTomorrow($drive));
             $sent += $recipients->count();

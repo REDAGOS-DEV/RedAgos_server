@@ -47,8 +47,8 @@ class DonorDeferred extends Notification implements ShouldQueue
      */
     public function via(object $notifiable): array
     {
-        // The email is the donor's choice in Settings; the in-app copy is always written.
-        return DonorNotificationPreferences::alwaysInAppChannels($notifiable, DonorNotificationPreferences::RESULTS_EMAIL);
+        // The email (and the text, under the same switch) is the donor's choice in Settings; the in-app copy is always written.
+        return DonorNotificationPreferences::alwaysInAppChannels($notifiable, DonorNotificationPreferences::RESULTS_EMAIL, sms: true);
     }
 
     /**
@@ -92,6 +92,23 @@ class DonorDeferred extends Notification implements ShouldQueue
                 : 'A deferral is common and is usually temporary. Our staff can tell you when it would be right to try again.')
             ->action('Book another appointment', $frontend.'/donor/appointments')
             ->line('Questions? Call us on '.config('donation.support.hotline_label').' ('.config('donation.support.hours').').');
+    }
+
+    /**
+     * Build the text message: the code, never the reason, as in the email.
+     */
+    public function toSms(object $notifiable): string
+    {
+        $next = match (true) {
+            $this->isBlocking() => ' Please speak to our staff before booking again.',
+            $this->until !== null => ' You can book again after '.$this->untilLabel().'.',
+            default => '',
+        };
+
+        return 'RedAgos: You were not able to donate at '.$this->venue().' today.'
+            .($this->code ? ' Deferral code: '.$this->code.'.' : '')
+            .$next
+            .' Questions? Call '.config('donation.support.hotline_label').'.';
     }
 
     /**

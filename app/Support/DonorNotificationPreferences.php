@@ -3,6 +3,8 @@
 namespace App\Support;
 
 use App\Models\User;
+use App\Notifications\Channels\SmsChannel;
+use App\Service\SemaphoreSms;
 
 /**
  * What a donor chose to be told, and on which channel.
@@ -101,11 +103,23 @@ final class DonorNotificationPreferences
      * email follows `$emailKey`. No email for a donor without an address (a
      * counter registration may have none).
      *
+     * With `$sms`, the notice is also texted under the same switch, to a donor
+     * with a mobile number, once Semaphore is configured. The project owner
+     * chose one switch for both (2026-11-03): Settings has no SMS column.
+     *
      * @return array<int, string>
      */
-    public static function alwaysInAppChannels(object $notifiable, string $emailKey): array
+    public static function alwaysInAppChannels(object $notifiable, string $emailKey, bool $sms = false): array
     {
-        return self::wantsEmail($notifiable, $emailKey) ? ['mail', 'database'] : ['database'];
+        $channels = self::wantsEmail($notifiable, $emailKey) ? ['mail'] : [];
+
+        if ($sms && self::wantsSms($notifiable, $emailKey)) {
+            $channels[] = SmsChannel::class;
+        }
+
+        $channels[] = 'database';
+
+        return $channels;
     }
 
     /**
@@ -136,5 +150,14 @@ final class DonorNotificationPreferences
         }
 
         return self::allows($notifiable, $key);
+    }
+
+    private static function wantsSms(object $notifiable, string $key): bool
+    {
+        if (! $notifiable instanceof User || SemaphoreSms::recipient($notifiable->phone) === null) {
+            return false;
+        }
+
+        return app(SemaphoreSms::class)->isConfigured() && self::allows($notifiable, $key);
     }
 }

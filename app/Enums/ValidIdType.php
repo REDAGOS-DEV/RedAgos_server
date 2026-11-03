@@ -26,6 +26,12 @@ enum ValidIdType: string
 
     case SssId = 'sss_id';
 
+    case Tin = 'tin';
+
+    case PhilHealth = 'philhealth';
+
+    case PagIbig = 'pagibig';
+
     /**
      * Get the human-readable name of this ID type.
      */
@@ -40,6 +46,48 @@ enum ValidIdType: string
             self::PrcId => 'PRC ID',
             self::VotersId => "Voter's ID",
             self::SssId => 'SSS ID',
+            self::Tin => 'TIN ID',
+            self::PhilHealth => 'PhilHealth ID',
+            self::PagIbig => 'Pag-IBIG ID',
+        };
+    }
+
+    /**
+     * The pattern this ID's number matches once normalised (capitals, no
+     * spaces or hyphens), or null for an ID whose numbering is not fixed here.
+     *
+     * Kept in step with the client's utils/validId.ts, which hyphenates the
+     * number as it is typed and checks the same shapes before it is sent.
+     */
+    public function numberPattern(): ?string
+    {
+        return match ($this) {
+            self::PhilSys => '/^\d{16}$/',
+            self::DriversLicense => '/^[A-Z]\d{10}$/',
+            self::Tin => '/^\d{9}(\d{3})?$/',
+            self::SssId => '/^\d{10}$/',
+            self::Umid, self::PhilHealth, self::PagIbig => '/^\d{12}$/',
+            self::Passport => '/^[A-Z]\d{7}[A-Z]$/',
+            default => null,
+        };
+    }
+
+    /**
+     * What the number is, with an example written without symbols, for the
+     * error when one does not match numberPattern().
+     */
+    public function numberFormat(): ?string
+    {
+        return match ($this) {
+            self::PhilSys => 'PhilSys number: 16 digits, e.g. 1234567890123456',
+            self::DriversLicense => "Driver's license number: 1 letter and 10 digits, e.g. A1234567890",
+            self::Tin => 'TIN: 9 or 12 digits, e.g. 123456789 or 123456789000',
+            self::SssId => 'SSS number: 10 digits, e.g. 1234567890',
+            self::Umid => 'UMID number (CRN): 12 digits, e.g. 123456789012',
+            self::PhilHealth => 'PhilHealth number: 12 digits, e.g. 123456789012',
+            self::PagIbig => 'Pag-IBIG number: 12 digits, e.g. 123456789012',
+            self::Passport => 'Passport number: 1 letter, 7 digits and 1 letter, e.g. P1234567A',
+            default => null,
         };
     }
 

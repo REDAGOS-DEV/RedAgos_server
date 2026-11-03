@@ -2,14 +2,14 @@
 
 namespace App\Repository;
 
+use App\Enums\AppointmentStatus;
 use App\Enums\DonationStatus;
-use App\Enums\FacilityDonorStatus;
 use App\Enums\RoleName;
 use App\Models\Donation;
-use App\Models\DonationAppointment;
 use App\Models\FacilityDonor;
 use App\Models\User;
 use App\Support\AccountIdentity;
+use App\Support\DonorStanding;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
@@ -21,11 +21,11 @@ use Illuminate\Support\Facades\DB;
  * Donor lookup for blood-centre staff, in the two shapes the privacy rule allows.
  *
  * Donors are not owned by a facility — `donor_profiles` carries no facility_id
- * and a donor may book anywhere. So browsing is restricted to donors this
- * facility has actually dealt with, while an exact identifier finds anyone. The
- * second path exists because a walk-in who last donated elsewhere must be
- * findable: registering them again would fork their donation history and break
- * the 56-day interval check that reads it.
+ * and a donor may book anywhere. So browsing is restricted to donors who have
+ * come in person (attendedAt()), while an exact identifier finds anyone. The
+ * second path exists because a walk-in who last donated elsewhere, or who has
+ * only a Donor Portal account, must be findable: registering them again would
+ * fork their donation history and break the 56-day interval check that reads it.
  */
 class DonorDirectoryRepository
 {
@@ -35,25 +35,27 @@ class DonorDirectoryRepository
     private const DONOR_CODE_PATTERN = '/^DONOR-(\d{1,10})$/i';
 
     /**
-     * Page every donor in RedAgos, as Donor Management lists them: global
-     * across the blood centres (project owner, 2026-10-25).
+     * Page the donors Donor Management lists: the same list at every blood
+     * centre (project owner, 2026-10-25), of everyone who has come in person
+     * at any of them (attendedAt(), project owner, 2026-11-01). A Donor Portal
+     * account, or a booking, does not put a person on it.
      *
-     * The filters are the facility's own where they must be: status is this
-     * centre's record of the donor (facility_donors). The export, the
-     * eligibility reminders, drive announcements and the dashboard's pool
-     * keep facilityDonorQuery(): this centre's own donors only.
+     * The export, the eligibility reminders, drive announcements and the
+     * dashboard's pool keep facilityDonorQuery(): this centre's own donors only.
      *
      * @param  array<string, mixed>  $filters
      * @return LengthAwarePaginator<int, User>
      */
-    public function browseNetwork(int $facilityId, array $filters, int $perPage): LengthAwarePaginator
+    public function browseNetwork(array $filters, int $perPage): LengthAwarePaginator
     {
-        return $this->filtered($this->donorQuery(), $facilityId, $filters)->paginate($perPage);
+        $query = $this->donorQuery()->where(fn (Builder $query): Builder => $this->attendedAt($query, null));
+
+        return $this->filtered($query, $filters)->paginate($perPage);
     }
 
     /**
-     * Which of these donors this facility has dealt with (a booking, a
-     * donation or its own record), for the list's "other centre" mark.
+     * Which of these donors are this facility's own (attendedAt()), for the
+     * list's "other centre" mark.
      *
      * @param  array<int, int>  $donorIds
      * @return array<int, int> the ids that are this centre's own
@@ -64,42 +66,67 @@ class DonorDirectoryRepository
             return [];
         }
 
-        return array_values(array_unique(array_map('intval', [
-            ...DonationAppointment::query()->where('facility_id', $facilityId)->whereIn('donor_id', $donorIds)->pluck('donor_id')->all(),
-            ...Donation::query()->where('facility_id', $facilityId)->whereIn('donor_id', $donorIds)->pluck('donor_id')->all(),
-            ...FacilityDonor::query()->where('facility_id', $facilityId)->whereIn('donor_id', $donorIds)->pluck('donor_id')->all(),
-        ])));
+        return User::query()
+            ->whereIn('users.id', $donorIds)
+            ->where(fn (Builder $query): Builder => $this->attendedAt($query, $facilityId))
+            ->pluck('users.id')
+            ->map(fn ($id): int => (int) $id)
+            ->all();
     }
 
     /**
-     * The donors this facility has dealt with, filtered and sorted as the
-     * Donors page asks. The export and the eligibility reminders, drive
-     * announcements and the dashboard's pool: this centre's own donors, while
-     * the page itself lists everyone (browseNetwork(), project owner,
-     * 2026-10-25).
+     * This facility's own donors, filtered and sorted as the Donors page
+     * asks: the export and the eligibility reminders, drive announcements and
+     * the dashboard's pool, while the page itself lists every centre's
+     * (browseNetwork()).
      *
-     * "Dealt with" means an appointment booked here, a donation recorded here,
-     * or a record of this centre's own (`facility_donors`: registered at its
-     * counter, or given a status or a note here).
+     * Own means the donor came in person here (attendedAt()). With
+     * $withBookings, also anyone booked here who has not come yet: a drive's
+     * paper record is typed for the people on its roster.
      *
      * Filters: search, blood_type_id, status (active|inactive), sort
      * (newest|oldest|name; newest by default).
      *
      * @param  array<string, mixed>  $filters
      */
-    public function facilityDonorQuery(int $facilityId, array $filters = []): Builder
+    public function facilityDonorQuery(int $facilityId, array $filters = [], bool $withBookings = false): Builder
     {
         $query = $this->donorQuery()
-            ->where(fn (Builder $query): Builder => $query
-                ->whereHas('donorProfile.appointments', fn (Builder $q) => $q->where('facility_id', $facilityId))
-                ->orWhereHas('donorProfile.donations', fn (Builder $q) => $q->where('facility_id', $facilityId))
-                ->orWhereExists(fn (QueryBuilder $q) => $q->select(DB::raw(1))
-                    ->from('facility_donors')
-                    ->whereColumn('facility_donors.donor_id', 'users.id')
-                    ->where('facility_donors.facility_id', $facilityId))
+            ->where(fn (Builder $query): Builder => $this->attendedAt($query, $facilityId)
+                ->when($withBookings, fn (Builder $q): Builder => $q->orWhereHas(
+                    'donorProfile.appointments',
+                    fn (Builder $appointment) => $appointment->where('facility_id', $facilityId)
+                ))
             );
 
-        return $this->filtered($query, $facilityId, $filters);
+        return $this->filtered($query, $filters);
+    }
+
+    /**
+     * Narrow to the donors who have come in person, at one centre or (with
+     * no facility) at any: checked in for a booking (the visit under way or
+     * finished), a visit recorded (at the counter or from a drive's paper
+     * record, deferred or drawn), or registered at the counter.
+     *
+     * A Donor Portal account is not a visit, and neither is a booking
+     * (project owner, 2026-11-01): the person becomes a centre's donor when
+     * they are checked in there. A note or reminder a centre keeps on a donor
+     * (facility_donors without registered_here) is not one either.
+     *
+     * Applies OR clauses, so callers wrap it in a where() closure.
+     */
+    private function attendedAt(Builder $query, ?int $facilityId): Builder
+    {
+        $here = fn ($q, string $column) => $q->when($facilityId !== null, fn ($q) => $q->where($column, $facilityId));
+
+        return $query
+            ->whereHas('donorProfile.appointments', fn (Builder $q) => $here($q, 'facility_id')
+                ->whereIn('status', AppointmentStatus::arrivedValues()))
+            ->orWhereHas('donorProfile.donations', fn (Builder $q) => $here($q, 'facility_id'))
+            ->orWhereExists(fn (QueryBuilder $q) => $here($q->select(DB::raw(1))
+                ->from('facility_donors')
+                ->whereColumn('facility_donors.donor_id', 'users.id')
+                ->where('facility_donors.registered_here', true), 'facility_donors.facility_id'));
     }
 
     /**
@@ -107,7 +134,7 @@ class DonorDirectoryRepository
      *
      * @param  array<string, mixed>  $filters
      */
-    private function filtered(Builder $query, int $facilityId, array $filters): Builder
+    private function filtered(Builder $query, array $filters): Builder
     {
         $query = $query
             ->when(
@@ -119,7 +146,7 @@ class DonorDirectoryRepository
             )
             ->when(
                 isset($filters['status']),
-                fn (Builder $q): Builder => $this->applyStatus($q, $facilityId, FacilityDonorStatus::from($filters['status']))
+                fn (Builder $q): Builder => $this->applyStatus($q, (string) $filters['status'])
             )
             ->when(
                 isset($filters['search']),
@@ -193,7 +220,6 @@ class DonorDirectoryRepository
             array_map(fn (int $donorId): array => [
                 'facility_id' => $facilityId,
                 'donor_id' => $donorId,
-                'status' => FacilityDonorStatus::Active->value,
                 'registered_here' => false,
                 'eligibility_reminded_at' => $at,
                 'created_at' => $at,
@@ -302,31 +328,12 @@ class DonorDirectoryRepository
     }
 
     /**
-     * Determine whether this facility has dealt with this donor before.
-     *
-     * Decides which of the two response shapes the caller receives: a full
-     * record, or the standardised cross-facility summary.
+     * Determine whether this donor is this facility's own: they came in
+     * person here (attendedAt()). A booking here alone does not make them so.
      */
     public function facilityHasRelationship(int $donorId, int $facilityId): bool
     {
-        $hasAppointment = DonationAppointment::query()
-            ->where('donor_id', $donorId)
-            ->where('facility_id', $facilityId)
-            ->exists();
-
-        if ($hasAppointment) {
-            return true;
-        }
-
-        $hasDonation = Donation::query()
-            ->where('donor_id', $donorId)
-            ->where('facility_id', $facilityId)
-            ->exists();
-
-        return $hasDonation || FacilityDonor::query()
-            ->where('donor_id', $donorId)
-            ->where('facility_id', $facilityId)
-            ->exists();
+        return $this->relatedDonorIds($facilityId, [$donorId]) !== [];
     }
 
     /**
@@ -336,8 +343,8 @@ class DonorDirectoryRepository
      * is allowed to see, so it must carry enough to judge eligibility and
      * nothing that identifies where they donated or what was recorded there.
      *
-     * A donation counts once blood was given: the bag was drawn, or Processing
-     * has completed it. Counting completed donations alone told a donor bled
+     * A donation counts once blood was given: a collection was recorded
+     * (bloodGiven()). Counting completed donations alone told a donor bled
      * this morning that they were eligible, because the bag was still in the
      * laboratory, and the counter's own interval check (EligibilityRuleEvaluator,
      * reading the draw) would then turn them away. The eligibility reminder
@@ -358,17 +365,17 @@ class DonorDirectoryRepository
     }
 
     /**
-     * Narrow a donations query to the visits where blood was actually given.
+     * Narrow a donations query to the visits where blood was actually given:
+     * a collection was recorded, whatever became of the bag afterwards. Only
+     * that record says so (project owner, 2026-11-01): a visit deferred at
+     * screening, or whose draw failed, is a visit, not a donation.
      */
     private function bloodGiven(QueryBuilder $query): QueryBuilder
     {
-        return $query->where(fn (QueryBuilder $q) => $q
-            ->where('donations.status', DonationStatus::Completed->value)
-            ->orWhereExists(fn (QueryBuilder $collection) => $collection
-                ->select(DB::raw(1))
-                ->from('blood_collections')
-                ->whereColumn('blood_collections.donation_id', 'donations.id'))
-        );
+        return $query->whereExists(fn (QueryBuilder $collection) => $collection
+            ->select(DB::raw(1))
+            ->from('blood_collections')
+            ->whereColumn('blood_collections.donation_id', 'donations.id'));
     }
 
     /**
@@ -453,20 +460,25 @@ class DonorDirectoryRepository
     }
 
     /**
-     * Keep the donors with this status at this facility. No record there
-     * means active.
+     * Keep the active or the inactive donors (DonorStanding::activity()),
+     * reading the last donation as DonorStandingResolver does: the last draw
+     * anywhere, else the date the donor declared. A donor with neither is in
+     * neither.
      */
-    private function applyStatus(Builder $query, int $facilityId, FacilityDonorStatus $status): Builder
+    private function applyStatus(Builder $query, string $status): Builder
     {
-        $inactive = fn (QueryBuilder $q) => $q->select(DB::raw(1))
-            ->from('facility_donors')
-            ->whereColumn('facility_donors.donor_id', 'users.id')
-            ->where('facility_donors.facility_id', $facilityId)
-            ->where('facility_donors.status', FacilityDonorStatus::Inactive->value);
+        $since = DonorStanding::activeSince()->toDateString();
+        $given = fn (QueryBuilder $q) => $this->bloodGiven($q->select(DB::raw(1))
+            ->from('donations')
+            ->whereColumn('donations.donor_id', 'users.id'));
+        $givenSince = fn (QueryBuilder $q) => $given($q)->where('donations.donation_date', '>=', $since);
+        $declared = fn (string $operator) => fn (Builder $q): Builder => $q->whereNotExists($given)
+            ->whereHas('donorProfile', fn (Builder $p) => $p->where('last_donation_date', $operator, $since));
 
-        return $status === FacilityDonorStatus::Inactive
-            ? $query->whereExists($inactive)
-            : $query->whereNotExists($inactive);
+        return $query->where(fn (Builder $q): Builder => $status === DonorStanding::ACTIVE
+            ? $q->whereExists($givenSince)->orWhere($declared('>='))
+            : $q->where(fn (Builder $drawn): Builder => $drawn->whereExists($given)->whereNotExists($givenSince))
+                ->orWhere($declared('<')));
     }
 
     /**

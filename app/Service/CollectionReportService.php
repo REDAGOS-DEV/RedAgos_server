@@ -3,7 +3,6 @@
 namespace App\Service;
 
 use App\Enums\AppointmentStatus;
-use App\Enums\DonationStatus;
 use App\Enums\DonationType;
 use App\Enums\DonorType;
 use App\Enums\ScreeningOutcome;
@@ -138,8 +137,10 @@ class CollectionReportService
         $noShow = $count(AppointmentStatus::NoShow);
 
         // ── Drives ──
+        // A cancelled drive was never held.
         $drives = MobileEvent::query()
             ->where('facility_id', $facility->id)
+            ->notCancelled()
             ->whereBetween('event_date', [$first->toDateString(), $last->toDateString()])
             ->get(['id', 'name', 'event_date', 'max_capacity']);
 
@@ -344,7 +345,7 @@ class CollectionReportService
         $earlier = Donation::query()
             ->whereIn('donor_id', $given->pluck('donor_id')->unique()->values())
             ->where('donation_date', '<', $given->max('donation_date') ?? $periodEnd)
-            ->where(fn ($q) => $q->where('status', DonationStatus::Completed->value)->orWhereHas('collection'))
+            ->whereHas('collection')
             ->get(['id', 'donor_id', 'facility_id', 'donation_date'])
             ->groupBy('donor_id');
 
@@ -406,6 +407,8 @@ class CollectionReportService
             'type_labels' => collect(DonorType::cases())->mapWithKeys(fn (DonorType $t): array => [$t->value => $t->label()])->all(),
             'lapsed_after_days' => self::LAPSED_AFTER_DAYS,
             'lapsed_donors' => $this->lapsedDonors($facilityId, $periodEnd),
+            // Everyone who has given here, so the lapsed can be read as a share (2026-10-30).
+            'donors_here' => $this->donorsHere($facilityId)->count(),
         ];
     }
 
@@ -415,21 +418,31 @@ class CollectionReportService
      */
     private function lapsedDonors(int $facilityId, CarbonImmutable $periodEnd): int
     {
-        $donors = Donation::query()
-            ->where('facility_id', $facilityId)
-            ->where(fn ($q) => $q->where('status', DonationStatus::Completed->value)->orWhereHas('collection'))
-            ->distinct()
-            ->pluck('donor_id');
+        $donors = $this->donorsHere($facilityId);
 
         return Donation::query()
             ->whereIn('donor_id', $donors)
             ->where('donation_date', '<=', $periodEnd->endOfDay())
-            ->where(fn ($q) => $q->where('status', DonationStatus::Completed->value)->orWhereHas('collection'))
+            ->whereHas('collection')
             ->groupBy('donor_id')
             ->selectRaw('donor_id, max(donation_date) as last_at')
             ->get()
             ->filter(fn ($row): bool => CarbonImmutable::parse($row->last_at)->diffInDays($periodEnd) > self::LAPSED_AFTER_DAYS)
             ->count();
+    }
+
+    /**
+     * The donors who have given here at least once.
+     *
+     * @return Collection<int, int>
+     */
+    private function donorsHere(int $facilityId): Collection
+    {
+        return Donation::query()
+            ->where('facility_id', $facilityId)
+            ->whereHas('collection')
+            ->distinct()
+            ->pluck('donor_id');
     }
 
     private function refuse(int $status, string $code, string $message): HttpResponseException

@@ -3,6 +3,7 @@
 namespace App\Http\Requests;
 
 use App\Enums\AccountStatus;
+use App\Rules\PersonName;
 use App\Support\AdminPrivileges;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -18,7 +19,7 @@ class StoreUserRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'first_name' => ['required', 'string', 'max:150'], 'last_name' => ['required', 'string', 'max:150'],
+            'first_name' => ['required', 'string', 'max:150', new PersonName], 'last_name' => ['required', 'string', 'max:150', new PersonName],
             'email' => ['required', 'email:rfc', 'max:150', 'unique:users,email'],
             'phone' => ['nullable', 'string', 'max:20', 'unique:users,phone'],
             'username' => ['required', 'string', 'max:150', 'unique:users,username'],

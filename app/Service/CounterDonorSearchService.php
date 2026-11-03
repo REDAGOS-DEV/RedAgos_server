@@ -12,8 +12,9 @@ use Illuminate\Http\Exceptions\HttpResponseException;
  * Find a walk-in donor at the Donation counter by name, email or phone.
  *
  * Two reaches, on purpose. A name, or any part of a name, email or phone, is
- * searched only among the donors this centre has already dealt with -- the
- * same list the Donors page shows. Across the whole register a donor is found
+ * searched only among this centre's own donors and the people booked here: a
+ * drive's paper record is typed for the people on its roster, who have not
+ * been checked in until it is. Across the whole register a donor is found
  * only by something they could have handed over in person: their exact email,
  * phone, valid ID number or donor code. A partial match across facilities would
  * turn this box into a way to enumerate everyone who has ever given blood
@@ -42,7 +43,7 @@ class CounterDonorSearchService
         $term = trim($term);
 
         $own = $this->donorDirectoryRepository
-            ->facilityDonorQuery($facility->id, ['search' => $term, 'sort' => 'name'])
+            ->facilityDonorQuery($facility->id, ['search' => $term, 'sort' => 'name'], withBookings: true)
             ->limit(self::LIMIT + 1)
             ->get();
 

@@ -87,8 +87,10 @@ class DonorDirectoryTest extends TestCase
         $this->assertStringNotContainsString($theirs->last_name, $csv);
     }
 
-    public function test_a_donor_with_only_an_appointment_here_is_browsable(): void
+    public function test_a_donor_with_only_an_appointment_here_is_not_browsable(): void
     {
+        // Booked is not checked in (project owner, 2026-11-01). The rules
+        // themselves are pinned in DonorDirectoryMembershipTest.
         $donor = User::factory()->donor()->create();
 
         DonationAppointment::factory()->create([
@@ -98,7 +100,7 @@ class DonorDirectoryTest extends TestCase
 
         $uuids = collect($this->actingAs($this->staff)->getJson('/api/blood-center/donors')->json('data'))->pluck('uuid');
 
-        $this->assertContains($donor->uuid, $uuids);
+        $this->assertNotContains($donor->uuid, $uuids);
     }
 
     public function test_an_exact_donor_code_finds_a_donor_from_another_facility(): void

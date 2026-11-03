@@ -65,6 +65,29 @@ enum AppointmentStatus: string
     }
 
     /**
+     * Determine whether the donor came for this appointment: checked in (the
+     * visit under way) or finished. A booking alone is not a visit (project
+     * owner, 2026-11-01), so scheduled, cancelled and no-show are not.
+     */
+    public function isArrival(): bool
+    {
+        return $this === self::Confirmed || $this === self::Completed;
+    }
+
+    /**
+     * Get every status the donor reaches only by coming in.
+     *
+     * @return array<int, string>
+     */
+    public static function arrivedValues(): array
+    {
+        return array_values(array_map(
+            fn (self $status): string => $status->value,
+            array_filter(self::cases(), fn (self $status): bool => $status->isArrival())
+        ));
+    }
+
+    /**
      * Get every status that still occupies a slot.
      *
      * @return array<int, string>

@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Rules\PersonName;
 use App\Support\AccountIdentity;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -30,8 +31,8 @@ class UpdateBloodCenterProfileRequest extends FormRequest
         $user = $this->user();
 
         return [
-            'first_name' => ['sometimes', 'required', 'string', 'max:150'],
-            'last_name' => ['sometimes', 'required', 'string', 'max:150'],
+            'first_name' => ['sometimes', 'required', 'string', 'max:150', new PersonName],
+            'last_name' => ['sometimes', 'required', 'string', 'max:150', new PersonName],
             'phone' => [
                 'sometimes', 'required', 'string', 'regex:/^(?:\+63|63|0)9\d{9}$/',
                 Rule::unique('users', 'phone')->ignore($user?->id),

@@ -4,12 +4,16 @@ namespace App\Repository;
 
 use App\Enums\AppointmentStatus;
 use App\Enums\IdentityStatus;
+use App\Enums\RoleName;
 use App\Models\BloodType;
 use App\Models\DonorProfile;
+use App\Models\FacilityDonor;
 use App\Models\Role;
 use App\Models\User;
+use App\Support\AccountIdentity;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
@@ -137,6 +141,115 @@ class DonorRepository
             ->select('users.*')
             ->paginate($perPage)
             ->withQueryString();
+    }
+
+    /**
+     * Other donor accounts that may belong to the same person as one of these
+     * donors: the same date of birth with the same first name, last name, or
+     * both. Birthday and surname is how a married donor's maiden-name record
+     * turns up; birthday and first name, a misspelt surname.
+     *
+     * The ID number, email and phone are unique, so a second account always
+     * differs on those. The birthday is required on every account (portal,
+     * counter and record edits alike) and the same person cannot change it
+     * between two sign-ups. A name alone is not enough: a common one would list
+     * every namesake in the network.
+     *
+     * One query for the whole page, an OR group per donor. The donors
+     * themselves come back too, and are only dropped from their own matches
+     * (DonorIdentityVerificationService): two accounts awaiting review at once
+     * are the likeliest pair of all.
+     *
+     * @param  iterable<int, User>  $donors  with donorProfile loaded
+     * @return EloquentCollection<int, User>
+     */
+    public function lookalikeDonors(iterable $donors): EloquentCollection
+    {
+        $first = 'LOWER(TRIM(users.first_name)) = ?';
+        $last = 'LOWER(TRIM(users.last_name)) = ?';
+        $clauses = 0;
+
+        $query = User::query()
+            ->with(['donorProfile'])
+            ->join('donor_profiles', 'donor_profiles.donor_id', '=', 'users.id')
+            ->whereNull('donor_profiles.deleted_at')
+            ->whereHas('roles', fn (Builder $q) => $q->where('name', RoleName::Donor->value))
+            ->select('users.*');
+
+        $query->where(function (Builder $any) use ($donors, $first, $last, &$clauses): void {
+            foreach ($donors as $donor) {
+                $firstName = AccountIdentity::comparableName($donor->first_name);
+                $lastName = AccountIdentity::comparableName($donor->last_name);
+                $born = $donor->donorProfile?->birth_date?->toDateString();
+
+                if ($born === null || ($firstName === '' && $lastName === '')) {
+                    continue;
+                }
+
+                $any->orWhere(fn (Builder $same) => $same
+                    ->whereDate('donor_profiles.birth_date', $born)
+                    ->where(fn (Builder $name) => $name
+                        ->whereRaw($first, [$firstName])
+                        ->orWhereRaw($last, [$lastName])));
+
+                $clauses++;
+            }
+        });
+
+        return $clauses === 0 ? new EloquentCollection : $query->get();
+    }
+
+    /**
+     * The centre whose counter created each of these donor accounts, by donor
+     * id. A donor without one signed up on the portal.
+     *
+     * @param  array<int, int>  $donorIds
+     * @return Collection<int, string>
+     */
+    public function counterRegistrations(array $donorIds): Collection
+    {
+        if ($donorIds === []) {
+            return collect();
+        }
+
+        return FacilityDonor::query()
+            ->with('facility:id,name')
+            ->whereIn('donor_id', $donorIds)
+            ->where('registered_here', true)
+            ->get()
+            ->mapWithKeys(fn (FacilityDonor $record): array => [
+                (int) $record->donor_id => (string) $record->facility?->name,
+            ]);
+    }
+
+    /**
+     * How many times each of these donors gave blood, and when last, by donor
+     * id. Counted as countCollectedDonations() counts: a bag was drawn.
+     *
+     * @param  array<int, int>  $donorIds
+     * @return Collection<int, array{total: int, last_at: ?string}>
+     */
+    public function collectedDonationSummaries(array $donorIds): Collection
+    {
+        if ($donorIds === []) {
+            return collect();
+        }
+
+        return DB::table('donations')
+            ->whereIn('donations.donor_id', $donorIds)
+            ->whereExists(fn (QueryBuilder $collection) => $collection
+                ->select(DB::raw(1))
+                ->from('blood_collections')
+                ->whereColumn('blood_collections.donation_id', 'donations.id'))
+            ->groupBy('donations.donor_id')
+            ->select('donations.donor_id', DB::raw('COUNT(*) as total'), DB::raw('MAX(donations.donation_date) as last_at'))
+            ->get()
+            ->mapWithKeys(fn (object $row): array => [
+                (int) $row->donor_id => [
+                    'total' => (int) $row->total,
+                    'last_at' => $row->last_at !== null ? Carbon::parse($row->last_at)->toDateString() : null,
+                ],
+            ]);
     }
 
     /**

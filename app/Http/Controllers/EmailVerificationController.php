@@ -16,15 +16,11 @@ class EmailVerificationController extends Controller
     ) {}
 
     /**
-     * Verify an email address from a signed verification link.
+     * Verify an email address with the code mailed to it.
      */
-    public function verify(VerifyEmailRequest $request): JsonResponse|Response
+    public function verify(VerifyEmailRequest $request): JsonResponse
     {
-        $result = $this->authService->verifyEmail($request->validated());
-
-        if ($result['already_verified']) {
-            return response()->noContent();
-        }
+        $this->authService->verifyEmail($request->validated());
 
         return response()->json([
             'message' => 'Email address verified successfully.',
@@ -32,7 +28,7 @@ class EmailVerificationController extends Controller
     }
 
     /**
-     * Re-send the verification email to the authenticated user.
+     * Mail a new code to the authenticated user.
      */
     public function resend(Request $request): Response
     {
@@ -42,7 +38,7 @@ class EmailVerificationController extends Controller
     }
 
     /**
-     * Re-send the verification email to an address supplied by a guest.
+     * Mail a new code to an address supplied by a guest.
      *
      * An unverified account cannot sign in, so it can never reach resend()
      * above. The reply is identical whatever the address turns out to be, so
@@ -53,7 +49,7 @@ class EmailVerificationController extends Controller
         $this->authService->resendVerificationEmailToAddress($request->validated()['email']);
 
         return response()->json([
-            'message' => 'If that address is registered and still unverified, a new verification link is on its way.',
+            'message' => 'If that address is registered and still unverified, a new code is on its way.',
         ]);
     }
 }

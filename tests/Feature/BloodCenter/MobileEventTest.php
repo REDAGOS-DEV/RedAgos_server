@@ -12,6 +12,7 @@ use App\Models\DonorProfile;
 use App\Models\EligibilityScreening;
 use App\Models\Facility;
 use App\Models\MobileEvent;
+use App\Models\PaperDonationSheet;
 use App\Models\User;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Support\Carbon;
@@ -231,41 +232,56 @@ class MobileEventTest extends TestCase
             ->assertJsonPath('drives.0.status', 'Full');
     }
 
-    public function test_units_collected_this_month_counts_only_drawn_bags(): void
+    /**
+     * The card reads "At drives this month". It used to count every bag the
+     * centre drew; it counts only bags from a drive, reached through the drive
+     * booking or the paper sheet, with a collection on record.
+     */
+    public function test_units_collected_this_month_counts_only_bags_drawn_at_drives(): void
     {
         $donor = $this->donorWithProfile();
-
-        foreach ([DonationStatus::Collected, DonationStatus::Tested, DonationStatus::Completed] as $status) {
-            Donation::factory()->create([
-                'donor_id' => $donor->donor_id,
-                'facility_id' => $this->facility->id,
-                'donation_date' => now(),
-                'status' => $status,
-            ]);
-        }
-
-        // Neither of these put blood in a bag.
-        foreach ([DonationStatus::Registered, DonationStatus::Rejected] as $status) {
-            Donation::factory()->create([
-                'donor_id' => $donor->donor_id,
-                'facility_id' => $this->facility->id,
-                'donation_date' => now(),
-                'status' => $status,
-            ]);
-        }
-
-        // Drawn, but in a different month.
-        Donation::factory()->create([
+        $drive = MobileEvent::factory()->past()->create(['facility_id' => $this->facility->id, 'event_date' => now()->startOfMonth()->toDateString()]);
+        $sheet = PaperDonationSheet::query()->create([
+            'facility_id' => $this->facility->id,
+            'drive_name' => 'Barangay drive, typed from paper',
+            'held_on' => now()->toDateString(),
+            'starts_at' => '08:00',
+            'created_by' => $this->staff->id,
+        ]);
+        $at = fn (array $link, DonationStatus $status = DonationStatus::Collected, ?Carbon $date = null) => Donation::factory()->create([
             'donor_id' => $donor->donor_id,
             'facility_id' => $this->facility->id,
-            'donation_date' => now()->subMonthNoOverflow()->startOfMonth(),
-            'status' => DonationStatus::Collected,
+            'donation_date' => $date ?? now(),
+            'status' => $status,
+            ...$link,
         ]);
+        $booking = fn () => ['appointment_id' => $this->registerDonorTo($drive)->id];
+
+        // Drawn at a drive: through its booking (any drawn status), or a paper sheet.
+        $at($booking());
+        $at($booking(), DonationStatus::Tested);
+        $at(['paper_sheet_id' => $sheet->id], DonationStatus::Completed);
+        // Drawn, then closed before the lab: the bag was still drawn.
+        Donation::factory()->rejectedAfterCollection()->create([
+            'donor_id' => $donor->donor_id,
+            'facility_id' => $this->facility->id,
+            'donation_date' => now(),
+            'appointment_id' => $this->registerDonorTo($drive)->id,
+        ]);
+
+        // At a drive, but no bag.
+        $at($booking(), DonationStatus::Registered);
+        $at(['paper_sheet_id' => $sheet->id], DonationStatus::Rejected);
+        // A bag, but at the centre's own counter.
+        $at([]);
+        $at(['appointment_id' => DonationAppointment::factory()->create(['donor_id' => $donor->donor_id, 'facility_id' => $this->facility->id])->id]);
+        // At a drive, but in a different month.
+        $at($booking(), DonationStatus::Collected, now()->subMonthNoOverflow()->startOfMonth());
 
         $this->actingAs($this->staff)
             ->getJson('/api/blood-center/drives')
             ->assertOk()
-            ->assertJsonPath('units_collected_month', 3);
+            ->assertJsonPath('units_collected_month', 4);
     }
 
     /**

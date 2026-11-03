@@ -32,9 +32,9 @@ final class DonorAvatar
             return null;
         }
 
-        // Relative, like the email-verification link: an absolute signature
-        // also covers the host, and Laravel only sees the one the dev proxy
-        // rewrites to (127.0.0.1:8000), which a phone on the LAN cannot reach.
+        // Relative: an absolute signature also covers the host, and Laravel
+        // only sees the one the dev proxy rewrites to (127.0.0.1:8000), which
+        // a phone on the LAN cannot reach.
         // The client resolves the path against its own API base instead.
         return URL::temporarySignedRoute(
             'donors.avatar.show',

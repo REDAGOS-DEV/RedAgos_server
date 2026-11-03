@@ -101,7 +101,6 @@ class DonorRecordsTest extends TestCase
             'email' => 'mohit@example.test',
             'address' => 'House 42, Cebu City',
             'occupation' => 'Engineer',
-            'status' => 'active',
             'notes' => 'Prefers morning slots.',
             ...$overrides,
         ];
@@ -124,7 +123,8 @@ class DonorRecordsTest extends TestCase
 
         $this->assertSame('male', $row['gender']);
         $this->assertSame('House 42, Cebu City', $row['address']);
-        $this->assertSame('active', $row['status']);
+        // No donation yet, recorded or declared: neither active nor inactive.
+        $this->assertNull($row['status']);
         $this->assertSame('eligible', $row['eligibility']);
     }
 
@@ -218,27 +218,39 @@ class DonorRecordsTest extends TestCase
         }
     }
 
-    public function test_status_is_this_centres_own_and_filters_the_list(): void
+    public function test_status_is_worked_out_from_the_last_donation_and_filters_the_list(): void
     {
-        $donor = $this->donorWhoGave(now()->subYear()->toDateTimeString());
-        $elsewhere = Facility::factory()->approved()->create();
-        Donation::factory()->create(['donor_id' => $donor->id, 'facility_id' => $elsewhere->id, 'donation_date' => now()->subYears(2)]);
+        $recent = $this->donorWhoGave(now()->subMonths(11)->toDateTimeString());
+        $lapsed = $this->donorWhoGave(now()->subMonths(13)->toDateTimeString());
 
-        $this->actingAs($this->receptionist)
-            ->patchJson("/api/blood-center/donors/{$donor->uuid}", ['status' => 'inactive'])
+        // A draw on record wins over the date the donor declared.
+        $drawnLongAgo = $this->donorWhoGave(now()->subYears(2)->toDateTimeString());
+        DonorProfile::where('donor_id', $drawnLongAgo->id)->update(['last_donation_date' => now()->subMonth()->toDateString()]);
+
+        // With none on record, the declared date is read.
+        $declared = User::factory()->donor()->create();
+        DonorProfile::where('donor_id', $declared->id)->update(['last_donation_date' => now()->subMonths(2)->toDateString()]);
+        FacilityDonor::create(['facility_id' => $this->facility->id, 'donor_id' => $declared->id, 'registered_here' => true]);
+
+        $neverGave = User::factory()->donor()->create();
+        FacilityDonor::create(['facility_id' => $this->facility->id, 'donor_id' => $neverGave->id, 'registered_here' => true]);
+
+        $listed = fn (string $status) => collect($this->actingAs($this->receptionist)
+            ->getJson('/api/blood-center/donors?status='.$status)
             ->assertOk()
-            ->assertJsonPath('data.status', 'inactive');
+            ->json('data'))->pluck('uuid')->all();
 
-        $inactive = collect($this->actingAs($this->receptionist)->getJson('/api/blood-center/donors?status=inactive')->json('data'))->pluck('uuid');
-        $active = collect($this->actingAs($this->receptionist)->getJson('/api/blood-center/donors?status=active')->json('data'))->pluck('uuid');
+        foreach ([[$recent, 'active'], [$lapsed, 'inactive'], [$drawnLongAgo, 'inactive'], [$declared, 'active'], [$neverGave, null]] as [$donor, $status]) {
+            $this->assertSame($status, $this->row($donor)['status']);
+            $this->assertSame($status === 'active', in_array($donor->uuid, $listed('active'), true));
+            $this->assertSame($status === 'inactive', in_array($donor->uuid, $listed('inactive'), true));
+        }
 
-        $this->assertContains($donor->uuid, $inactive);
-        $this->assertNotContains($donor->uuid, $active);
-
-        // The other centre still sees an active donor.
-        $theirStaff = User::factory()->bloodCenterStaff($elsewhere, StaffRole::MedicalReceptionist)->create();
-        $theirs = collect($this->actingAs($theirStaff)->getJson('/api/blood-center/donors')->json('data'))->firstWhere('uuid', $donor->uuid);
-        $this->assertSame('active', $theirs['status']);
+        // Staff no longer set it: a status sent with an edit is ignored.
+        $this->actingAs($this->receptionist)
+            ->patchJson("/api/blood-center/donors/{$recent->uuid}", ['status' => 'inactive'])
+            ->assertOk()
+            ->assertJsonPath('data.status', 'active');
     }
 
     // --- Editing ---------------------------------------------------------------
@@ -392,9 +404,6 @@ class DonorRecordsTest extends TestCase
         $optedOut = $this->donorWhoGave(now()->subYear()->toDateTimeString());
         DonorProfile::where('donor_id', $optedOut->id)->update(['notification_preferences' => ['eligibility_renewal' => false]]);
 
-        $inactive = $this->donorWhoGave(now()->subYear()->toDateTimeString());
-        FacilityDonor::create(['facility_id' => $this->facility->id, 'donor_id' => $inactive->id, 'status' => 'inactive']);
-
         $noEmail = $this->donorWhoGave(now()->subYear()->toDateTimeString());
         $noEmail->forceFill(['email' => null])->save();
 
@@ -417,8 +426,21 @@ class DonorRecordsTest extends TestCase
             && $mail->hasReplyTo('donors@lifestream.test')
             && str_contains($mail->subjectLine, 'Lifestream Blood Center'));
 
-        foreach ([$waiting, $optedOut, $inactive] as $skipped) {
+        foreach ([$waiting, $optedOut] as $skipped) {
             Mail::assertNotQueued(DonorCenterEmail::class, fn (DonorCenterEmail $mail): bool => $mail->hasTo($skipped->email));
+        }
+    }
+
+    public function test_a_lapsed_donor_is_still_reminded_and_the_status_filter_narrows_the_run(): void
+    {
+        $this->donorWhoGave(now()->subMonths(6)->toDateTimeString());
+        $this->donorWhoGave(now()->subYears(2)->toDateTimeString());
+
+        foreach (['' => 2, 'active' => 1, 'inactive' => 1] as $status => $recipients) {
+            $this->actingAs($this->receptionist)
+                ->getJson('/api/blood-center/donors/eligibility-reminders?'.http_build_query(array_filter(['status' => $status])))
+                ->assertOk()
+                ->assertJsonPath('recipients', $recipients);
         }
     }
 

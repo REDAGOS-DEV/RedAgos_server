@@ -15,7 +15,7 @@ use Tests\TestCase;
  * A hospital blood bank's Head keeps its staff (project owner, 2026-10-11).
  *
  * What is locked in: the Head adds a colleague with a role, who holds the
- * blood_bank role at the Head's blood bank and is sent a verification link;
+ * blood_bank role at the Head's blood bank and is sent a verification code;
  * the Head changes roles, removes and restores accounts; the blood bank is
  * never left without a Head; nobody else may do any of it; and another blood
  * bank's account is not found.

@@ -63,6 +63,7 @@ use App\Http\Controllers\FacilityNotificationController;
 use App\Http\Controllers\HospitalAvailabilityController;
 use App\Http\Controllers\HospitalBillingController;
 use App\Http\Controllers\HospitalBloodRequestController;
+use App\Http\Controllers\HospitalDashboardController;
 use App\Http\Controllers\HospitalDirectDistributionController;
 use App\Http\Controllers\HospitalInventoryController;
 use App\Http\Controllers\HospitalReferenceController;
@@ -82,6 +83,8 @@ use Illuminate\Support\Facades\Route;
 
 Route::post('/login', [AuthController::class, 'login'])
     ->middleware('throttle:5,1');
+Route::post('/login/google', [AuthController::class, 'googleLogin'])
+    ->middleware('throttle:5,1');
 Route::post('/donors/register', [DonorRegistrationController::class, 'register'])
     ->middleware('throttle:5,1');
 
@@ -92,17 +95,16 @@ Route::post('/reset-password', [PasswordResetController::class, 'reset'])
     ->middleware('throttle:6,1')
     ->name('password.reset');
 
-// `signed:relative`, not `signed`: an absolute signature also covers the scheme
-// and host, and this endpoint is never reached on the host it was signed for —
-// the SPA posts to its own origin and the dev proxy rewrites the Host, and a
-// tunnel terminates TLS upstream so the request arrives as http. The path and
-// query carry the claim; VerifyEmailNotification signs exactly those.
+// The address and the six-digit code mailed to it (2026-11-03; it was a signed
+// link before). Public for the reason the resend below is. Each code allows
+// EmailVerificationCode::MAX_ATTEMPTS tries; the throttle bounds how fast
+// anyone can guess across codes.
 Route::post('/email/verify', [EmailVerificationController::class, 'verify'])
-    ->middleware(['signed:relative', 'throttle:6,1'])
+    ->middleware('throttle:10,1')
     ->name('verification.verify');
 
 // Public by necessity: login is refused until the address is verified, so
-// somebody who never received the mail has no token to authenticate the
+// somebody who never received the code has no token to authenticate the
 // resend below with. The reply never reveals whether the address exists.
 Route::post('/email/resend-verification', [EmailVerificationController::class, 'resendForGuest'])
     ->middleware('throttle:3,10')
@@ -165,9 +167,10 @@ Route::middleware(['auth:sanctum', 'role:donor'])->prefix('donors')->group(funct
     Route::delete('/account', [DonorProfileController::class, 'destroy']);
 });
 
-// `signed:relative` for the same reason as /email/verify above: the <img> loads
-// it through the SPA's own origin, never the host the link was signed on. The
-// signature still covers the donor's uuid and the expiry.
+// `signed:relative`, not `signed`: an absolute signature also covers the scheme
+// and host, and the <img> loads it through the SPA's own origin, never the host
+// the link was signed on (the dev proxy rewrites the Host; a tunnel terminates
+// TLS upstream). The signature still covers the donor's uuid and the expiry.
 Route::get('/donors/{user}/avatar', [DonorProfileController::class, 'showAvatar'])
     ->middleware('signed:relative')
     ->name('donors.avatar.show');
@@ -764,6 +767,20 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
 
             Route::post('/', [BloodCenterDriveController::class, 'store'])
                 ->middleware('can:drives.manage');
+
+            // A drive's lifecycle (drive pre-registration, phase 1): edit,
+            // publish a draft, close or reopen registration, cancel. The same
+            // hands that schedule it.
+            Route::patch('/{drive}', [BloodCenterDriveController::class, 'update'])
+                ->middleware('can:drives.manage')->whereNumber('drive');
+            Route::post('/{drive}/publish', [BloodCenterDriveController::class, 'publish'])
+                ->middleware('can:drives.manage')->whereNumber('drive');
+            Route::post('/{drive}/registration/close', [BloodCenterDriveController::class, 'closeRegistration'])
+                ->middleware('can:drives.manage')->whereNumber('drive');
+            Route::post('/{drive}/registration/open', [BloodCenterDriveController::class, 'reopenRegistration'])
+                ->middleware('can:drives.manage')->whereNumber('drive');
+            Route::post('/{drive}/cancel', [BloodCenterDriveController::class, 'cancel'])
+                ->middleware('can:drives.manage')->whereNumber('drive');
         });
 
         // The Donor/Collection dashboard. donations.view, which every role at
@@ -1112,6 +1129,9 @@ Route::middleware(['auth:sanctum', 'role:admin', 'throttle:60,1'])
 Route::middleware(['auth:sanctum', 'role:blood_bank', 'facility.operational'])
     ->prefix('hospital')->group(function (): void {
         Route::get('/reference-data', [HospitalReferenceController::class, 'index']);
+
+        // The dashboard: any role; the service reads only what the role may see.
+        Route::get('/dashboard', [HospitalDashboardController::class, 'show']);
 
         Route::get('/availability', [HospitalAvailabilityController::class, 'index'])
             ->middleware('can:hospital.requests.view');

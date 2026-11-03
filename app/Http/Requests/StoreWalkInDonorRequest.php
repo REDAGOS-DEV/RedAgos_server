@@ -2,7 +2,9 @@
 
 namespace App\Http\Requests;
 
-use App\Enums\FacilityDonorStatus;
+use App\Enums\ValidIdType;
+use App\Rules\PersonName;
+use App\Rules\ValidIdNumber;
 use App\Support\AccountIdentity;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Support\Str;
@@ -45,12 +47,21 @@ class StoreWalkInDonorRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'first_name' => ['required', 'string', 'max:150'],
-            'last_name' => ['required', 'string', 'max:150'],
+            'first_name' => ['required', 'string', 'max:150', new PersonName],
+            'last_name' => ['required', 'string', 'max:150', new PersonName],
 
             // The identifier a walk-in actually carries, and what stops the same
             // person being registered twice under two spellings of their name.
-            'valid_id_number' => ['required', 'string', 'max:50', 'unique:donor_profiles,valid_id_number'],
+            //
+            // Its type says the number's shape. Donor Management always picks
+            // one; a paper sheet may not say which ID was shown, so it stays
+            // optional here and the number is then taken as written.
+            'valid_id_type' => ['nullable', 'string', Rule::in(ValidIdType::values())],
+            'valid_id_number' => [
+                'required', 'string', 'max:50',
+                new ValidIdNumber($this->input('valid_id_type')),
+                'unique:donor_profiles,valid_id_number',
+            ],
 
             // Optional by decision: a counter-registered donor may have no
             // address, and an invented one is worse than none.
@@ -68,7 +79,6 @@ class StoreWalkInDonorRequest extends FormRequest
             'last_donation_date' => ['nullable', 'date', 'before_or_equal:today'],
 
             // This centre's own record of them.
-            'status' => ['nullable', 'string', Rule::in(FacilityDonorStatus::values())],
             'notes' => ['nullable', 'string', 'max:2000'],
         ];
     }
@@ -79,6 +89,7 @@ class StoreWalkInDonorRequest extends FormRequest
     public function messages(): array
     {
         return [
+            'valid_id_type.in' => 'Please select a valid ID type.',
             'valid_id_number.required' => 'A valid ID number is required to register a donor at the counter.',
             'valid_id_number.unique' => 'A donor is already registered with this ID. Search for them instead.',
             'email.unique' => 'An account already exists for this email address.',

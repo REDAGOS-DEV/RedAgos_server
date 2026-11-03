@@ -3,7 +3,6 @@
 namespace App\Service;
 
 use App\Enums\AccountStatus;
-use App\Enums\FacilityDonorStatus;
 use App\Models\MobileEvent;
 use App\Models\User;
 use App\Notifications\BloodDriveScheduled;
@@ -17,8 +16,7 @@ use Throwable;
  * Tell a centre's donors about a drive it just scheduled.
  *
  * "A centre's donors" is the Donors page's list (DonorDirectoryRepository):
- * anyone who booked, donated or was registered there, less those the centre
- * marked inactive and closed accounts. Without donor locations on file this
+ * anyone who booked, donated or was registered there, less closed accounts. Without donor locations on file this
  * stands in for "nearby": the centres a donor uses are the ones they can reach.
  *
  * Each donor's own switches decide the channels (BloodDriveScheduled::via), so
@@ -46,7 +44,7 @@ class BloodDriveAnnouncer
         $sent = 0;
 
         $this->donorDirectoryRepository
-            ->facilityDonorQuery($drive->facility_id, ['status' => FacilityDonorStatus::Active->value])
+            ->facilityDonorQuery($drive->facility_id)
             ->reorder()
             ->chunkById(self::CHUNK, function ($donors) use ($drive, &$sent): void {
                 $recipients = $donors->filter(fn (User $donor): bool => ! in_array(

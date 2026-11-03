@@ -3,9 +3,12 @@
 namespace Tests\Feature\Auth;
 
 use App\Enums\RoleName;
+use App\Models\EmailVerificationCode;
 use App\Models\Facility;
 use App\Models\User;
+use App\Notifications\VerifyEmailNotification;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Support\Facades\Notification;
 use Tests\TestCase;
 
 class LoginTest extends TestCase
@@ -143,6 +146,58 @@ class LoginTest extends TestCase
 
         // No token is issued, so nothing about the account is reachable.
         $this->assertSame(0, $user->tokens()->count());
+    }
+
+    public function test_the_refusal_mails_a_code_and_names_the_address_when_none_is_waiting(): void
+    {
+        // Staff signing in by username days after their account was made: the
+        // code from creation is long expired, and the screen needs the address.
+        $user = User::factory()->unverified()->create([
+            'email' => 'new.staff@example.com',
+            'username' => 'newstaff',
+            'password' => 'Password123',
+        ]);
+        EmailVerificationCode::issue($user);
+        $this->travel(11)->minutes();
+        Notification::fake();
+
+        $this->postJson('/api/login', ['login' => 'newstaff', 'password' => 'Password123'])
+            ->assertStatus(403)
+            ->assertJsonPath('code', 'email_not_verified')
+            ->assertJsonPath('email', 'new.staff@example.com');
+
+        Notification::assertSentTo($user, VerifyEmailNotification::class);
+    }
+
+    public function test_the_refusal_leaves_a_live_code_alone(): void
+    {
+        $user = User::factory()->unverified()->create([
+            'email' => 'unverified@example.com',
+            'password' => 'Password123',
+        ]);
+        EmailVerificationCode::issue($user);
+        Notification::fake();
+
+        $this->postJson('/api/login', ['login' => 'unverified@example.com', 'password' => 'Password123'])
+            ->assertStatus(403)
+            ->assertJsonPath('code', 'email_not_verified');
+
+        Notification::assertNothingSent();
+    }
+
+    public function test_a_wrong_password_on_an_unverified_account_mails_nothing(): void
+    {
+        User::factory()->unverified()->create([
+            'email' => 'unverified@example.com',
+            'password' => 'Password123',
+        ]);
+        Notification::fake();
+
+        $this->postJson('/api/login', ['login' => 'unverified@example.com', 'password' => 'WrongPassword1'])
+            ->assertStatus(422)
+            ->assertJsonMissingPath('email');
+
+        Notification::assertNothingSent();
     }
 
     public function test_the_same_account_can_log_in_once_the_address_is_verified(): void
@@ -342,7 +397,11 @@ class LoginTest extends TestCase
         }
     }
 
-    public function test_an_administrator_is_sent_to_the_admin_sign_in(): void
+    /**
+     * One sign-in for everyone, administrators included (project owner,
+     * 2026-10-30); the page naming `admin` still works.
+     */
+    public function test_an_administrator_signs_in_on_the_single_sign_in_page(): void
     {
         $admin = User::factory()->withRole(RoleName::Admin)->create([
             'email' => 'admin@example.com',
@@ -353,10 +412,10 @@ class LoginTest extends TestCase
             'email' => 'admin@example.com',
             'password' => 'Password123',
         ])
-            ->assertForbidden()
-            ->assertJsonPath('code', 'admin_sign_in_required');
+            ->assertOk()
+            ->assertJsonPath('user.email', 'admin@example.com');
 
-        $this->assertSame(0, $admin->tokens()->count());
+        $this->assertSame('admin-token', $admin->tokens()->sole()->name);
 
         $this->postJson('/api/login', [
             'email' => 'admin@example.com',
@@ -365,7 +424,7 @@ class LoginTest extends TestCase
         ])->assertOk();
     }
 
-    public function test_an_administrator_with_another_role_is_still_sent_to_the_admin_sign_in(): void
+    public function test_an_administrator_with_another_role_signs_in_on_the_single_sign_in_page(): void
     {
         $admin = User::factory()->withRole(RoleName::Admin)->donor()->create([
             'email' => 'admin@example.com',
@@ -375,11 +434,10 @@ class LoginTest extends TestCase
         $this->postJson('/api/login', [
             'email' => 'admin@example.com',
             'password' => 'Password123',
-        ])
-            ->assertForbidden()
-            ->assertJsonPath('code', 'admin_sign_in_required');
+        ])->assertOk();
 
-        $this->assertSame(0, $admin->tokens()->count());
+        // Several roles: no single portal names the token.
+        $this->assertSame('api-token', $admin->tokens()->sole()->name);
     }
 
     public function test_a_wrong_password_on_an_admin_account_still_answers_422(): void

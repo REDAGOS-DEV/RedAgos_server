@@ -429,7 +429,7 @@ class ProfileAndAccountTest extends TestCase
         $this->assertNull($donor->email_verified_at);
     }
 
-    public function test_changing_the_email_address_sends_a_link_for_the_new_address(): void
+    public function test_changing_the_email_address_sends_a_code_for_the_new_address(): void
     {
         Notification::fake();
 
@@ -437,13 +437,13 @@ class ProfileAndAccountTest extends TestCase
             ->patchJson('/api/donors/profile', $this->profilePayload(['email' => 'MOVED@Example.com ']))
             ->assertOk();
 
-        // Ang notifiable kay ang donor mismo, so ang link kay gi-pirmahan batok
-        // sa na-normalize nga address — dili sa daan.
+        // The code belongs to the normalised new address, not the old one.
         Notification::assertSentTo(
             $this->donor,
             VerifyEmailNotification::class,
             fn ($notification, $channels, $notifiable) => $notifiable->getEmailForVerification() === 'moved@example.com'
         );
+        $this->assertSame('moved@example.com', $this->donor->fresh()->emailVerificationCode->email);
     }
 
     public function test_updating_a_profile_without_touching_the_email_keeps_the_verification(): void

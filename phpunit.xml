@@ -43,5 +43,7 @@
         <env name="XENDIT_WEBHOOK_TOKEN" value=""/>
         <env name="XENDIT_CHECKOUT_ENABLED" value="false"/>
         <env name="XENDIT_ALLOW_MAIN_ACCOUNT" value="false"/>
+        <env name="SEMAPHORE_API_KEY" value=""/>
+        <env name="SEMAPHORE_LOG_ONLY" value="false"/>
     </php>
 </phpunit>

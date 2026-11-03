@@ -3,6 +3,8 @@
 namespace App\Http\Requests;
 
 use App\Enums\ValidIdType;
+use App\Rules\PersonName;
+use App\Rules\ValidIdNumber;
 use App\Support\AccountIdentity;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -44,8 +46,8 @@ class RegisterDonorRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'first_name' => ['required', 'string', 'max:150'],
-            'last_name' => ['required', 'string', 'max:150'],
+            'first_name' => ['required', 'string', 'max:150', new PersonName],
+            'last_name' => ['required', 'string', 'max:150', new PersonName],
             'email' => ['required', 'string', 'email:rfc', 'max:150', 'unique:users,email'],
             'phone' => ['required', 'string', 'regex:/^(?:\+63|63|0)9\d{9}$/', 'unique:users,phone'],
             // Optional: plenty of first-time donors genuinely do not know their
@@ -67,7 +69,6 @@ class RegisterDonorRequest extends FormRequest
             // not blocked: the columns are nullable and the blood centre's
             // questionnaire prints a gap as "Not provided".
 
-
             // Optional at signup: the donor may supply the ID they will present
             // at the counter now, or upload the document later from their
             // profile. Either way it is the type and number together or neither.
@@ -75,6 +76,7 @@ class RegisterDonorRequest extends FormRequest
             'valid_id_number' => [
                 'nullable', 'string', 'max:50',
                 'required_with:valid_id_type',
+                new ValidIdNumber($this->input('valid_id_type')),
                 'unique:donor_profiles,valid_id_number',
             ],
 

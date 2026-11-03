@@ -2,8 +2,7 @@
 
 namespace Tests\Feature\Auth;
 
-use AppModelsSER;
-USE App\Enums\AccountStatus;
+use App\Enums\AccountStatus;
 use App\Enums\RoleName;
 use App\Models\BloodType;
 use App\Models\User;
@@ -177,6 +176,16 @@ class DonorRegistrationTest extends TestCase
             ->assertJsonValidationErrors('phone');
     }
 
+    public function test_a_name_with_an_emoji_or_a_digit_is_rejected(): void
+    {
+        $this->postJson('/api/donors/register', $this->payload([
+            'first_name' => 'Juan 😀',
+            'last_name' => 'Dela Cruz 2',
+        ]))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['first_name', 'last_name']);
+    }
+
     public function test_a_weak_password_is_rejected(): void
     {
         $this->postJson('/api/donors/register', $this->payload([
@@ -319,16 +328,21 @@ class DonorRegistrationTest extends TestCase
             ->assertJsonPath('code', 'email_not_verified');
     }
 
-    public function test_a_newly_registered_donor_can_log_in_once_the_link_is_followed(): void
+    public function test_a_newly_registered_donor_can_log_in_once_the_code_is_entered(): void
     {
         Notification::fake();
 
         $this->postJson('/api/donors/register', $this->payload())->assertCreated();
 
         $donor = User::where('email', 'juan@example.com')->firstOrFail();
-        $actionUrl = (new VerifyEmailNotification)->toMail($donor)->actionUrl;
+        $code = null;
+        Notification::assertSentTo($donor, VerifyEmailNotification::class, function ($notification) use (&$code) {
+            $code = $notification->code;
 
-        $this->postJson('/api/email/verify'.substr($actionUrl, strpos($actionUrl, '?')))
+            return true;
+        });
+
+        $this->postJson('/api/email/verify', ['email' => 'juan@example.com', 'code' => $code])
             ->assertOk();
 
         $this->postJson('/api/login', [

@@ -35,6 +35,8 @@ class StoreTransfusionRequestRequest extends StoreBloodRequestRequest
 
             'blood_type_id' => ['required', 'integer', 'exists:blood_types,id'],
             'urgency_level' => ['required', Rule::in(UrgencyLevel::values())],
+            // When the blood is needed, if the hospital has a set time.
+            'needed_by' => ['nullable', 'date', 'after:now'],
 
             'patient_surname' => ['required', 'string', 'max:100'],
             'patient_first_name' => ['required', 'string', 'max:100'],
@@ -60,6 +62,7 @@ class StoreTransfusionRequestRequest extends StoreBloodRequestRequest
     {
         return [
             ...parent::messages(),
+            'needed_by.after' => 'The time needed must be in the future.',
             ...AddTransfusionAllocationsRequest::shareMessages(),
             'internal_stock_confirmed.accepted' => "Confirm the hospital's own stock cannot cover this patient before asking other facilities.",
             'patient_surname.required' => 'Enter the patient surname.',

@@ -7,7 +7,8 @@ use Illuminate\Support\Carbon;
 
 /**
  * Where one donor stands with one blood centre: how often they have given,
- * when they may give again, and whether a deferral stands in the way.
+ * when they may give again, whether a deferral stands in the way, and whether
+ * they are still an active donor.
  *
  * Built by DonorStandingResolver, and read the same way by the Donors list,
  * the export and the eligibility reminders, so the pill a receptionist sees
@@ -28,6 +29,19 @@ final class DonorStanding
      * 2026-10-17). Once the bag is drawn they are waiting instead.
      */
     public const IN_PROGRESS = 'in_progress';
+
+    /**
+     * Gave blood within the last ACTIVE_MONTHS months. Worked out from the
+     * last donation, never set by staff (project owner, 2026-11-03).
+     */
+    public const ACTIVE = 'active';
+
+    /**
+     * Gave blood before then, and not since.
+     */
+    public const INACTIVE = 'inactive';
+
+    public const ACTIVE_MONTHS = 12;
 
     public function __construct(
         public readonly int $totalDonations,
@@ -56,6 +70,27 @@ final class DonorStanding
     public function isEligibleNow(): bool
     {
         return $this->eligibility() === self::ELIGIBLE;
+    }
+
+    /**
+     * active or inactive, from the same last donation the list shows (a
+     * declared one included); null when there is none.
+     */
+    public function activity(): ?string
+    {
+        return match (true) {
+            $this->lastDonationAt === null => null,
+            $this->lastDonationAt->isBefore(self::activeSince()) => self::INACTIVE,
+            default => self::ACTIVE,
+        };
+    }
+
+    /**
+     * The earliest last donation that still counts as active.
+     */
+    public static function activeSince(): Carbon
+    {
+        return today()->subMonthsNoOverflow(self::ACTIVE_MONTHS);
     }
 
     /**
@@ -97,6 +132,7 @@ final class DonorStanding
             'last_donation_declared' => $this->lastDonationDeclared,
             'next_eligible_date' => $this->nextEligibleDate?->toDateString(),
             'eligibility' => $this->eligibility(),
+            'status' => $this->activity(),
             'open_visit_id' => $this->openVisitId,
             'deferral' => $withDeferral && $this->deferral !== null
                 ? [

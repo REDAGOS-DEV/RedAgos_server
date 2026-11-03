@@ -166,9 +166,13 @@ class StaffAppointmentsTest extends TestCase
         Notification::assertSentTo($donor, AppointmentScheduled::class);
         $this->assertDatabaseHas('audit_logs', ['action' => 'appointment.booked_by_staff', 'actor_id' => $this->desk->id]);
 
-        // The booking makes them this centre's donor.
+        // The booking puts them on the Appointments roster, not on Donor
+        // Management: that waits for check-in (project owner, 2026-11-01).
         $uuids = collect($this->actingAs($this->desk)->getJson('/api/blood-center/donors')->json('data'))->pluck('uuid');
-        $this->assertContains($donor->uuid, $uuids);
+        $this->assertNotContains($donor->uuid, $uuids);
+
+        $roster = collect($this->actingAs($this->desk)->getJson('/api/blood-center/appointments')->json('data'))->pluck('donor.uuid');
+        $this->assertContains($donor->uuid, $roster);
     }
 
     public function test_a_phone_booking_obeys_the_portals_rules(): void

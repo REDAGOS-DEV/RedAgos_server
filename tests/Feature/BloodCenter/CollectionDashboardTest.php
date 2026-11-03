@@ -9,7 +9,6 @@ use App\Models\Donation;
 use App\Models\DonationAppointment;
 use App\Models\DonationScreening;
 use App\Models\Facility;
-use App\Models\FacilityDonor;
 use App\Models\MobileEvent;
 use App\Models\User;
 use App\Support\OperationalDay;
@@ -126,18 +125,21 @@ class CollectionDashboardTest extends TestCase
         $deferred = $this->visit(-300, DonationStatus::Completed);
         DonationScreening::factory()->permanentlyDeferred()->create(['donation_id' => $deferred->id, 'facility_id' => $this->facility->id]);
 
-        $inactive = $this->visit(-200, DonationStatus::Completed)->donorProfile->donor;
-        FacilityDonor::create(['facility_id' => $this->facility->id, 'donor_id' => $inactive->id, 'status' => 'inactive']);
+        // No donation in 12 months: inactive, and still one to call back.
+        $lapsed = $this->visit(-400, DonationStatus::Completed)->donorProfile->donor;
 
         $pool = $this->dashboard()['pool'];
 
         $this->assertSame(4, $pool['total']);
-        $this->assertSame(1, $pool['eligible']);
+        $this->assertSame(2, $pool['eligible']);
         $this->assertSame(1, $pool['waiting']);
         $this->assertSame(1, $pool['deferred']);
         $this->assertSame(1, $pool['inactive']);
-        $this->assertSame(
-            [['code' => $eligible->donorProfile->bloodType->code, 'count' => 1]],
+        $this->assertEqualsCanonicalizing(
+            [
+                ['code' => $eligible->donorProfile->bloodType->code, 'count' => 1],
+                ['code' => $lapsed->donorProfile->bloodType->code, 'count' => 1],
+            ],
             $pool['eligible_by_blood_type']
         );
     }

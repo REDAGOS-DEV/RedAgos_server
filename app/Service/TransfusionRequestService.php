@@ -496,6 +496,7 @@ class TransfusionRequestService
             'patient_sex' => $payload['patient_sex'],
             'blood_type_id' => $payload['blood_type_id'],
             'urgency_level' => UrgencyLevel::from($payload['urgency_level']),
+            'needed_by' => $payload['needed_by'] ?? null,
             // The form cannot be submitted without staff confirming their own
             // stock is short, so this is when they did.
             'internal_stock_checked_at' => now(),

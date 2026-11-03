@@ -4,9 +4,7 @@ namespace App\Service;
 
 use App\Enums\AccountStatus;
 use App\Enums\DonorEmailTemplate;
-use App\Enums\FacilityDonorStatus;
 use App\Models\Facility;
-use App\Models\FacilityDonor;
 use App\Models\FacilityEmailTemplate;
 use App\Models\User;
 use App\Repository\DonorDirectoryRepository;
@@ -25,7 +23,7 @@ use Throwable;
  * count the confirmation dialog shows is the count that is sent. A donor is
  * reminded only when every one of these holds:
  *
- *  - they are on this centre's list (the same filters as the page) and active here;
+ *  - they are on this centre's list (the same filters as the page);
  *  - they have an email address and an account that is not suspended or closed;
  *  - they have not turned eligibility emails off in their portal;
  *  - they are eligible today: the donation interval has passed and no
@@ -53,9 +51,9 @@ class DonorOutreachService
      * Stricter about the thank-you than the bulk reminder is about anything:
      * staff choose this donor, so the rules are about the email making sense.
      * A thank-you needs a donation at this centre to thank them for. A
-     * reminder is refused for a standing deferral, an inactive donor, or one
-     * who turned reminders off; a temporary deferral is left to the staff
-     * member's judgement, since nothing records when it ends.
+     * reminder is refused for a standing deferral, a visit under way, or a
+     * donor who turned reminders off; a temporary deferral is left to the
+     * staff member's judgement, since nothing records when it ends.
      *
      * @return array<string, mixed>
      */
@@ -79,7 +77,6 @@ class DonorOutreachService
         }
 
         $standing = $this->donorStandingResolver->forDonor($facility->id, $donor);
-        $record = $this->donorDirectoryRepository->facilityRecord($facility->id, $donor->id);
 
         if ($template === DonorEmailTemplate::ThankYou && $standing->donationsHere === 0) {
             throw $this->refuse(422, 'no_donation_here', 'There is no donation at this centre to thank them for yet.');
@@ -89,7 +86,6 @@ class DonorOutreachService
             match (true) {
                 $standing->hasStandingDeferral() => throw $this->refuse(422, 'donor_deferred', 'This donor is deferred, so they cannot be reminded to donate.'),
                 $standing->eligibility() === DonorStanding::IN_PROGRESS => throw $this->refuse(422, 'visit_in_progress', 'This donor is in a visit at your centre right now.'),
-                $this->isInactive($record) => throw $this->refuse(422, 'donor_inactive', 'This donor is inactive at your centre. Mark them active to remind them.'),
                 ! $this->acceptsReminders($donor) => throw $this->refuse(422, 'reminders_off', 'This donor has turned off eligibility reminders.'),
                 default => null,
             };
@@ -143,7 +139,7 @@ class DonorOutreachService
     }
 
     /**
-     * Email every active, eligible donor on the list that may be reminded.
+     * Email every eligible donor on the list that may be reminded.
      *
      * One donor's mail failing does not stop the run; they are counted as
      * failed and not marked reminded, so the next run picks them up.
@@ -188,7 +184,7 @@ class DonorOutreachService
             'sent' => $sent,
             'failed' => $failed,
             'skipped' => $skipped,
-            'filters' => array_intersect_key($filters, array_flip(['search', 'blood_type_id'])),
+            'filters' => array_intersect_key($filters, array_flip(['search', 'blood_type_id', 'status'])),
         ]);
 
         return [
@@ -269,7 +265,7 @@ class DonorOutreachService
     }
 
     /**
-     * Walk the centre's active donors on the filtered list, a chunk at a time,
+     * Walk the centre's donors on the filtered list, a chunk at a time,
      * handing over who may be reminded and why the rest may not.
      *
      * @param  array<string, mixed>  $filters
@@ -277,10 +273,7 @@ class DonorOutreachService
      */
     private function eachCandidate(Facility $facility, array $filters, callable $handle): void
     {
-        $filters = [
-            ...array_intersect_key($filters, array_flip(['search', 'blood_type_id'])),
-            'status' => FacilityDonorStatus::Active->value,
-        ];
+        $filters = array_intersect_key($filters, array_flip(['search', 'blood_type_id', 'status']));
 
         $cooldownStart = now()->subDays(self::REMINDER_COOLDOWN_DAYS);
 
@@ -348,11 +341,6 @@ class DonorOutreachService
     private function acceptsReminders(User $donor): bool
     {
         return DonorNotificationPreferences::allows($donor, DonorNotificationPreferences::ELIGIBILITY_RENEWAL);
-    }
-
-    private function isInactive(?FacilityDonor $record): bool
-    {
-        return $record?->status === FacilityDonorStatus::Inactive;
     }
 
     private function requireFacility(User $staff): Facility

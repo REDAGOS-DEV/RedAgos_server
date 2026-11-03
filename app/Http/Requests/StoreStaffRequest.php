@@ -6,6 +6,7 @@ use App\Enums\Department;
 use App\Enums\ManagementLevel;
 use App\Enums\StaffPrivilege;
 use App\Enums\StaffRole;
+use App\Rules\PersonName;
 use App\Support\AccountIdentity;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Support\Str;
@@ -67,8 +68,8 @@ class StoreStaffRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'first_name' => ['required', 'string', 'max:150'],
-            'last_name' => ['required', 'string', 'max:150'],
+            'first_name' => ['required', 'string', 'max:150', new PersonName],
+            'last_name' => ['required', 'string', 'max:150', new PersonName],
             'email' => ['required', 'string', 'email:rfc', 'max:150', 'unique:users,email'],
             'phone' => ['nullable', 'string', 'regex:/^(?:\+63|63|0)9\d{9}$/', 'unique:users,phone'],
             // The title — RMT, RN, or anything typed. A label only.

@@ -7,6 +7,7 @@ use App\Enums\Department;
 use App\Enums\ManagementLevel;
 use App\Enums\StaffPrivilege;
 use App\Enums\StaffRole;
+use App\Rules\PersonName;
 use App\Support\AccountIdentity;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -60,8 +61,8 @@ class UpdateStaffRequest extends FormRequest
         $uuid = (string) $this->route('uuid');
 
         return [
-            'first_name' => ['sometimes', 'string', 'max:150'],
-            'last_name' => ['sometimes', 'string', 'max:150'],
+            'first_name' => ['sometimes', 'string', 'max:150', new PersonName],
+            'last_name' => ['sometimes', 'string', 'max:150', new PersonName],
             'phone' => [
                 'sometimes', 'nullable', 'string', 'regex:/^(?:\+63|63|0)9\d{9}$/',
                 Rule::unique('users', 'phone')->ignore($uuid, 'uuid'),

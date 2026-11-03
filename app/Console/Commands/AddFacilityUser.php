@@ -16,6 +16,7 @@ use App\Models\User;
 use App\Repository\AuthRepository;
 use App\Repository\BloodCenterRepository;
 use App\Repository\FacilityRepository;
+use App\Rules\PersonName;
 use App\Service\AuditLogger;
 use App\Support\AccountIdentity;
 use Illuminate\Console\Command;
@@ -132,8 +133,8 @@ class AddFacilityUser extends Command
         }
 
         $validator = Validator::make($attributes, [
-            'first_name' => ['required', 'string', 'max:150'],
-            'last_name' => ['required', 'string', 'max:150'],
+            'first_name' => ['required', 'string', 'max:150', new PersonName],
+            'last_name' => ['required', 'string', 'max:150', new PersonName],
             'email' => ['required', 'email:rfc', 'max:150', 'unique:users,email'],
             'phone' => ['nullable', 'string', 'regex:/^(?:\+63|63|0)9\d{9}$/', 'unique:users,phone'],
             'username' => ['nullable', 'string', 'max:150', 'unique:users,username'],
@@ -490,9 +491,9 @@ class AddFacilityUser extends Command
                 'position' => $attributes['position'],
             ], $facility, $role, $level, privileges: $privileges);
 
-            // Verified on creation, with no link mailed: the operator at the
+            // Verified on creation, with no code mailed: the operator at the
             // terminal is vouching for the account in person. This is the same
-            // state the emailed link leaves behind, so the account is active
+            // state the emailed code leaves behind, so the account is active
             // rather than merely verified.
             $this->authRepository->markVerified($staff);
 

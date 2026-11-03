@@ -227,7 +227,7 @@ trait BuildsFulfilmentScenarios
                 'relationship' => 'Son',
                 'contact' => '09171234567',
                 'id_type' => 'philsys',
-                'id_number' => '1234-5678-9012',
+                'id_number' => '1234-5678-9012-3456',
             ],
         ], $overrides);
     }

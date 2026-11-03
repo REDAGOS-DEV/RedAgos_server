@@ -3,6 +3,7 @@
 namespace App\Http\Requests;
 
 use App\Enums\ValidIdType;
+use App\Rules\ValidIdNumber;
 use App\Support\AccountIdentity;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -42,6 +43,7 @@ class StoreDonorIdentityRequest extends FormRequest
             // hold.
             'valid_id_number' => [
                 'required', 'string', 'max:50',
+                new ValidIdNumber($this->input('valid_id_type')),
                 Rule::unique('donor_profiles', 'valid_id_number')->ignore($this->user()?->id, 'donor_id'),
             ],
 

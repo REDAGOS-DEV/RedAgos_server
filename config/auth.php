@@ -106,12 +106,14 @@ return [
     | Email Verification
     |--------------------------------------------------------------------------
     |
-    | Number of minutes a signed email verification link remains valid.
+    | Number of minutes an emailed verification code can be entered. The
+    | variable was renamed with the switch from links to codes, so a .env
+    | still holding the link's 60 minutes does not stretch the code.
     |
     */
 
     'verification' => [
-        'expire' => env('AUTH_VERIFICATION_EXPIRE_MINUTES', 60),
+        'expire' => env('AUTH_VERIFICATION_CODE_MINUTES', 10),
     ],
 
     /*

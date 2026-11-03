@@ -60,6 +60,18 @@ final class AccountIdentity
     }
 
     /**
+     * A name in the form two accounts are compared on for being one person.
+     *
+     * Case and surrounding spaces only, matching the LOWER(TRIM()) the query
+     * narrows with (DonorRepository::lookalikeDonors()), so the two can never
+     * disagree on whether "ana " and "Ana" are the same name.
+     */
+    public static function comparableName(?string $name): string
+    {
+        return mb_strtolower(trim((string) $name));
+    }
+
+    /**
      * Mask a stored ID number down to its last four characters.
      *
      * Administrators reviewing a submission read the number off the document

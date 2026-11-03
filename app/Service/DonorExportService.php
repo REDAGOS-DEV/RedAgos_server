@@ -127,7 +127,11 @@ class DonorExportService
                 default => 'None',
             },
             filled($profile?->profile_image_path) ? 'Yes' : 'No',
-            ($record?->status?->label()) ?? 'Active',
+            match ($standing->activity()) {
+                DonorStanding::ACTIVE => 'Active',
+                DonorStanding::INACTIVE => 'Inactive',
+                default => '',
+            },
             $record?->notes,
             $donor->created_at?->toDateString(),
         ]);
