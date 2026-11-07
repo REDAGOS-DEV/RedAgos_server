@@ -313,8 +313,9 @@ final class DepartmentPermissions
             // the counter a watcher reaches and the department that fills it.
             'requests.record',
 
-            // Read-only: no unit may be released without confirmed payment,
-            // so release needs to read billing status without altering it.
+            // Read-only: release needs to read billing status without
+            // altering it. Deferring a payment moves no money, so it is
+            // requests.release's, not a billing write.
             'billing.view',
 
             // Issuance's correction approver. Edits a unit directly (above),

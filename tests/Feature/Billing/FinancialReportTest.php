@@ -35,7 +35,6 @@ class FinancialReportTest extends TestCase
         $this->allocatedRequest(1);
 
         $weekly = $this->allocatedRequest(2, replenishment: true);
-        $this->actingAs($this->inventoryStaff)->postJson("/api/blood-center/blood-requests/{$weekly->id}/release")->assertOk();
         $this->actingAs($this->billingClerk)
             ->postJson("/api/blood-center/billings/{$weekly->id}/settlement", [
                 'settlement_reference' => 'HOSP-CHK-7',

@@ -16,11 +16,25 @@
 
     $expiry = fn (?string $date): string => $date ? Carbon::parse($date)->format('m/d/y') : '';
 
-    // The bag, its type when every type shares the sheet, and a mark when it
-    // is tagged but still waiting for its crossmatch.
+    // The bag, its type when every type shares the sheet, and its mark: tagged
+    // but waiting for its crossmatch, reserved for a donor partner, or transfused.
     $label = fn (array $cell): string => $cell['bag_number']
         .($all && $cell['blood_type'] ? ' · '.$cell['blood_type'] : '')
-        .($cell['tagged'] ? ' (T)' : '');
+        .($cell['tagged'] ? ' (T)' : '')
+        .(($cell['reserved'] ?? false) ? ' (R)' : '')
+        .(($cell['transfused'] ?? false) ? ' (TF)' : '');
+
+    // The colour code (project owner, 2026-11-07). CROSSMATCHED: waiting for
+    // the transfusion blue, transfused green. UNCROSSMATCHED: on the shelf and
+    // not tagged black, tagged pink, reserved for a blood donor partner purple.
+    // The marks stay, for a sheet printed or copied in grey.
+    $tone = fn (?array $cell, string $section): string => match (true) {
+        $cell === null => '',
+        $section === 'crossmatched' => ($cell['transfused'] ?? false) ? ' transfused' : ' waiting',
+        $cell['tagged'] => ' tagged',
+        $cell['reserved'] ?? false => ' reserved',
+        default => '',
+    };
 @endphp
 <!DOCTYPE html>
 <html lang="en">
@@ -47,7 +61,7 @@
         .head .type { font-size: 7.4pt; }
         .head .when { text-align: right; font-size: 6.8pt; color: #222; }
 
-        .form th, .form td { border: .6px solid #333; padding: 0 3px; height: 15.5pt; overflow: hidden; white-space: nowrap; }
+        .form th, .form td { border: .6px solid #333; padding: 0 3px; height: 15.2pt; overflow: hidden; white-space: nowrap; }
         .form .section { font-size: 10pt; font-weight: bold; text-align: center; letter-spacing: .3px; height: 17pt; }
         .form .col { font-size: 6.6pt; font-weight: bold; text-align: center; }
         .form .num { text-align: center; font-size: 5.6pt; color: #333; }
@@ -58,6 +72,17 @@
         .sign .value { display: block; margin-top: 5pt; font-size: 7pt; }
 
         .legend { margin: 3px 0 0; font-size: 5.8pt; color: #333; }
+        .legend .key { color: #000; }
+        .legend .gap { padding-left: 8pt; }
+        .legend .section { font-weight: bold; color: #000; }
+
+        /* CROSSMATCHED: waiting for transfusion blue, transfused green.
+           UNCROSSMATCHED: tagged, waiting for crossmatch pink; reserved for a
+           blood donor partner purple; everything else black. */
+        .waiting, .legend .key.waiting { color: #1565C0; }
+        .transfused, .legend .key.transfused { color: #2E7D32; }
+        .tagged, .legend .key.tagged { color: #D81B60; }
+        .reserved, .legend .key.reserved { color: #7B1FA2; }
 
         .control { margin-top: 9pt; }
         .control td { font-size: 6.4pt; font-weight: bold; }
@@ -107,8 +132,8 @@
                         <td class="num">{{ $row + 1 }}</td>
                         @foreach ($page[$key] as $column)
                             @php($cell = $column['cells'][$row] ?? null)
-                            <td class="bag">{{ $cell ? $label($cell) : '' }}</td>
-                            <td class="exp">{{ $cell ? $expiry($cell['expiry_date']) : '' }}</td>
+                            <td class="bag{{ $tone($cell, $key) }}">{{ $cell ? $label($cell) : '' }}</td>
+                            <td class="exp{{ $tone($cell, $key) }}">{{ $cell ? $expiry($cell['expiry_date']) : '' }}</td>
                         @endforeach
                     </tr>
                 @endfor
@@ -123,7 +148,17 @@
             </tr>
         </table>
 
-        <p class="legend">(T) Tagged to a patient, waiting for crossmatch.</p>
+        <p class="legend">
+            <span class="section">Crossmatched:</span>
+            <span class="key waiting">&#9632;</span> Waiting for transfusion
+            <span class="gap"><span class="key transfused">&#9632;</span> <span class="transfused">(TF)</span> Transfused today</span>
+        </p>
+        <p class="legend">
+            <span class="section">Uncrossmatched:</span>
+            <span class="key">&#9632;</span> Available, not tagged
+            <span class="gap"><span class="key tagged">&#9632;</span> <span class="tagged">(T)</span> Tagged to a patient, waiting for crossmatch</span>
+            <span class="gap"><span class="key reserved">&#9632;</span> <span class="reserved">(R)</span> Reserved for a blood donor partner</span>
+        </p>
 
         <table class="control">
             <tr>

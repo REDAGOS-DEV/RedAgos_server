@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\AmendQuestionnaireAnswersRequest;
 use App\Http\Requests\SubmitEligibilityScreeningRequest;
 use App\Service\DonorQuestionnaireService;
 use Illuminate\Http\JsonResponse;
@@ -61,6 +62,21 @@ class BloodCenterDonorQuestionnaireController extends Controller
                 $request->boolean('force')
             ),
             201
+        );
+    }
+
+    /**
+     * Change Section I-B answers during the donor's screening.
+     */
+    public function amend(AmendQuestionnaireAnswersRequest $request, string $uuid): JsonResponse
+    {
+        return response()->json(
+            $this->donorQuestionnaireService->amendAnswers(
+                $request->user(),
+                $uuid,
+                $request->integer('screening_id'),
+                $request->validated('answers')
+            )
         );
     }
 }

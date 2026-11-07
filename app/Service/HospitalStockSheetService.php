@@ -28,10 +28,14 @@ use Throwable;
  * The form (project owner, 2026-10-28) has two tables of twenty rows, each
  * cell a bag and its expiry:
  * - CROSSMATCHED: bags tagged to a patient and crossmatched, ready to
- *   transfuse. Its Whole Blood is listed under TRANSFUSE AS PRBC, as the
- *   owner chose; the form's WB column is left for writing in.
+ *   transfuse, then those transfused during the day. Its Whole Blood is
+ *   listed under TRANSFUSE AS PRBC, as the owner chose; the form's WB column
+ *   is left for writing in. Colour coded (project owner, 2026-11-07): waiting
+ *   for transfusion blue, transfused green (TF).
  * - UNCROSSMATCHED: free bags and bags tagged but still waiting for their
- *   crossmatch, which are marked.
+ *   crossmatch, which are marked. Colour coded (project owner, 2026-11-07):
+ *   free bags black, tagged pink (T), reserved for a blood donor partner
+ *   purple (R).
  *
  * Whole Blood and Packed RBC are on the form. Every other component follows
  * it on "Other components" pages in the same layout, one column per
@@ -95,6 +99,9 @@ class HospitalStockSheetService
             ->map(fn (HospitalUnit $unit): array => $this->bag($unit))
             ->filter(fn (array $bag): bool => $components->contains('id', $bag['component_id'])
                 && $types->contains('id', $bag['blood_type_id']))
+            // The bags still waiting for their transfusion head their columns,
+            // the day's transfusions follow; each keeps first-expiring-first.
+            ->sortBy(fn (array $bag): int => $bag['transfused'] ? 1 : 0)
             ->values();
 
         $isForm = fn (BloodComponent $component): bool => in_array($component->code, [self::WHOLE_BLOOD, self::PACKED_RBC], true);
@@ -125,8 +132,11 @@ class HospitalStockSheetService
             'as_of_date' => $now->format('F j, Y'),
             'as_of_time' => $now->format('g:i A'),
             'totals' => [
-                'crossmatched' => $bags->where('crossmatched', true)->count(),
+                // Still in the blood bank's custody, waiting for the transfusion.
+                'crossmatched' => $bags->where('crossmatched', true)->where('transfused', false)->count(),
                 'uncrossmatched' => $bags->where('crossmatched', false)->count(),
+                // Listed with the crossmatched bags, but no longer here.
+                'transfused' => $bags->where('transfused', true)->count(),
             ],
             'sheets' => $sheets,
             // What it was configured to cover, as the screen says it.
@@ -295,9 +305,15 @@ class HospitalStockSheetService
             'component' => $bag?->component?->code,
             'component_id' => $bag?->component_id,
             'expiry_date' => $bag?->expiry_date?->toDateString(),
-            'crossmatched' => $unit->status === HospitalUnitStatus::TagCrossmatched,
+            // Crossmatched: waiting for its transfusion (blue), or transfused
+            // during the day (green, marked), as the owner colour-coded them.
+            'crossmatched' => in_array($unit->status, [HospitalUnitStatus::TagCrossmatched, HospitalUnitStatus::Transfused], true),
+            'transfused' => $unit->status === HospitalUnitStatus::Transfused,
             // Held for a patient but not yet crossmatched: on the shelf, marked.
             'tagged' => $unit->status === HospitalUnitStatus::TagAssigned,
+            // Untagged and held for a blood donor partner (project owner,
+            // 2026-11-07). Once tagged, the bag prints as tagged.
+            'reserved' => $unit->status === HospitalUnitStatus::Available && $unit->isPartnerReserved(),
         ];
     }
 
@@ -444,6 +460,8 @@ class HospitalStockSheetService
                         'blood_type' => $bag['blood_type'],
                         'expiry_date' => $bag['expiry_date'],
                         'tagged' => $bag['tagged'],
+                        'reserved' => $bag['reserved'],
+                        'transfused' => $bag['transfused'],
                     ])
                     ->values()
                     ->all(),

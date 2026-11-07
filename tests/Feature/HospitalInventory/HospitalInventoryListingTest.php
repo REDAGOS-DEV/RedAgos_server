@@ -128,7 +128,7 @@ class HospitalInventoryListingTest extends TestCase
     public function test_an_unknown_status_filter_is_refused(): void
     {
         $this->actingAs($this->requester)
-            ->getJson('/api/hospital/inventory?status=reserved')
+            ->getJson('/api/hospital/inventory?status=on_hold')
             ->assertUnprocessable()
             ->assertJsonValidationErrors(['status']);
     }

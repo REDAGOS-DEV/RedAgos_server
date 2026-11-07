@@ -123,6 +123,35 @@ class CorrectionRequestTest extends TestCase
         $this->assertDatabaseHas('audit_logs', ['action' => 'correction.applied']);
     }
 
+    public function test_a_correction_can_change_who_is_named_as_having_drawn_the_bag(): void
+    {
+        $phlebotomist = $this->staff(StaffRole::Phlebotomist);
+        $physician = $this->staff(StaffRole::ScreeningPhysician);
+        $recordedBy = BloodCollection::where('donation_id', $this->donation->id)->value('collected_by');
+
+        $correct = function (array $changes) use ($phlebotomist, $physician): void {
+            $id = $this->ask($phlebotomist, 'collection', $changes)->assertCreated()->json('data.id');
+
+            $this->actingAs($physician)
+                ->postJson("/api/blood-center/corrections/{$id}/approve", ['note' => 'Checked against the bag.'])
+                ->assertOk();
+        };
+
+        $correct([...$this->collectionBox(), 'phlebotomist_name' => 'Liza Bautista']);
+
+        $collection = BloodCollection::where('donation_id', $this->donation->id)->sole();
+        $this->assertSame('Liza Bautista', $collection->phlebotomist_name);
+        $this->assertSame($recordedBy, $collection->collected_by);
+
+        // A correction that does not mention the name leaves it alone.
+        $correct($this->collectionBox('SEG-1011'));
+        $this->assertSame('Liza Bautista', $collection->fresh()->phlebotomist_name);
+
+        // Blanked, the bag goes back to the account that recorded it.
+        $correct([...$this->collectionBox('SEG-1012'), 'phlebotomist_name' => ' ']);
+        $this->assertNull($collection->fresh()->phlebotomist_name);
+    }
+
     public function test_the_head_is_told_a_correction_waits_for_them(): void
     {
         Notification::fake();

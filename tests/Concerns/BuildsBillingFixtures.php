@@ -96,10 +96,11 @@ trait BuildsBillingFixtures
     }
 
     /**
-     * A request with units reserved against it, which raises its statement.
+     * A request with units against it, which raises its statement.
      *
-     * A Patient Transfusion by default, whose watcher owes the bill; a
-     * replenishment when $replenishment is set, which is billed by statement only.
+     * A Patient Transfusion by default, with the units tagged, whose watcher owes
+     * the bill; a replenishment when $replenishment is set, confirmed and
+     * dispatched, since nothing is held for one, and billed by statement only.
      */
     protected function allocatedRequest(int $units, ?int $askedFor = null, bool $replenishment = false): BloodRequest
     {
@@ -110,12 +111,14 @@ trait BuildsBillingFixtures
 
         $request = ($replenishment ? $factory->replenishment() : $factory)->create();
 
-        // A replenishment order is confirmed before anything is reserved for it.
+        $this->stock($units);
+
         if ($replenishment) {
             $this->planSupply($request, $this->inventoryStaff);
-        }
+            $this->sendDispatch($request, $this->inventoryStaff)->assertOk();
 
-        $this->stock($units);
+            return $request->fresh();
+        }
 
         $this->actingAs($this->inventoryStaff)
             ->postJson("/api/blood-center/blood-requests/{$request->id}/allocate", ['quantity' => $units])
@@ -125,7 +128,7 @@ trait BuildsBillingFixtures
     }
 
     /**
-     * Reserve more units against a request that is still open.
+     * Tag more units against a request that is still open.
      */
     protected function topUp(BloodRequest $request, int $units): void
     {

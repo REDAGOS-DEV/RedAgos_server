@@ -217,7 +217,7 @@
                 </td>
                 <td class="cell">
                     <div class="cap">Payable</div>
-                    <strong>{{ $revision->statement_only ? 'Settled outside RedAgos' : 'Before the units are released' }}</strong>
+                    <strong>{{ $revision->statement_only ? 'Settled outside RedAgos' : ($revision->payment_deferred ? 'After the units are released' : 'Before the units are released') }}</strong>
                 </td>
                 <td class="cell">
                     <div class="cap">Currency</div>

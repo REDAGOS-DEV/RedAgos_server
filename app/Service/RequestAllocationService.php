@@ -4,7 +4,6 @@ namespace App\Service;
 
 use App\Enums\AllocationStatus;
 use App\Enums\BloodRequestStatus;
-use App\Enums\BloodUnitStatus;
 use App\Enums\LineClosureReason;
 use App\Enums\RequestEventType;
 use App\Models\BloodRequest;
@@ -18,11 +17,14 @@ use App\Support\OperationalDay;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Validation\ValidationException;
 use RuntimeException;
 
 /**
- * The fulfilling side: reviewing an incoming request and holding stock for it.
+ * The fulfilling side: reviewing a patient's request and tagging stock for it.
+ *
+ * Only a patient's request is tagged (project owner, 2026-11-07). A replenishment
+ * order holds nothing back: its units are picked and recorded when it is
+ * dispatched (FulfillmentService::dispatchOrder).
  *
  * Every write here happens inside one transaction that begins by locking the
  * request row and ends by reconciling how many unit rows actually moved. That
@@ -49,7 +51,8 @@ class RequestAllocationService
         private readonly BloodRequestHistory $history,
         private readonly BloodRequestNotifier $notifier,
         private readonly RequestLineCloser $lineCloser,
-        private readonly TransfusionRequestResolver $transfusionResolver
+        private readonly TransfusionRequestResolver $transfusionResolver,
+        private readonly ChosenUnitsMatcher $chosenUnits
     ) {}
 
     /**
@@ -82,17 +85,11 @@ class RequestAllocationService
             $request = $this->lockRequestForDecision($requestId, $facilityId);
             $from = $request->status;
 
-            // A replenishment order is planned before anything is held for it
-            // (project owner, 2026-10-29): what the centre will supply of each
-            // line, and how and when it reaches the hospital. The plan's
-            // commitments then cap the lines' allocatable figures.
-            $planned = $request->supplyPlan()->exists();
-
-            if ($request->isReplenishment() && ! $planned) {
+            if ($request->isReplenishment()) {
                 throw $this->refuse(
                     409,
-                    'supply_plan_required',
-                    'Confirm this order first: what you will supply of each line, and when it is picked up or delivered.'
+                    'replenishment_not_tagged',
+                    "Only a patient's request is tagged. A replenishment order's units are picked when it is dispatched."
                 );
             }
 
@@ -107,9 +104,7 @@ class RequestAllocationService
                 throw $this->refuse(
                     409,
                     'request_fully_allocated',
-                    $planned
-                        ? 'Every unit you committed to supply on this order is already held.'
-                        : 'Every unit this request still needs from this facility is already held.'
+                    'Every unit this request still needs from this facility is already tagged.'
                 );
             }
 
@@ -217,8 +212,8 @@ class RequestAllocationService
 
         return [
             'message' => $result['short_by'] > 0
-                ? "Units reserved. {$result['short_by']} unit(s) still outstanding."
-                : 'Request fully allocated.',
+                ? "Units tagged. {$result['short_by']} unit(s) still outstanding."
+                : 'Request fully tagged.',
             'request_id' => $result['request']->id,
             'status' => $result['request']->status->value,
             'held_total' => $result['held_total'],
@@ -369,7 +364,7 @@ class RequestAllocationService
                 throw $this->refuse(
                     409,
                     'request_has_holds',
-                    'Release the units held for this request before rejecting it.'
+                    'Return the units tagged for this request to stock before rejecting it.'
                 );
             }
 
@@ -428,7 +423,7 @@ class RequestAllocationService
                 ->get();
 
             if ($holds->isEmpty()) {
-                throw $this->refuse(409, 'no_holds_to_release', 'This request has no reserved units to release.');
+                throw $this->refuse(409, 'no_holds_to_release', 'This request has no tagged units to return.');
             }
 
             $unitIds = $holds->pluck('unit_id')->all();
@@ -496,11 +491,7 @@ class RequestAllocationService
     }
 
     /**
-     * Hold the units staff picked, each against a line with room left for it.
-     *
-     * Refused whole, with a reason against each unit that cannot be held: a
-     * partial hold of a hand-picked set would leave staff guessing which bags
-     * went where.
+     * Tag the units staff picked, each against a line with room left for it.
      *
      * @param  Collection<int, BloodRequestItem>  $lines
      * @param  Collection<int, array<string, mixed>>  $figures
@@ -509,67 +500,7 @@ class RequestAllocationService
      */
     private function takeChosenUnits(BloodRequest $request, Collection $lines, Collection $figures, array $unitIds, int $facilityId, User $user): array
     {
-        $lines->each(fn (BloodRequestItem $line) => $line->loadMissing(['component', 'bloodType']));
-
-        $today = OperationalDay::todayAsDate();
-        $units = $this->inventoryRepository->lockUnitsById($facilityId, $unitIds);
-        $claimed = array_flip($this->inventoryRepository->claimedUnitIds($unitIds));
-
-        $room = [];
-
-        foreach ($lines as $line) {
-            $room[$line->id] = (int) ($figures->get($line->id)['allocatable'] ?? 0);
-        }
-
-        $chosen = [];
-        $errors = [];
-
-        foreach (array_values($unitIds) as $index => $unitId) {
-            $unit = $units->get($unitId);
-            $field = "unit_ids.{$index}";
-
-            if ($unit === null) {
-                $errors[$field] = ["{$unitId} is not in this centre's stock."];
-
-                continue;
-            }
-
-            if ($unit->status !== BloodUnitStatus::Available || isset($claimed[$unitId]) || $unit->expiry_date->toDateString() < $today) {
-                $errors[$field] = ["{$unitId} is no longer available."];
-
-                continue;
-            }
-
-            // The same rule as the walk: the line's own blood type and
-            // component, never a compatible substitute.
-            $matching = $lines->filter(fn (BloodRequestItem $line): bool => (int) $line->blood_type_id === (int) $unit->blood_type_id
-                && (int) $line->component_id === (int) $unit->component_id);
-
-            if ($matching->isEmpty()) {
-                $errors[$field] = ["{$unitId} is not a blood type and component this request asks for."];
-
-                continue;
-            }
-
-            $line = $matching->first(fn (BloodRequestItem $candidate): bool => $room[$candidate->id] > 0);
-
-            if ($line === null) {
-                $first = $matching->first();
-                $errors[$field] = [$first->committed_quantity === null
-                    ? "More {$first->component?->name} ({$first->bloodType?->code}) was picked than this request still needs."
-                    : "More {$first->component?->name} ({$first->bloodType?->code}) was picked than you committed to supply."];
-
-                continue;
-            }
-
-            $room[$line->id]--;
-            $chosen[$line->id]['line'] = $line;
-            $chosen[$line->id]['units'][] = $unit;
-        }
-
-        if ($errors !== []) {
-            throw ValidationException::withMessages($errors);
-        }
+        $chosen = $this->chosenUnits->match($lines, $figures, $unitIds, $facilityId);
 
         $taken = collect();
         $allocations = collect();

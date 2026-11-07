@@ -49,6 +49,12 @@ use Illuminate\Validation\ValidationException;
  * raised as StatementOnly: the hospital receives the statement, nothing is
  * collected against it here, and it does not hold units back.
  *
+ * Deferred payment. At issuance, staff decide whether a patient request needs
+ * settling first or can go now and be settled afterwards (project owner,
+ * 2026-11-07). A walk-in must always be settled first. A deferred statement
+ * stays Unpaid or Partial and keeps collecting, so the bill is still recorded
+ * and still owed; only the release gate stops waiting for it.
+ *
  * Locking. Every change to a statement or to one of its payments runs inside
  * one transaction, and the blood request is the point they serialise on:
  * locks are always taken request, then billing, then attempt or payment, then
@@ -105,9 +111,10 @@ class BillingService
     /**
      * Raise or update the statement for a request's currently held units.
      *
-     * Called on every allocation, because billings.request_id is unique: a
-     * request that grows from two held units to five needs its one statement
-     * to grow with it rather than a second statement it cannot have.
+     * Called on every allocation, and on a replenishment order's dispatch,
+     * because billings.request_id is unique: a request that grows from two held
+     * units to five needs its one statement to grow with it rather than a second
+     * statement it cannot have.
      *
      * The held units are read from the allocations rather than passed in. Once
      * a request can ask for several components at different prices, a bare
@@ -120,7 +127,7 @@ class BillingService
      * money may already be on its way.
      *
      * Must be called inside a transaction that already holds the request lock,
-     * as the allocating one does. The statement is then locked here, which
+     * as the allocating and dispatching ones do. The statement is then locked here, which
      * completes request, then billing.
      */
     public function syncFor(BloodRequest $request, User $actor): Billing
@@ -157,7 +164,7 @@ class BillingService
                 TransactionChannel::System,
                 $total,
                 $actor,
-                note: 'Bill raised for the units reserved.'
+                note: $request->isReplenishment() ? 'Bill raised for the units dispatched.' : 'Bill raised for the units tagged.'
             );
 
             return $billing;
@@ -187,7 +194,11 @@ class BillingService
                 TransactionChannel::System,
                 $difference,
                 $actor,
-                note: $difference > 0 ? 'More units reserved.' : 'Fewer units held.'
+                note: match (true) {
+                    $difference < 0 => 'Fewer units held.',
+                    $request->isReplenishment() => 'More units dispatched.',
+                    default => 'More units tagged.',
+                }
             );
         }
 
@@ -535,13 +546,74 @@ class BillingService
     }
 
     /**
-     * Refuse release unless the request's statement is settled.
+     * Let a request's units go out before its statement is settled.
      *
-     * The Capstone states twice that no unit leaves without confirmed payment.
-     * Under the present subsidy every statement is zero and already paid, so
-     * this passes silently — but it is the real gate, not a placeholder, and it
-     * starts refusing the moment a component carries a price. A weekly order's
-     * statement-only statement clears it, by owner decision.
+     * The decision Issuance takes at the point of issue (project owner,
+     * 2026-11-07). Nothing about the money changes: the statement keeps its
+     * status and balance, stays on the counter and is settled there afterwards,
+     * and units reserved later on the request are covered too.
+     *
+     * Refused for a walk-in, which must be fully settled first, and for a
+     * statement that holds nothing back, so that every deferral on record is a
+     * bill that really was outstanding when somebody decided.
+     *
+     * @return array<string, mixed>
+     */
+    public function deferPayment(User $actor, Billing $billing): array
+    {
+        return DB::transaction(function () use ($actor, $billing): array {
+            [$request, $statement] = $this->lockForMutation((int) $billing->request_id, (int) $actor->facility_id);
+
+            if ($request->request_source->isWalkIn()) {
+                throw $this->refuse(
+                    409,
+                    'settlement_required',
+                    'A walk-in request must be fully settled before its units are issued.'
+                );
+            }
+
+            if ($statement->status->clearsRelease()) {
+                throw $this->refuse(
+                    409,
+                    'billing_settled',
+                    'Nothing is outstanding on this invoice, so there is no payment to defer.'
+                );
+            }
+
+            if ($statement->isPaymentDeferred()) {
+                throw $this->refuse(
+                    409,
+                    'payment_already_deferred',
+                    'Payment on this invoice is already deferred.'
+                );
+            }
+
+            $statement->payment_deferred_at = now();
+            $statement->payment_deferred_by = $actor->id;
+            $statement->save();
+
+            $this->auditLogger->record($actor, 'billing.payment_deferred', $statement, [
+                'request_id' => $statement->request_id,
+                'outstanding' => Money::toFloat($this->outstandingFor($statement)),
+            ]);
+
+            return [
+                'message' => 'The units can be dispatched, and the balance stays on the invoice.',
+                'billing' => $this->format($statement->fresh()),
+            ];
+        });
+    }
+
+    /**
+     * Refuse release unless the request's statement clears it.
+     *
+     * Every issuance has a statement behind it, so a request with none is
+     * refused whatever else is true of it. One that has a statement goes once
+     * it is settled, or once Issuance deferred its payment. Under the present
+     * subsidy every statement is zero and already paid, so this passes silently
+     * — but it is the real gate, not a placeholder, and it starts refusing the
+     * moment a component carries a price. A weekly order's statement-only
+     * statement clears it, by owner decision.
      *
      * Reads the statement without locking it: its caller, release(), already
      * holds the request, and every writer takes the request first, so what it
@@ -565,7 +637,9 @@ class BillingService
             throw $this->refuse(
                 409,
                 'billing_unsettled',
-                'Blood units cannot be released until payment for this request is confirmed.'
+                $request->request_source->isWalkIn()
+                    ? 'A walk-in request must be fully settled before its units are issued.'
+                    : 'Settle this invoice or defer its payment before the units are issued.'
             );
         }
     }
@@ -1363,6 +1437,8 @@ class BillingService
             // a status alone cannot once a subsidy zeroes the total.
             'represents_collected_money' => $billing->status->representsCollectedMoney(),
             'clears_release' => $billing->clearsRelease(),
+            // Owing, but its units need not wait: Issuance's decision.
+            'is_payment_deferred' => $billing->isPaymentDeferred(),
             'billing_date' => $billing->billing_date?->toIso8601String(),
             // Set once the hospital settles a weekly bill outside RedAgos.
             'settlement' => $billing->status === BillingStatus::SettledOutside ? [

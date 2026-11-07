@@ -139,6 +139,18 @@ class BloodCenterBillingController extends Controller
     }
 
     /**
+     * Let a request's units go out now, with its invoice settled afterwards.
+     */
+    public function deferPayment(Request $request, int $bloodRequest): JsonResponse
+    {
+        $billing = $this->billingForFacility($bloodRequest, $request->user()->facility_id);
+
+        return response()->json(
+            $this->billingService->deferPayment($request->user(), $billing)
+        );
+    }
+
+    /**
      * Reverse a subsidy applied in error before any unit has left the centre.
      */
     public function removeSubsidy(RemoveSubsidyRequest $request, int $bloodRequest): JsonResponse

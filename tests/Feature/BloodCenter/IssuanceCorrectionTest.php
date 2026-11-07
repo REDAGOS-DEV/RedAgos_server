@@ -351,13 +351,13 @@ class IssuanceCorrectionTest extends TestCase
             ->assertJsonPath('code', 'nothing_to_correct');
     }
 
-    public function test_a_release_time_must_sit_between_reserved_and_received(): void
+    public function test_a_release_time_must_sit_between_tagged_and_received(): void
     {
         [$allocation] = $this->dispatched();
         $allocation->update(['allocated_at' => now()->subHours(2), 'released_at' => now()->subHour(), 'received_at' => now()->subMinutes(10)]);
 
         foreach ([
-            'before it was reserved' => now()->subHours(3),
+            'before it was tagged' => now()->subHours(3),
             'after it was received' => now()->subMinutes(5),
             'in the future' => now()->addHour(),
         ] as $case => $at) {

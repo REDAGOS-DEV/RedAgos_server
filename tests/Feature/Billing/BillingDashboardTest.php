@@ -35,7 +35,6 @@ class BillingDashboardTest extends TestCase
         $this->allocatedRequest(1);
 
         $weekly = $this->allocatedRequest(2, replenishment: true);
-        $this->actingAs($this->inventoryStaff)->postJson("/api/blood-center/blood-requests/{$weekly->id}/release")->assertOk();
 
         $response = $this->actingAs($this->billingClerk)->getJson(self::URL)
             ->assertOk()

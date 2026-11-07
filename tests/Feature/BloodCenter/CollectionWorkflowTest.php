@@ -922,7 +922,7 @@ class CollectionWorkflowTest extends TestCase
             ->assertJsonValidationErrors('ended_at');
     }
 
-    public function test_the_phlebotomist_is_never_taken_from_the_request(): void
+    public function test_the_recording_account_is_never_taken_from_the_request(): void
     {
         $someoneElse = User::factory()->bloodCenterStaff($this->facility, StaffRole::Phlebotomist)->create();
         $id = $this->openDonation();
@@ -938,6 +938,55 @@ class CollectionWorkflowTest extends TestCase
             'donation_id' => $id,
             'collected_by' => $this->staff->id,
         ]);
+    }
+
+    public function test_someone_else_can_be_named_as_the_phlebotomist(): void
+    {
+        $id = $this->openDonation();
+        $this->screenDonation($id);
+
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload([
+                'phlebotomist_name' => '  Liza Bautista, RN  ',
+            ]))
+            ->assertCreated()
+            ->assertJsonPath('data.collection.phlebotomist', 'Liza Bautista, RN')
+            ->assertJsonPath('data.collection.phlebotomist_name', 'Liza Bautista, RN')
+            ->assertJsonPath('data.collection.recorded_by', trim($this->staff->first_name.' '.$this->staff->last_name));
+
+        // The name changes who is shown, never who is answerable for the entry.
+        $this->assertDatabaseHas('blood_collections', [
+            'donation_id' => $id,
+            'collected_by' => $this->staff->id,
+            'phlebotomist_name' => 'Liza Bautista, RN',
+        ]);
+    }
+
+    public function test_a_blank_other_phlebotomist_leaves_the_signed_in_account(): void
+    {
+        $id = $this->openDonation();
+        $this->screenDonation($id);
+
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload([
+                'phlebotomist_name' => '   ',
+            ]))
+            ->assertCreated()
+            ->assertJsonPath('data.collection.phlebotomist', trim($this->staff->first_name.' '.$this->staff->last_name))
+            ->assertJsonPath('data.collection.phlebotomist_name', null);
+    }
+
+    public function test_the_other_phlebotomist_has_a_length_limit(): void
+    {
+        $id = $this->openDonation();
+        $this->screenDonation($id);
+
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload([
+                'phlebotomist_name' => str_repeat('A', 121),
+            ]))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('phlebotomist_name');
     }
 
     public function test_the_fingerprick_blood_type_is_stored_but_never_adopted_onto_the_donor(): void

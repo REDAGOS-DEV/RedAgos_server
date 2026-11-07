@@ -22,8 +22,9 @@ class BloodCollection extends Model
         // facility; a unique index cannot reach through `donations`.
         'facility_id',
         'collected_by',
-        // The phlebotomist as a drive's paper record names them; collected_by
-        // is then the staff member who typed it. Null at the counter.
+        // The phlebotomist when it is not the account that recorded the bag: a
+        // drive's paper record, or a draw the counter says someone else did.
+        // collected_by is then the staff member who typed it.
         'phlebotomist_name',
         'collection_datetime',
         'blood_bag_type',
@@ -53,7 +54,8 @@ class BloodCollection extends Model
     }
 
     /**
-     * The staff member who performed the collection — the form's "Phlebotomist".
+     * The staff member who recorded the collection, and the form's "Phlebotomist"
+     * unless phlebotomist_name says otherwise.
      */
     public function collector(): BelongsTo
     {
@@ -61,8 +63,8 @@ class BloodCollection extends Model
     }
 
     /**
-     * Who drew the bag: the name on a paper record, otherwise the staff member
-     * who recorded the collection at the chair.
+     * Who drew the bag: the name given for it, otherwise the staff member who
+     * recorded the collection at the chair.
      */
     public function phlebotomistName(): ?string
     {

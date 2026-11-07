@@ -22,13 +22,13 @@ use Tests\Feature\Receiving\Concerns\SendsWeeklyRequests;
 use Tests\TestCase;
 
 /**
- * A replenishment order is planned before it is reserved (project owner, 2026-10-29).
+ * A replenishment order is planned before it is dispatched (project owner, 2026-10-29).
  *
  * The centre says how many units of each line it can supply, whether the
- * hospital picks the order up or the centre delivers it, and when. Nothing is
- * reserved before that, never more of a line than was committed, and whatever
- * the commitments leave out is closed when the order is dispatched. The plan
- * may change until units go out, and the hospital is told each time.
+ * hospital picks the order up or the centre delivers it, and when. Nothing goes
+ * out before that, never more of a line than was committed, and whatever the
+ * commitments leave out is closed when the order is dispatched. The plan may
+ * change until units go out, and the hospital is told each time.
  */
 class SupplyPlanTest extends TestCase
 {
@@ -62,7 +62,7 @@ class SupplyPlanTest extends TestCase
             ->assertJsonPath('request.supply_plan.handover_address', 'Issuance counter, ground floor')
             ->assertJsonPath('request.supply_plan.contact_phone', '(082) 227-2731')
             ->assertJsonPath('request.committed_quantity', 3)
-            // Planning reserves nothing, so the request is still waiting.
+            // Planning holds nothing, so the request is still waiting.
             ->assertJsonPath('request.status', BloodRequestStatus::Pending->value);
 
         $this->assertSame(3, BloodRequestItem::query()->findOrFail($prbc)->committed_quantity);
@@ -88,20 +88,19 @@ class SupplyPlanTest extends TestCase
         });
     }
 
-    public function test_nothing_is_reserved_for_an_order_the_centre_has_not_confirmed(): void
+    public function test_an_order_the_centre_has_not_confirmed_cannot_be_dispatched(): void
     {
         $request = $this->weeklyOrder([[$this->bloodType, $this->prbc, 2]]);
         $this->stock($this->centre, $this->prbc, 2);
 
-        $this->actingAs($this->issuance)
-            ->postJson("/api/blood-center/blood-requests/{$request->id}/allocate")
+        $this->sendDispatch($request, $this->issuance)
             ->assertStatus(409)
             ->assertJsonPath('code', 'supply_plan_required');
 
         $this->assertSame(0, $request->allocations()->count());
     }
 
-    public function test_reserving_stops_at_what_was_committed(): void
+    public function test_the_dispatch_stops_at_what_was_committed(): void
     {
         $request = $this->weeklyOrder([[$this->bloodType, $this->prbc, 4]]);
         $line = $this->lineFor($request, $this->prbc);
@@ -110,37 +109,30 @@ class SupplyPlanTest extends TestCase
 
         // The picker offers room for the commitment, not for the order.
         $this->actingAs($this->issuance)
-            ->getJson("/api/blood-center/blood-requests/{$request->id}/units")
+            ->getJson("/api/blood-center/blood-requests/{$request->id}/dispatch-units")
             ->assertOk()
             ->assertJsonPath('lines.0.allocatable', 2);
 
-        $three = BloodUnit::query()->where('facility_id', $this->centre->id)->orderBy('id')->limit(3)->pluck('id')->all();
-
-        $this->actingAs($this->issuance)
-            ->postJson("/api/blood-center/blood-requests/{$request->id}/allocate", ['unit_ids' => $three])
-            ->assertStatus(422)
-            ->assertJsonValidationErrors(['unit_ids.2' => 'committed to supply']);
-
-        $this->actingAs($this->issuance)
-            ->postJson("/api/blood-center/blood-requests/{$request->id}/allocate")
-            ->assertOk()
-            ->assertJsonPath('held_total', 2)
-            ->assertJsonPath('short_by', 0);
-
-        $this->actingAs($this->issuance)
-            ->postJson("/api/blood-center/blood-requests/{$request->id}/allocate")
-            ->assertStatus(409)
-            ->assertJsonPath('code', 'request_fully_allocated');
-
-        // Nothing more to find here, though two were asked beyond the commitment.
         $this->actingAs($this->issuance)
             ->getJson("/api/blood-center/blood-requests/{$request->id}")
             ->assertOk()
-            ->assertJsonPath('request.outstanding_quantity', 0)
-            ->assertJsonPath('request.unclaimed_quantity', 2)
+            ->assertJsonPath('request.outstanding_quantity', 2)
+            ->assertJsonPath('request.unclaimed_quantity', 4)
             ->assertJsonPath('request.items.0.committed_quantity', 2)
             ->assertJsonPath('inventory.lines.0.committed', 2)
-            ->assertJsonPath('inventory.lines.0.unclaimed', 2);
+            ->assertJsonPath('inventory.lines.0.unclaimed', 4);
+
+        $three = BloodUnit::query()->where('facility_id', $this->centre->id)->orderBy('id')->limit(3)->pluck('id')->all();
+
+        $this->sendDispatch($request, $this->issuance, $three)
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['unit_ids.2' => 'committed to supply']);
+
+        $this->assertSame(0, $request->allocations()->count(), 'A pick refused is refused whole.');
+
+        $this->sendDispatch($request, $this->issuance, array_slice($three, 0, 2))
+            ->assertOk()
+            ->assertJsonPath('released_units', array_slice($three, 0, 2));
     }
 
     public function test_the_dispatch_closes_what_lay_beyond_the_commitment(): void
@@ -154,13 +146,7 @@ class SupplyPlanTest extends TestCase
         $this->stock($this->centre, $this->ffp, 2);
 
         // The plasma is on the shelf, but none was committed.
-        $this->actingAs($this->issuance)
-            ->postJson("/api/blood-center/blood-requests/{$request->id}/allocate")
-            ->assertOk()
-            ->assertJsonPath('held_total', 2);
-
-        $this->actingAs($this->issuance)
-            ->postJson("/api/blood-center/blood-requests/{$request->id}/release")
+        $this->sendDispatch($request, $this->issuance)
             ->assertOk()
             ->assertJsonPath('status', BloodRequestStatus::Partial->value)
             ->assertJsonPath('closed_short.0.component', 'Packed RBC')
@@ -171,7 +157,7 @@ class SupplyPlanTest extends TestCase
         $this->assertNotNull($request->fresh()->closed_at);
     }
 
-    public function test_the_plan_may_change_until_units_go_out_but_not_below_what_is_reserved(): void
+    public function test_the_plan_may_change_until_units_go_out(): void
     {
         Notification::fake();
 
@@ -180,20 +166,13 @@ class SupplyPlanTest extends TestCase
         $this->planSupply($request, $this->issuance, [$line => 3]);
         $this->stock($this->centre, $this->prbc, 3);
 
-        $this->actingAs($this->issuance)
-            ->postJson("/api/blood-center/blood-requests/{$request->id}/allocate")
-            ->assertOk();
-
-        $this->sendSupplyPlan($request, $this->issuance, [$line => 2])
-            ->assertStatus(422)
-            ->assertJsonValidationErrors(['lines.0.committed_quantity' => 'already reserved']);
-
-        $this->sendSupplyPlan($request, $this->issuance, [$line => 3], [
+        $this->sendSupplyPlan($request, $this->issuance, [$line => 2], [
             'handover_method' => 'pickup',
             'handover_address' => null,
             'scheduled_at' => '2026-10-06T14:00:00+08:00',
         ])
             ->assertOk()
+            ->assertJsonPath('request.committed_quantity', 2)
             ->assertJsonPath('request.supply_plan.handover_method', 'pickup')
             ->assertJsonPath('request.supply_plan.handover_address', null);
 
@@ -209,9 +188,7 @@ class SupplyPlanTest extends TestCase
         );
 
         // A weekly order is finished once it goes out.
-        $this->actingAs($this->issuance)
-            ->postJson("/api/blood-center/blood-requests/{$request->id}/release")
-            ->assertOk();
+        $this->sendDispatch($request, $this->issuance)->assertOk();
 
         $this->sendSupplyPlan($request, $this->issuance, null, [
             'lines' => [['request_item_id' => $line, 'committed_quantity' => 3]],
@@ -232,7 +209,7 @@ class SupplyPlanTest extends TestCase
 
         $this->planSupply($request, $this->issuance);
         $this->stock($this->centre, $this->prbc, 1);
-        $this->allocateAndRelease($request);
+        $this->sendDispatch($request, $this->issuance)->assertOk();
 
         $this->sendSupplyPlan($request, $this->issuance)
             ->assertStatus(409)
@@ -298,7 +275,7 @@ class SupplyPlanTest extends TestCase
         $this->assertNull(BloodRequestItem::query()->findOrFail($prbc)->committed_quantity);
     }
 
-    public function test_a_patients_request_is_approved_and_reserved_not_planned(): void
+    public function test_a_patients_request_is_approved_and_tagged_not_planned(): void
     {
         $this->sendSupplyPlan($this->scenarioRequest(), $this->issuance)
             ->assertStatus(409)

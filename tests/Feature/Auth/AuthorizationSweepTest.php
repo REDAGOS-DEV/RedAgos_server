@@ -53,6 +53,8 @@ class AuthorizationSweepTest extends TestCase
             'centre reject' => ['post', '/api/blood-center/blood-requests/1/reject'],
             'centre release holds' => ['post', '/api/blood-center/blood-requests/1/release-holds'],
             'centre release' => ['post', '/api/blood-center/blood-requests/1/release'],
+            'centre dispatch units' => ['get', '/api/blood-center/blood-requests/1/dispatch-units'],
+            'centre dispatch order' => ['post', '/api/blood-center/blood-requests/1/dispatch'],
             'centre request history' => ['get', '/api/blood-center/blood-requests/1/history'],
             'centre close line' => ['post', '/api/blood-center/blood-requests/1/items/1/close'],
             'centre walk-in reference' => ['get', '/api/blood-center/blood-requests/walk-in/reference'],
@@ -101,6 +103,7 @@ class AuthorizationSweepTest extends TestCase
             'hospital external source add' => ['post', '/api/hospital/external-blood-sources'],
             'centre billing show' => ['get', '/api/blood-center/billings/1'],
             'centre record payment' => ['post', '/api/blood-center/billings/1/payments'],
+            'centre defer payment' => ['post', '/api/blood-center/billings/1/defer-payment'],
             'centre statement list' => ['get', '/api/blood-center/billings/1/statements'],
             'centre statement issue' => ['post', '/api/blood-center/billings/1/statements'],
             'centre statement pdf' => ['get', '/api/blood-center/statements/1/pdf'],
@@ -226,6 +229,8 @@ class AuthorizationSweepTest extends TestCase
             'reject request' => ['post', '/api/blood-center/blood-requests/1/reject', 'requests.approve'],
             'release holds' => ['post', '/api/blood-center/blood-requests/1/release-holds', 'requests.approve'],
             'release units' => ['post', '/api/blood-center/blood-requests/1/release', 'requests.release'],
+            'units to dispatch' => ['get', '/api/blood-center/blood-requests/1/dispatch-units', 'requests.release'],
+            'dispatch order' => ['post', '/api/blood-center/blood-requests/1/dispatch', 'requests.release'],
             'request history' => ['get', '/api/blood-center/blood-requests/1/history', 'requests.view'],
             'close request line' => ['post', '/api/blood-center/blood-requests/1/items/1/close', 'requests.approve'],
             'walk-in reference' => ['get', '/api/blood-center/blood-requests/walk-in/reference', 'requests.record'],
@@ -233,6 +238,7 @@ class AuthorizationSweepTest extends TestCase
             'record walk-in' => ['post', '/api/blood-center/blood-requests/walk-in', 'requests.record'],
             'billing show' => ['get', '/api/blood-center/billings/1', 'billing.view'],
             'record payment' => ['post', '/api/blood-center/billings/1/payments', 'billing.record_payment'],
+            'defer payment' => ['post', '/api/blood-center/billings/1/defer-payment', 'requests.release'],
             'statement list' => ['get', '/api/blood-center/billings/1/statements', 'billing.view'],
             'issue statement' => ['post', '/api/blood-center/billings/1/statements', 'billing.record_payment'],
             'statement pdf' => ['get', '/api/blood-center/statements/1/pdf', 'billing.view'],
@@ -313,8 +319,9 @@ class AuthorizationSweepTest extends TestCase
             'lift deferral' => ['post', '/api/blood-center/deferrals/1/lift', 'donors.defer'],
             'add deferral code' => ['post', '/api/blood-center/deferral-codes', 'deferrals.configure'],
             'change deferral code' => ['patch', '/api/blood-center/deferral-codes/1', 'deferrals.configure'],
-            // Its limit is 60, above every row's before it.
+            // Their limit is 60, above every row's before them.
             'counter arrival' => ['get', '/api/blood-center/collection/arrival/00000000-0000-4000-8000-000000000000', 'appointments.verify'],
+            'change questionnaire answers' => ['patch', '/api/blood-center/donors/00000000-0000-4000-8000-000000000000/health-questionnaire/answers', 'donations.screen'],
         ];
     }
 

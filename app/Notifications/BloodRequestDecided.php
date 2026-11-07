@@ -89,7 +89,7 @@ class BloodRequestDecided extends Notification
         $reference = $this->request->reference_number;
 
         return match ($this->outcome) {
-            'allocated' => "{$facility} has reserved stock for request {$reference}.",
+            'allocated' => "{$facility} has tagged stock for request {$reference}.",
             'rejected' => "{$facility} could not fulfil request {$reference}. "
                 .($this->request->rejection_reason ?? 'No reason was recorded.')
                 .($this->request->transfusion_request_id !== null

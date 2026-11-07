@@ -180,7 +180,7 @@ class TransfusionAllocationFlowTest extends TestCase
             ->assertJsonPath('request.totals.awaiting', 0)
             ->assertJsonPath('request.totals.unallocated', 1)
             ->assertJsonPath('request.needs_allocation', true)
-            ->assertJsonPath('request.allocations.0.allocation_status_label', 'Approved — units reserved');
+            ->assertJsonPath('request.allocations.0.allocation_status_label', 'Approved — units tagged');
     }
 
     public function test_a_centre_still_reviewing_its_share_is_not_asked_again(): void

@@ -3,6 +3,7 @@
 namespace Tests\Feature\BloodRequest;
 
 use App\Enums\BillingStatus;
+use App\Enums\BloodRequestStatus;
 use App\Models\Billing;
 use App\Models\BloodRequest;
 use App\Models\Payment;
@@ -45,13 +46,12 @@ class StatementOnlyBillingTest extends TestCase
             ->assertJsonPath('billing.represents_collected_money', false);
     }
 
-    public function test_a_statement_only_request_is_released_without_any_payment(): void
+    public function test_a_statement_only_request_goes_out_without_any_payment(): void
     {
         $request = $this->allocatedRequest(1, replenishment: true);
 
-        $this->actingAs($this->inventoryStaff)
-            ->postJson("/api/blood-center/blood-requests/{$request->id}/release")
-            ->assertOk();
+        $this->assertSame(BloodRequestStatus::Fulfilled, $request->status);
+        $this->assertSame(0, Payment::query()->count());
     }
 
     public function test_no_payment_is_recorded_against_a_statement_only_statement(): void
@@ -75,11 +75,12 @@ class StatementOnlyBillingTest extends TestCase
             ->assertJsonPath('code', 'billing_not_collectible');
     }
 
-    public function test_its_total_follows_the_units_reserved_while_its_status_stays(): void
+    public function test_its_total_follows_the_units_dispatched_while_its_status_stays(): void
     {
         $request = $this->allocatedRequest(1, askedFor: 3, replenishment: true);
 
-        $this->topUp($request, 2);
+        $this->stock(2);
+        $this->sendDispatch($request, $this->inventoryStaff)->assertOk();
 
         $billing = $request->billing()->firstOrFail();
 

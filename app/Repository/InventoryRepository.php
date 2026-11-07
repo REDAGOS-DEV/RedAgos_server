@@ -775,6 +775,25 @@ class InventoryRepository
     }
 
     /**
+     * Flip available units straight to issued, returning how many rows actually moved.
+     *
+     * For a replenishment order's dispatch, which tags nothing first.
+     *
+     * @param  array<int, string>  $unitIds
+     */
+    public function markIssuedFromStock(array $unitIds): int
+    {
+        if ($unitIds === []) {
+            return 0;
+        }
+
+        return BloodUnit::query()
+            ->whereIn('id', $unitIds)
+            ->where('status', BloodUnitStatus::Available)
+            ->update(['status' => BloodUnitStatus::Issued->value]);
+    }
+
+    /**
      * Return reserved units to available stock, for a hold being given up.
      *
      * @param  array<int, string>  $unitIds

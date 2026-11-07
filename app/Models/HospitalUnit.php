@@ -53,7 +53,16 @@ class HospitalUnit extends Model
             'stocked_at' => 'immutable_datetime',
             'expired_at' => 'immutable_datetime',
             'discarded_at' => 'immutable_datetime',
+            'partner_reserved_at' => 'immutable_datetime',
         ];
+    }
+
+    /**
+     * Whether the bag is reserved for a blood donor partner.
+     */
+    public function isPartnerReserved(): bool
+    {
+        return $this->partner_name !== null;
     }
 
     /**
@@ -127,6 +136,14 @@ class HospitalUnit extends Model
     public function discardedBy(): BelongsTo
     {
         return $this->belongsTo(User::class, 'discarded_by');
+    }
+
+    /**
+     * The staff member who reserved the bag for a blood donor partner.
+     */
+    public function partnerReservedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'partner_reserved_by');
     }
 
     /**

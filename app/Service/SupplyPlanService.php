@@ -12,25 +12,25 @@ use App\Repository\BloodRequestRepository;
 use App\Support\OperationalDay;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Exceptions\HttpResponseException;
-use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 /**
- * A blood centre's answer to a replenishment order, before anything is reserved for it.
+ * A blood centre's answer to a replenishment order, before it is dispatched.
  *
  * A restock is not met the way a patient's request is (project owner,
  * 2026-10-29). The centre first says how many units of each line it can
  * supply, whether the hospital picks the order up or the centre delivers it,
- * and when; only then are bags reserved, and never more of a line than was
- * committed (RequestStatusResolver caps the line's allocatable figure).
+ * and when. The plan holds no stock (project owner, 2026-11-07): bags stay on
+ * the shelf for anyone until they are picked at dispatch, and never more of a
+ * line than was committed (RequestStatusResolver caps the line's allocatable
+ * figure).
  *
  * The plan may be changed while nothing has gone out — a delivery moved to
- * the afternoon, a line cut to what is left on the shelf — but never below
- * what is already reserved for a line, and not at all once units are
- * dispatched. Whatever the commitments leave out is closed as not supplied
- * when the order is dispatched, as any unsupplied remainder of a weekly order
- * is (FulfillmentService::release). The hospital is told each time.
+ * the afternoon, a line cut to what is left on the shelf — but not at all once
+ * units are dispatched. Whatever the commitments leave out is closed as not
+ * supplied when the order is dispatched (FulfillmentService::dispatchOrder).
+ * The hospital is told each time.
  */
 class SupplyPlanService
 {
@@ -69,7 +69,7 @@ class SupplyPlanService
                 throw $this->refuse(
                     409,
                     'not_replenishment',
-                    "A patient's request is approved and reserved, not planned. Only a replenishment order takes a supply plan."
+                    "A patient's request is approved and tagged, not planned. Only a replenishment order takes a supply plan."
                 );
             }
 
@@ -81,9 +81,7 @@ class SupplyPlanService
                 );
             }
 
-            $figures = $this->resolver->freshFigures($request);
-
-            if ($figures->sum('fulfilled') > 0) {
+            if ($this->resolver->freshFigures($request)->sum('fulfilled') > 0) {
                 throw $this->refuse(
                     409,
                     'supply_plan_locked',
@@ -91,7 +89,7 @@ class SupplyPlanService
                 );
             }
 
-            $commitments = $this->commitments($request, $figures, $payload['lines']);
+            $commitments = $this->commitments($request, $payload['lines']);
 
             /** @var SupplyPlan|null $plan */
             $plan = $request->supplyPlan()->lockForUpdate()->first();
@@ -116,6 +114,11 @@ class SupplyPlanService
                     $item->save();
                 }
             }
+
+            // Confirming is the centre's review of the order.
+            $request->reviewed_by ??= $user->id;
+            $request->reviewed_at ??= now();
+            $request->save();
 
             $request->setRelation('supplyPlan', $plan);
             $after = $this->summary($plan, $request->load('items'));
@@ -154,19 +157,17 @@ class SupplyPlanService
     }
 
     /**
-     * Each open line's commitment, judged against what it asked for and what is already held.
+     * Each open line's commitment, judged against what it asked for.
      *
      * Every line still open must be given one, and a closed line takes none:
-     * its remainder is already settled. A line may not be committed below the
-     * units already reserved for it — those are returned to stock first — nor
-     * above what it asked for. Committing nothing at all is a rejection, and
-     * is refused as one.
+     * its remainder is already settled. A line may not be committed above what
+     * it asked for. Committing nothing at all is a rejection, and is refused as
+     * one.
      *
-     * @param  Collection<int, array<string, mixed>>  $figures
      * @param  array<int, array{request_item_id: int, committed_quantity: int}>  $lines
      * @return array<int, int> request_item_id => committed quantity
      */
-    private function commitments(BloodRequest $request, Collection $figures, array $lines): array
+    private function commitments(BloodRequest $request, array $lines): array
     {
         $items = $request->items->keyBy('id');
         $commitments = [];
@@ -190,13 +191,8 @@ class SupplyPlanService
                 continue;
             }
 
-            $figure = $figures->get($itemId);
-            $held = (int) ($figure['reserved'] ?? 0) + (int) ($figure['fulfilled'] ?? 0);
-
             if ($quantity > $item->quantity) {
                 $errors["lines.{$index}.committed_quantity"] = ["No more than the {$item->quantity} asked for."];
-            } elseif ($quantity < $held) {
-                $errors["lines.{$index}.committed_quantity"] = ["{$held} already reserved for this line; return some to stock first."];
             }
 
             $commitments[$itemId] = $quantity;

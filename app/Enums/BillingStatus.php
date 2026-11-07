@@ -24,8 +24,8 @@ namespace App\Enums;
  * project owner decided on 2026-10-10 that only the patient or watcher of a
  * Patient Transfusion owes money in RedAgos; a weekly order is billed to the
  * hospital by statement and settled outside the system. Nothing is collected
- * against it, it clears release, and its total still follows the units
- * reserved. That is a recorded exception to the Capstone rule that no unit
+ * against it, it clears release, and its total follows the units
+ * dispatched. That is a recorded exception to the Capstone rule that no unit
  * leaves without confirmed payment, for weekly orders only.
  *
  * `SettledOutside` is a statement-only statement the hospital has since
@@ -91,6 +91,9 @@ enum BillingStatus: string
      * `StatementOnly` clears because nothing is owed in RedAgos at all: the
      * weekly order is settled outside the system, by owner decision. So does
      * `SettledOutside`, the same statement once the hospital has settled it.
+     *
+     * This is what the status alone says. An Unpaid or Partial statement whose
+     * payment Issuance deferred also clears: see Billing::clearsRelease().
      */
     public function clearsRelease(): bool
     {
@@ -109,7 +112,7 @@ enum BillingStatus: string
      * back into an unpaid balance would undo that decision.
      *
      * StatementOnly is not settled by decision: its total keeps following the
-     * units reserved, only its status stays put. SettledOutside is: the
+     * units dispatched, only its status stays put. SettledOutside is: the
      * hospital settled the figure it was billed, which must not move after.
      */
     public function isSettledByDecision(): bool

@@ -4,6 +4,7 @@ namespace App\Service;
 
 use App\Enums\BloodRequestStatus;
 use App\Enums\HospitalUnitStatus;
+use App\Enums\UntagReason;
 use App\Enums\UrgencyLevel;
 use App\Models\BloodRequest;
 use App\Models\BloodRequestItem;
@@ -58,6 +59,10 @@ class HospitalDashboardService
 
         return [
             'units_available' => $seesStock ? $this->inventory->summaryCounts($facilityId)[HospitalUnitStatus::Available->value] : 0,
+            // Bags left past their 24 hours (project owner, 2026-11-07). A tag
+            // staff released in time is neither, whatever its status says.
+            'untagged_crossmatched' => $seesStock ? $this->inventory->endedTagCount($facilityId, UntagReason::TransfusionDeadlineExpired) : 0,
+            'untagged_assigned' => $seesStock ? $this->inventory->endedTagCount($facilityId, UntagReason::CrossmatchDeadlineExpired) : 0,
             ...($seesRequests ? $this->requestFigures($facilityId) : $this->noRequestFigures()),
             'activities' => $this->activities($user, $facilityId, $seesRequests, $seesStock),
             'notifications' => $this->notifications($user),

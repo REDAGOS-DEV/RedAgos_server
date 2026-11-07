@@ -10,6 +10,9 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * A single questionnaire answer. These records carry infectious disease status,
  * surgery and transfusion history, and medication use, so the answer is
  * encrypted at rest and hidden from array and JSON serialisation.
+ *
+ * The screening physician may change it during the donor's screening. What the
+ * donor declared then stays in `original_answer`, under the same protection.
  */
 class EligibilityScreeningAnswer extends Model
 {
@@ -21,10 +24,14 @@ class EligibilityScreeningAnswer extends Model
         'screening_id',
         'question_code',
         'answer',
+        'original_answer',
+        'amended_by',
+        'amended_at',
     ];
 
     protected $hidden = [
         'answer',
+        'original_answer',
     ];
 
     /**
@@ -36,11 +43,18 @@ class EligibilityScreeningAnswer extends Model
     {
         return [
             'answer' => 'encrypted:json',
+            'original_answer' => 'encrypted:json',
+            'amended_at' => 'datetime',
         ];
     }
 
     public function screening(): BelongsTo
     {
         return $this->belongsTo(EligibilityScreening::class, 'screening_id');
+    }
+
+    public function amendedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'amended_by');
     }
 }

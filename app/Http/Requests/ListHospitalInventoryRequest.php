@@ -19,8 +19,9 @@ class ListHospitalInventoryRequest extends FormRequest
     public function rules(): array
     {
         return [
-            // A status, or `tagged` for both tag stages at once.
-            'status' => ['sometimes', 'string', Rule::in([...HospitalUnitStatus::values(), 'tagged'])],
+            // A status, `tagged` for both tag stages at once, or `reserved`
+            // for untagged bags reserved for a blood donor partner.
+            'status' => ['sometimes', 'string', Rule::in([...HospitalUnitStatus::values(), 'tagged', 'reserved'])],
             'blood_type_id' => ['sometimes', 'integer', 'exists:blood_types,id'],
             'component_id' => ['sometimes', 'integer', 'exists:blood_components,id'],
             'transfusion_request_id' => ['sometimes', 'integer'],

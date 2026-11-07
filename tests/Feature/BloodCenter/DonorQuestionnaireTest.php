@@ -4,9 +4,11 @@ namespace Tests\Feature\BloodCenter;
 
 use App\Enums\AppointmentStatus;
 use App\Enums\Department;
+use App\Enums\DonationStatus;
 use App\Enums\EligibilityStatus;
 use App\Enums\StaffRole;
 use App\Models\AuditLog;
+use App\Models\Donation;
 use App\Models\DonationAppointment;
 use App\Models\DonorQrToken;
 use App\Models\EligibilityQuestion;
@@ -17,8 +19,11 @@ use App\Models\User;
 use Database\Seeders\EligibilityQuestionSeeder;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Support\Facades\Crypt;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Str;
+use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
 
 /**
@@ -400,5 +405,233 @@ class DonorQuestionnaireTest extends TestCase
         $context = json_encode($log->context);
         $this->assertStringNotContainsString('v2_ev_5', $context);
         $this->assertStringNotContainsString('answer', $context);
+    }
+
+    // --- Changing an answer during screening ---------------------------------
+
+    private function openDonation(DonationStatus $status = DonationStatus::Registered, ?Facility $facility = null): Donation
+    {
+        return Donation::factory()->create([
+            'donor_id' => $this->donor->id,
+            'facility_id' => ($facility ?? $this->facility)->id,
+            'status' => $status,
+        ]);
+    }
+
+    /**
+     * @param  array<string, bool>  $answers
+     */
+    private function amend(EligibilityScreening $screening, array $answers, ?User $as = null): TestResponse
+    {
+        return $this->actingAs($as ?? $this->staff)->patchJson($this->url().'/answers', [
+            'screening_id' => $screening->id,
+            'answers' => collect($answers)->map(fn (bool $answer, string $code): array => ['code' => $code, 'answer' => $answer])->values()->all(),
+        ]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function question(TestResponse $response, string $code): array
+    {
+        return collect($response->json('data.sections'))
+            ->flatMap(fn (array $section): array => $section['questions'])
+            ->keyBy('code')
+            ->get($code);
+    }
+
+    public function test_the_physician_changes_an_answer_and_the_donors_stays_on_record(): void
+    {
+        $screening = $this->answerQuestionnaire();
+        $this->openDonation();
+
+        $response = $this->amend($screening, ['v2_ev_5' => true])
+            ->assertOk()
+            ->assertJsonPath('data.computed_assessment', 'deferred');
+
+        $question = $this->question($response, 'v2_ev_5');
+
+        $this->assertTrue($question['answer']);
+        $this->assertSame('Yes', $question['answer_label']);
+        // The review marker reads the answer as it now stands.
+        $this->assertTrue($question['flagged']);
+        $this->assertContains('v2_ev_5', $response->json('data.flagged_codes'));
+
+        $this->assertFalse($question['amendment']['donor_answer']);
+        $this->assertSame('No', $question['amendment']['donor_answer_label']);
+        $this->assertSame($this->staff->signatureName(), $question['amendment']['amended_by']);
+        $this->assertNotNull($question['amendment']['amended_at']);
+
+        // An answer nobody touched says nothing of the kind.
+        $this->assertNull($this->question($response, 'v2_m12_1')['amendment']);
+
+        $this->assertSame('deferred', $screening->fresh()->computed_result);
+    }
+
+    public function test_what_the_donor_declared_is_encrypted_like_the_answer(): void
+    {
+        $screening = $this->answerQuestionnaire();
+        $this->openDonation();
+
+        $this->amend($screening, ['v2_ev_5' => true])->assertOk();
+
+        $raw = DB::table('eligibility_screening_answers')
+            ->where('screening_id', $screening->id)
+            ->where('question_code', 'v2_ev_5')
+            ->value('original_answer');
+
+        $this->assertNotSame('false', $raw);
+        $this->assertSame('false', Crypt::decryptString($raw));
+    }
+
+    public function test_putting_an_answer_back_leaves_no_change_on_it(): void
+    {
+        $screening = $this->answerQuestionnaire();
+        $this->openDonation();
+
+        $this->amend($screening, ['v2_ev_5' => true])->assertOk();
+        $response = $this->amend($screening, ['v2_ev_5' => false])
+            ->assertOk()
+            ->assertJsonPath('data.computed_assessment', 'eligible');
+
+        $this->assertNull($this->question($response, 'v2_ev_5')['amendment']);
+        $this->assertFalse($this->question($response, 'v2_ev_5')['answer']);
+    }
+
+    public function test_a_question_the_donor_left_blank_says_so_after_it_is_answered(): void
+    {
+        $screening = $this->answerQuestionnaire();
+        $this->openDonation();
+        EligibilityScreeningAnswer::where('screening_id', $screening->id)->where('question_code', 'v2_ev_5')->delete();
+
+        // Blank is never a "No", so a further change cannot read as putting it back.
+        foreach ([true, false] as $answer) {
+            $amendment = $this->question($this->amend($screening, ['v2_ev_5' => $answer])->assertOk(), 'v2_ev_5')['amendment'];
+
+            $this->assertNull($amendment['donor_answer']);
+            $this->assertSame('Not answered', $amendment['donor_answer_label']);
+        }
+    }
+
+    public function test_answers_cannot_be_changed_with_no_visit_open_here(): void
+    {
+        $screening = $this->answerQuestionnaire();
+        $this->bookToday();
+
+        $this->amend($screening, ['v2_ev_5' => true])
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'questionnaire_not_amendable');
+
+        // A visit open at another centre is not one at this counter.
+        $this->openDonation(facility: Facility::factory()->approved()->create());
+
+        $this->amend($screening, ['v2_ev_5' => true])->assertStatus(409);
+    }
+
+    public function test_answers_cannot_be_changed_once_the_screening_is_recorded(): void
+    {
+        $screening = $this->answerQuestionnaire();
+        $this->openDonation(DonationStatus::Screening);
+
+        $this->amend($screening, ['v2_ev_5' => true])
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'questionnaire_not_amendable');
+
+        $this->assertFalse(
+            EligibilityScreeningAnswer::where('screening_id', $screening->id)->where('question_code', 'v2_ev_5')->sole()->answer
+        );
+    }
+
+    public function test_a_lapsed_questionnaire_cannot_be_changed(): void
+    {
+        $screening = $this->answerQuestionnaire(screeningOverrides: ['valid_until' => now()->subDay()]);
+        $this->openDonation();
+
+        $this->amend($screening, ['v2_ev_5' => true])
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'questionnaire_not_amendable');
+    }
+
+    public function test_only_a_question_put_to_this_donor_can_be_changed(): void
+    {
+        $screening = $this->answerQuestionnaire();
+        $this->openDonation();
+
+        // v2_fd_1 is for female donors; this donor is male. One bad row refuses
+        // the whole save rather than applying the rest.
+        foreach (['v2_fd_1', 'nonsense'] as $code) {
+            $this->amend($screening, ['v2_ev_5' => true, $code => true])
+                ->assertStatus(422)
+                ->assertJsonPath('code', 'question_not_amendable');
+        }
+
+        $this->assertDatabaseMissing('eligibility_screening_answers', ['screening_id' => $screening->id, 'question_code' => 'v2_fd_1']);
+        $this->assertFalse(
+            EligibilityScreeningAnswer::where('screening_id', $screening->id)->where('question_code', 'v2_ev_5')->sole()->answer
+        );
+    }
+
+    public function test_another_donors_questionnaire_cannot_be_changed(): void
+    {
+        $this->answerQuestionnaire();
+        $this->openDonation();
+
+        $theirs = EligibilityScreening::factory()->create(['donor_id' => User::factory()->donor()->create()->id]);
+
+        $this->amend($theirs, ['v2_ev_5' => true])
+            ->assertNotFound()
+            ->assertJsonPath('code', 'questionnaire_not_found');
+    }
+
+    public function test_only_the_physician_changes_answers(): void
+    {
+        $screening = $this->answerQuestionnaire();
+        $this->openDonation();
+
+        // The desk takes a walk-in's questionnaire, and still may not change one.
+        foreach ([StaffRole::MedicalReceptionist, StaffRole::Phlebotomist] as $role) {
+            $this->amend($screening, ['v2_ev_5' => true], User::factory()->bloodCenterStaff($this->facility, $role)->create())
+                ->assertForbidden();
+        }
+    }
+
+    public function test_changing_an_answer_is_audited_without_saying_which_or_what(): void
+    {
+        $screening = $this->answerQuestionnaire();
+        $this->openDonation();
+
+        // A save that changes nothing is not an event.
+        $this->amend($screening, ['v2_ev_5' => false])->assertOk();
+        $this->assertDatabaseMissing('audit_logs', ['action' => 'collection.questionnaire_amended']);
+
+        $this->amend($screening, ['v2_ev_5' => true])->assertOk();
+
+        $log = AuditLog::where('action', 'collection.questionnaire_amended')->sole();
+
+        $this->assertSame($this->staff->id, $log->actor_id);
+        $this->assertSame($screening->id, $log->context['screening_id']);
+        $this->assertSame(1, $log->context['changed_count']);
+
+        $context = json_encode($log->context);
+        $this->assertStringNotContainsString('v2_ev_5', $context);
+        $this->assertStringNotContainsString('answer', $context);
+    }
+
+    public function test_the_printed_form_says_an_answer_was_changed(): void
+    {
+        $screening = $this->answerQuestionnaire();
+        $this->openDonation();
+
+        $this->amend($screening, ['v2_ev_5' => true])->assertOk();
+
+        $response = $this->actingAs($this->staff)
+            ->getJson($this->url().'/print?screening_id='.$screening->id)
+            ->assertOk();
+
+        $question = $this->question($response, 'v2_ev_5');
+
+        $this->assertTrue($question['answer']);
+        $this->assertSame('No', $question['amendment']['donor_answer_label']);
+        $this->assertArrayNotHasKey('flagged', $question);
     }
 }

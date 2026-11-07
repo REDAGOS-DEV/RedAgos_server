@@ -9,7 +9,7 @@ use App\Support\OperationalDay;
 use Illuminate\Testing\TestResponse;
 
 /**
- * Confirming a replenishment order, which must happen before anything is reserved for it.
+ * Confirming a replenishment order, and dispatching it: the units are picked as it goes.
  */
 trait PlansSupply
 {
@@ -27,6 +27,39 @@ trait PlansSupply
         $this->sendSupplyPlan($request, $staff, $commitments, $overrides)->assertOk();
 
         return $request->fresh();
+    }
+
+    /**
+     * Dispatch a confirmed order as $staff and return the response.
+     *
+     * The units named, or, given none, the first-expiring ones each line may
+     * still take.
+     *
+     * @param  array<int, string>|null  $unitIds
+     * @param  array<string, mixed>  $extra
+     */
+    protected function sendDispatch(BloodRequest $request, User $staff, ?array $unitIds = null, array $extra = []): TestResponse
+    {
+        return $this->actingAs($staff)->postJson("/api/blood-center/blood-requests/{$request->id}/dispatch", [
+            'unit_ids' => $unitIds ?? $this->unitsInReach($request, $staff),
+            ...$extra,
+        ]);
+    }
+
+    /**
+     * The first-expiring units each line of an order may still take.
+     *
+     * @return array<int, string>
+     */
+    protected function unitsInReach(BloodRequest $request, User $staff): array
+    {
+        return collect($this->actingAs($staff)
+            ->getJson("/api/blood-center/blood-requests/{$request->id}/dispatch-units")
+            ->assertOk()
+            ->json('lines'))
+            ->flatMap(fn (array $line): array => array_column(array_slice($line['units'], 0, $line['allocatable']), 'id'))
+            ->values()
+            ->all();
     }
 
     /**

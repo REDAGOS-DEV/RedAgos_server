@@ -4,12 +4,14 @@ namespace Tests\Feature\Receiving;
 
 use App\Enums\AllocationStatus;
 use App\Enums\BloodRequestStatus;
+use App\Enums\BloodUnitStatus;
 use App\Enums\HospitalUnitStatus;
 use App\Enums\LineClosureReason;
 use App\Enums\RequestEventType;
 use App\Models\BloodRequest;
 use App\Models\BloodRequestEvent;
 use App\Models\BloodType;
+use App\Models\BloodUnit;
 use App\Models\HospitalUnit;
 use App\Models\WeeklyRequest;
 use App\Service\FulfillmentService;
@@ -49,13 +51,7 @@ class WeeklyDispatchTest extends TestCase
         // The centre holds two packed cells and no plasma.
         $this->stock($this->centre, $this->prbc, 2);
 
-        $this->actingAs($this->issuance)
-            ->postJson("/api/blood-center/blood-requests/{$request->id}/allocate")
-            ->assertOk()
-            ->assertJsonPath('short_by', 3);
-
-        $this->actingAs($this->issuance)
-            ->postJson("/api/blood-center/blood-requests/{$request->id}/release")
+        $this->sendDispatch($request, $this->issuance)
             ->assertOk()
             ->assertJsonPath('status', BloodRequestStatus::Partial->value)
             ->assertJsonCount(2, 'closed_short')
@@ -112,24 +108,18 @@ class WeeklyDispatchTest extends TestCase
             ->assertJsonPath('inventory.lines.1.blood_type.code', 'A+')
             ->assertJsonPath('inventory.lines.1.available', 1);
 
-        $this->actingAs($this->issuance)
-            ->postJson("/api/blood-center/blood-requests/{$request->id}/allocate")
-            ->assertOk()
-            ->assertJsonPath('short_by', 2);
-
-        $held = $request->allocations()->with(['unit', 'requestItem'])->get();
-        $this->assertCount(3, $held);
-
-        foreach ($held as $allocation) {
-            $this->assertSame($allocation->requestItem->blood_type_id, $allocation->unit->blood_type_id);
-        }
-
-        $this->actingAs($this->issuance)
-            ->postJson("/api/blood-center/blood-requests/{$request->id}/release")
+        $this->sendDispatch($request, $this->issuance)
             ->assertOk()
             ->assertJsonCount(1, 'closed_short')
             ->assertJsonPath('closed_short.0.blood_type', 'A+')
             ->assertJsonPath('closed_short.0.quantity', 2);
+
+        $sent = $request->allocations()->with(['unit', 'requestItem'])->get();
+        $this->assertCount(3, $sent);
+
+        foreach ($sent as $allocation) {
+            $this->assertSame($allocation->requestItem->blood_type_id, $allocation->unit->blood_type_id);
+        }
 
         $this->actingAs($this->requester)
             ->getJson("/api/hospital/weekly-requests/{$weekly->id}")
@@ -146,7 +136,7 @@ class WeeklyDispatchTest extends TestCase
         $request = $this->requestOf($weekly);
         $this->stock($this->centre, $this->prbc, 2);
 
-        $this->allocateAndRelease($request);
+        $this->sendDispatch($request, $this->issuance)->assertOk()->assertJsonPath('closed_short', []);
 
         $request->refresh();
         $this->assertSame(BloodRequestStatus::Fulfilled, $request->status);
@@ -158,41 +148,22 @@ class WeeklyDispatchTest extends TestCase
             ->assertJsonPath('weekly_request.totals.not_supplied', 0);
     }
 
-    public function test_a_weekly_request_is_not_dispatched_in_part(): void
+    public function test_what_was_not_picked_closes_with_the_delivery(): void
     {
         $request = $this->requestOf($this->sentWeekly([[$this->bloodType, $this->prbc, 2]]));
         $this->stock($this->centre, $this->prbc, 2);
 
-        $this->actingAs($this->issuance)
-            ->postJson("/api/blood-center/blood-requests/{$request->id}/allocate")
-            ->assertOk();
+        [$sent, $left] = $this->unitsInReach($request, $this->issuance);
 
-        $first = $request->allocations()->orderBy('id')->value('id');
-
-        $this->actingAs($this->issuance)
-            ->postJson("/api/blood-center/blood-requests/{$request->id}/release", ['allocation_ids' => [$first]])
-            ->assertStatus(409)
-            ->assertJsonPath('code', 'weekly_release_all');
-
-        $this->assertSame(2, $request->allocations()->where('status', AllocationStatus::Allocated)->count());
-        $this->assertNull($request->items()->first()->closed_at);
-    }
-
-    public function test_naming_every_reserved_unit_is_dispatching_the_whole_delivery(): void
-    {
-        $request = $this->requestOf($this->sentWeekly([[$this->bloodType, $this->prbc, 3]]));
-        $this->stock($this->centre, $this->prbc, 2);
-
-        $this->actingAs($this->issuance)
-            ->postJson("/api/blood-center/blood-requests/{$request->id}/allocate")
-            ->assertOk();
-
-        $this->actingAs($this->issuance)
-            ->postJson("/api/blood-center/blood-requests/{$request->id}/release", [
-                'allocation_ids' => $request->allocations()->pluck('id')->all(),
-            ])
+        $this->sendDispatch($request, $this->issuance, [$sent])
             ->assertOk()
             ->assertJsonPath('closed_short.0.quantity', 1);
+
+        // One delivery: the order is finished, and the other bag stays on the shelf.
+        $this->assertSame(BloodUnitStatus::Available, BloodUnit::query()->findOrFail($left)->status);
+        $this->sendDispatch($request, $this->issuance, [$left])
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'request_closed');
     }
 
     public function test_a_request_outside_a_weekly_request_is_dispatched_as_before(): void
@@ -221,7 +192,7 @@ class WeeklyDispatchTest extends TestCase
     {
         $request = $this->requestOf($this->sentWeekly([[$this->bloodType, $this->prbc, 3]]));
         $this->stock($this->centre, $this->prbc, 2);
-        $this->allocateAndRelease($request);
+        $this->sendDispatch($request, $this->issuance)->assertOk();
 
         $this->actingAs($this->requester)
             ->postJson("/api/hospital/blood-requests/{$request->id}/confirm-receipt")

@@ -82,6 +82,8 @@ class HospitalInventoryService
         'hospital_inventory.crossmatched' => 'crossmatched',
         'hospital_inventory.transfused' => 'transfused',
         'hospital_inventory.untagged' => 'untagged',
+        'hospital_inventory.partner_reserved' => 'reserved',
+        'hospital_inventory.partner_released' => 'unreserved',
         'hospital_inventory.returned' => 'returned',
         'hospital_inventory.discarded' => 'discarded',
         'hospital_inventory.expired' => 'expired',
@@ -417,6 +419,90 @@ class HospitalInventoryService
         });
 
         return $this->respond('Blood unit tagged to the patient.', $unit, $facilityId);
+    }
+
+    /**
+     * Reserve a bag on the shelf for a blood donor partner.
+     *
+     * Project owner, 2026-11-07: staff open a bag on Blood Bank Inventory and
+     * reserve it for a blood donor partner, and the Inventory Report prints it
+     * purple. Only an untagged bag in date, on the shelf, may be reserved.
+     *
+     * The bag stays Available: the reservation is a mark, not a status. It may
+     * still be tagged to a patient, and the reservation outlasts the tag, so a
+     * tag that ends returns the bag to its partner rather than to the shelf at
+     * large. Staff release it when the partner no longer needs it.
+     *
+     * The partner's name lives on the bag only: audit_logs carries identifiers.
+     *
+     * @return array<string, mixed>
+     */
+    public function reserveForPartner(User $user, string $unitId, string $partner): array
+    {
+        $facilityId = $this->requireFacilityId($user);
+        $now = now()->startOfSecond()->toImmutable();
+
+        $unit = DB::transaction(function () use ($user, $unitId, $facilityId, $partner, $now): HospitalUnit {
+            $unit = $this->lockUnit($unitId, $facilityId);
+
+            if ($unit->status !== HospitalUnitStatus::Available) {
+                throw $this->refuse(409, 'unit_not_available', match ($unit->status) {
+                    HospitalUnitStatus::TagAssigned, HospitalUnitStatus::TagCrossmatched => 'This bag is tagged to a patient. Release the tag before reserving it.',
+                    HospitalUnitStatus::PendingReturn => 'This bag is awaiting return to storage. Confirm the return before reserving it.',
+                    HospitalUnitStatus::Received => 'This bag is not stocked in yet. Stock it in before reserving it.',
+                    default => "A bag that is {$unit->status->label()} cannot be reserved.",
+                });
+            }
+
+            if ($unit->isPartnerReserved()) {
+                throw $this->refuse(409, 'unit_already_reserved', 'This bag is already reserved for a blood donor partner.');
+            }
+
+            $this->guardBagInDate($unit);
+
+            $unit->partner_name = trim($partner);
+            $unit->partner_reserved_at = $now;
+            $unit->partner_reserved_by = $user->id;
+            $unit->save();
+
+            $this->audit($user, 'hospital_inventory.partner_reserved', $unit, null, $unit->status);
+
+            return $unit;
+        });
+
+        return $this->respond('Blood unit reserved for the blood donor partner.', $unit, $facilityId);
+    }
+
+    /**
+     * Release a bag's blood donor partner reservation.
+     *
+     * Allowed whatever the bag's stage: a tagged bag keeps its patient, and an
+     * untagged one is free to tag to anybody.
+     *
+     * @return array<string, mixed>
+     */
+    public function releasePartnerReservation(User $user, string $unitId): array
+    {
+        $facilityId = $this->requireFacilityId($user);
+
+        $unit = DB::transaction(function () use ($user, $unitId, $facilityId): HospitalUnit {
+            $unit = $this->lockUnit($unitId, $facilityId);
+
+            if (! $unit->isPartnerReserved()) {
+                throw $this->refuse(409, 'unit_not_reserved', 'This bag is not reserved for a blood donor partner.');
+            }
+
+            $unit->partner_name = null;
+            $unit->partner_reserved_at = null;
+            $unit->partner_reserved_by = null;
+            $unit->save();
+
+            $this->audit($user, 'hospital_inventory.partner_released', $unit, null, $unit->status);
+
+            return $unit;
+        });
+
+        return $this->respond('Reservation released.', $unit, $facilityId);
     }
 
     /**
@@ -872,6 +958,12 @@ class HospitalInventoryService
             'stocked_at' => ($unit->stocked_at ?? ($unit->status === HospitalUnitStatus::Received ? null : $unit->created_at))?->toIso8601String(),
             'stocked_by' => $unit->stockedBy === null ? null : trim($unit->stockedBy->first_name.' '.$unit->stockedBy->last_name),
             'storage_location' => $unit->storage_location,
+            // Held for a blood donor partner (project owner, 2026-11-07).
+            'partner_reservation' => $unit->isPartnerReserved() ? [
+                'partner' => $unit->partner_name,
+                'reserved_at' => $unit->partner_reserved_at?->toIso8601String(),
+                'reserved_by' => $unit->partnerReservedBy?->signatureName(),
+            ] : null,
             // Where the bag came from: a RedAgos request it was received for,
             // or a delivery from outside RedAgos.
             'source' => [

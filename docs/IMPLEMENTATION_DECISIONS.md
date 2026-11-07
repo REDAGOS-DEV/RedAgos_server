@@ -659,7 +659,8 @@ keeps its original wording, which is what those donors were actually told.
 in person and transcribe. All eight are entered at the counter after the scan,
 and nothing on the donor side of the application writes to them.
 
-**DECISION (where the margin boxes are filled in):** Sleep, Meal, Meds and
+**DECISION (where the margin boxes are filled in):** *(Since superseded: see "The
+counter no longer asks Sleep, Meal, Meds and Allergies" at the end.)* Sleep, Meal, Meds and
 Allergies are printed in the top margin of the donor's questionnaire sheet, not
 in the Section I-D box, so that is where the counter fills them — at the top of
 the questionnaire drawer, above the tabs, rather than in the screening form
@@ -2550,3 +2551,148 @@ Opened from View, the dialog offers Edit or Review when the row allows it. Every
 **TESTS:** `DonorRecordsTest::test_status_is_worked_out_from_the_last_donation_and_filters_the_list` (11 and 13 months, a draw beating a later declared date, a declared date alone, never donated, and an edit's status ignored) and `test_a_lapsed_donor_is_still_reminded_and_the_status_filter_narrows_the_run`; `CollectionDashboardTest` counts a lapsed eligible donor in both eligible and inactive; `NotificationPreferencesTest` tells a lapsed donor about a drive. The reactivation tests in `DonorDirectoryMembershipTest` were removed.
 
 **Migration:** `2026_11_03_000001_drop_status_from_facility_donors_table` drops the column and its `(facility_id, status)` index. It has run on dev PostgreSQL, where all 10 records were Active.
+
+## The counter no longer asks Sleep, Meal, Meds and Allergies
+
+**SOURCE:** The project owner, 2026-11-06: "remove this", with a screenshot of the "Ask the donor" block at the top of the questionnaire drawer.
+
+**DECISION:** The block is gone from the drawer, and a new screening at the counter no longer sends the four fields. This supersedes "where the margin boxes are filled in" above.
+
+**DECIDED BY:** Claude, 2026-11-06, taking the request as that block only. The owner has not ruled on the rest, so it stays: the `donation_screenings` columns and the `RecordScreeningRequest` rules, the four boxes on the paper record form (`PaperDonationForm`), and the blank boxes on the printed A4 sheet, which staff write on by hand.
+
+**CONSEQUENCE (corrections):** `CollectionService::screeningAttributes()` writes a missing field as null and a correction replaces the whole screening, so `donation.vue` sends the four back as saved when it files one. Without that, approving a correction would erase them.
+
+**KNOWN LIMITATION:** Answers already saved stay in the database, but the drawer was the only counter screen that showed them, so staff can no longer read them there.
+
+**TESTS:** `tests/donorQuestionnaire.spec.ts` in the client: the drawer has no text input, a new screening does not send the four, and a correction sends them back as saved.
+
+## The physician can change DHQ answers at screening
+
+**SOURCE:** The project owner, 2026-11-06: "the donors answered DHQ in donor portal must be modifiable in screening". This reverses the rule that the counter never edits the donor's declaration ("where the margin boxes are filled in" and the drawer's read-only guarantee above).
+
+**DECIDED BY:** Claude, 2026-11-06, filling in what the request left open. The owner has not yet ruled on the choices below.
+
+**DECISION (who, when, what):** `PATCH /blood-center/donors/{uuid}/health-questionnaire/answers`, behind both `donors.view_questionnaire` and `donations.screen`, which today means the Donor Screening Physician. Only while this centre has the donor's donation open at `registered` with no screening saved, and the questionnaire is still valid; after that the screening rests on the answers, and a screening changes only through a correction. Only the Yes and No of Section I-B, on questions put to this donor. Personal data and consent stay read-only. A questionnaire taken at the counter can be changed the same way as one from the portal.
+
+**DECISION (the donor's answer stays):** `eligibility_screening_answers` gains `original_answer`, encrypted like `answer`, plus `amended_by` and `amended_at`. The drawer and the printed form show the new answer with who changed it and what the donor declared. Putting an answer back clears the change. A question the donor left blank has no original, and reads "Not answered" rather than "No".
+
+**CONSEQUENCE:** `computed_result` is worked out again, or it would contradict the review markers, which read the answers as they stand. It stays advisory. The questionnaire belongs to the donor rather than to the visit, so a changed answer stands wherever it is read next, until the donor answers again.
+
+**DECISION (audit):** `collection.questionnaire_amended` records how many answers changed, never which. AuditLogger's rule is identifiers and outcomes only, and a question code says what the donor was asked about. Who changed which answer is on the encrypted row.
+
+**KNOWN LIMITATION:** No reason is asked for a change. The row keeps only the latest change, so a sequence of changes survives only as a count in the audit trail.
+
+**TESTS:** `DonorQuestionnaireTest` (the change and the kept answer, encryption, putting back, blank answers, each refusal, who may, the audit context, the printed form) and `tests/donorQuestionnaire.spec.ts` in the client.
+
+**Migration:** `2026_11_06_000001_add_amendment_to_eligibility_screening_answers_table`.
+
+## Naming another phlebotomist at the counter
+
+**SOURCE:** The project owner, 2026-11-06: "add another field for phlebotomist is the user login is not the one who process it", with a screenshot of the "Phlebotomist:" line on Record the collection.
+
+**DECISION:** An optional "Other phlebotomist" box on Record the collection and on its correction, written to `blood_collections.phlebotomist_name`, the column a drive's paper record already uses, so every reader of `phlebotomistName()` shows it. Left blank, the phlebotomist is the signed-in account as before. `collected_by` stays the signed-in account either way and is never taken from the request, so the bag still traces to whoever recorded it.
+
+**DECIDED BY:** Claude, 2026-11-06: free text as written, up to 120 characters, as on the paper form. It is not linked to a staff account, so nothing checks the name against the centre's staff.
+
+**CONSEQUENCE (corrections):** A correction can change or blank the name, never `collected_by`. A correction filed before the box existed does not carry the name and leaves it alone.
+
+**TESTS:** `CollectionWorkflowTest`, `CorrectionRequestTest::test_a_correction_can_change_who_is_named_as_having_drawn_the_bag` and `tests/sectionTwo.spec.ts` in the client.
+
+## Issuing with deferred payment
+
+**SOURCE:** The project owner, 2026-11-07, "Issuance and Billing Settlement Rules": authorised staff decide during issuance whether a request needs billing settlement first or can go with deferred payment. A walk-in must be fully settled first. A partnered blood bank can receive blood immediately and settle afterwards. Every issuance must have a billing record either way. In the owner's words: "so the issuance can issued even if the request is not paid".
+
+**CONFLICT, RECORDED:** This replaces the Capstone rule that no unit leaves without confirmed payment. That rule now holds only for walk-ins, and for other patient requests until somebody defers them. Weekly orders were already exempt ("statement only") and are unchanged.
+
+**DECISION:** `POST /blood-center/billings/{id}/defer-payment` sets `billings.payment_deferred_at` and `payment_deferred_by`, audited as `billing.payment_deferred`. `Billing::clearsRelease()` then answers true, so the release gate and the `release_cleared` queue filter both honour it. The request moves from Request Fulfillment to For Dispatch, where it is dispatched as usual.
+
+**DECISION (the bill stays a bill):** A deferred statement keeps its `unpaid` or `partial` status and its balance. No journal row is posted, because no money moved. It stays on the Billing Counter, behind bills still holding blood back, on Invoices as "Deferred", and in receivables. A payment taken afterwards settles it in the ordinary way, and `is_payment_deferred` then reads false. `clears_release` no longer implies "takes no payment", so `takesPayment()` and the counter's `takes_payment` read the deferral.
+
+**DECISION (the billing record):** `billing_missing` still refuses release, so nothing is issued without a statement. An invoice issued after a deferral says payable "After the units are released"; `billing_revisions.payment_deferred` freezes that, and a deferral counts as a change, so re-issuing freezes a new revision.
+
+**DECIDED BY:** Claude, 2026-11-07, filling in what the rules left open. The owner has not yet ruled on these:
+- "Partnered blood bank" means any request raised through a hospital's portal. There is no partner flag on a facility.
+- "Authorised staff" means whoever holds `requests.release` (Inventory Control Officer, Dispatch Coordinator). No new ability.
+- A deferred patient bill stays off the hospital's Statement of Account, which still lists weekly orders only, and is settled at the counter.
+- A deferral asks for no reason and has no undo.
+
+**TESTS:** `DeferredPaymentTest`, `AuthorizationSweepTest`, and `tests/billing.spec.ts` and `tests/bloodCenterNav.spec.ts` in the client.
+
+**Migration:** `2026_11_07_000001_add_payment_deferral_to_billings_table`.
+
+## Untagged counts on the hospital dashboard
+
+**SOURCE:** The project owner, 2026-11-07: "in hospital blood bank dashboard add these: Untagged Crossmatch (Crossmatched units not transfused after 24hrs.), Untagged Assigned (Assigned units not crossmatch after 24 hrs.)".
+
+**DECISION:** `GET /hospital/dashboard` gains `untagged_crossmatched` and `untagged_assigned`, read through `HospitalInventoryRepository::endedTagCount()`. The count goes by `untag_reason` (`transfusion_deadline_expired`, `crossmatch_deadline_expired`), not by tag status. Both untagged statuses also hold tags staff released in time, which are not what the owner described.
+
+**DECISION (the tiles):** The dashboard's stat strip goes to three columns, so six tiles sit in two even rows. Each new tile opens the inventory's Tag History on the tags it counts, through `?tag_status=&untag_reason=`. Tag History gains a visible Reason filter, so those links hide nothing and staff can change it. The server already accepted `untag_reason`.
+
+**DECIDED BY:** Claude, 2026-11-07, filling in what the request left open. The owner has not yet ruled on these:
+- The counts are all-time, matching Tag History, which has no date filter. They only ever rise.
+- A tag counts once the sweep has ended it, usually within a minute. Until then "Needs attention" reports it as past its deadline. With the scheduler stopped, the tiles do not move.
+- Each tag counts once, so a bag that lapses for two patients counts twice.
+- The tile reads "Untagged Crossmatch" as the owner wrote it. The status elsewhere reads "Untagged Crossmatched".
+
+**TESTS:** `HospitalTagDeadlineTest`, and `tests/hospitalInventory.spec.ts` in the client.
+
+## Replenishment orders hold no stock; only a patient's request is tagged
+
+**SOURCE:** The project owner, 2026-11-07: "the replinishment request is not being reserve like how the patient request flow. the replinishment inventory request blood units is recorded on dispatch, right now the blood units is being reserve to it even it never deliver/dispatch so revise that process and also since the only reservation is for patient blood request so rename it to Tag instead of reserve".
+
+**DECISION (the flow):** A replenishment order is **Confirmed, then Dispatched**. Confirming still sets the supply plan (`Replenishment orders are confirmed before they are reserved` above) but holds nothing: the bags stay `available` for anyone.
+- `POST /blood-center/blood-requests/{id}/dispatch` (`requests.release`, `DispatchOrderRequest`, `FulfillmentService::dispatchOrder`) takes the picked `unit_ids` and optional `handed_to`.
+- In one transaction: each unit goes `available` → `issued`, a `released` allocation is written for each, the statement is raised or updated, and the history and audit log record the release.
+- `GET /blood-center/blood-requests/{id}/dispatch-units` (`requests.release`) lists what may be picked, so the Dispatch Coordinator can pick without `requests.process`, which stays the patient tag's.
+- `allocate` and `release` refuse an order (`replenishment_not_tagged`), and `dispatch` refuses a patient's request (`not_replenishment`).
+- `ChosenUnitsMatcher` holds the hand-pick judgement both flows share. A pick is refused whole, unit by unit.
+
+**DECISION (billing):** Nothing is billed until something goes out, so a confirmed order has no statement. It is never "still owing": `release_cleared=1` always includes replenishment and `release_cleared=0` never does, so an order skips Request Fulfillment and waits on For Dispatch. `BloodRequest::scopeAwaitingDispatch` is the queue and the summary's `awaiting_release` count.
+
+**DECISION (correcting the time):** An order's `allocated_at` is the moment staff recorded the dispatch, which may be after the bags left, so a correction may go earlier than it. The floor is when the order was sent (`RequestAllocation::earliestDeparture`). A patient's unit still cannot have left before it was tagged.
+
+**DECISION (holds already in place):** Migration `2026_11_07_000002_return_replenishment_holds_to_stock` returns any hold on a replenishment order to stock and puts a `processing` order back to `pending`. Its bill keeps its figure until the next dispatch re-prices it, as returning units to stock always has. Dev had none.
+
+**DECISION (the name):** Reserve is **Tag** on every screen, message, notification, audit label, CSV header and journal note. Code and data keep their names: `blood_units.status = reserved`, `BloodUnitStatus::Reserved`, `AllocationStatus::Allocated`, `reserved_quantity`, the `allocation.reserved` audit action, as with the Patient Request rename. Rows already written keep their words: a journal note or cancellation reason from before reads "reserved".
+
+**DECIDED BY:** Claude, 2026-11-07, filling in what the request left open. The owner has not yet ruled on these:
+- The Confirm step stays, because the owner asked for it on 2026-10-29. Dispatching is what no longer needs a hold.
+- Whoever holds `requests.release` picks the bags, as dispatching now includes picking.
+- With no hold, a bag can go to a patient after the order was confirmed, and the centre can then send less than it committed; a weekly order closes the rest. The hospital is told at dispatch.
+- A restock outside a weekly order may still go in more than one delivery, up to the commitment. What lay beyond the commitment closes once the commitment has gone out, since the plan already told staff it would, and such a line otherwise stayed open with nothing left to do on it.
+- The hospital may cancel a confirmed order up to the moment it is dispatched, because it is still `pending`.
+- The Dispatch page's unit list opens from "Pick Units & Dispatch" on For Dispatch; the Incoming Requests row links there rather than picking in place.
+- "Reserved for Requests" on Blood Inventory reads "Tagged for Patients".
+
+**TESTS:** `ReplenishmentDispatchTest`, `SupplyPlanTest`, `WeeklyDispatchTest`, `StatementOnlyBillingTest`, `WeeklySettlementTest`, `AccountStatementTest`, and `tests/incomingRequestsPage.spec.ts` and `tests/receiving.spec.ts` in the client.
+
+## Inventory Report colour code, and bags reserved for a blood donor partner
+
+**SOURCE:** The project owner, 2026-11-07: "the hospital blood bank daily report has color coding. In Uncrossmatched all available units that is not tag it is color BLACK. For tagged color Pink and PURPLE for reserve for blood donor partner." Asked how a bag becomes reserved, the owner answered: "in inventory add it like when I click to blood unit it has like reserve for blood partner".
+
+**DECISION (the colours):** On the Inventory Report (screen and PDF), an UNCROSSMATCHED bag prints in one of three colours. A free bag prints black. A Tag Assigned bag prints pink (`#D81B60`). An untagged bag reserved for a blood donor partner prints purple (`#7B1FA2`). The bag number and its expiry both take the colour. The marks stay as well: (T) for tagged, and a new (R) for reserved, so a grey photocopy still tells them apart. The legend under the form names all three. The CROSSMATCHED table stays black.
+
+**DECISION (the reservation):** The reservation is a mark on a bag, not a status. `hospital_units` gains `partner_name`, `partner_reserved_at` and `partner_reserved_by` (migration `2026_11_07_000003`, run on dev), so the bag stays `available` and every stock count is unchanged.
+- `POST /hospital/inventory/{unit}/reserve` takes `{partner}` (150 characters at most). `POST /{unit}/unreserve` clears the mark. Both require `hospital.inventory.handle`, the same permission as tagging.
+- Only an untagged bag in date on the shelf may be reserved. A bag that is already reserved is refused with `unit_already_reserved`.
+- A reserved bag may still be tagged, and the tag dialog warns that it is reserved. The reservation outlasts the tag: while the tag lasts the bag prints pink, and if the tag ends the bag is purple again.
+- A release is allowed at any stage.
+- Audit actions are `hospital_inventory.partner_reserved` and `hospital_inventory.partner_released`, listed in the activity feed as "Reserved for Partner" and "Reservation Released". The partner's name stays on the bag and out of `audit_logs`, like a patient's.
+- The list gains a `status=reserved` filter for untagged reserved bags. On screen such a bag's badge reads "Reserved" in purple, with the partner under it. The drawer has a "Reserved For" section.
+
+**DECIDED BY:** Claude, 2026-11-07, filling in what the request left open. The owner has not yet ruled on these:
+- The partner is a typed name. There is no list of partners to pick from.
+- Any staff member may tag a reserved bag to any patient. The dialog only warns.
+- Reserved bags still count as Available in the KPIs, the blood type rings and the stock thresholds.
+- The partner's name is not printed on the report, only the colour and (R).
+- Once released, the reservation keeps no record of which partner it was. The audit log keeps when and by whom only.
+
+**SOURCE (crossmatched, same day):** "in crossmatched the waiting for trafussion is blue and the tranfused is green".
+
+**DECISION (CROSSMATCHED colours):** CROSSMATCHED prints a bag waiting for its transfusion blue (`#1565C0`). A bag transfused during the report's operational day joins it, printed green (`#2E7D32`) and marked (TF). The waiting bags head each column and the day's transfusions follow, each first-expiring-first. Crossmatched Whole Blood stays under TRANSFUSE AS PRBC either way. `HospitalInventoryRepository::sheetUnits` adds Transfused bags whose transfused tag's `transfused_at` falls inside `OperationalDay::boundsFor`. The totals keep `crossmatched` for the bags still waiting and add `transfused`, which the screen shows as "Transfused today". The legend is now two lines, one per table, and rows are 15.2pt instead of 15.5pt so the document control line stays on the same page. `HospitalStockSheetTest` counts the stored PDF's pages to hold that.
+
+**DECIDED BY (crossmatched):** Claude, 2026-11-07, filling in what the request left open. The owner has not yet ruled on these:
+- "Transfused" means transfused on the report's operational day. Earlier transfusions are off the report.
+- The (TF) mark was added for grey copies. The waiting bags carry no mark.
+
+**TESTS:** `HospitalPartnerReservationTest`, `HospitalStockSheetTest`, `HospitalInventoryListingTest`, and `tests/hospitalInventory.spec.ts` and `tests/hospitalInventoryDashboard.spec.ts` in the client.

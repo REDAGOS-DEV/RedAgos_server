@@ -6,9 +6,11 @@ namespace App\Enums;
  * The states one blood unit's hold against one request moves through.
  *
  * This is the row that carries dispatch and receipt, which is why the request's
- * own status does not need to. A unit is `Allocated` while it is held in the
- * fridge for a request, `Released` once it has physically left the facility,
- * and `Cancelled` when the hold is given up and the unit returns to stock.
+ * own status does not need to. A unit is `Allocated` while it is tagged in the
+ * fridge for a patient's request, `Released` once it has physically left the
+ * facility, and `Cancelled` when the tag is given up and the unit returns to
+ * stock. A replenishment order's unit is `Released` from the start: nothing is
+ * held for that order.
  *
  * `Released` is not the same as received. Receipt is stamped on the same row by
  * the requesting facility, because only they can assert that blood arrived.
@@ -37,7 +39,7 @@ enum AllocationStatus: string
     public function label(): string
     {
         return match ($this) {
-            self::Allocated => 'Reserved',
+            self::Allocated => 'Tagged',
             self::Released => 'Released',
             self::Cancelled => 'Cancelled',
         };

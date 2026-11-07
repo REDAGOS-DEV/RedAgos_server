@@ -137,6 +137,61 @@ class HospitalTagDeadlineTest extends TestCase
         $this->assertSame(HospitalUnitStatus::Available, $this->unit->fresh()->status);
     }
 
+    public function test_the_dashboard_counts_each_lapse_once_the_sweep_has_ended_it(): void
+    {
+        $crossmatched = $this->receiveOne();
+        $this->tagUnit($crossmatched)->assertOk();
+        $this->act($crossmatched, 'crossmatch')->assertOk();
+
+        $this->assertDashboardUntagged(crossmatched: 0, assigned: 0);
+
+        $this->travelTo(CarbonImmutable::parse('2026-10-03 08:00:00'));
+
+        // Past both deadlines, but still tags until the sweep ends them.
+        $this->assertDashboardUntagged(crossmatched: 0, assigned: 0);
+
+        $this->artisan('hospital:expire-tags')->assertSuccessful();
+
+        $this->assertDashboardUntagged(crossmatched: 1, assigned: 1);
+    }
+
+    public function test_the_dashboard_leaves_out_a_tag_staff_released_in_time(): void
+    {
+        $crossmatched = $this->receiveOne();
+        $this->tagUnit($crossmatched)->assertOk();
+        $this->act($crossmatched, 'crossmatch')->assertOk();
+
+        $this->act($this->unit, 'release', ['reason' => 'Patient discharged'])->assertOk();
+        $this->act($crossmatched, 'release', ['reason' => 'Order cancelled'])->assertOk();
+
+        $this->assertSame(1, UnitTag::query()->where('status', UnitTagStatus::UntaggedAssigned)->count());
+        $this->assertSame(1, UnitTag::query()->where('status', UnitTagStatus::UntaggedCrossmatched)->count());
+        $this->assertDashboardUntagged(crossmatched: 0, assigned: 0);
+    }
+
+    public function test_the_dashboard_counts_a_bag_again_when_it_lapses_for_a_second_patient(): void
+    {
+        $this->travelTo(CarbonImmutable::parse('2026-10-03 08:00:00'));
+        $this->artisan('hospital:expire-tags')->assertSuccessful();
+
+        $this->tagUnit($this->unit)->assertOk();
+
+        $this->travelTo(CarbonImmutable::parse('2026-10-04 08:00:00'));
+        $this->artisan('hospital:expire-tags')->assertSuccessful();
+
+        $this->assertDashboardUntagged(crossmatched: 0, assigned: 2);
+    }
+
+    public function test_the_dashboard_leaves_out_another_hospitals_lapses(): void
+    {
+        $this->travelTo(CarbonImmutable::parse('2026-10-03 08:00:00'));
+        $this->artisan('hospital:expire-tags')->assertSuccessful();
+
+        $this->asOtherHospital(fn () => $this->assertDashboardUntagged(crossmatched: 0, assigned: 0));
+
+        $this->assertDashboardUntagged(crossmatched: 0, assigned: 1);
+    }
+
     public function test_a_second_sweep_finds_nothing_left_to_do(): void
     {
         $this->travelTo(CarbonImmutable::parse('2026-10-03 09:00:00'));
@@ -228,6 +283,26 @@ class HospitalTagDeadlineTest extends TestCase
      * @param  callable(): T  $callback
      * @return T
      */
+    /**
+     * The dashboard's two figures, and the Tag History lists its tiles open, agree.
+     */
+    private function assertDashboardUntagged(int $crossmatched, int $assigned): void
+    {
+        $this->actingAs($this->requester)
+            ->getJson('/api/hospital/dashboard')
+            ->assertOk()
+            ->assertJsonPath('untagged_crossmatched', $crossmatched)
+            ->assertJsonPath('untagged_assigned', $assigned);
+
+        $this->getJson('/api/hospital/inventory/tag-events?status=untagged_crossmatched&untag_reason=transfusion_deadline_expired')
+            ->assertOk()
+            ->assertJsonPath('total', $crossmatched);
+
+        $this->getJson('/api/hospital/inventory/tag-events?status=untagged_assigned&untag_reason=crossmatch_deadline_expired')
+            ->assertOk()
+            ->assertJsonPath('total', $assigned);
+    }
+
     private function asOtherHospital(callable $callback): mixed
     {
         [$hospital, $requester] = [$this->hospital, $this->requester];

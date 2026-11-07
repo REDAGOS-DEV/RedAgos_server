@@ -217,9 +217,68 @@ class EligibilityRepository
     public function screeningWithAnswers(int $screeningId): ?EligibilityScreening
     {
         return EligibilityScreening::query()
-            ->with(['answers', 'donorProfile.donor', 'donorProfile.bloodType'])
+            ->with(['answers.amendedBy', 'donorProfile.donor', 'donorProfile.bloodType'])
             ->whereKey($screeningId)
             ->first();
+    }
+
+    /**
+     * A donor's own screening, locked while its answers are changed.
+     *
+     * Must run inside the caller's transaction.
+     */
+    public function lockDonorScreening(int $screeningId, int $donorId): ?EligibilityScreening
+    {
+        return EligibilityScreening::query()
+            ->whereKey($screeningId)
+            ->where('donor_id', $donorId)
+            ->lockForUpdate()
+            ->first();
+    }
+
+    /**
+     * Change one answer at screening, keeping what the donor declared.
+     *
+     * `original_answer` is written the first time the answer moves and cleared
+     * if it is put back. A question the donor left blank has no row, so it gets
+     * one with no original, which is how the record says it was blank.
+     *
+     * @return bool Whether anything changed.
+     */
+    public function amendAnswer(int $screeningId, string $code, bool $answer, int $staffId): bool
+    {
+        $row = EligibilityScreeningAnswer::query()
+            ->where('screening_id', $screeningId)
+            ->where('question_code', $code)
+            ->first();
+
+        if ($row === null) {
+            EligibilityScreeningAnswer::create([
+                'screening_id' => $screeningId,
+                'question_code' => $code,
+                'answer' => $answer,
+                'amended_by' => $staffId,
+                'amended_at' => now(),
+                'created_at' => now(),
+            ]);
+
+            return true;
+        }
+
+        if ($row->answer === $answer) {
+            return false;
+        }
+
+        $declared = $row->amended_at === null ? $row->answer : $row->original_answer;
+        $restored = $declared === $answer;
+
+        $row->answer = $answer;
+        $row->original_answer = $restored ? null : $declared;
+        $row->amended_by = $restored ? null : $staffId;
+        $row->amended_at = $restored ? null : now();
+        $row->save();
+
+        return true;
     }
 
     /**
@@ -228,7 +287,7 @@ class EligibilityRepository
     public function latestScreeningWithAnswers(int $donorId): ?EligibilityScreening
     {
         return EligibilityScreening::query()
-            ->with(['answers', 'donorProfile.donor', 'donorProfile.bloodType'])
+            ->with(['answers.amendedBy', 'donorProfile.donor', 'donorProfile.bloodType'])
             ->where('donor_id', $donorId)
             ->latest('screened_at')
             ->latest('id')

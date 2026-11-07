@@ -22,20 +22,25 @@ class RecordCollectionRequest extends FormRequest
     /**
      * `collected_by` is absent by design: it is the authenticated staff member,
      * never a name supplied by the request, because it is the traceability link
-     * between a bag and the person who drew it. It is the form's "Phlebotomist".
+     * between a bag and the account that recorded it. It is the form's
+     * "Phlebotomist" unless `phlebotomist_name` names somebody else, for a bag
+     * another person drew (project owner, 2026-11-06).
      *
      * @return array<string, mixed>
      */
     public function rules(): array
     {
-        return self::boxRules(
-            $this->user()?->facility_id,
-            // A donation's own barcode is never a collision. A correction
-            // keeps it, and a save retried after its response was lost is
-            // answered by the service as already recorded, not as somebody
-            // else's bag.
-            $this->correctingDonationId ?? $this->route('donation')
-        );
+        return [
+            ...self::boxRules(
+                $this->user()?->facility_id,
+                // A donation's own barcode is never a collision. A correction
+                // keeps it, and a save retried after its response was lost is
+                // answered by the service as already recorded, not as somebody
+                // else's bag.
+                $this->correctingDonationId ?? $this->route('donation')
+            ),
+            'phlebotomist_name' => ['nullable', 'string', 'max:120'],
+        ];
     }
 
     /**
@@ -104,6 +109,13 @@ class RecordCollectionRequest extends FormRequest
             $this->merge([
                 'donation_barcode' => self::normaliseBarcode($this->input('donation_barcode')),
             ]);
+        }
+
+        // Here as well as in the middleware: a correction validates through
+        // this request without passing through it, and a blank must not count
+        // as a name.
+        if (is_string($this->input('phlebotomist_name'))) {
+            $this->merge(['phlebotomist_name' => trim($this->input('phlebotomist_name')) ?: null]);
         }
     }
 
