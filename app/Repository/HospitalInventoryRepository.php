@@ -10,6 +10,7 @@ use App\Models\BloodUnit;
 use App\Models\HospitalUnit;
 use App\Models\TransfusionRequest;
 use App\Models\UnitTag;
+use App\Support\OperationalDay;
 use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
@@ -43,6 +44,7 @@ class HospitalInventoryRepository
         'requestAllocation.request:id,reference_number,transfusion_request_id,weekly_request_id',
         'requestAllocation.request.transfusionRequest:id,reference_number',
         'stockedBy:id,first_name,last_name,credentials',
+        'partnerReservedBy:id,first_name,last_name,credentials',
     ];
 
     /**
@@ -122,19 +124,31 @@ class HospitalInventoryRepository
 
     /**
      * The bags the inventory sheet lists: in date, on the shelf or tagged to a
-     * patient, first-expiring-first.
+     * patient, and those transfused during the operational day, first-expiring-first.
+     *
+     * The day's transfusions are listed with the crossmatched bags, printed
+     * green (project owner, 2026-11-07). A bag cannot be transfused past its
+     * date, so one transfused today is in date too.
      *
      * @return Collection<int, HospitalUnit>
      */
     public function sheetUnits(int $facilityId, string $operationalDate): Collection
     {
+        [$dayStart, $dayEnd] = OperationalDay::boundsFor($operationalDate);
+
         return HospitalUnit::query()
             ->forFacility($facilityId)
-            ->whereIn('hospital_units.status', [
-                HospitalUnitStatus::Available->value,
-                HospitalUnitStatus::TagAssigned->value,
-                HospitalUnitStatus::TagCrossmatched->value,
-            ])
+            ->where(fn (Builder $listed): Builder => $listed
+                ->whereIn('hospital_units.status', [
+                    HospitalUnitStatus::Available->value,
+                    HospitalUnitStatus::TagAssigned->value,
+                    HospitalUnitStatus::TagCrossmatched->value,
+                ])
+                ->orWhere(fn (Builder $transfused): Builder => $transfused
+                    ->where('hospital_units.status', HospitalUnitStatus::Transfused->value)
+                    ->whereHas('tags', fn (Builder $tag): Builder => $tag
+                        ->where('status', UnitTagStatus::Transfused->value)
+                        ->whereBetween('transfused_at', [$dayStart, $dayEnd]))))
             ->whereHas('bloodUnit', fn (Builder $bag): Builder => $bag->whereDate('expiry_date', '>=', $operationalDate))
             ->with([
                 'bloodUnit:id,blood_type_id,component_id,expiry_date,direct_distribution_id',
@@ -386,6 +400,20 @@ class HospitalInventoryRepository
     public function overdueActiveTagCount(int $facilityId, CarbonImmutable $now): int
     {
         return $this->overdue(UnitTag::query()->where('facility_id', $facilityId), $now)->count();
+    }
+
+    /**
+     * Tags at this hospital that ended for this reason, ever.
+     *
+     * Each tag counts once, so a bag that lapsed for two patients counts twice,
+     * as Tag History lists it.
+     */
+    public function endedTagCount(int $facilityId, UntagReason $reason): int
+    {
+        return UnitTag::query()
+            ->where('facility_id', $facilityId)
+            ->where('untag_reason', $reason->value)
+            ->count();
     }
 
     /**
@@ -677,12 +705,17 @@ class HospitalInventoryRepository
             ->forFacility($facilityId)
             ->when(
                 isset($filters['status']),
-                fn (Builder $query): Builder => $filters['status'] === 'tagged'
-                    ? $query->whereIn('hospital_units.status', [
+                fn (Builder $query): Builder => match ($filters['status']) {
+                    'tagged' => $query->whereIn('hospital_units.status', [
                         HospitalUnitStatus::TagAssigned->value,
                         HospitalUnitStatus::TagCrossmatched->value,
-                    ])
-                    : $query->where('hospital_units.status', $filters['status'])
+                    ]),
+                    // On the shelf, untagged, reserved for a blood donor partner.
+                    'reserved' => $query
+                        ->where('hospital_units.status', HospitalUnitStatus::Available->value)
+                        ->whereNotNull('hospital_units.partner_name'),
+                    default => $query->where('hospital_units.status', $filters['status']),
+                }
             )
             ->when(
                 isset($filters['blood_type_id']),

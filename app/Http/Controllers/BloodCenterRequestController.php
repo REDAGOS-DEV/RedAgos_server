@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Requests\AllocateUnitsRequest;
 use App\Http\Requests\CloseRequestLineRequest;
+use App\Http\Requests\DispatchOrderRequest;
 use App\Http\Requests\ListBloodRequestsRequest;
 use App\Http\Requests\RejectBloodRequestRequest;
 use App\Http\Requests\ReleaseUnitsRequest;
@@ -152,7 +153,7 @@ class BloodCenterRequestController extends Controller
     }
 
     /**
-     * Dispatch the units held for a request.
+     * Dispatch the units tagged for a patient's request.
      */
     public function release(ReleaseUnitsRequest $request, int $bloodRequest): JsonResponse
     {
@@ -161,6 +162,21 @@ class BloodCenterRequestController extends Controller
                 $request->user(),
                 $bloodRequest,
                 $request->validated()['allocation_ids'] ?? null,
+                $request->validated()['handed_to'] ?? null
+            )
+        );
+    }
+
+    /**
+     * Dispatch a confirmed replenishment order: the units picked go out now.
+     */
+    public function dispatchOrder(DispatchOrderRequest $request, int $bloodRequest): JsonResponse
+    {
+        return response()->json(
+            $this->fulfillmentService->dispatchOrder(
+                $request->user(),
+                $bloodRequest,
+                $request->validated()['unit_ids'],
                 $request->validated()['handed_to'] ?? null
             )
         );

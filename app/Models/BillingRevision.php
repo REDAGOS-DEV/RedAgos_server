@@ -32,6 +32,7 @@ class BillingRevision extends Model
         'collected_at_issue',
         'amount_due',
         'statement_only',
+        'payment_deferred',
         'billing_status',
         'reason',
         'created_by',
@@ -45,6 +46,7 @@ class BillingRevision extends Model
             'collected_at_issue' => 'decimal:2',
             'amount_due' => 'decimal:2',
             'statement_only' => 'boolean',
+            'payment_deferred' => 'boolean',
             'billing_status' => BillingStatus::class,
             'created_at' => 'immutable_datetime',
         ];

@@ -26,7 +26,7 @@ use Illuminate\Support\Collection;
  * a figure, but it no longer moves the status.
  *
  * A planned replenishment line also carries what the centre committed to
- * supply of it (SupplyPlanService). The commitment caps what may be reserved;
+ * supply of it (SupplyPlanService). The commitment caps what may be sent;
  * it does not change what was asked for, and what lies beyond it is closed
  * when the order is dispatched, as any unsupplied remainder is.
  *

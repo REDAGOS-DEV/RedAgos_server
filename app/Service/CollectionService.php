@@ -582,6 +582,7 @@ class CollectionService
             'volume_ml' => $donation->volume_ml,
             'blood_bag_type' => $payload['blood_bag_type'],
             'donation_barcode' => $payload['donation_barcode'],
+            'phlebotomist_name' => $payload['phlebotomist_name'] ?? null,
         ]);
 
         $this->donorNotifier->send(
@@ -605,7 +606,9 @@ class CollectionService
      * Only reachable through CorrectionService, and only while the bag is still
      * in the laboratory: once Issuance has booked units against it the barcode
      * number is on the shelf, and once the donation is rejected nothing about
-     * it changes. The phlebotomist stays whoever drew the bag.
+     * it changes. The account that recorded the bag never changes; the name given
+     * for whoever else drew it does, and a correction filed before that name
+     * existed leaves it alone.
      *
      * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
@@ -635,6 +638,11 @@ class CollectionService
                 $collection->started_at = $payload['started_at'];
                 $collection->ended_at = $payload['ended_at'];
                 $collection->collection_datetime = $payload['ended_at'];
+
+                if (array_key_exists('phlebotomist_name', $payload)) {
+                    $collection->phlebotomist_name = $payload['phlebotomist_name'];
+                }
+
                 $collection->save();
 
                 $locked->volume_ml = $payload['volume_ml'];
@@ -704,8 +712,10 @@ class CollectionService
                 'facility_id' => $facility->id,
                 // The authenticated staff member, never a name from the request.
                 // This is the traceability link between a bag and a person,
-                // and the form's "Phlebotomist".
+                // and the form's "Phlebotomist" unless a name is given below.
                 'collected_by' => $staff->id,
+                // Only when someone other than the signed-in account drew it.
+                'phlebotomist_name' => $payload['phlebotomist_name'] ?? null,
                 'blood_bag_type' => BloodBagType::from($payload['blood_bag_type']),
                 'donation_barcode' => $payload['donation_barcode'],
                 'started_at' => $payload['started_at'],
@@ -1091,6 +1101,9 @@ class CollectionService
             'ended_at' => $collection->ended_at?->toISOString(),
             'collected_at' => $collection->collection_datetime?->toISOString(),
             'phlebotomist' => $collection->phlebotomistName(),
+            // The two it is worked out from, for the correction form.
+            'phlebotomist_name' => $collection->phlebotomist_name,
+            'recorded_by' => $collection->collector?->signatureName(),
         ];
     }
 

@@ -820,6 +820,7 @@ class CorrectionService
                 'started_at' => $collection->started_at?->toISOString(),
                 'ended_at' => $collection->ended_at?->toISOString(),
                 'volume_ml' => $record->volume_ml,
+                'phlebotomist_name' => $collection->phlebotomist_name,
             ],
             CorrectionSubject::Immunohematology => DonationImmunohematology::query()->where('donation_id', $record->id)->first()?->only([
                 'blood_type_id', 'forward_group', 'reverse_group', 'antibody_screen', 'notes',

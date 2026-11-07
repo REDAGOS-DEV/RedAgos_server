@@ -74,8 +74,12 @@ class CorrectDispatchRequest extends FormRequest
 
                 $releasedAt = CarbonImmutable::parse((string) $this->input('released_at'));
 
-                if ($allocation->allocated_at !== null && $releasedAt->lt($allocation->allocated_at)) {
-                    $validator->errors()->add('released_at', 'A unit cannot have left before it was reserved.');
+                $earliest = $allocation->earliestDeparture();
+
+                if ($earliest !== null && $releasedAt->lt($earliest)) {
+                    $validator->errors()->add('released_at', $allocation->request?->isReplenishment()
+                        ? 'A unit cannot have left before the order was sent.'
+                        : 'A unit cannot have left before it was tagged.');
                 }
 
                 if ($allocation->received_at !== null && $releasedAt->gt($allocation->received_at)) {

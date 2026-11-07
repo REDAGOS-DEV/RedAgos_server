@@ -135,13 +135,7 @@ class AccountStatementTest extends TestCase
 
     private function dispatchedWeekly(int $units): BloodRequest
     {
-        $request = $this->allocatedRequest($units, replenishment: true);
-
-        $this->actingAs($this->inventoryStaff)
-            ->postJson("/api/blood-center/blood-requests/{$request->id}/release")
-            ->assertOk();
-
-        return $request;
+        return $this->allocatedRequest($units, replenishment: true);
     }
 
     private function settle(BloodRequest $request): void

@@ -68,7 +68,7 @@ class RequestLineCloser
             throw $this->refuse(
                 409,
                 'nothing_to_close',
-                'Every unit of this component is already supplied or reserved.'
+                'Every unit of this component is already supplied or tagged.'
             );
         }
 

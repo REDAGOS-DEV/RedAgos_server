@@ -25,9 +25,9 @@ use Illuminate\Support\Facades\DB;
  * Sent only on one of the hospital's request days for that centre, at most
  * once a day. It is written as one ordinary replenishment request under a WR-
  * header, however many blood types it restocks: each line names its own type,
- * so the centre reviews, reserves, bills and dispatches the whole order once,
- * supplying what it can; when it dispatches, whatever it did not supply is
- * closed as unavailable (FulfillmentService::release), because the next
+ * so the centre confirms and dispatches the whole order once, supplying what
+ * it can, and bills it as it goes; when it dispatches, whatever it did not
+ * supply is closed as unavailable (FulfillmentService::dispatchOrder), because the next
  * request day's order replaces it.
  *
  * A routine restock can only be sent this way. A STAT restock is still raised
@@ -370,8 +370,8 @@ class WeeklyRequestService
     private function overallStatus(Collection $requests, int $requested, int $fulfilled): array
     {
         if ($requests->every(fn (array $request): bool => $request['status'] === BloodRequestStatus::Pending->value)) {
-            // The centre has said what it will supply and when, and reserved
-            // nothing yet (project owner, 2026-10-29).
+            // The centre has said what it will supply and when, and sent nothing
+            // yet (project owner, 2026-10-29).
             return $requests->every(fn (array $request): bool => $request['supply_plan'] !== null)
                 ? ['confirmed', 'Confirmed']
                 : ['submitted', 'Submitted'];

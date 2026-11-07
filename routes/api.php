@@ -437,7 +437,7 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
                 ->middleware('can:requests.process')
                 ->whereNumber('bloodRequest');
 
-            // A replenishment order is confirmed before it is reserved
+            // A replenishment order is confirmed before it goes
             // (project owner, 2026-10-29): how many units of each line, pick-up
             // or delivery, and when. Deciding what to supply is an approval;
             // the Dispatch Coordinator, who arranges the hand-over, holds it.
@@ -446,9 +446,20 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
                 ->whereNumber('bloodRequest');
 
             // The units staff may pick for it (project owner, 2026-10-19):
-            // reserving is choosing bags from the shelf, so the same ability.
+            // tagging is choosing bags from the shelf, so the same ability.
             Route::get('/{bloodRequest}/units', [BloodCenterRequestController::class, 'units'])
                 ->middleware('can:requests.process')
+                ->whereNumber('bloodRequest');
+
+            // A replenishment order is never tagged; its bags are picked and
+            // recorded as it goes out (project owner, 2026-11-07). That is
+            // dispatching, so whoever dispatches lists and picks them.
+            Route::get('/{bloodRequest}/dispatch-units', [BloodCenterRequestController::class, 'units'])
+                ->middleware('can:requests.release')
+                ->whereNumber('bloodRequest');
+
+            Route::post('/{bloodRequest}/dispatch', [BloodCenterRequestController::class, 'dispatchOrder'])
+                ->middleware('can:requests.release')
                 ->whereNumber('bloodRequest');
 
             // What the watcher takes to the next blood centre when this one
@@ -533,6 +544,13 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             // balance; it never edits the original subsidy out of history.
             Route::delete('/{bloodRequest}/subsidy', [BloodCenterBillingController::class, 'removeSubsidy'])
                 ->middleware('can:billing.subsidise')
+                ->whereNumber('bloodRequest');
+
+            // Whether a request is settled first or issued now and settled
+            // afterwards is decided at issuance, by whoever may release it
+            // (project owner, 2026-11-07). It moves no money.
+            Route::post('/{bloodRequest}/defer-payment', [BloodCenterBillingController::class, 'deferPayment'])
+                ->middleware('can:requests.release')
                 ->whereNumber('bloodRequest');
 
             // Statements of Account: frozen revisions of the statement. Reading
@@ -727,6 +745,11 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
 
             Route::post('/{uuid}/health-questionnaire', [BloodCenterDonorQuestionnaireController::class, 'store'])
                 ->middleware(['can:donors.record_questionnaire', 'throttle:counter-questionnaire'])->whereUuid('uuid');
+
+            // The physician changing an answer during the donor's screening.
+            // Both abilities: it reads the answers back, and it is screening work.
+            Route::patch('/{uuid}/health-questionnaire/answers', [BloodCenterDonorQuestionnaireController::class, 'amend'])
+                ->middleware(['can:donors.view_questionnaire', 'can:donations.screen', 'throttle:60,1'])->whereUuid('uuid');
         });
 
         // The Deferrals page (project owner, 2026-10-18): deferrals recorded
@@ -1183,6 +1206,14 @@ Route::middleware(['auth:sanctum', 'role:blood_bank', 'facility.operational'])
                 ->where('unit', '[A-Za-z0-9\-]+')
                 ->middleware('can:hospital.inventory.view');
             Route::post('/{unit}/tag', [HospitalInventoryController::class, 'tag'])
+                ->where('unit', '[A-Za-z0-9\-]+')
+                ->middleware('can:hospital.inventory.handle');
+            // A bag on the shelf held for a blood donor partner (project
+            // owner, 2026-11-07); the Inventory Report prints it purple.
+            Route::post('/{unit}/reserve', [HospitalInventoryController::class, 'reserve'])
+                ->where('unit', '[A-Za-z0-9\-]+')
+                ->middleware('can:hospital.inventory.handle');
+            Route::post('/{unit}/unreserve', [HospitalInventoryController::class, 'unreserve'])
                 ->where('unit', '[A-Za-z0-9\-]+')
                 ->middleware('can:hospital.inventory.handle');
             Route::post('/{unit}/crossmatch', [HospitalInventoryController::class, 'crossmatch'])

@@ -3,8 +3,8 @@
 namespace App\Repository;
 
 use App\Enums\AllocationStatus;
-use App\Enums\BillingStatus;
 use App\Enums\BloodRequestStatus;
+use App\Enums\RequestPurpose;
 use App\Enums\UrgencyLevel;
 use App\Models\BloodRequest;
 use App\Models\Facility;
@@ -367,24 +367,27 @@ class BloodRequestRepository
                 isset($filters['to']),
                 fn (Builder $query): Builder => $query->where('request_date', '<=', OperationalDay::boundsFor($filters['to'])[1])
             )
-            // The dispatch queue: requests with stock held but not yet sent.
-            // Expressed as a filter rather than left to the client, which could
-            // only narrow the page it happened to be shown.
+            // The dispatch queue: requests with units tagged and not yet sent,
+            // and confirmed replenishment orders. Expressed as a filter rather
+            // than left to the client, which could only narrow the page it
+            // happened to be shown.
             ->when(
                 isset($filters['awaiting_release']) && $filters['awaiting_release'],
-                fn (Builder $query): Builder => $query->whereHas(
-                    'allocations',
-                    fn (Builder $allocations): Builder => $allocations->where('status', AllocationStatus::Allocated->value)
-                )
+                fn (Builder $query): Builder => $query->awaitingDispatch()
             )
-            // Paid (or otherwise cleared) for release, or still owing
+            // Paid, deferred or otherwise cleared for release, or still owing
             // (2026-10-31): Request Fulfillment holds the second, For Dispatch
-            // the first. A request with no invoice yet is still owing.
+            // the first. A patient request with no invoice yet is still owing.
+            // A replenishment order never is: nothing is collected against its
+            // invoice, which is raised as it goes.
             ->when(
                 isset($filters['release_cleared']),
                 fn (Builder $query): Builder => $filters['release_cleared']
-                    ? $query->whereHas('billing', fn (Builder $billing): Builder => $billing->whereIn('status', self::releaseClearing()))
-                    : $query->whereDoesntHave('billing', fn (Builder $billing): Builder => $billing->whereIn('status', self::releaseClearing()))
+                    ? $query->where(fn (Builder $either): Builder => $either
+                        ->where('request_purpose', RequestPurpose::Replenishment->value)
+                        ->orWhereHas('billing', fn (Builder $billing): Builder => $billing->clearingRelease()))
+                    : $query->where('request_purpose', '!=', RequestPurpose::Replenishment->value)
+                        ->whereDoesntHave('billing', fn (Builder $billing): Builder => $billing->clearingRelease())
             )
             // Only requests still being worked: not closed, not finished.
             ->when(
@@ -402,19 +405,6 @@ class BloodRequestRepository
                         ->whereNull('received_at')
                 )
             );
-    }
-
-    /**
-     * The invoice states that clear units for release.
-     *
-     * @return array<int, string>
-     */
-    private static function releaseClearing(): array
-    {
-        return array_values(array_map(
-            fn (BillingStatus $status): string => $status->value,
-            array_filter(BillingStatus::cases(), fn (BillingStatus $status): bool => $status->clearsRelease())
-        ));
     }
 
     /**

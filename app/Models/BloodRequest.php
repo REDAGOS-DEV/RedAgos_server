@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\AllocationStatus;
 use App\Enums\BloodRequestStatus;
 use App\Enums\RequestPurpose;
 use App\Enums\RequestSource;
@@ -155,8 +156,9 @@ class BloodRequest extends Model
     /**
      * Whether this request restocks the hospital's own shelves rather than serving a patient.
      *
-     * A replenishment is planned before it is reserved: what the centre will
-     * supply, and how and when it reaches the hospital (supplyPlan()).
+     * A replenishment is confirmed before it goes: what the centre will supply,
+     * and how and when it reaches the hospital (supplyPlan()). Nothing is held
+     * for it; its units are picked when it is dispatched.
      */
     public function isReplenishment(): bool
     {
@@ -293,6 +295,29 @@ class BloodRequest extends Model
                 array_filter(BloodRequestStatus::cases(), fn (BloodRequestStatus $status): bool => ! $status->isTerminal())
             )))
             ->whereNull('closed_at');
+    }
+
+    /**
+     * Limit the query to requests waiting to go out.
+     *
+     * A patient's request waits with units tagged for it. A replenishment order
+     * holds nothing, so it waits from the moment it is confirmed, while a line
+     * still has committed units that have not been sent.
+     */
+    public function scopeAwaitingDispatch(Builder $query): Builder
+    {
+        return $query->where(fn (Builder $either): Builder => $either
+            ->whereHas('allocations', fn (Builder $allocations): Builder => $allocations->where('status', AllocationStatus::Allocated->value))
+            ->orWhere(fn (Builder $order): Builder => $order
+                ->where('request_purpose', RequestPurpose::Replenishment->value)
+                ->open()
+                ->whereHas('supplyPlan')
+                ->whereHas('items', fn (Builder $items): Builder => $items
+                    ->whereNull('closed_at')
+                    ->where('committed_quantity', '>', RequestAllocation::query()
+                        ->selectRaw('COUNT(*)')
+                        ->whereColumn('request_allocations.request_item_id', 'blood_request_items.id')
+                        ->claiming()))));
     }
 
     /**

@@ -95,6 +95,65 @@ class HospitalStockSheetTest extends TestCase
         $this->assertTrue($prbc[$waiting->unit_id]['tagged']);
     }
 
+    public function test_the_printed_sheet_colours_a_tagged_bag_pink_and_a_free_one_black(): void
+    {
+        [$free, $waiting] = $this->receiveStock(2);
+        $this->tagUnit($waiting)->assertOk();
+
+        // One sheet per type, so the cells carry no type after the bag number.
+        $sheet = $this->generate(['by' => 'type'])->assertCreated()->json('sheet');
+        $html = view('pdf.hospital-inventory-sheet', ['sheet' => $sheet])->render();
+
+        // The tagged bag and its expiry print pink, still marked (T) for a grey copy.
+        $this->assertMatchesRegularExpression('/<td class="bag tagged">'.preg_quote($waiting->unit_id, '/').' \(T\)<\/td>\s*<td class="exp tagged">/', $html);
+        // The free bag keeps the form's black.
+        $this->assertMatchesRegularExpression('/<td class="bag">'.preg_quote($free->unit_id, '/').'<\/td>\s*<td class="exp">/', $html);
+        $this->assertStringContainsString('.tagged, .legend .key.tagged { color: #D81B60; }', $html);
+    }
+
+    public function test_crossmatched_lists_the_bags_waiting_in_blue_then_the_days_transfusions_in_green(): void
+    {
+        // Transfused on the day before: off today's report.
+        $this->travelTo(CarbonImmutable::parse('2026-10-01 02:00:00')); // 10:00 Manila, 1 Oct
+        [$yesterday] = $this->receiveStock(1);
+        $this->tagUnit($yesterday)->assertOk();
+        $this->act($yesterday, 'crossmatch')->assertOk();
+        $this->act($yesterday, 'transfuse')->assertOk();
+
+        $this->travelTo(CarbonImmutable::parse('2026-10-02 02:00:00')); // 10:00 Manila, 2 Oct
+        [$transfused, $waiting] = $this->receiveStock(2);
+        foreach ([$transfused, $waiting] as $unit) {
+            $this->tagUnit($unit)->assertOk();
+            $this->act($unit, 'crossmatch')->assertOk();
+        }
+        $this->act($transfused, 'transfuse')->assertOk();
+
+        $response = $this->generate(['by' => 'type'])
+            ->assertCreated()
+            ->assertJsonPath('sheet.totals.crossmatched', 1)
+            ->assertJsonPath('sheet.totals.transfused', 1)
+            ->assertJsonPath('sheet.totals.uncrossmatched', 0)
+            // The bag still waiting heads the column, the day's transfusion follows.
+            ->assertJsonPath('sheet.sheets.0.crossmatched.2.cells.0.bag_number', $waiting->unit_id)
+            ->assertJsonPath('sheet.sheets.0.crossmatched.2.cells.0.transfused', false)
+            ->assertJsonPath('sheet.sheets.0.crossmatched.2.cells.1.bag_number', $transfused->unit_id)
+            ->assertJsonPath('sheet.sheets.0.crossmatched.2.cells.1.transfused', true)
+            ->assertJsonPath('sheet.sheets.0.crossmatched.2.cells.2', null);
+
+        $html = view('pdf.hospital-inventory-sheet', ['sheet' => $response->json('sheet')])->render();
+
+        $this->assertMatchesRegularExpression('/<td class="bag waiting">'.preg_quote($waiting->unit_id, '/').'<\/td>\s*<td class="exp waiting">/', $html);
+        $this->assertMatchesRegularExpression('/<td class="bag transfused">'.preg_quote($transfused->unit_id, '/').' \(TF\)<\/td>\s*<td class="exp transfused">/', $html);
+        $this->assertStringNotContainsString($yesterday->unit_id, $html);
+        $this->assertStringContainsString('.waiting, .legend .key.waiting { color: #1565C0; }', $html);
+        $this->assertStringContainsString('.transfused, .legend .key.transfused { color: #2E7D32; }', $html);
+
+        // The two-line legend still leaves the form's footer on its own page:
+        // one printed page per sheet, never a spill-over page.
+        $printed = Storage::disk('local')->get(HospitalInventoryReport::query()->findOrFail($response->json('report.id'))->file_path);
+        $this->assertSame(count($response->json('sheet.sheets')), preg_match_all('#/Type\s*/Page[^s]#', $printed));
+    }
+
     public function test_every_other_component_follows_the_form_a_column_each(): void
     {
         [$plasma] = $this->receiveStock(1, $this->ffp);

@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\AllocationStatus;
+use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -78,7 +79,22 @@ class RequestAllocation extends Model
     }
 
     /**
-     * The staff member who reserved the unit for the request.
+     * The earliest this unit can truly have left, for a correction to its dispatch record.
+     *
+     * Once it was tagged, on a patient's request. A replenishment order's unit
+     * is recorded as it is dispatched, so that stamp may be the correction's own
+     * subject: staff writing up a delivery that left earlier. The floor is then
+     * when the order was sent.
+     */
+    public function earliestDeparture(): ?CarbonInterface
+    {
+        $request = $this->request;
+
+        return $request?->isReplenishment() ? $request->request_date : $this->allocated_at;
+    }
+
+    /**
+     * The staff member who tagged the unit for the request.
      */
     public function allocatedBy(): BelongsTo
     {

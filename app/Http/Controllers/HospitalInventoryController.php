@@ -7,6 +7,7 @@ use App\Http\Requests\ListHospitalInventoryRequest;
 use App\Http\Requests\ListInventoryActivityRequest;
 use App\Http\Requests\ListUnitTagEventsRequest;
 use App\Http\Requests\ReleaseUnitTagRequest;
+use App\Http\Requests\ReserveHospitalUnitRequest;
 use App\Http\Requests\StockInHospitalUnitsRequest;
 use App\Http\Requests\TagHospitalUnitRequest;
 use App\Service\HospitalInventoryService;
@@ -91,6 +92,26 @@ class HospitalInventoryController extends Controller
     {
         return response()->json(
             $this->hospitalInventoryService->tag($request->user(), $unit, $request->validated())
+        );
+    }
+
+    /**
+     * Reserve a bag on the shelf for a blood donor partner.
+     */
+    public function reserve(ReserveHospitalUnitRequest $request, string $unit): JsonResponse
+    {
+        return response()->json(
+            $this->hospitalInventoryService->reserveForPartner($request->user(), $unit, $request->validated()['partner'])
+        );
+    }
+
+    /**
+     * Release a bag's blood donor partner reservation.
+     */
+    public function unreserve(Request $request, string $unit): JsonResponse
+    {
+        return response()->json(
+            $this->hospitalInventoryService->releasePartnerReservation($request->user(), $unit)
         );
     }
 

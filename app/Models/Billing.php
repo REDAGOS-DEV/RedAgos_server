@@ -45,6 +45,7 @@ class Billing extends Model
             'total_amount' => 'decimal:2',
             'billing_date' => 'immutable_datetime',
             'settled_at' => 'immutable_date',
+            'payment_deferred_at' => 'immutable_datetime',
         ];
     }
 
@@ -106,12 +107,24 @@ class Billing extends Model
     /**
      * Determine whether this statement clears its request's units for release.
      *
-     * Delegates to the enum so the rule that "no unit is released without
-     * confirmed payment" has exactly one definition.
+     * Either its status settles it, which the enum alone decides, or Issuance
+     * decided the units may go first and the bill is settled afterwards
+     * (project owner, 2026-11-07).
      */
     public function clearsRelease(): bool
     {
-        return $this->status->clearsRelease();
+        return $this->status->clearsRelease() || $this->payment_deferred_at !== null;
+    }
+
+    /**
+     * Determine whether money is still owed on a statement whose units need not wait for it.
+     *
+     * False once it is settled, whatever was decided before: a deferred bill
+     * that has since been paid is simply paid.
+     */
+    public function isPaymentDeferred(): bool
+    {
+        return $this->payment_deferred_at !== null && ! $this->status->clearsRelease();
     }
 
     /**
@@ -132,5 +145,20 @@ class Billing extends Model
     public function scopeOutstanding(Builder $query): Builder
     {
         return $query->whereIn('status', [BillingStatus::Unpaid, BillingStatus::Partial]);
+    }
+
+    /**
+     * Limit the query to statements that clear their request's units for release.
+     *
+     * Nested, so its "or" cannot escape the request a whereHas() ties it to.
+     */
+    public function scopeClearingRelease(Builder $query): Builder
+    {
+        return $query->where(fn (Builder $clearing): Builder => $clearing
+            ->whereIn('status', array_values(array_filter(
+                BillingStatus::cases(),
+                fn (BillingStatus $status): bool => $status->clearsRelease()
+            )))
+            ->orWhereNotNull('payment_deferred_at'));
     }
 }

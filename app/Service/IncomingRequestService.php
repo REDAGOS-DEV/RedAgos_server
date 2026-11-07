@@ -148,7 +148,7 @@ class IncomingRequestService
             fwrite($out, "\xEF\xBB\xBF");
             fputcsv($out, [
                 'Reference', 'Date', 'Time', 'Hospital', 'Requester', 'Patient', 'BloodTypes', 'Components',
-                'Requested', 'Reserved', 'Issued', 'Priority', 'Status', 'Source', 'Purpose',
+                'Requested', 'Tagged', 'Issued', 'Priority', 'Status', 'Source', 'Purpose',
             ], escape: '');
 
             $query->chunk(200, function ($requests) use ($out, $timezone): void {
@@ -220,7 +220,7 @@ class IncomingRequestService
 
         $awaitingRelease = BloodRequest::query()
             ->addressedTo($facilityId)
-            ->whereHas('allocations', fn ($query) => $query->where('status', 'allocated'))
+            ->awaitingDispatch()
             ->count();
 
         // Open requests by where they were keyed in, so the queue can show how
@@ -270,8 +270,8 @@ class IncomingRequestService
 
     /**
      * Each tab's own counts for the list's quick filters: every status, the
-     * open emergencies, and the requests with units reserved and waiting to
-     * go out. The tabs list patient requests and restocking orders apart, so
+     * open emergencies, and the requests waiting to go out: units tagged, or
+     * an order confirmed. The tabs list patient requests and restocking orders apart, so
      * a facility-wide figure would not match the list under it.
      *
      * @return array<string, array{totals: array<string, int>, open_emergencies: int, awaiting_release: int}>
@@ -298,7 +298,7 @@ class IncomingRequestService
 
         $awaiting = BloodRequest::query()
             ->addressedTo($facilityId)
-            ->whereHas('allocations', fn ($query) => $query->where('status', 'allocated'))
+            ->awaitingDispatch()
             ->groupBy('request_purpose')
             ->selectRaw('request_purpose, COUNT(*) as aggregate')
             ->toBase()
@@ -350,7 +350,7 @@ class IncomingRequestService
      *
      * The availability figure is read at the moment of review and is advisory
      * in exactly the way a search result is: it is not a hold, and allocation
-     * re-checks every unit under a lock before anything is reserved.
+     * re-checks every unit under a lock before anything is tagged.
      *
      * @return array<string, mixed>
      */

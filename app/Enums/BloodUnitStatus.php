@@ -58,7 +58,7 @@ enum BloodUnitStatus: string
     {
         return match ($this) {
             self::Available => 'Available',
-            self::Reserved => 'Reserved',
+            self::Reserved => 'Tagged',
             self::Issued => 'Issued',
             self::Expired => 'Expired',
             self::Discarded => 'Discarded',

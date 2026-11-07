@@ -76,7 +76,7 @@ class ExpiredHoldSweepTest extends TestCase
         $this->artisan('inventory:expire-units')->assertSuccessful();
 
         $this->assertSame(
-            'Unit passed its expiry date while reserved.',
+            'Unit passed its expiry date while tagged.',
             $hold->fresh()->cancellation_reason
         );
         $this->assertDatabaseHas('audit_logs', [

@@ -72,7 +72,10 @@ class PosService
     }
 
     /**
-     * The patient bills holding blood back, oldest first: the counter's queue.
+     * The patient bills still owing: the counter's queue.
+     *
+     * Those holding blood back come first, oldest first. A deferred bill's
+     * units need not wait for it, so it must not push them off the list.
      *
      * @return array<int, array<string, mixed>>
      */
@@ -80,6 +83,7 @@ class PosService
     {
         return $this->counterBills($this->requireFacilityId($staff))
             ->whereHas('billing', fn (Builder $billing) => $billing->outstanding())
+            ->orderByRaw('CASE WHEN EXISTS (SELECT 1 FROM billings b WHERE b.request_id = blood_requests.id AND b.payment_deferred_at IS NOT NULL) THEN 1 ELSE 0 END')
             ->orderBy('request_date')
             ->limit(self::QUEUE_LIMIT)
             ->get()
@@ -164,7 +168,9 @@ class PosService
             'collected' => Money::toDecimal($collected),
             'outstanding' => Money::toDecimal($this->billingService->outstandingFor($billing)),
             'clears_release' => $billing->clearsRelease(),
-            'takes_payment' => $billing->status->isCollectible() && ! $billing->clearsRelease(),
+            'is_payment_deferred' => $billing->isPaymentDeferred(),
+            // By status alone: a deferred bill clears release and is still owed.
+            'takes_payment' => $billing->status->isCollectible() && ! $billing->status->clearsRelease(),
         ];
     }
 

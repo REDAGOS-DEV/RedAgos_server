@@ -72,7 +72,8 @@ class WeeklySettlementTest extends TestCase
 
     public function test_a_weekly_order_still_open_cannot_be_settled_yet(): void
     {
-        $request = $this->allocatedRequest(1, replenishment: true);
+        // One of the three committed has gone; the rest may still follow.
+        $request = $this->allocatedRequest(1, askedFor: 3, replenishment: true);
 
         $this->settle($request)->assertStatus(409)->assertJsonPath('code', 'weekly_not_final');
     }
@@ -138,15 +139,11 @@ class WeeklySettlementTest extends TestCase
     }
 
     /**
-     * A weekly (replenishment) order with every unit reserved and dispatched, so it is closed.
+     * A weekly (replenishment) order with every unit dispatched, so it is closed.
      */
     private function dispatchedWeekly(int $units): BloodRequest
     {
         $request = $this->allocatedRequest($units, replenishment: true);
-
-        $this->actingAs($this->inventoryStaff)
-            ->postJson("/api/blood-center/blood-requests/{$request->id}/release")
-            ->assertOk();
 
         $this->assertTrue($request->fresh()->isClosed());
 

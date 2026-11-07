@@ -2,10 +2,12 @@
 
 namespace App\Service;
 
+use App\Enums\DonationStatus;
 use App\Enums\DonorType;
 use App\Models\DonorProfile;
 use App\Models\EligibilityQuestion;
 use App\Models\EligibilityScreening;
+use App\Models\EligibilityScreeningAnswer;
 use App\Models\Facility;
 use App\Models\User;
 use App\Repository\CollectionRepository;
@@ -14,6 +16,7 @@ use App\Repository\EligibilityRepository;
 use App\Support\OperationalDay;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Sections I-A to I-C of the DOH questionnaire, as the counter reads them.
@@ -21,7 +24,8 @@ use Illuminate\Support\Collection;
  * Kept out of CollectionService, which is chartered to carry a donation from
  * registration to collection and is long enough already. This class has one
  * job: decide whether a facility may read a donor's questionnaire, then shape
- * it for the screen.
+ * it for the screen. The physician may also change Section I-B's answers during
+ * the donor's screening; see amendAnswers().
  *
  * On the response: this is the donor's own declaration, and the blood centre is
  * the one that decides what it means. So the payload carries every answer, the
@@ -195,6 +199,100 @@ class DonorQuestionnaireService
     }
 
     /**
+     * Change Section I-B answers during the donor's screening (project owner,
+     * 2026-11-06).
+     *
+     * Only from the moment the donation is open until its screening is saved:
+     * after that the screening rests on these answers, and it changes only
+     * through a correction. What the donor declared stays beside the new answer.
+     *
+     * The advisory assessment is worked out again, or it would contradict the
+     * review markers, which always read the answers as they stand.
+     *
+     * @param  array<int, array{code: string, answer: mixed}>  $changes
+     * @return array<string, mixed>
+     */
+    public function amendAnswers(User $staff, string $donorUuid, int $screeningId, array $changes): array
+    {
+        $facility = $this->requireFacility($staff);
+
+        $donor = $this->donorDirectoryRepository->findDonor($donorUuid)
+            ?? throw $this->refuse(404, 'donor_not_found', 'No donor matches that identifier.');
+
+        [$changedCount, $assessment] = DB::transaction(function () use ($staff, $facility, $donor, $screeningId, $changes): array {
+            $open = $this->donorDirectoryRepository->openDonationAtFacility($donor->id, $facility->id);
+
+            // The lock recordScreening() takes, so the two cannot cross.
+            $donation = $open === null ? null : $this->collectionRepository->lockDonation($open->id, $facility->id);
+
+            if ($donation === null
+                || $donation->status !== DonationStatus::Registered
+                || $this->collectionRepository->screeningExists($donation->id)) {
+                throw $this->refuse(
+                    409,
+                    'questionnaire_not_amendable',
+                    'The questionnaire can be changed only while the donor is at screening.'
+                );
+            }
+
+            $screening = $this->eligibilityRepository->lockDonorScreening($screeningId, $donor->id)
+                ?? throw $this->refuse(404, 'questionnaire_not_found', 'That questionnaire does not belong to this donor.');
+
+            if (! $screening->isValid()) {
+                throw $this->refuse(
+                    409,
+                    'questionnaire_not_amendable',
+                    'This questionnaire is past its validity date. The donor answers it again.'
+                );
+            }
+
+            $questions = $this->eligibilityRepository->questionTextMap((int) $screening->question_version);
+
+            foreach ($changes as $change) {
+                $question = $questions->get($change['code']);
+
+                if ($question === null || ! $question->appliesToGender($screening->gender_at_screening)) {
+                    throw $this->refuse(422, 'question_not_amendable', "That question is not on this donor's questionnaire.");
+                }
+            }
+
+            $changedCount = 0;
+
+            foreach ($changes as $change) {
+                if ($this->eligibilityRepository->amendAnswer($screening->id, $change['code'], (bool) $change['answer'], $staff->id)) {
+                    $changedCount++;
+                }
+            }
+
+            $screening->computed_result = $this->evaluator->assessAnswers(
+                $questions->values(),
+                $screening->answers()->get()->pluck('answer', 'question_code')->all()
+            );
+            $screening->save();
+
+            return [$changedCount, $screening->computed_result];
+        });
+
+        if ($changedCount > 0) {
+            // A count, never the codes: AuditLogger's rule is identifiers and
+            // outcomes only, and a code says what the donor was asked about.
+            $this->auditLogger->record($staff, 'collection.questionnaire_amended', $donor, [
+                'facility_id' => $facility->id,
+                'screening_id' => $screeningId,
+                'changed_count' => $changedCount,
+                'computed_result' => $assessment,
+            ]);
+        }
+
+        [$screening, $source] = $this->resolveScreening($donor->id, $screeningId);
+
+        return [
+            'message' => 'Questionnaire saved.',
+            'data' => $this->present($screening, $source),
+        ];
+    }
+
+    /**
      * The small reference the scan response carries, without any health data.
      *
      * Enough to draw the counter's summary strip and decide whether to warn
@@ -341,6 +439,7 @@ class DonorQuestionnaireService
         $questions = $this->eligibilityRepository->questionTextMap($version);
         $answers = $screening->answers->pluck('answer', 'question_code');
         $flagged = $this->evaluator->flaggedAnswers($questions->values(), $answers->all());
+        $amended = $screening->answers->whereNotNull('amended_at')->keyBy('question_code');
 
         return [
             'screening_id' => $screening->id,
@@ -364,7 +463,7 @@ class DonorQuestionnaireService
                 : 'Declared by the donor in the RedAgos portal. This is not the on-site screening.',
 
             'personal_data' => $this->personalData($screening),
-            'sections' => $this->sections($screening, $questions, $answers, $flagged),
+            'sections' => $this->sections($screening, $questions, $answers, $flagged, $amended),
             'answered_count' => $answers->count(),
             'question_count' => $questions->count(),
             'flagged_codes' => $flagged,
@@ -468,13 +567,15 @@ class DonorQuestionnaireService
      * @param  Collection<string, EligibilityQuestion>  $questions
      * @param  Collection<string, bool>  $answers
      * @param  array<int, string>  $flagged
+     * @param  Collection<string, EligibilityScreeningAnswer>  $amended
      * @return array<int, array<string, mixed>>
      */
     private function sections(
         EligibilityScreening $screening,
         Collection $questions,
         Collection $answers,
-        array $flagged
+        array $flagged,
+        Collection $amended
     ): array {
         $gender = $screening->gender_at_screening;
 
@@ -485,7 +586,7 @@ class DonorQuestionnaireService
                 'number' => $group->first()->section_number,
                 'title' => $group->first()->section_title ?? str($key)->headline()->value(),
                 'questions' => $group
-                    ->map(function (EligibilityQuestion $question) use ($answers, $flagged, $gender): array {
+                    ->map(function (EligibilityQuestion $question) use ($answers, $flagged, $gender, $amended): array {
                         $applicable = $question->appliesToGender($gender);
                         $answered = $answers->has($question->code);
                         $answer = $answered ? (bool) $answers->get($question->code) : null;
@@ -510,6 +611,9 @@ class DonorQuestionnaireService
                             // True where the answer trips the question's review
                             // marker. It highlights a row; it defers nobody.
                             'flagged' => in_array($question->code, $flagged, true),
+                            // Null unless the physician changed it. An answer
+                            // that is no longer the donor's must say so.
+                            'amendment' => $this->amendment($amended->get($question->code)),
                         ];
                     })
                     ->values()
@@ -518,6 +622,29 @@ class DonorQuestionnaireService
             ->sortBy('number')
             ->values()
             ->all();
+    }
+
+    /**
+     * Who changed an answer, and what the donor had declared.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function amendment(?EligibilityScreeningAnswer $answer): ?array
+    {
+        if ($answer === null) {
+            return null;
+        }
+
+        return [
+            'donor_answer' => $answer->original_answer,
+            'donor_answer_label' => match ($answer->original_answer) {
+                true => 'Yes',
+                false => 'No',
+                default => 'Not answered',
+            },
+            'amended_by' => $answer->amendedBy?->signatureName(),
+            'amended_at' => $answer->amended_at?->toISOString(),
+        ];
     }
 
     /**

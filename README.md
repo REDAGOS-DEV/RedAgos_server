@@ -384,6 +384,8 @@ MAIL_FROM_NAME=RedAgos
 SEMAPHORE_API_KEY=            # empty turns SMS off
 SEMAPHORE_SENDER_NAME=        # an approved sender name; empty uses the account's default
 
+GOOGLE_CLIENT_ID=             # the same Web client ID as in Cloudflare Pages; empty refuses every Google sign-in
+
 XENDIT_CHECKOUT_ENABLED=false
 ```
 

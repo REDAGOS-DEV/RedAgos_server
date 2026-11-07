@@ -389,7 +389,7 @@ class TransfusionRequestService
                     throw $this->refuse(
                         409,
                         'request_has_supply',
-                        'Units have already been reserved or released for this patient. Close the remaining quantities instead.'
+                        'Units have already been tagged or released for this patient. Close the remaining quantities instead.'
                     );
                 }
             }

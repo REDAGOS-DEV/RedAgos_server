@@ -27,7 +27,7 @@ A step-by-step guide to the whole internal process, from the donor's QR code bei
 | | **Collection** (front desk and counter) | **Head (approves change requests):**<br>Donor Screening Physician<br>`screening.physician@redagos.test` | | |
 | 1 | **Scan the QR** (check in) | **Medical Receptionist**<br>`medical.receptionist@redagos.test` | Donor identified; appointment `scheduled` → `confirmed` | 2 |
 | 2 | **Open the donation** | **Medical Receptionist**<br>`medical.receptionist@redagos.test` | Donation `registered` | 3 |
-| 3 | **Screening: review the questionnaire** | **Donor Screening Physician**<br>`screening.physician@redagos.test` | Answers read; officer's margin notes entered | 4 |
+| 3 | **Screening: review the questionnaire** | **Donor Screening Physician**<br>`screening.physician@redagos.test` | Answers read, and changed where needed | 4 |
 | 4 | **Physical screening** | **Donor Screening Physician**<br>`screening.physician@redagos.test` | Vitals and the physical exam recorded | 5 |
 | 5 | **Accept or defer** | **Donor Screening Physician**<br>`screening.physician@redagos.test` | `screening` (accepted) or `rejected` (deferred; ends here) | 6 |
 | 6 | **Collect the blood** | **Phlebotomist**<br>`phlebotomist@redagos.test`<br>or **Apheresis Specialist**<br>`apheresis.specialist@redagos.test` | Donation `collected`, with its barcode sticker | 7 and 9, together |
@@ -44,7 +44,7 @@ A step-by-step guide to the whole internal process, from the donor's QR code bei
 | | **Hospital Blood Bank** (no departments, so no head) | Every account does every action | | |
 | 14 | **Raise a request** | **Any blood-bank account**<br>`user@redagos.ph` (SPMC Blood Bank) | Request `pending` at the center | 15 |
 | | **Issuance** (requests) | **Head (approves change requests):**<br>ICO<br>`inventory.control.officer@redagos.test` | | |
-| 15 | **Review and reserve** | **ICO**<br>`inventory.control.officer@redagos.test`<br>Reject only: **ICO** or **Dispatch Coordinator**<br>`dispatch.coordinator@redagos.test` | Bags `reserved`; billing statement raised | 16 |
+| 15 | **Review and tag** (patient request) or **confirm** (replenishment) | **ICO**<br>`inventory.control.officer@redagos.test`<br>Confirm or reject: **ICO** or **Dispatch Coordinator**<br>`dispatch.coordinator@redagos.test` | Patient request: bags tagged, billing statement raised. Replenishment: order confirmed, nothing held | 16 (patient), 17 (replenishment) |
 | | **Billing** | **Head (approves change requests):**<br>Billing Supervisor<br>`billing.supervisor@redagos.test` | | |
 | 16 | **Billing** | **Billing Clerk**<br>`billing.clerk@redagos.test`<br>or **Billing Supervisor**<br>`billing.supervisor@redagos.test` | Statement `paid` or `subsidised` (taken at the Billing Counter) | 17 |
 | | **Issuance** (dispatch) | **Head (approves change requests):**<br>ICO<br>`inventory.control.officer@redagos.test` | | |
@@ -80,7 +80,7 @@ flowchart TD
     subgraph ISS["BLOOD CENTER: Issuance"]
         S11["11. Book in: quarantined<br/>ICO"]
         S12["12. Release: available<br/>ICO"]
-        S15["15. Review and reserve<br/>ICO"]
+        S15["15. Review and tag, or confirm<br/>ICO"]
         S16["16. Billing<br/>Billing Clerk / Supervisor"]
         S17["17. Dispatch<br/>Dispatch Coordinator / ICO"]
         S11 --> S12
@@ -112,7 +112,7 @@ flowchart TD
 | **Serology / Molecular Medical Technologist** | Blood Center | Testing | Testing | 7, 8 |
 | **Laboratory Supervisor** | Blood Center | Testing | Testing | 7, 8, counselling referrals |
 | **Inventory Control Officer (ICO)** | Blood Center | Issuance | Issuance | 11, 12, 13, 15, 17 |
-| **Dispatch / Transport Coordinator** | Blood Center | Issuance | Request Fulfillment | 13 (view), 15 (reject, return holds or close a line; cannot reserve), 17 |
+| **Dispatch / Transport Coordinator** | Blood Center | Issuance | Request Fulfillment | 13 (view), 15 (confirm a replenishment order, reject, return tagged units or close a line; cannot tag), 17 |
 | **IT Data Entry Clerk** | Blood Center | Issuance | Blood Inventory | 13 (audit, view only) |
 | **Billing Clerk**, **Billing Supervisor** | Blood Center | Billing | Billing Counter, Statements, Receipts, Billing Transactions | 16 |
 | **Center Admin** | Blood Center | none (a supervisor) | Center Overview | Any step; plus the approvals in §5.1 |
@@ -155,8 +155,8 @@ A visit that cannot go ahead can be closed by the Receptionist, the Physician or
 | | |
 |---|---|
 | **Log in as** | **Donor Screening Physician** (Collection page). No other staff role can open the questionnaire (`donors.view_questionnaire`); the Center Admin can, as it holds every ability. |
-| **Actions** | Opens the questionnaire drawer and reads the donor's declared answers: Section I-A (personal data), I-B (29 history questions), I-C (informed consent). Rows with a review flag are highlighted so the eye lands on them; **a flag is a prompt to look, never a deferral trigger**. The drawer says if the donor answered an older form version. The physician also fills the officer's four **margin boxes** at the top of the drawer: Sleep, Meal, Meds, Allergies, asked in person and transcribed (never pre-filled from the donor's own answers). The physician may open the donor's history (`donors.view_clinical`): earlier deferral reasons and the final lab result, never an individual marker. |
-| **Status changes** | None yet. The questionnaire is **read-only** (the margin boxes save with the screening at Step 4). Each read is rate-limited and audited. |
+| **Actions** | Opens the questionnaire drawer and reads the donor's declared answers: Section I-A (personal data), I-B (29 history questions), I-C (informed consent). Rows with a review flag are highlighted so the eye lands on them; **a flag is a prompt to look, never a deferral trigger**. The drawer says if the donor answered an older form version. Until the screening is saved, the physician can change the Yes and No of Section I-B; each changed row keeps saying what the donor declared. The physician may open the donor's history (`donors.view_clinical`): earlier deferral reasons and the final lab result, never an individual marker. |
+| **Status changes** | None yet. Personal data and consent are **read-only**. Each read and each save of changed answers is audited, and reads are rate-limited. |
 | **Approvals** | The donor's answers decide nothing by themselves; the physician's judgement is the verdict. |
 | **Hands off to** | Step 4 (same physician). |
 
@@ -266,7 +266,7 @@ The final label shows the verified blood type (large), component, volume, expiry
 | **Approvals** | The **ICO edits a unit's storage location and expiry directly**. Everyone else files a correction for the ICO. |
 | **Hands off to** | Step 15 when a request arrives. A shortage is the cue to chase supply. |
 
-Only `available` bags that are **not past their date** count as stock. Quarantined, reserved, issued, expired and discarded bags never do.
+Only `available` bags that are **not past their date** count as stock. Quarantined, tagged, issued, expired and discarded bags never do.
 
 ### Step 14. Raise a request (Hospital Blood Bank)
 
@@ -287,7 +287,7 @@ Only `available` bags that are **not past their date** count as stock. Quarantin
 - Staff enter the patient (surname, first name, age, sex), each component with its **indication code** (required for the components the DOH form prints codes for), and the urgency (**Routine** or **STAT**), and **confirm the hospital's own stock cannot cover the patient** (`internal_stock_confirmed`).
 - **Sourcing advice** lists centers holding matching issuable stock, earliest expiry first. It is advice only and holds nothing.
 - The need is recorded once as a `PTR-…` requirement and **split into Facility Allocations**, one per center asked, each an `RQ-…` request the center works normally. Asking for more than is unallocated is refused.
-- The hospital can add allocations, **withdraw** one nobody has answered, **close** a component the patient no longer needs, and **cancel** (only while nothing is reserved or released).
+- The hospital can add allocations, **withdraw** one nobody has answered, **close** a component the patient no longer needs, and **cancel** (only while nothing is tagged or released).
 
 | | |
 |---|---|
@@ -297,15 +297,17 @@ Only `available` bags that are **not past their date** count as stock. Quarantin
 
 *Walk-in variant:* when a watcher brings a patient's request to the center in person, the **ICO** or **Dispatch Coordinator** (`requests.record`) phones the hospital blood bank first and records the request **only once the hospital confirms**. It becomes the hospital's own request and carries on at Step 15.
 
-### Step 15. Review and reserve (Blood Center)
+### Step 15. Review and tag, or confirm (Blood Center)
 
-*A replenishment order (Inventory Replenishment tab) is **confirmed first**.* The ICO or Dispatch Coordinator (`requests.approve`) chooses **Confirm** and sets **how many units of each line** the center will supply (from what is already reserved up to what was asked), **pick-up or delivery**, the **date and time**, the delivery address or pick-up point, a center contact and notes for the hospital. The hospital is notified and sees it on its Weekly Request page. Reserving is refused with `supply_plan_required` until then, and never takes more of a line than was committed. The plan can be changed (and the hospital is told again) until units are dispatched, never below what is already reserved for a line. Committing nothing is refused: reject the order instead.
+*A replenishment order (Inventory Replenishment tab) is **confirmed, never tagged**.* The ICO or Dispatch Coordinator (`requests.approve`) chooses **Confirm** and sets **how many units of each line** the center will supply (up to what was asked), **pick-up or delivery**, the **date and time**, the delivery address or pick-up point, a center contact and notes for the hospital. The hospital is notified and sees it on its Weekly Request page. **Confirming holds no stock**: the bags stay available to anyone, and the order waits on For Dispatch (Step 17). Tagging one is refused with `replenishment_not_tagged`. The plan can be changed (and the hospital is told again) until units are dispatched. Committing nothing is refused: reject the order instead.
+
+*Only a patient's request is tagged.* The table below is that flow. The stored status is still `reserved`; every screen reads **Tagged**.
 
 | | |
 |---|---|
-| **Log in as** | **Inventory Control Officer** to approve and reserve (Incoming Requests page). The **ICO or Dispatch Coordinator** may reject, return holds, or close a line. |
-| **Actions** | **Approve & Reserve** (`requests.process`, ICO only): holds issuable units for the request in **first-expiry-first-out** order, never more than the request still needs or the shelf has; partial cover is allowed. **Reject** (`requests.approve`): a reason is required (at least 3 characters). **Return holds** to stock. **Close a line** the center cannot supply (`unavailable`). |
-| **Status changes** | Units `available` → **`reserved`**; each hold is an allocation `allocated`. Approval and reservation are one operation, so the request moves `pending` → `processing`, and a **billing statement is raised or updated** in the same step. A rejection records its reason and notifies the requester. |
+| **Log in as** | **Inventory Control Officer** to approve and tag (Incoming Requests page). The **ICO or Dispatch Coordinator** may reject, return tagged units, or close a line. |
+| **Actions** | **Approve & Tag** (`requests.process`, ICO only): tags issuable units for the request in **first-expiry-first-out** order, never more than the request still needs or the shelf has; partial cover is allowed. **Reject** (`requests.approve`): a reason is required (at least 3 characters). **Return tagged units** to stock. **Close a line** the center cannot supply (`unavailable`). |
+| **Status changes** | Units `available` → **`reserved`** (reads Tagged); each tag is an allocation `allocated`. Approval and tagging are one operation, so the request moves `pending` → `processing`, and a **billing statement is raised or updated** in the same step. A rejection records its reason and notifies the requester. |
 | **Approvals** | Quarantined and past-date units are never offered. If nothing matches the answer is `no_matching_stock`. |
 | **Hands off to** | **Billing** (Step 16), then **Dispatch** (Step 17). The hospital is notified of an approval or rejection. |
 
@@ -315,18 +317,18 @@ Only `available` bags that are **not past their date** count as stock. Quarantin
 |---|---|
 | **Log in as** | **Billing Clerk** or **Billing Supervisor** (Billing Counter, Statements, Receipts and Billing Transactions pages) |
 | **Actions** | At the Billing Counter, picks **Patient bills** or **Hospital restocking**, finds the bill (request or PTR reference, or patient name; a scanner types into the same box), checks its lines, patient and request details, and **takes the payment in person**: cash, entering the amount handed over (the counter shows the change), a GCash transfer, card payment or bank transfer by its reference. A payment can be **split across methods**: cash short of what is due is added as one part and the rest paid by card, GCash or transfer, each part with its own receipt, all recorded together. From a patient bill's statement page they can instead open a **GCash checkout** the watcher pays by QR code. Prints the **80mm receipt**; the A4 receipt and the Statement of Account stay available. Each statement and receipt has its own page (issued by, bill to or received from, details, items, totals, payment history), with Print, Download PDF and an *As printed* view. Or **applies the government subsidy**, which writes the balance to zero. A **weekly bill** is billed to the hospital by statement; once the hospital settles it, billing staff **record the settlement** with the hospital's reference and date. Cash shifts (float, drawer count, Z report) are **off** while one billing staff member runs the counter; with `BILLING_CASH_SHIFTS=true`, the cashier opens a shift with the float before taking payments and closes it with the drawer counted. |
-| **Status changes** | Patient bill `unpaid` → `partial` → `paid`, or `subsidised`. Weekly bill `statement_only` → `settled_outside`. **Paid, Subsidised and both weekly statuses clear the request for release.** Every money event is a numbered row in the **billing journal** (`TXN-`). Today components carry no price, so statements come to zero and are settled on creation, and the gate passes without anyone acting. |
+| **Status changes** | Patient bill `unpaid` → `partial` → `paid`, or `subsidised`. Weekly bill `statement_only` → `settled_outside`. **Paid, Subsidised and both weekly statuses clear the request for release, and so does a deferred payment (Step 17), which leaves the bill `unpaid` or `partial` for later settlement.** Every money event is a numbered row in the **billing journal** (`TXN-`). Today components carry no price, so statements come to zero and are settled on creation, and the gate passes without anyone acting. |
 | **Approvals** | The **Billing Supervisor** approves payment corrections (amount, method, reference) and **voids** (a counter payment recorded in error, on the day it was taken, or while its shift is still open when shifts are on; refunds are settled outside RedAgos). A clerk's request goes to the supervisor; a supervisor's own goes to the **Center Admin**. A correction or void approved *after* dispatch can reopen a balance: the units stay released and the statement shows as outstanding. With shifts on, a shift cannot close while a void of one of its payments awaits a decision. |
-| **Hands off to** | **Dispatch** (Step 17). Release is refused with `billing_unsettled` (or `billing_missing`) until the statement clears. With shifts on, a counter payment is refused with `no_open_cash_session` until the cashier opens a shift. |
+| **Hands off to** | **Dispatch** (Step 17). Release is refused with `billing_unsettled` until the statement clears or Issuance defers its payment, and with `billing_missing` when a request has no statement at all. A walk-in cannot be deferred (`settlement_required`). With shifts on, a counter payment is refused with `no_open_cash_session` until the cashier opens a shift. |
 
 ### Step 17. Dispatch
 
 | | |
 |---|---|
-| **Log in as** | **Dispatch / Transport Coordinator** or **ICO** (Request Fulfillment page, `requests.release`) |
-| **Actions** | Selects the reserved units and **releases** them for transport, recording who physically took them (`handed_to`; for a walk-in, the watcher; on a confirmed replenishment, the hospital's collector for a pick-up or the driver for a delivery). The card shows a replenishment order's confirmed hand-over and time. |
-| **Status changes** | Units `reserved` → **`issued`**. Allocations `allocated` → **`released`**. The request becomes **Partially Fulfilled** or **Fulfilled**: fulfillment is counted **at dispatch**, not at receipt. For a *weekly* request, any unsupplied remainder, including what lay beyond the center's commitment, is closed automatically as unavailable ("Not supplied in this weekly delivery."). |
-| **Approvals** | Three checks, in order: the **billing statement clears**; **every unit has both clearance tokens** (`unit_not_cleared` otherwise); a weekly request goes out in **one delivery** (`weekly_release_all`). A correction to *when a unit left* or *who took it* is filed by the Dispatch Coordinator or ICO and approved by the **ICO** (the ICO's own goes to the Center Admin). It never changes status or receipt. |
+| **Log in as** | **Dispatch / Transport Coordinator** or **ICO** (For Dispatch page, `requests.release`) |
+| **Actions** | *Patient request:* selects the tagged units and **releases** them for transport. *Replenishment order:* chooses **Pick Units & Dispatch**, and the bags picked are recorded as they go (`POST blood-requests/{id}/dispatch`), never more of a line than was committed. Both record who physically took them (`handed_to`; for a walk-in, the watcher; on a confirmed replenishment, the hospital's collector for a pick-up or the driver for a delivery). The card shows a replenishment order's confirmed hand-over and time. |
+| **Status changes** | *Patient request:* units `reserved` → **`issued`**; allocations `allocated` → **`released`**. *Replenishment order:* units `available` → **`issued`** directly; each allocation is written as **`released`**, and the **billing statement is raised or updated** in the same step. The request becomes **Partially Fulfilled** or **Fulfilled**: fulfillment is counted **at dispatch**, not at receipt. For a *weekly* request, anything not sent, including what lay beyond the center's commitment, is closed automatically as unavailable ("Not supplied in this weekly delivery."). On any other restock, what lay beyond the commitment closes once the commitment has gone out. |
+| **Approvals** | Two checks: the **billing statement clears**; **every unit has both clearance tokens** (`unit_not_cleared` otherwise). A replenishment order must be confirmed (`supply_plan_required`), and a picked unit no longer available, tagged for a patient meanwhile for example, refuses the whole pick by name. A correction to *when a unit left* or *who took it* is filed by the Dispatch Coordinator or ICO and approved by the **ICO** (the ICO's own goes to the Center Admin). It never changes status or receipt. |
 | **Hands off to** | The **Hospital Blood Bank** (Step 18). The requester is notified that units were released. |
 
 ---
@@ -408,7 +410,7 @@ A saved record is never overwritten. The person whose role wrote it files a **co
 5. Nothing is **dispatched** whose donation lacks either clearance.
 6. Laboratory and inventory screens never show a donor's name to a role that does not meet donors.
 7. Receipt is the hospital's alone.
-8. No unit is released without a cleared billing statement. (The one documented exception: a payment correction approved *after* dispatch can reopen a balance.)
+8. No unit is released without a billing statement, and that statement must be settled or have its payment deferred by whoever holds `requests.release`. A walk-in must be settled. (A payment correction approved *after* dispatch can still reopen a balance.)
 
 ### 5.3 Notifications and scheduled jobs
 
@@ -436,9 +438,9 @@ A saved record is never overwritten. The person whose role wrote it files a **co
 
 **Screening outcome:** `accepted`, `temporarily_deferred`, `permanently_deferred`, `indefinite_deferral`.
 
-**Center blood unit** (`blood_units.status`): `quarantined` → `available` → `reserved` → `issued`; `available` → `expired` → `discarded`; `discarded` from other states by the ICO.
+**Center blood unit** (`blood_units.status`): `quarantined` → `available` → `reserved` (reads Tagged) → `issued`; `available` → `issued` on a replenishment dispatch; `available` → `expired` → `discarded`; `discarded` from other states by the ICO.
 
-**Allocation** (`request_allocations.status`): `allocated` ("Reserved") → `released`; `cancelled` when a hold is returned to stock.
+**Allocation** (`request_allocations.status`): `allocated` ("Tagged") → `released`; `cancelled` when a tag is returned to stock. A replenishment order's allocation is written `released`.
 
 **Blood request** (`blood_requests.status`): `pending` → `processing` → `partial` → `fulfilled`; `rejected` and `cancelled`. Derived from the lines, never set by hand.
 

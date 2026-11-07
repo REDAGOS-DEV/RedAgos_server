@@ -188,7 +188,7 @@ class ExpireBloodUnits extends Command
             RequestAllocation::query()->whereIn('id', $holds->pluck('id'))->update([
                 'status' => AllocationStatus::Cancelled->value,
                 'cancelled_at' => now(),
-                'cancellation_reason' => 'Unit passed its expiry date while reserved.',
+                'cancellation_reason' => 'Unit passed its expiry date while tagged.',
             ]);
 
             foreach ($holds as $hold) {
@@ -241,7 +241,7 @@ class ExpireBloodUnits extends Command
                     RequestEventType::HoldExpired,
                     null,
                     $from,
-                    count($unitIds).' reserved unit(s) passed their expiry date and were returned to stock.',
+                    count($unitIds).' tagged unit(s) passed their expiry date and were returned to stock.',
                     $unitIds,
                 );
 

@@ -12,7 +12,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * A hospital blood bank's scheduled restock, sent to one centre on one of its request days.
  *
  * A header over the one replenishment request it was sent as, whose lines each
- * name their own blood type. The centre approves, reserves, bills, dispatches
+ * name their own blood type. The centre confirms, dispatches, bills
  * and the hospital receives it exactly as any replenishment, except that it
  * goes out in one delivery and whatever was not supplied is closed as
  * unavailable when it does (FulfillmentService::release).

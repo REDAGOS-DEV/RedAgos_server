@@ -145,7 +145,7 @@ class TransfusionRequestProjector
     {
         return match ($allocation->status) {
             BloodRequestStatus::Pending => 'Awaiting review',
-            BloodRequestStatus::Processing => 'Approved — units reserved',
+            BloodRequestStatus::Processing => 'Approved — units tagged',
             BloodRequestStatus::Partial => $allocation->isClosed() ? 'Released — rest unavailable' : 'Partly released',
             BloodRequestStatus::Fulfilled => 'Released',
             BloodRequestStatus::Rejected => 'Rejected',

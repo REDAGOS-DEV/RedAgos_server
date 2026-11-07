@@ -58,6 +58,8 @@ class StatementRevisionService
         $collected = $this->figures->collectedFor($lockedBilling);
         $status = $lockedBilling->status;
         $due = $this->amountDue($status, $total, $collected);
+        // Says when it is payable, so a deferral after it was issued is a change.
+        $deferred = $lockedBilling->payment_deferred_at !== null;
 
         $latest = BillingRevision::query()
             ->with('items')
@@ -65,7 +67,7 @@ class StatementRevisionService
             ->orderByDesc('revision_number')
             ->first();
 
-        if ($latest !== null && $this->matches($latest, $lines, $total, $collected, $status)) {
+        if ($latest !== null && $this->matches($latest, $lines, $total, $collected, $status, $deferred)) {
             return [$latest, false];
         }
 
@@ -87,6 +89,7 @@ class StatementRevisionService
             'amount_due' => Money::toDecimal($due),
             // A weekly bill is the hospital's, before and after it settles it.
             'statement_only' => $status === BillingStatus::StatementOnly || $status === BillingStatus::SettledOutside,
+            'payment_deferred' => $deferred,
             'billing_status' => $status,
             'reason' => $reason,
             'created_by' => $actor?->id,
@@ -139,6 +142,7 @@ class StatementRevisionService
             'billing_status' => $revision->billing_status->value,
             'billing_status_label' => $revision->billing_status->label(),
             'statement_only' => $revision->statement_only,
+            'payment_deferred' => $revision->payment_deferred,
             'currency' => $revision->currency,
             'total_amount' => $revision->total_amount,
             'collected_at_issue' => $revision->collected_at_issue,
@@ -278,11 +282,12 @@ class StatementRevisionService
      *
      * @param  array<int, array{request_item_id: int, component_id: int, quantity: int, unit_price: int}>  $lines
      */
-    private function matches(BillingRevision $revision, array $lines, int $total, int $collected, BillingStatus $status): bool
+    private function matches(BillingRevision $revision, array $lines, int $total, int $collected, BillingStatus $status, bool $deferred): bool
     {
         if (Money::toCentavos($revision->total_amount) !== $total
             || Money::toCentavos($revision->collected_at_issue) !== $collected
-            || $revision->billing_status !== $status) {
+            || $revision->billing_status !== $status
+            || $revision->payment_deferred !== $deferred) {
             return false;
         }
 
