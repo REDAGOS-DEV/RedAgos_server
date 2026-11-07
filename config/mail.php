@@ -115,4 +115,18 @@ return [
         'name' => env('MAIL_FROM_NAME', env('APP_NAME', 'Laravel')),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Logo
+    |--------------------------------------------------------------------------
+    |
+    | The logo every RedAgos email opens with, served from the client's
+    | public/images. Linked, because Gmail lists an attached image as a chip in
+    | the inbox. One public address for every environment, because Gmail cannot
+    | fetch an image from localhost.
+    |
+    */
+
+    'logo_url' => env('MAIL_LOGO_URL', 'https://redagos.pages.dev/images/mail-logo.png'),
+
 ];
