@@ -113,16 +113,38 @@ class MobileEventRepository
      */
     public function unitsCollectedAtDrivesInMonth(int $facilityId, Carbon $month): int
     {
-        return Donation::query()
-            ->where('facility_id', $facilityId)
+        return $this->drawnAtDrives($facilityId)
             ->whereBetween('donation_date', [
                 $month->copy()->startOfMonth(),
                 $month->copy()->endOfMonth(),
             ])
+            ->count();
+    }
+
+    /**
+     * The same bags, counted for every month that has any, keyed "YYYY-MM",
+     * so the drives screen can follow whichever month it shows.
+     *
+     * @return array<string, int>
+     */
+    public function unitsCollectedAtDrivesByMonth(int $facilityId): array
+    {
+        return $this->drawnAtDrives($facilityId)
+            ->pluck('donation_date')
+            ->countBy(fn ($date): string => Carbon::parse($date)->format('Y-m'))
+            ->all();
+    }
+
+    /**
+     * Donations at this facility's drives with a bag drawn (see above).
+     */
+    private function drawnAtDrives(int $facilityId): Builder
+    {
+        return Donation::query()
+            ->where('facility_id', $facilityId)
             ->where(fn (Builder $query) => $query
                 ->whereNotNull('paper_sheet_id')
                 ->orWhereHas('appointment', fn (Builder $appointment) => $appointment->whereNotNull('event_id')))
-            ->whereHas('collection')
-            ->count();
+            ->whereHas('collection');
     }
 }
