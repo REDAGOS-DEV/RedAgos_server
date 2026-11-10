@@ -37,6 +37,18 @@ class DeferralCodeRepository
     }
 
     /**
+     * One of the facility's codes, locked for an update. Must be called inside a transaction.
+     */
+    public function findForUpdate(int $facilityId, int $id): ?DeferralCode
+    {
+        return DeferralCode::query()
+            ->where('facility_id', $facilityId)
+            ->whereKey($id)
+            ->lockForUpdate()
+            ->first();
+    }
+
+    /**
      * An active code, whatever the case it is sent in: r2-low finds R2-Low.
      */
     public function findActive(int $facilityId, string $code): ?DeferralCode

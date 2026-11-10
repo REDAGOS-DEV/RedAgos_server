@@ -54,11 +54,24 @@ class BloodCenterInventoryController extends Controller
 
     /**
      * Summarise the caller's facility stock.
+     *
+     * `?trend=0` leaves out the seven-day trend, which is rebuilt from the
+     * whole unit history and is drawn by the Issuance dashboard alone.
      */
     public function summary(Request $request): JsonResponse
     {
         return response()->json(
-            $this->inventoryService->summary($request->user())
+            $this->inventoryService->summary($request->user(), $request->boolean('trend', true))
+        );
+    }
+
+    /**
+     * Count the caller's facility stock close to, or past, its expiry date.
+     */
+    public function nearExpiry(Request $request): JsonResponse
+    {
+        return response()->json(
+            $this->inventoryService->nearExpiry($request->user())
         );
     }
 

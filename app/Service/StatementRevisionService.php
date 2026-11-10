@@ -55,9 +55,12 @@ class StatementRevisionService
     {
         $lines = $this->figures->linesFor($lockedRequest);
         $total = $this->figures->totalOf($lines);
+        // One of the centre's discounts, if the bill carries one: the invoice
+        // shows the lines' total, the discount, and what is due after it.
+        $discount = $lockedBilling->hasDiscount() ? Money::toCentavos($lockedBilling->discount_amount) : 0;
         $collected = $this->figures->collectedFor($lockedBilling);
         $status = $lockedBilling->status;
-        $due = $this->amountDue($status, $total, $collected);
+        $due = $this->amountDue($status, $total - $discount, $collected);
         // Says when it is payable, so a deferral after it was issued is a change.
         $deferred = $lockedBilling->payment_deferred_at !== null;
 
@@ -67,7 +70,7 @@ class StatementRevisionService
             ->orderByDesc('revision_number')
             ->first();
 
-        if ($latest !== null && $this->matches($latest, $lines, $total, $collected, $status, $deferred)) {
+        if ($latest !== null && $this->matches($latest, $lines, $total, $discount, $collected, $status, $deferred)) {
             return [$latest, false];
         }
 
@@ -85,6 +88,8 @@ class StatementRevisionService
             'issuer_logo_path' => Facility::query()->whereKey($issuingFacilityId)->value('logo_path'),
             'currency' => 'PHP',
             'total_amount' => Money::toDecimal($total),
+            'discount_name' => $discount > 0 ? $lockedBilling->discount_name : null,
+            'discount_amount' => Money::toDecimal($discount),
             'collected_at_issue' => Money::toDecimal($collected),
             'amount_due' => Money::toDecimal($due),
             // A weekly bill is the hospital's, before and after it settles it.
@@ -144,7 +149,12 @@ class StatementRevisionService
             'statement_only' => $revision->statement_only,
             'payment_deferred' => $revision->payment_deferred,
             'currency' => $revision->currency,
+            // What the lines come to. A discount, when there is one, is taken
+            // off that: net_amount is what the invoice is for.
             'total_amount' => $revision->total_amount,
+            'discount_name' => $revision->discount_name,
+            'discount_amount' => $revision->discount_amount,
+            'net_amount' => Money::toDecimal(Money::toCentavos($revision->total_amount) - Money::toCentavos($revision->discount_amount ?? 0)),
             'collected_at_issue' => $revision->collected_at_issue,
             'amount_due' => $revision->amount_due,
             'issued_at' => $revision->created_at?->toIso8601String(),
@@ -282,9 +292,10 @@ class StatementRevisionService
      *
      * @param  array<int, array{request_item_id: int, component_id: int, quantity: int, unit_price: int}>  $lines
      */
-    private function matches(BillingRevision $revision, array $lines, int $total, int $collected, BillingStatus $status, bool $deferred): bool
+    private function matches(BillingRevision $revision, array $lines, int $total, int $discount, int $collected, BillingStatus $status, bool $deferred): bool
     {
         if (Money::toCentavos($revision->total_amount) !== $total
+            || Money::toCentavos($revision->discount_amount ?? 0) !== $discount
             || Money::toCentavos($revision->collected_at_issue) !== $collected
             || $revision->billing_status !== $status
             || $revision->payment_deferred !== $deferred) {

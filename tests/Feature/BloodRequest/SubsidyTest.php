@@ -10,7 +10,6 @@ use App\Enums\StaffRole;
 use App\Models\Billing;
 use App\Models\BillingRevision;
 use App\Models\BillingTransaction;
-use App\Models\BillingProgram;
 use App\Models\BloodComponent;
 use App\Models\BloodRequest;
 use App\Models\BloodType;
@@ -164,27 +163,6 @@ class SubsidyTest extends TestCase
             ->postJson("/api/blood-center/billings/{$request->id}/subsidy")
             ->assertStatus(409)
             ->assertJsonPath('code', 'billing_already_subsidised');
-    }
-
-    public function test_a_configured_subsidy_must_be_inside_its_effective_dates(): void
-    {
-        $request = $this->reservedRequest();
-
-        BillingProgram::query()->create([
-            'facility_id' => $this->centre->id,
-            'name' => 'Expired allocation',
-            'kind' => BillingProgram::GOVERNMENT_SUBSIDY,
-            'effective_from' => now()->subMonth()->toDateString(),
-            'effective_to' => now()->subDay()->toDateString(),
-            'is_enabled' => true,
-            'created_by' => $this->billingStaff->id,
-            'updated_by' => $this->billingStaff->id,
-        ]);
-
-        $this->actingAs($this->billingStaff)
-            ->postJson("/api/blood-center/billings/{$request->id}/subsidy")
-            ->assertStatus(409)
-            ->assertJsonPath('code', 'subsidy_not_active');
     }
 
     public function test_an_accidental_subsidy_can_be_removed_before_dispatch_with_an_audited_reversal(): void

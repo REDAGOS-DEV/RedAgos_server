@@ -15,6 +15,7 @@ use App\Repository\BloodRequestRepository;
 use App\Repository\InventoryRepository;
 use App\Support\CorrectionValues;
 use App\Support\DocumentNumbering;
+use App\Support\OperationalDay;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Collection;
@@ -123,6 +124,10 @@ class FulfillmentService
             $unitIds = $holds->pluck('unit_id')->all();
 
             $this->assertCleared($unitIds);
+
+            // The bags themselves, locked and judged on their dates last thing
+            // before they change status.
+            $this->assertInDate($this->inventoryRepository->lockUnits($unitIds, $facilityId));
 
             $issued = $this->inventoryRepository->markIssued($unitIds);
 
@@ -291,6 +296,41 @@ class FulfillmentService
                 409,
                 'unit_not_cleared',
                 'Unit '.implode(', ', $uncleared).' has not been cleared by testing and cannot be dispatched.'
+            );
+        }
+    }
+
+    /**
+     * Refuse to dispatch a tagged bag that is past its expiry date.
+     *
+     * A bag tagged while in date can run out of date before it goes. The
+     * nightly sweep gives such tags up, but only when it runs: from midnight
+     * until 00:30, and for as long as the scheduler is down, the tag would still
+     * dispatch. So the date is judged here, on rows the caller has locked.
+     *
+     * A bag expiring today may still go. "Today" is the operational day
+     * (Asia/Manila), the rule allocation and the hospital's issue apply.
+     *
+     * Refused whole, and nothing is undone: the tag stays as it is.
+     *
+     * @param  Collection<int, BloodUnit>  $units
+     */
+    private function assertInDate(Collection $units): void
+    {
+        $today = OperationalDay::todayAsDate();
+
+        $expired = $units
+            ->filter(fn (BloodUnit $unit): bool => $unit->expiry_date->toDateString() < $today)
+            ->pluck('id')
+            ->sort()
+            ->values()
+            ->all();
+
+        if ($expired !== []) {
+            throw $this->refuse(
+                409,
+                'unit_expired',
+                'Unit '.implode(', ', $expired).' is past its expiry date and cannot be dispatched.'
             );
         }
     }

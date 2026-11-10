@@ -131,6 +131,10 @@ class ExpireBloodUnits extends Command
         // Written on every run, including ones that expire nothing: a dead
         // scheduler and a quiet day would otherwise look identical in
         // audit_logs. One row a day is not a volume problem.
+        //
+        // Written last, once everything above is committed, so a run that
+        // failed part way leaves none. The inventory summary reads the newest
+        // row as the last completed sweep and warns when it is overdue.
         $this->auditLogger->record(null, 'inventory.expiry_swept', null, [
             'run_id' => $runId,
             'operational_date' => $today,

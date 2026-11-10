@@ -9,7 +9,7 @@ use App\Http\Controllers\BloodCenterAppointmentController;
 use App\Http\Controllers\BloodCenterAuditLogController;
 use App\Http\Controllers\BloodCenterBillingController;
 use App\Http\Controllers\BloodCenterBillingDashboardController;
-use App\Http\Controllers\BloodCenterBillingProgramController;
+use App\Http\Controllers\BloodCenterBillingDiscountController;
 use App\Http\Controllers\BloodCenterBillingTransactionController;
 use App\Http\Controllers\BloodCenterBookingScheduleController;
 use App\Http\Controllers\BloodCenterCheckoutController;
@@ -285,14 +285,16 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             Route::put('/', [BloodCenterComponentPriceController::class, 'update']);
         });
 
-        // The Billing Supervisor schedules subsidy and discount programmes.
-        // These are centre-owned dates, never switches supplied by Issuance.
-        Route::prefix('billing-programs')->middleware('can:billing.prices')->group(function (): void {
-            Route::get('/', [BloodCenterBillingProgramController::class, 'index']);
-            Route::post('/', [BloodCenterBillingProgramController::class, 'store'])
-                ->middleware('throttle:20,1');
-            Route::put('/{program}', [BloodCenterBillingProgramController::class, 'update'])
-                ->whereNumber('program');
+        // The centre's own discounts, offered at the counter beside the
+        // government subsidy (project owner, 2026-11-10). Billing keeps the
+        // list, as it keeps the prices; anyone at the counter applies them.
+        Route::prefix('billing-discounts')->middleware('can:billing.prices')->group(function (): void {
+            Route::get('/', [BloodCenterBillingDiscountController::class, 'index']);
+            // Unthrottled, like saving the prices: a plain throttle shares one
+            // count per person across routes, and this would only add to it.
+            Route::post('/', [BloodCenterBillingDiscountController::class, 'store']);
+            Route::put('/{discount}', [BloodCenterBillingDiscountController::class, 'update'])
+                ->whereNumber('discount');
         });
 
         // The facility's own logo, printed on its reports. The Blood Center
@@ -327,6 +329,12 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         // Declared before /inventory/{unit}: the parameter is a string and
         // would otherwise swallow 'summary'.
         Route::get('/inventory/summary', [BloodCenterInventoryController::class, 'summary'])
+            ->middleware('can:inventory.view');
+
+        // Only the near-expiry counts, for the sidebar's and the dashboards'
+        // task counts, which need nothing else from the summary. Before
+        // /inventory/{unit} for the same reason as the summary.
+        Route::get('/inventory/near-expiry', [BloodCenterInventoryController::class, 'nearExpiry'])
             ->middleware('can:inventory.view');
 
         // The centre's own stock movements from the audit trail, for the
@@ -544,6 +552,17 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             // balance; it never edits the original subsidy out of history.
             Route::delete('/{bloodRequest}/subsidy', [BloodCenterBillingController::class, 'removeSubsidy'])
                 ->middleware('can:billing.subsidise')
+                ->whereNumber('bloodRequest');
+
+            // One of the centre's own discounts, applied at the counter by
+            // whoever takes payments there (project owner, 2026-11-10), and
+            // taken back off before anything is paid or dispatched.
+            Route::post('/{bloodRequest}/discount', [BloodCenterBillingController::class, 'storeDiscount'])
+                ->middleware('can:billing.record_payment')
+                ->whereNumber('bloodRequest');
+
+            Route::delete('/{bloodRequest}/discount', [BloodCenterBillingController::class, 'removeDiscount'])
+                ->middleware('can:billing.record_payment')
                 ->whereNumber('bloodRequest');
 
             // Whether a request is settled first or issued now and settled

@@ -58,6 +58,13 @@ class InventoryService
     private const TREND_DAYS = 7;
 
     /**
+     * How long after the expiry sweep last completed it counts as overdue.
+     *
+     * It runs once a day at 00:30, so a day plus slack for a slow run.
+     */
+    public const EXPIRY_SWEEP_OVERDUE_HOURS = 26;
+
+    /**
      * The audit actions that make up a centre's inventory activity, and what
      * each one is called on the page.
      *
@@ -207,7 +214,14 @@ class InventoryService
         ];
     }
 
-    public function summary(User $user): array
+    /**
+     * The facility's stock at a glance.
+     *
+     * $withTrend false leaves out `trend`: seven reconstructions of past days
+     * from the whole unit history, which only the Issuance dashboard draws.
+     * Blood Inventory refreshes this every minute and has no use for them.
+     */
+    public function summary(User $user, bool $withTrend = true): array
     {
         $facilityId = $this->requireFacilityId($user);
         $today = OperationalDay::todayAsDate();
@@ -223,7 +237,7 @@ class InventoryService
             'stock_by_blood_type' => $this->inventoryRepository->stockByBloodType($facilityId, $today),
             'by_component' => $this->inventoryRepository->countsByComponent($facilityId),
             'near_expiry' => $nearExpiry,
-            'trend' => $this->trend($facilityId, $totals, $nearExpiry),
+            ...($withTrend ? ['trend' => $this->trend($facilityId, $totals, $nearExpiry)] : []),
             // Units that left this centre for a request today.
             'issued_today' => $this->inventoryRepository->issuedCountBetween($facilityId, $dayStart, $dayEnd),
             // Units that joined issuable stock this week, out of quarantine.
@@ -231,7 +245,45 @@ class InventoryService
             // in the application's timezone, and so is this bound.
             'released_last_7_days' => $this->inventoryRepository->releasedToStockSince($facilityId, CarbonImmutable::now()->subDays(7)),
             'storage_locations' => $this->storageLocations($facilityId),
+            'expiry_sweep' => $this->expirySweep(),
             'as_of' => OperationalDay::today()->toIso8601String(),
+        ];
+    }
+
+    /**
+     * Only the facility's near-expiry counts: the same figures as the summary's
+     * `near_expiry`, without the rest of the summary.
+     *
+     * @return array{near_expiry: array{expired: int, within_3_days: int, within_7_days: int}, as_of: string}
+     */
+    public function nearExpiry(User $user): array
+    {
+        return [
+            'near_expiry' => $this->inventoryRepository->nearExpiryCounts(
+                $this->requireFacilityId($user),
+                OperationalDay::todayAsDate()
+            ),
+            'as_of' => OperationalDay::today()->toIso8601String(),
+        ];
+    }
+
+    /**
+     * When the nightly expiry sweep last completed, and whether that is too long ago.
+     *
+     * Until it runs, a unit past its date still reads `available` and is
+     * counted as stock above, so the pages warn when it is overdue. One run
+     * covers every centre, so this is the same answer for all of them.
+     *
+     * @return array{last_completed_at: string|null, overdue: bool}
+     */
+    private function expirySweep(): array
+    {
+        $last = $this->inventoryRepository->lastCompletedExpirySweepAt();
+
+        return [
+            'last_completed_at' => $last?->toIso8601String(),
+            'overdue' => $last === null
+                || $last->lessThan(CarbonImmutable::now()->subHours(self::EXPIRY_SWEEP_OVERDUE_HOURS)),
         ];
     }
 

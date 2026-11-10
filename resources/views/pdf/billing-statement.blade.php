@@ -27,7 +27,9 @@
     // A subsidy waives the whole charge; anything collected before it stays
     // recorded and is refunded, if at all, outside RedAgos.
     $subsidy = $subsidised ? (float) $revision->total_amount : 0.0;
-    $payable = (float) $revision->total_amount - $subsidy;
+    // One of the centre's own discounts, as the invoice was issued with it.
+    $discount = (float) ($revision->discount_amount ?? 0);
+    $payable = (float) $revision->total_amount - $subsidy - $discount;
     $collected = (float) $revision->collected_at_issue;
     $showsPaid = $collected > 0 && ! $subsidised;
     $issuedBy = $revision->creator ? trim($revision->creator->first_name.' '.$revision->creator->last_name) : null;
@@ -299,6 +301,12 @@
                             <tr class="less">
                                 <td>Government subsidy</td>
                                 <td class="num">− {{ $peso($subsidy) }}</td>
+                            </tr>
+                        @endif
+                        @if ($discount > 0)
+                            <tr class="less">
+                                <td>Discount{{ $revision->discount_name ? ': '.$revision->discount_name : '' }}</td>
+                                <td class="num">− {{ $peso($discount) }}</td>
                             </tr>
                         @endif
                         @if ($showsPaid)

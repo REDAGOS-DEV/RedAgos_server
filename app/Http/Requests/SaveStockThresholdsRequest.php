@@ -72,6 +72,13 @@ class SaveStockThresholdsRequest extends FormRequest
             'thresholds.*.minimum_units' => ['sometimes', 'nullable', 'integer', 'min:1', 'max:9999'],
             'thresholds.*.par_units' => ['sometimes', 'nullable', 'integer', 'min:1', 'max:9999'],
             'thresholds.*.alerts_enabled' => ['sometimes', 'nullable', 'boolean'],
+            // What the screen was showing for the levels this cell changes,
+            // when it loaded. The save is refused if any is no longer stored
+            // (someone else saved since).
+            'thresholds.*.expected' => ['sometimes', 'array'],
+            'thresholds.*.expected.minimum_units' => ['sometimes', 'nullable', 'integer'],
+            'thresholds.*.expected.par_units' => ['sometimes', 'nullable', 'integer'],
+            'thresholds.*.expected.alerts_enabled' => ['sometimes', 'nullable', 'boolean'],
         ];
     }
 

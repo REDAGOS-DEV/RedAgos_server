@@ -110,10 +110,12 @@ class DonorService
                 'birth_date' => $payload['birth_date'],
                 'address' => trim($payload['address']),
 
-                // Optional, and deliberately not a submission: a number with no
-                // document is nothing an administrator can review. It exists so
-                // the counter can find this donor by the ID they present, and
-                // identity_status stays unsubmitted until a photo arrives.
+                // Required of a portal registration (RegisterDonorRequest), and
+                // deliberately not a submission: a number with no document is
+                // nothing an administrator can review. It exists so the counter
+                // can find this donor by the ID they present, and
+                // identity_status stays unsubmitted until a photo arrives. The
+                // console's donor:create may still leave it out.
                 'valid_id_type' => $payload['valid_id_type'] ?? null,
                 'valid_id_number' => $payload['valid_id_number'] ?? null,
             ]);

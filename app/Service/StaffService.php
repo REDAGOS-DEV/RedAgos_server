@@ -156,22 +156,31 @@ class StaffService
     {
         $facility = $this->requireFacility($actor);
         $staff = $this->findOrFail($actor, $uuid);
-
-        $before = [
-            'roles' => $this->roleValues($staff),
-            'role_label' => $staff->roleLabel(),
-            'department' => $staff->department?->value,
-            'privileges' => $this->privilegeValues($staff),
-            'management_level' => $staff->management_level?->value,
-            'account_status' => $staff->account_status?->value,
-        ];
+        $before = [];
 
         try {
-            $staff = DB::transaction(function () use ($facility, $staff, $payload): User {
+            $staff = DB::transaction(function () use ($facility, $staff, $payload, &$before): User {
                 // Serialise on the facility row before touching anything that
                 // could reduce the Admin count. Two concurrent demotions would
                 // otherwise both read "two Admins" and both proceed.
                 $this->bloodCenterRepository->lockFacility($facility->id);
+
+                // The account itself, locked and read again: a save that
+                // waited behind another sees what that one wrote, and is
+                // judged and applied against it.
+                $staff->newQueryWithoutScopes()->whereKey($staff->getKey())->lockForUpdate()->first();
+                $staff->refresh();
+
+                $this->refuseStale($staff, $payload['expected'] ?? null);
+
+                $before = [
+                    'roles' => $this->roleValues($staff),
+                    'role_label' => $staff->roleLabel(),
+                    'department' => $staff->department?->value,
+                    'privileges' => $this->privilegeValues($staff),
+                    'management_level' => $staff->management_level?->value,
+                    'account_status' => $staff->account_status?->value,
+                ];
 
                 $this->applyUpdate($staff, $payload);
                 $staff->save();
@@ -199,6 +208,62 @@ class StaffService
             'message' => $staff->first_name."'s account has been updated.",
             'data' => $this->format($staff),
         ];
+    }
+
+    /**
+     * Refuse an update made against an account someone else has changed since.
+     *
+     * The dialog sends every field it shows, so without this a second Admin's
+     * save would quietly put back what the first had just changed. `expected`
+     * holds, for those fields, what the dialog showed when it opened, in the
+     * shape format() gives them. If any is no longer stored, nothing is
+     * written. An update without `expected` is not checked.
+     */
+    private function refuseStale(User $staff, mixed $expected): void
+    {
+        if (! is_array($expected)) {
+            return;
+        }
+
+        $stored = [
+            'phone' => $staff->phone,
+            'employee_id' => $staff->employee_id,
+            'credentials' => $staff->credentials,
+            'department' => $staff->department?->value,
+            'staff_role' => $staff->staff_role?->value,
+            'additional_staff_roles' => array_values(array_map(
+                fn (StaffRole $role): string => $role->value,
+                array_slice($staff->staffRoles(), 1)
+            )),
+            'custom_role' => $staff->custom_role,
+            'staff_privileges' => $this->privilegeValues($staff),
+            'management_level' => $staff->management_level?->value,
+            'account_status' => $staff->account_status?->value,
+        ];
+
+        foreach ($expected as $field => $value) {
+            if (! array_key_exists($field, $stored)) {
+                continue;
+            }
+
+            $now = $stored[$field];
+
+            // Lists are compared as sets: the order they were shown in is not a change.
+            if (is_array($now) || is_array($value)) {
+                $now = (array) $now;
+                $value = (array) $value;
+                sort($now);
+                sort($value);
+            }
+
+            if ($now !== $value) {
+                throw $this->refuse(
+                    409,
+                    'stale_edit',
+                    'Someone else changed this account after you opened it. Check it and save again.'
+                );
+            }
+        }
     }
 
     /**

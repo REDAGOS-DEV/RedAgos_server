@@ -315,6 +315,8 @@ class BillingTransactionService
             // A removed subsidy reverses the earlier subsidy in the journal;
             // reports show the net funding actually applied.
             'subsidised' => Money::toDecimal(-$of([TransactionType::Subsidy, TransactionType::SubsidyReversal])),
+            // The centre's own discounts, net of any taken back off.
+            'discounted' => Money::toDecimal(-$of(TransactionType::discounts())),
             'settled_outside' => Money::toDecimal(-$of([TransactionType::ExternalSettlement])),
         ];
     }

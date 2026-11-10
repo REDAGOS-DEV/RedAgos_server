@@ -7,6 +7,7 @@ use App\Models\Facility;
 use App\Models\User;
 use App\Repository\DeferralCodeRepository;
 use Illuminate\Http\Exceptions\HttpResponseException;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -103,9 +104,60 @@ class DeferralCodeService
     {
         $facility = $this->requireFacility($staff);
 
-        $code = $this->deferralCodes->find($facility->id, $id)
-            ?? throw $this->refuse(404, 'deferral_code_not_found', 'This centre has no such deferral code.');
+        // Locked, so a second save of the same code waits for this one and
+        // then judges `expected` against what it wrote.
+        return DB::transaction(function () use ($staff, $facility, $id, $payload): array {
+            $code = $this->deferralCodes->findForUpdate($facility->id, $id)
+                ?? throw $this->refuse(404, 'deferral_code_not_found', 'This centre has no such deferral code.');
 
+            $this->refuseStale($code, $payload['expected'] ?? null);
+
+            return $this->applyUpdate($staff, $facility, $code, $payload);
+        });
+    }
+
+    /**
+     * Refuse a save made against a code someone else has changed since.
+     *
+     * `expected` holds what the screen showed, when it loaded, for the fields
+     * this save changes. If any is no longer stored, nothing is written. An
+     * update without `expected` is not checked.
+     */
+    private function refuseStale(DeferralCode $code, mixed $expected): void
+    {
+        if (! is_array($expected)) {
+            return;
+        }
+
+        $stored = [
+            'code' => $code->code,
+            'reason' => $code->reason,
+            'retired' => $code->retired_at !== null,
+        ];
+
+        foreach ($expected as $field => $value) {
+            if (! array_key_exists($field, $stored)) {
+                continue;
+            }
+
+            if ($stored[$field] !== ($field === 'retired' ? (bool) $value : $value)) {
+                throw $this->refuse(
+                    409,
+                    'stale_edit',
+                    "Someone else changed {$code->code} after you opened this page. Check it and save again."
+                );
+            }
+        }
+    }
+
+    /**
+     * Write an update to a locked code.
+     *
+     * @param  array{code?: string, reason?: string, retired?: bool}  $payload
+     * @return array<string, mixed>
+     */
+    private function applyUpdate(User $staff, Facility $facility, DeferralCode $code, array $payload): array
+    {
         $before = $code->code;
 
         if (isset($payload['code']) && $payload['code'] !== $code->code) {

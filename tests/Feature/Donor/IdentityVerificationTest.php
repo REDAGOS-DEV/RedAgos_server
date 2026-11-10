@@ -56,6 +56,8 @@ class IdentityVerificationTest extends TestCase
             'gender' => 'male',
             'birth_date' => '1995-05-20',
             'address' => '123 Rizal Street, Davao City',
+            'valid_id_type' => ValidIdType::PhilSys->value,
+            'valid_id_number' => '1234567890123456',
             'password' => 'Password123',
             'password_confirmation' => 'Password123',
             'terms_accepted' => true,
@@ -96,17 +98,18 @@ class IdentityVerificationTest extends TestCase
         $this->assertSame(IdentityStatus::Unsubmitted, $profile->identity_status);
     }
 
-    public function test_registration_without_an_id_still_succeeds(): void
+    public function test_registration_without_an_id_is_refused(): void
     {
         Notification::fake();
 
-        $this->postJson('/api/donors/register', $this->registrationPayload())
-            ->assertCreated();
+        $this->postJson('/api/donors/register', $this->registrationPayload([
+            'valid_id_type' => null,
+            'valid_id_number' => null,
+        ]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['valid_id_type', 'valid_id_number']);
 
-        $profile = User::where('email', 'juan@example.com')->firstOrFail()->donorProfile;
-
-        $this->assertNull($profile->valid_id_number);
-        $this->assertNull($profile->valid_id_type);
+        $this->assertNull(User::where('email', 'juan@example.com')->first());
     }
 
     public function test_registration_requires_the_id_type_and_number_together(): void
@@ -114,8 +117,14 @@ class IdentityVerificationTest extends TestCase
         Notification::fake();
 
         $this->postJson('/api/donors/register', $this->registrationPayload([
+            'valid_id_type' => null,
             'valid_id_number' => 'N0123456789',
         ]))->assertUnprocessable()->assertJsonValidationErrors('valid_id_type');
+
+        $this->postJson('/api/donors/register', $this->registrationPayload([
+            'valid_id_type' => ValidIdType::DriversLicense->value,
+            'valid_id_number' => null,
+        ]))->assertUnprocessable()->assertJsonValidationErrors('valid_id_number');
     }
 
     public function test_two_spellings_of_one_id_number_collide(): void
@@ -178,21 +187,18 @@ class IdentityVerificationTest extends TestCase
         $this->assertSame(ValidIdType::PhilHealth, $profile->valid_id_type);
     }
 
-    public function test_a_punctuation_only_id_number_is_stored_as_null_and_does_not_collide(): void
+    public function test_a_punctuation_only_id_number_is_no_id_number(): void
     {
         Notification::fake();
 
-        foreach ([['juan@example.com', '09171234567'], ['maria@example.com', '09171234568']] as [$email, $phone]) {
-            $this->postJson('/api/donors/register', $this->registrationPayload([
-                'email' => $email,
-                'phone' => $phone,
-                'valid_id_number' => '---',
-            ]))->assertCreated();
-
-            // Normalising to '' instead of null would make the second donor
-            // collide with the first on a value neither of them supplied.
-            $this->assertNull(User::where('email', $email)->firstOrFail()->donorProfile->valid_id_number);
-        }
+        // Normalised to null, not '' (which two donors would then share), and
+        // so refused: a registration needs a real number.
+        $this->postJson('/api/donors/register', $this->registrationPayload([
+            'valid_id_type' => ValidIdType::PostalId->value,
+            'valid_id_number' => '---',
+        ]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['valid_id_number' => 'Please enter the number on your ID.']);
     }
 
     public function test_a_donor_submits_an_id_for_review(): void

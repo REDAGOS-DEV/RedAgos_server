@@ -112,6 +112,9 @@ class PaymentReceiptService
                     'document_number' => $revision->document_number,
                     'revision_number' => $revision->revision_number,
                     'total_amount' => $revision->total_amount,
+                    // The discount the invoice was issued with, if any.
+                    'discount_name' => $revision->discount_name,
+                    'discount_amount' => $revision->discount_amount,
                     'amount_due' => $revision->amount_due,
                 ] : null,
                 // What the payment was for, copied from the statement it was made

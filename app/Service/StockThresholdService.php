@@ -104,6 +104,8 @@ class StockThresholdService
 
             $existing = $this->repository->lockForFacility($facility->id);
 
+            $this->refuseStale($existing, $cells);
+
             $this->refuseCriticalAbovePar($existing, $cells);
 
             $counts = $this->issuableCounts($facility);
@@ -309,6 +311,63 @@ class StockThresholdService
             $level('minimum_units', $before?->minimum_units),
             $level('par_units', $before?->par_units),
         ];
+    }
+
+    /**
+     * Refuse a save made against levels someone else has changed since.
+     *
+     * Each changed cell may say, under `expected`, what the screen showed for
+     * the levels it changes when it loaded. If the stored level is no longer
+     * that, nothing is written: the second person's save would otherwise
+     * quietly replace the first's. A cell with no row yet stands at no levels
+     * and alerts on, as status() shows it. A cell without `expected` is not
+     * checked.
+     *
+     * @param  Collection<string, StockThreshold>  $existing
+     * @param  array<int, array<string, mixed>>  $cells
+     */
+    private function refuseStale(Collection $existing, array $cells): void
+    {
+        $stale = 0;
+
+        foreach ($cells as $cell) {
+            if (! is_array($cell['expected'] ?? null)) {
+                continue;
+            }
+
+            $before = $existing->get(StockThresholdRepository::cellKey((int) $cell['blood_type_id'], (int) $cell['component_id']));
+            $stored = [
+                'minimum_units' => $before?->minimum_units,
+                'par_units' => $before?->par_units,
+                'alerts_enabled' => $before?->alerts_enabled ?? true,
+            ];
+
+            foreach ($cell['expected'] as $field => $value) {
+                if (! array_key_exists($field, $stored)) {
+                    continue;
+                }
+
+                $expected = match (true) {
+                    $field === 'alerts_enabled' => $value === null ? true : (bool) $value,
+                    default => $value === null ? null : (int) $value,
+                };
+
+                if ($stored[$field] !== $expected) {
+                    $stale++;
+
+                    break;
+                }
+            }
+        }
+
+        if ($stale > 0) {
+            throw $this->refuse(
+                409,
+                'stale_edit',
+                ($stale === 1 ? 'Someone else changed one of these levels' : "Someone else changed {$stale} of these levels")
+                    .' after you opened this page. Check them and save again.'
+            );
+        }
     }
 
     /**

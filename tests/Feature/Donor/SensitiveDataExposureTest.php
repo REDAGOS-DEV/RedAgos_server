@@ -182,6 +182,8 @@ class SensitiveDataExposureTest extends TestCase
             'gender' => 'male',
             'birth_date' => '1995-05-20',
             'address' => '123 Rizal Street',
+            'valid_id_type' => 'philsys',
+            'valid_id_number' => '1234567890123456',
             'password' => 'Password123',
             'password_confirmation' => 'Password123',
             'terms_accepted' => true,
