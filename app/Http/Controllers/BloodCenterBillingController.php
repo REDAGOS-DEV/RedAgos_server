@@ -2,15 +2,18 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\ApplyDiscountRequest;
 use App\Http\Requests\ApplySubsidyRequest;
 use App\Http\Requests\ListBillingsRequest;
 use App\Http\Requests\RecordPaymentRequest;
 use App\Http\Requests\RecordSplitPaymentRequest;
+use App\Http\Requests\RemoveDiscountRequest;
 use App\Http\Requests\RemoveSubsidyRequest;
 use App\Http\Requests\SettleWeeklyBillRequest;
 use App\Models\Billing;
 use App\Models\BloodRequest;
 use App\Models\PaymentAttempt;
+use App\Service\BillingDiscountService;
 use App\Service\BillingService;
 use App\Service\BillingTransactionService;
 use App\Service\PaymentCheckoutService;
@@ -30,7 +33,8 @@ class BloodCenterBillingController extends Controller
     public function __construct(
         private readonly BillingService $billingService,
         private readonly PaymentCheckoutService $checkout,
-        private readonly BillingTransactionService $transactions
+        private readonly BillingTransactionService $transactions,
+        private readonly BillingDiscountService $discounts
     ) {}
 
     /**
@@ -83,6 +87,11 @@ class BloodCenterBillingController extends Controller
             'billing' => $this->billingService->detail($billing),
             'checkout' => $this->checkout->availability($billing, $request->user()->facility),
             'open_attempt' => $open ? $this->checkout->format($open) : null,
+            // The counter's discount choices beside the subsidy: the centre's own,
+            // switched on. Only for whoever may apply one.
+            'discounts' => $request->user()->can('billing.record_payment')
+                ? $this->discounts->offeredAt((int) $request->user()->facility_id)
+                : [],
         ]);
     }
 
@@ -159,6 +168,39 @@ class BloodCenterBillingController extends Controller
 
         return response()->json(
             $this->billingService->removeSubsidy(
+                $request->user(),
+                $billing,
+                $request->validated()['reason']
+            )
+        );
+    }
+
+    /**
+     * Take one of the centre's discounts off a patient's bill, at the counter.
+     */
+    public function storeDiscount(ApplyDiscountRequest $request, int $bloodRequest): JsonResponse
+    {
+        $billing = $this->billingForFacility($bloodRequest, $request->user()->facility_id);
+
+        return response()->json(
+            $this->billingService->applyDiscount(
+                $request->user(),
+                $billing,
+                (int) $request->validated()['discount_id'],
+                $request->validated()['note']
+            )
+        );
+    }
+
+    /**
+     * Take a discount back off a bill, before anything is paid or dispatched.
+     */
+    public function removeDiscount(RemoveDiscountRequest $request, int $bloodRequest): JsonResponse
+    {
+        $billing = $this->billingForFacility($bloodRequest, $request->user()->facility_id);
+
+        return response()->json(
+            $this->billingService->removeDiscount(
                 $request->user(),
                 $billing,
                 $request->validated()['reason']

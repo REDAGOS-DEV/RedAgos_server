@@ -69,13 +69,14 @@ class RegisterDonorRequest extends FormRequest
             // not blocked: the columns are nullable and the blood centre's
             // questionnaire prints a gap as "Not provided".
 
-            // Optional at signup: the donor may supply the ID they will present
-            // at the counter now, or upload the document later from their
-            // profile. Either way it is the type and number together or neither.
-            'valid_id_type' => ['nullable', 'string', Rule::in(ValidIdType::values()), 'required_with:valid_id_number'],
+            // Required at signup (project owner, 2026-11-10): every portal donor
+            // names the ID they will present at the counter, its type and its
+            // number in that type's shape. The photo of it is not taken here;
+            // the registration page sends it, when one was chosen, through the
+            // profile's upload (POST /donors/identity) after the first sign-in.
+            'valid_id_type' => ['required', 'string', Rule::in(ValidIdType::values())],
             'valid_id_number' => [
-                'nullable', 'string', 'max:50',
-                'required_with:valid_id_type',
+                'required', 'string', 'max:50',
                 new ValidIdNumber($this->input('valid_id_type')),
                 'unique:donor_profiles,valid_id_number',
             ],
@@ -109,9 +110,10 @@ class RegisterDonorRequest extends FormRequest
             'birth_date.before_or_equal' => 'You must be at least '.self::MINIMUM_AGE_YEARS.' years old to register as a donor.',
             'address.required' => 'Address is required.',
             'address.max' => 'Address must not be greater than 255 characters.',
+            'valid_id_type.required' => 'Please choose your valid ID.',
             'valid_id_type.in' => 'Please select a valid ID type.',
-            'valid_id_type.required_with' => 'Please choose which ID this number belongs to.',
-            'valid_id_number.required_with' => 'Please enter the number on your ID.',
+            'valid_id_number.required' => 'Please enter the number on your ID.',
+            'valid_id_number.max' => 'The ID number must not be greater than 50 characters.',
             // Deliberately does not confirm that another account holds it.
             'valid_id_number.unique' => 'This ID is already on file. Please contact support.',
             'password.required' => 'Password is required.',

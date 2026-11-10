@@ -57,7 +57,7 @@ class FinancialReportService
         $rows = BillingTransaction::query()
             ->where('facility_id', $centreId)
             ->whereBetween('occurred_at', [$start, $end])
-            ->get(['id', 'type', 'payment_method', 'amount', 'occurred_at']);
+            ->get(['id', 'billing_id', 'type', 'payment_method', 'amount', 'occurred_at']);
 
         $billed = Billing::query()
             ->whereHas('request', fn (Builder $request) => $request->addressedTo($centreId))
@@ -68,6 +68,7 @@ class FinancialReportService
 
         $collections = $this->collections($rows, $from, $to);
         $subsidies = $this->subsidies($rows);
+        $discounts = $this->discounts($rows);
         $receivables = $this->receivables($centreId, $rows);
 
         return [
@@ -77,6 +78,7 @@ class FinancialReportService
                 'invoiced' => Money::toDecimal($this->sumOf($this->ofTypes($rows, TransactionType::charges()))),
                 'collected' => $collections['total'],
                 'subsidised' => $subsidies['amount'],
+                'discounted' => $discounts['amount'],
                 'settled_by_hospitals' => $receivables['settlements']['amount'],
                 'outstanding' => Money::toDecimal(
                     Money::toCentavos($receivables['patients']['amount']) + Money::toCentavos($receivables['hospitals']['amount'])
@@ -84,6 +86,7 @@ class FinancialReportService
             ],
             'collections' => $collections,
             'subsidies' => $subsidies,
+            'discounts' => $discounts,
             'receivables' => $receivables,
             'by_component' => $this->byComponent($billed),
             'by_hospital' => $this->byHospital($billed),
@@ -170,6 +173,29 @@ class FinancialReportService
         return [
             'count' => max($applied->count() - $removed->count(), 0),
             'amount' => Money::toDecimal(-$this->sumOf($applied->concat($removed))),
+        ];
+    }
+
+    /**
+     * What the centre's own discounts took off bills in the period, net of any removed.
+     *
+     * Counted by bill: a discount that moved with its units is still one
+     * discounted bill, and one taken back off again is none.
+     *
+     * @param  Collection<int, BillingTransaction>  $rows
+     * @return array{count: int, amount: string}
+     */
+    private function discounts(Collection $rows): array
+    {
+        $discountRows = $this->ofTypes($rows, TransactionType::discounts());
+        $billsDiscounted = $discountRows
+            ->groupBy('billing_id')
+            ->filter(fn (Collection $bill): bool => $this->sumOf($bill) < 0)
+            ->count();
+
+        return [
+            'count' => $billsDiscounted,
+            'amount' => Money::toDecimal(-$this->sumOf($discountRows)),
         ];
     }
 

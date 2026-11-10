@@ -32,6 +32,15 @@ enum TransactionType: string
     case OpeningBalance = 'opening_balance';
 
     /**
+     * Money taken off a bill by one of the centre's discounts, as a negative
+     * amount; it moves with the bill while units are tagged or let go.
+     */
+    case Discount = 'discount';
+
+    /** A discount taken back off a bill before anything was paid or dispatched. */
+    case DiscountReversal = 'discount_reversal';
+
+    /**
      * @return array<int, string>
      */
     public static function values(): array
@@ -59,6 +68,16 @@ enum TransactionType: string
         return [self::Charge, self::ChargeAdjustment, self::OpeningBalance];
     }
 
+    /**
+     * The types that record the centre's own discounts, net of any taken back.
+     *
+     * @return array<int, self>
+     */
+    public static function discounts(): array
+    {
+        return [self::Discount, self::DiscountReversal];
+    }
+
     public function label(): string
     {
         return match ($this) {
@@ -71,6 +90,8 @@ enum TransactionType: string
             self::SubsidyReversal => 'Government subsidy removed',
             self::ExternalSettlement => 'Settled by hospital',
             self::OpeningBalance => 'Opening balance',
+            self::Discount => 'Discount',
+            self::DiscountReversal => 'Discount removed',
         };
     }
 }

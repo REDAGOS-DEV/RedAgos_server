@@ -38,7 +38,8 @@ class PosService
     public function __construct(
         private readonly BillingService $billingService,
         private readonly PaymentCheckoutService $checkout,
-        private readonly StatementFigures $figures
+        private readonly StatementFigures $figures,
+        private readonly BillingDiscountService $discounts
     ) {}
 
     /**
@@ -113,6 +114,13 @@ class PosService
             'billing' => $this->billingService->format($billing),
             'checkout' => $this->checkout->availability($billing, $staff->facility),
             'open_attempt' => $open ? $this->checkout->format($open) : null,
+            // The counter's discount choices beside the government subsidy:
+            // this centre's own, switched on (project owner, 2026-11-10).
+            'discounts' => $this->discounts->offeredAt((int) $staff->facility_id),
+            // A discount comes off only before anything is paid or dispatched.
+            'discount_removable' => $billing->hasDiscount()
+                && $this->figures->collectedFor($billing) === 0
+                && ! $request->allocations()->released()->exists(),
         ];
     }
 

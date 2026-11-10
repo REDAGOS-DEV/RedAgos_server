@@ -229,8 +229,13 @@ final class AuditActions
         'billing.subsidised' => ['billing', 'approve', 'Applied a subsidy'],
         'billing.subsidy_removed' => ['billing', 'edit', 'Removed a subsidy'],
         'billing.payment_deferred' => ['billing', 'approve', 'Deferred a payment'],
+        // Kept so the history of the billing programmes (removed 2026-11-10) still reads.
         'billing.program_created' => ['billing', 'create', 'Scheduled a billing programme'],
         'billing.program_updated' => ['billing', 'edit', 'Updated a billing programme'],
+        'billing.discount_created' => ['billing', 'create', 'Added a discount'],
+        'billing.discount_updated' => ['billing', 'edit', 'Updated a discount'],
+        'billing.discounted' => ['billing', 'approve', 'Applied a discount'],
+        'billing.discount_removed' => ['billing', 'edit', 'Removed a discount'],
         'billing.statement_issued' => ['billing', 'create', 'Issued a statement'],
         'billing.statement_downloaded' => ['billing', 'export', 'Downloaded a statement'],
         'billing.receipt_downloaded' => ['billing', 'export', 'Downloaded a receipt'],

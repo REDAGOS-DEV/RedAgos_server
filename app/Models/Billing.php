@@ -36,6 +36,14 @@ class Billing extends Model
         'settled_by',
         'settlement_reference',
         'settlement_note',
+        'discount_id',
+        'discount_name',
+        'discount_kind',
+        'discount_value',
+        'discount_amount',
+        'discount_note',
+        'discounted_by',
+        'discounted_at',
     ];
 
     protected function casts(): array
@@ -46,7 +54,16 @@ class Billing extends Model
             'billing_date' => 'immutable_datetime',
             'settled_at' => 'immutable_date',
             'payment_deferred_at' => 'immutable_datetime',
+            'discount_value' => 'decimal:2',
+            'discount_amount' => 'decimal:2',
+            'discounted_at' => 'immutable_datetime',
         ];
+    }
+
+    /** Whether one of the centre's discounts is on this bill. The government subsidy is not one. */
+    public function hasDiscount(): bool
+    {
+        return $this->discount_kind !== null;
     }
 
     /**

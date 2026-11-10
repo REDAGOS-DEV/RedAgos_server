@@ -105,6 +105,12 @@ class UpdateStaffRequest extends FormRequest
                     AccountStatus::Deactivated->value,
                 ]),
             ],
+
+            // What the dialog was showing for the fields it sends, when it
+            // opened. The save is refused if any is no longer stored (someone
+            // else saved since). Compared by the service, field by field.
+            'expected' => ['sometimes', 'array'],
+            'expected.*' => ['nullable'],
         ];
     }
 
@@ -117,7 +123,7 @@ class UpdateStaffRequest extends FormRequest
     {
         return [
             function (Validator $validator): void {
-                if ($validator->errors()->isEmpty() && $this->safe()->all() === []) {
+                if ($validator->errors()->isEmpty() && $this->safe()->except('expected') === []) {
                     $validator->errors()->add('staff_role', 'Provide at least one field to update.');
                 }
             },

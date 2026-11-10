@@ -840,6 +840,11 @@ class InventoryRepository
     /**
      * Lock specific units belonging to a facility, whatever their status.
      *
+     * In id order, so two transactions locking overlapping sets take their
+     * locks in the same direction, as the expiry sweep does.
+     *
+     * Must be called inside a transaction.
+     *
      * @param  array<int, string>  $unitIds
      * @return Collection<int, BloodUnit>
      */
@@ -852,8 +857,26 @@ class InventoryRepository
         return BloodUnit::query()
             ->forFacility($facilityId)
             ->whereIn('id', $unitIds)
+            ->orderBy('id')
             ->lockForUpdate()
             ->get();
+    }
+
+    /**
+     * When the expiry sweep last ran to the end, or null if it never has.
+     *
+     * The sweep writes `inventory.expiry_swept` last, after every unit it
+     * expired is committed (ExpireBloodUnits). A run that failed part way leaves
+     * no row, so the newest row is the newest run that completed.
+     */
+    public function lastCompletedExpirySweepAt(): ?CarbonImmutable
+    {
+        $at = AuditLog::query()
+            ->where('action', 'inventory.expiry_swept')
+            ->latest('created_at')
+            ->value('created_at');
+
+        return $at === null ? null : CarbonImmutable::instance($at);
     }
 
     /**

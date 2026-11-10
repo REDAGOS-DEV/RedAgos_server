@@ -2,6 +2,7 @@
 
 use App\Http\Middleware\EnsureBloodCenterOperational;
 use App\Http\Middleware\EnsurePasswordChanged;
+use App\Http\Middleware\NoStoreApiResponses;
 use App\Http\Middleware\RequireRole;
 use App\Http\Middleware\VerifyXenditCallbackToken;
 use Illuminate\Foundation\Application;
@@ -25,9 +26,19 @@ return Application::configure(basePath: dirname(__DIR__))
 
         // Every API route: an account on the counter's temporary password may
         // only set its own (see the middleware for the few exceptions).
-        $middleware->api(append: [
-            EnsurePasswordChanged::class,
-        ]);
+        //
+        // Every API response is `no-store`, except the routes that middleware
+        // names. Prepended, so it is the outermost of the group and every
+        // refusal (a 401, a model not found, the temporary-password block)
+        // passes back through it too.
+        $middleware->api(
+            append: [
+                EnsurePasswordChanged::class,
+            ],
+            prepend: [
+                NoStoreApiResponses::class,
+            ],
+        );
 
         // Deployed, every request arrives through the host's proxy (Laravel
         // Cloud runs behind Cloudflare), which ends HTTPS and passes the

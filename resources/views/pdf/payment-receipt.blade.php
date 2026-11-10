@@ -286,7 +286,13 @@
                     <div class="cap">Balance</div>
                     <table class="totals">
                         @if ($statement)
-                            <tr><td>Statement total</td><td class="num">{{ $peso($statement['total_amount']) }}</td></tr>
+                            @if ((float) ($statement['discount_amount'] ?? 0) > 0)
+                                <tr><td>Subtotal</td><td class="num">{{ $peso($statement['total_amount']) }}</td></tr>
+                                <tr><td>Discount{{ ! empty($statement['discount_name']) ? ': '.$statement['discount_name'] : '' }}</td><td class="num">− {{ $peso($statement['discount_amount']) }}</td></tr>
+                                <tr><td>Statement total</td><td class="num">{{ $peso((float) $statement['total_amount'] - (float) $statement['discount_amount']) }}</td></tr>
+                            @else
+                                <tr><td>Statement total</td><td class="num">{{ $peso($statement['total_amount']) }}</td></tr>
+                            @endif
                         @endif
                         <tr><td>Balance before this payment</td><td class="num">{{ $peso($snapshot['balance_before'] ?? null) }}</td></tr>
                         <tr class="this"><td>This payment</td><td class="num">− {{ $peso($snapshot['amount_paid'] ?? null) }}</td></tr>

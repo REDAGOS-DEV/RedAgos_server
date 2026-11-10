@@ -49,6 +49,10 @@ class SaveComponentPricesRequest extends FormRequest
                 'max:1000000',
             ],
             'prices.*.shelf_life_days' => ['prohibited'],
+            // The price the screen was showing for this line when it loaded:
+            // null for one never set, 0 for no charge. The save is refused if
+            // the stored price is no longer that (someone else saved since).
+            'prices.*.loaded_price' => ['sometimes', 'nullable', 'numeric', 'min:0'],
         ];
     }
 

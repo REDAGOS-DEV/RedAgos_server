@@ -12,6 +12,7 @@ use App\Enums\RequestPurpose;
 use App\Enums\TransactionChannel;
 use App\Enums\TransactionType;
 use App\Models\Billing;
+use App\Models\BillingDiscount;
 use App\Models\BillingTransaction;
 use App\Models\BloodRequest;
 use App\Models\CashSession;
@@ -81,8 +82,7 @@ class BillingService
         private readonly StatementRevisionService $statements,
         private readonly PaymentReceiptService $receipts,
         private readonly BillingLedger $ledger,
-        private readonly CashSessionService $cashSessions,
-        private readonly BillingProgramService $programs
+        private readonly CashSessionService $cashSessions
     ) {}
 
     /**
@@ -179,14 +179,27 @@ class BillingService
             return $billing;
         }
 
-        $difference = $total - Money::toCentavos($billing->total_amount);
+        // A discount on the bill follows its units: a percentage is worked out
+        // again on the new lines, and a fixed amount never takes off more than
+        // they come to. The gross change and the discount's change are posted
+        // apart, so the journal still says what was charged and what was taken off.
+        $oldDiscount = Money::toCentavos($billing->discount_amount ?? 0);
+        $oldGross = Money::toCentavos($billing->total_amount) + $oldDiscount;
+        $discount = $this->discountOn($billing, $total);
+        $net = $total - $discount;
 
-        $billing->total_amount = Money::toDecimal($total);
+        $difference = $total - $oldGross;
+        $discountChange = $discount - $oldDiscount;
+
+        $billing->total_amount = Money::toDecimal($net);
+        $billing->discount_amount = Money::toDecimal($discount);
         $collected = $this->applyCollected($billing);
 
-        if ($difference !== 0) {
+        if ($difference !== 0 || $discountChange !== 0) {
             $this->supersedeOpenCheckouts($billing, 'statement_changed');
+        }
 
+        if ($difference !== 0) {
             $this->ledger->post(
                 $billing,
                 $request,
@@ -202,12 +215,25 @@ class BillingService
             );
         }
 
-        $this->auditLogger->record($actor, 'billing.updated', $billing, [
+        if ($discountChange !== 0) {
+            $this->ledger->post(
+                $billing,
+                $request,
+                TransactionType::Discount,
+                TransactionChannel::System,
+                -$discountChange,
+                $actor,
+                note: "{$billing->discount_name} follows the units held."
+            );
+        }
+
+        $this->auditLogger->record($actor, 'billing.updated', $billing, array_filter([
             'request_id' => $request->id,
-            'total_amount' => Money::toFloat($total),
+            'total_amount' => Money::toFloat($net),
             'collected' => Money::toFloat($collected),
             'units' => $this->figures->unitsOf($lines),
-        ]);
+            'discount_amount' => $billing->hasDiscount() ? Money::toFloat($discount) : null,
+        ], fn ($value): bool => $value !== null));
 
         return $billing;
     }
@@ -346,6 +372,11 @@ class BillingService
             ] : null,
             'lines' => $request ? $this->figures->displayLinesFor($request) : [],
             'outstanding' => Money::toDecimal($this->outstandingFor($billing)),
+            // A discount comes off only before anything is paid or dispatched.
+            'discount_removable' => $billing->hasDiscount()
+                && $this->collectedFor($billing) === 0
+                && $request !== null
+                && ! $request->allocations()->released()->exists(),
         ];
     }
 
@@ -365,8 +396,11 @@ class BillingService
      * The request still goes on the hospital's Statement of Account (project
      * owner, 2026-10-19): a revision is issued as part of the subsidy, its
      * lines at the centre's prices less the government subsidy, nothing
-     * payable. Billing applies it from its own statement or counter workflow;
-     * a configured programme is effective only within its dated window.
+     * payable. Billing applies it from the counter, as one of its discount
+     * choices (project owner, 2026-11-10), and Issuance at the point of issue.
+     *
+     * One discount per bill: a bill carrying one of the centre's discounts has
+     * it removed first.
      *
      * @return array<string, mixed>
      */
@@ -401,16 +435,11 @@ class BillingService
                 );
             }
 
-            // Existing centres keep their current subsidy behaviour until the
-            // Billing Supervisor creates its first programme. Once it does,
-            // only an enabled programme whose dates include today may clear a
-            // statement; Issuance cannot bypass this server-side rule.
-            $program = $this->programs->activeSubsidyFor((int) $actor->facility_id);
-            if ($this->programs->subsidyIsConfiguredFor((int) $actor->facility_id) && $program === null) {
+            if ($statement->hasDiscount()) {
                 throw $this->refuse(
                     409,
-                    'subsidy_not_active',
-                    'No government subsidy programme is active today. Ask Billing to check its effective dates.'
+                    'discount_applied',
+                    "This invoice has the {$statement->discount_name} discount. Remove it before applying the subsidy."
                 );
             }
 
@@ -432,7 +461,7 @@ class BillingService
                 TransactionChannel::System,
                 -$charged,
                 $actor,
-                note: trim(($program?->name ? "{$program->name}. " : '').($reason ?? 'Covered by the government subsidy.'))
+                note: $reason ?? 'Covered by the government subsidy.'
             );
 
             // The hospital's Statement of Account, as subsidised.
@@ -445,8 +474,6 @@ class BillingService
                 'amount_waived' => Money::toFloat($charged),
                 'already_collected' => Money::toFloat($collected),
                 'statement_revision_id' => $revision->id,
-                'billing_program_id' => $program?->id,
-                'billing_program_name' => $program?->name,
                 'reason' => $reason,
             ], fn ($value): bool => $value !== null));
 
@@ -543,6 +570,212 @@ class BillingService
                 'statement' => $this->statements->format($revision),
             ];
         });
+    }
+
+    /**
+     * Take one of the centre's discounts off a patient's bill, at the counter.
+     *
+     * The counter's discount choices are the government subsidy and the
+     * centre's own discounts (project owner, 2026-11-10); this is the latter.
+     * A percentage of what the bill's lines come to, or a fixed peso amount
+     * that never takes off more than that. The discount's name, kind and value
+     * are copied onto the bill, so a later edit to the discount, or switching
+     * it off, never changes a bill it was given to. A note is required, such
+     * as the Senior Citizen or PWD ID number.
+     *
+     * One per bill, and only before anything is collected: a bill already
+     * part-paid was paid against the full amount. Not on a weekly order,
+     * which is settled outside RedAgos, nor on one covered by the subsidy or
+     * voided.
+     *
+     * @return array<string, mixed>
+     */
+    public function applyDiscount(User $actor, Billing $billing, int $discountId, string $note): array
+    {
+        return DocumentNumbering::transaction(function () use ($actor, $billing, $discountId, $note): array {
+            [$request, $statement] = $this->lockForMutation((int) $billing->request_id, (int) $actor->facility_id);
+
+            if ($statement->status === BillingStatus::Subsidised) {
+                throw $this->refuse(409, 'billing_already_subsidised', 'This invoice is already covered by the government subsidy.');
+            }
+
+            if ($statement->status === BillingStatus::Void) {
+                throw $this->refuse(409, 'billing_void', 'This invoice has been voided, so no discount can be applied.');
+            }
+
+            if ($this->isWeeklyStatement($statement)) {
+                throw $this->refuse(409, 'billing_not_collectible', 'This weekly order is billed by statement only; discounts apply to patient bills.');
+            }
+
+            if ($statement->hasDiscount()) {
+                throw $this->refuse(
+                    409,
+                    'discount_already_applied',
+                    "This invoice already has the {$statement->discount_name} discount. Remove it to apply another."
+                );
+            }
+
+            if ($this->collectedFor($statement) > 0) {
+                throw $this->refuse(409, 'discount_after_payment', 'A payment has already been taken on this invoice, so a discount can no longer be applied.');
+            }
+
+            $gross = $this->figures->totalOf($this->figures->linesFor($request));
+
+            if ($gross <= 0) {
+                throw $this->refuse(409, 'nothing_to_discount', 'Nothing is owed on this invoice.');
+            }
+
+            $this->assertNoOpenCheckout($statement);
+
+            // The centre's own, and switched on, read now: the list the
+            // counter showed may be out of date.
+            $discount = BillingDiscount::query()
+                ->where('facility_id', $actor->facility_id)
+                ->where('is_active', true)
+                ->whereKey($discountId)
+                ->first()
+                ?? throw ValidationException::withMessages(['discount_id' => 'That discount is not offered at this centre.']);
+
+            $statement->fill([
+                'discount_id' => $discount->id,
+                'discount_name' => $discount->name,
+                'discount_kind' => $discount->kind,
+                'discount_value' => $discount->value,
+                'discount_note' => $note,
+                'discounted_by' => $actor->id,
+                'discounted_at' => now(),
+            ]);
+
+            $amount = $this->discountOn($statement, $gross);
+            $statement->discount_amount = Money::toDecimal($amount);
+            $statement->total_amount = Money::toDecimal($gross - $amount);
+            $statement->status = $this->settlementFor($gross - $amount, 0);
+            $statement->save();
+
+            $this->ledger->post(
+                $statement,
+                $request,
+                TransactionType::Discount,
+                TransactionChannel::System,
+                -$amount,
+                $actor,
+                note: "{$discount->name}: {$note}"
+            );
+
+            [$revision] = $this->statements->issueOrReuse($request, $statement, $actor, 'statement');
+
+            $this->auditLogger->record($actor, 'billing.discounted', $statement, [
+                'request_id' => $statement->request_id,
+                'discount_id' => $discount->id,
+                'discount_name' => $discount->name,
+                'kind' => $discount->kind,
+                'value' => (float) $discount->value,
+                'amount' => Money::toFloat($amount),
+                'note' => $note,
+                'statement_revision_id' => $revision->id,
+            ]);
+
+            return [
+                'message' => "{$discount->name} applied: ".$this->peso($amount).' off.',
+                'billing' => $this->format($statement->fresh()),
+                'statement' => $this->statements->format($revision),
+            ];
+        });
+    }
+
+    /**
+     * Take a discount back off a bill, before anything is paid or dispatched.
+     *
+     * Applied in error, or to the wrong patient. The original journal row
+     * stays; a reversing row puts the amount back. Refused once money has
+     * been collected against the discounted figure, or a unit has left the
+     * centre on it: a billing correction covers those.
+     *
+     * @return array<string, mixed>
+     */
+    public function removeDiscount(User $actor, Billing $billing, string $reason): array
+    {
+        return DocumentNumbering::transaction(function () use ($actor, $billing, $reason): array {
+            [$request, $statement] = $this->lockForMutation((int) $billing->request_id, (int) $actor->facility_id);
+
+            if (! $statement->hasDiscount()) {
+                throw $this->refuse(409, 'no_discount', 'This invoice has no discount to remove.');
+            }
+
+            if ($this->collectedFor($statement) > 0) {
+                throw $this->refuse(409, 'discount_after_payment', 'A payment has already been taken on this invoice, so its discount stays. File a billing correction instead.');
+            }
+
+            if ($request->allocations()->released()->exists()) {
+                throw $this->refuse(409, 'discount_removal_after_dispatch', 'The discount cannot be removed after a unit has been dispatched. File a billing correction instead.');
+            }
+
+            $this->assertNoOpenCheckout($statement);
+
+            $amount = Money::toCentavos($statement->discount_amount);
+            $name = $statement->discount_name;
+            $gross = Money::toCentavos($statement->total_amount) + $amount;
+
+            $statement->fill([
+                'discount_id' => null,
+                'discount_name' => null,
+                'discount_kind' => null,
+                'discount_value' => null,
+                'discount_amount' => 0,
+                'discount_note' => null,
+                'discounted_by' => null,
+                'discounted_at' => null,
+            ]);
+            $statement->total_amount = Money::toDecimal($gross);
+            $statement->status = $this->settlementFor($gross, 0);
+            $statement->save();
+
+            $this->ledger->post(
+                $statement,
+                $request,
+                TransactionType::DiscountReversal,
+                TransactionChannel::System,
+                $amount,
+                $actor,
+                note: "{$name} removed: {$reason}"
+            );
+
+            [$revision] = $this->statements->issueOrReuse($request, $statement, $actor, 'statement');
+
+            $this->auditLogger->record($actor, 'billing.discount_removed', $statement, [
+                'request_id' => $statement->request_id,
+                'discount_name' => $name,
+                'amount' => Money::toFloat($amount),
+                'reason' => $reason,
+                'statement_revision_id' => $revision->id,
+            ]);
+
+            return [
+                'message' => "{$name} removed. The invoice is back to ".$this->peso($gross).'.',
+                'billing' => $this->format($statement->fresh()),
+                'statement' => $this->statements->format($revision),
+            ];
+        });
+    }
+
+    /**
+     * What a bill's discount takes off lines coming to $gross centavos, never more than $gross.
+     *
+     * A percentage is rounded to the nearest centavo, half up. Zero for a bill
+     * with no discount.
+     */
+    private function discountOn(Billing $billing, int $gross): int
+    {
+        if (! $billing->hasDiscount() || $gross <= 0) {
+            return 0;
+        }
+
+        // The value in hundredths: 20.00% is 2000, ₱500.00 is 50000.
+        $value = Money::toCentavos($billing->discount_value);
+
+        return min($gross, $billing->discount_kind === BillingDiscount::PERCENTAGE
+            ? intdiv($gross * $value + 5000, 10000)
+            : $value);
     }
 
     /**
@@ -1429,6 +1662,17 @@ class BillingService
             'status_label' => $billing->status->label(),
             'is_zero_rated' => $billing->isZeroRated(),
             'is_subsidised' => $billing->status === BillingStatus::Subsidised,
+            // What the lines come to before any discount; total_amount is after it.
+            'subtotal' => Money::toFloat(Money::toCentavos($billing->total_amount) + Money::toCentavos($billing->discount_amount ?? 0)),
+            // One of the centre's own discounts, as copied onto this bill when applied.
+            'discount' => $billing->hasDiscount() ? [
+                'name' => $billing->discount_name,
+                'kind' => $billing->discount_kind,
+                'value' => (float) $billing->discount_value,
+                'amount' => Money::toFloat(Money::toCentavos($billing->discount_amount)),
+                'note' => $billing->discount_note,
+                'applied_at' => $billing->discounted_at?->toIso8601String(),
+            ] : null,
             // A weekly bill, before and after the hospital settles it.
             'is_statement_only' => $this->isWeeklyStatement($billing),
             'is_settled_outside' => $billing->status === BillingStatus::SettledOutside,
@@ -1615,6 +1859,12 @@ class BillingService
         }
 
         return $collected > 0 ? BillingStatus::Partial : BillingStatus::Unpaid;
+    }
+
+    /** "₱1,250.00", for a message. */
+    private function peso(int $centavos): string
+    {
+        return '₱'.number_format(Money::toFloat($centavos), 2);
     }
 
     /**

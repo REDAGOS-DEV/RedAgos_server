@@ -31,6 +31,13 @@ class UpdateDeferralCodeRequest extends FormRequest
             'code' => ['sometimes', 'required', ...StoreDeferralCodeRequest::CODE_RULES],
             'reason' => ['sometimes', 'required', 'string', 'min:2', 'max:255'],
             'retired' => ['sometimes', 'boolean'],
+            // What the screen was showing for the fields this save changes,
+            // when it loaded. The save is refused if any is no longer stored
+            // (someone else saved since).
+            'expected' => ['sometimes', 'array'],
+            'expected.code' => ['sometimes', 'nullable', 'string'],
+            'expected.reason' => ['sometimes', 'nullable', 'string'],
+            'expected.retired' => ['sometimes', 'boolean'],
         ];
     }
 

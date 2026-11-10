@@ -10,6 +10,7 @@ use App\Repository\BloodComponentRepository;
 use App\Support\Money;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Exceptions\HttpResponseException;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -218,6 +219,8 @@ class BloodComponentService
             $existing = $this->bloodComponentRepository->lockSettingsFor($facility->id);
             $sent = collect($lines)->keyBy(static fn (array $line): int => (int) $line['component_id']);
 
+            $this->refuseStalePrices($existing, $sent);
+
             $missing = $this->bloodComponentRepository->all()
                 ->filter(static fn (BloodComponent $component): bool => ! $sent->has($component->id)
                     && $existing->get($component->id)?->price === null)
@@ -330,6 +333,45 @@ class BloodComponentService
     /**
      * @return array<string, mixed>
      */
+    /**
+     * Refuse a price save made against prices someone else has changed since.
+     *
+     * The screen sends its whole list, untouched lines included, so without
+     * this a second person's save would quietly put back every price the
+     * first had just changed. Each line says what it was loaded with
+     * (`loaded_price`); if the stored price is no longer that, nothing is
+     * written and the components are named. A line without `loaded_price` is
+     * not checked.
+     *
+     * @param  Collection<int, FacilityBloodComponent>  $existing  locked, keyed by component id
+     * @param  Collection<int, array<string, mixed>>  $sent  keyed by component id
+     */
+    private function refuseStalePrices(Collection $existing, Collection $sent): void
+    {
+        $centavos = static fn (mixed $price): ?int => $price === null ? null : Money::toCentavos($price);
+
+        $stale = $sent
+            ->filter(static fn (array $line, int $componentId): bool => array_key_exists('loaded_price', $line)
+                && $centavos($existing->get($componentId)?->price) !== $centavos($line['loaded_price']))
+            ->keys();
+
+        if ($stale->isEmpty()) {
+            return;
+        }
+
+        $names = $this->bloodComponentRepository->all()
+            ->whereIn('id', $stale->all())
+            ->pluck('name')
+            ->join(', ');
+
+        throw $this->refuse(
+            409,
+            'stale_edit',
+            "Someone else changed the price of {$names} after you opened this page. Check it and save again.",
+            ['components' => $stale->values()->all()]
+        );
+    }
+
     private function formatPrice(BloodComponent $component, ?FacilityBloodComponent $setting): array
     {
         return [

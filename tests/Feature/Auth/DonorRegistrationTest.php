@@ -42,6 +42,8 @@ class DonorRegistrationTest extends TestCase
             'gender' => 'male',
             'birth_date' => '1995-05-20',
             'address' => '123 Rizal Street, Davao City',
+            'valid_id_type' => 'philsys',
+            'valid_id_number' => '1234567890123456',
             'password' => 'Password123',
             'password_confirmation' => 'Password123',
             'terms_accepted' => true,
@@ -286,9 +288,75 @@ class DonorRegistrationTest extends TestCase
                 'gender',
                 'birth_date',
                 'address',
+                'valid_id_type',
+                'valid_id_number',
                 'password',
                 'terms_accepted',
             ]);
+    }
+
+    public function test_a_valid_id_is_required(): void
+    {
+        $this->postJson('/api/donors/register', $this->payload([
+            'valid_id_type' => null,
+            'valid_id_number' => null,
+        ]))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors([
+                'valid_id_type' => 'Please choose your valid ID.',
+                'valid_id_number' => 'Please enter the number on your ID.',
+            ]);
+
+        $this->assertNull(User::where('email', 'juan@example.com')->first());
+    }
+
+    public function test_an_id_type_without_its_number_is_rejected(): void
+    {
+        $this->postJson('/api/donors/register', $this->payload(['valid_id_number' => '']))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('valid_id_number')
+            ->assertJsonMissingValidationErrors('valid_id_type');
+    }
+
+    public function test_an_id_number_without_its_type_is_rejected(): void
+    {
+        $this->postJson('/api/donors/register', $this->payload(['valid_id_type' => '']))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('valid_id_type');
+    }
+
+    public function test_an_id_number_in_the_wrong_shape_for_its_type_is_rejected(): void
+    {
+        $this->postJson('/api/donors/register', $this->payload([
+            'valid_id_type' => 'philsys',
+            'valid_id_number' => '123456789012',
+        ]))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['valid_id_number' => 'PhilSys number: 16 digits, e.g. 1234567890123456.']);
+    }
+
+    public function test_an_id_type_with_no_fixed_numbering_takes_the_number_as_printed(): void
+    {
+        Notification::fake();
+
+        $this->postJson('/api/donors/register', $this->payload([
+            'valid_id_type' => 'postal_id',
+            'valid_id_number' => 'PRN 100-1234-5678',
+        ]))->assertCreated();
+    }
+
+    public function test_registration_takes_no_id_photo(): void
+    {
+        Notification::fake();
+
+        // The photo is optional and goes up from the profile's upload after
+        // the first sign-in; a registration carries the type and number only.
+        $this->postJson('/api/donors/register', $this->payload())->assertCreated();
+
+        $profile = User::where('email', 'juan@example.com')->firstOrFail()->donorProfile;
+
+        $this->assertSame('1234567890123456', $profile->valid_id_number);
+        $this->assertNull($profile->valid_id_image_path);
     }
 
     public function test_a_failed_registration_leaves_no_partial_records(): void
