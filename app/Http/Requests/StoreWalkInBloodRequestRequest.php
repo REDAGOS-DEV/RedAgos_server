@@ -31,6 +31,16 @@ class StoreWalkInBloodRequestRequest extends StoreBloodRequestRequest
      * The watcher's ID number is kept as the donor's is: capitals, no
      * separators, so it is checked and stored the same however it was typed.
      */
+    /**
+     * A walk-in names no indication (project owner, 2026-11-11): the watcher's
+     * paperwork is the hospital's, so the centre's form no longer asks for it.
+     * One that is sent is still checked against its component.
+     */
+    protected function indicationRequired(): bool
+    {
+        return false;
+    }
+
     protected function prepareForValidation(): void
     {
         $representative = $this->input('representative');

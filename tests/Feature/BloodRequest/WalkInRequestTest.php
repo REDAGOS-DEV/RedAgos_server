@@ -259,10 +259,21 @@ class WalkInRequestTest extends TestCase
             ->assertJsonValidationErrors(['patient_surname', 'patient_first_name', 'patient_age', 'patient_sex']);
     }
 
-    public function test_every_line_still_needs_its_indication(): void
+    public function test_a_walk_in_line_needs_no_indication(): void
     {
+        // The centre's form no longer asks for it (project owner, 2026-11-11).
         $payload = $this->walkInPayload();
         $payload['items'] = [['component_id' => $this->prbc->id, 'quantity' => 2]];
+
+        $this->actingAs($this->issuance)
+            ->postJson('/api/blood-center/blood-requests/walk-in', $payload)
+            ->assertCreated();
+    }
+
+    public function test_an_indication_that_is_sent_must_still_fit_its_component(): void
+    {
+        $payload = $this->walkInPayload();
+        $payload['items'] = [['component_id' => $this->prbc->id, 'quantity' => 2, 'indication_code' => 'P-1']];
 
         $this->actingAs($this->issuance)
             ->postJson('/api/blood-center/blood-requests/walk-in', $payload)
