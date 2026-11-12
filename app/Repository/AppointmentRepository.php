@@ -2,6 +2,7 @@
 
 namespace App\Repository;
 
+use App\Enums\AppointmentStatus;
 use App\Models\DonationAppointment;
 use App\Models\Facility;
 use App\Models\MobileEvent;
@@ -37,8 +38,8 @@ class AppointmentRepository
 
     /**
      * List upcoming mobile blood drives open for registration, with their
-     * registered counts. Drafts, cancelled drives and drives closed to new
-     * bookings are left out.
+     * pre-registered donors counts. Drafts, cancelled drives and drives
+     * closed to new bookings are left out.
      *
      * @return Collection<int, MobileEvent>
      */
@@ -47,21 +48,19 @@ class AppointmentRepository
         return MobileEvent::query()
             ->with('facility')
             ->openForRegistration()
-            ->withCount(['appointments as registered' => fn ($query) => $query->active()])
+            ->withPreRegisteredCounts()
             ->whereDate('event_date', '>=', now()->toDateString())
             ->orderBy('event_date')
             ->get();
     }
 
     /**
-     * Find an upcoming drive open for registration by id, with its registered
-     * count loaded.
+     * Find an upcoming drive open for registration by id.
      */
     public function findUpcomingDrive(int $eventId): ?MobileEvent
     {
         return MobileEvent::query()
             ->openForRegistration()
-            ->withCount(['appointments as registered' => fn ($query) => $query->active()])
             ->whereDate('event_date', '>=', now()->toDateString())
             ->whereKey($eventId)
             ->first();
@@ -71,9 +70,7 @@ class AppointmentRepository
      * Lock a drive's own row for the rest of the transaction.
      *
      * Every booking, edit and cancellation of one drive queues behind this
-     * lock. Locking its appointment rows alone is not enough: while a drive
-     * has no bookings there is nothing to lock, and two donors can both take
-     * the last place.
+     * lock, so no booking lands after the drive is cancelled or closed.
      */
     public function lockDrive(int $eventId): ?MobileEvent
     {
@@ -112,8 +109,8 @@ class AppointmentRepository
         return DonationAppointment::query()
             ->where('facility_id', $facilityId)
             ->where('appointment_datetime', $slot)
-            // Matches bookedCountsByTime(): counter capacity counts walk-ins,
-            // drive capacity is guarded separately by lockedDriveCount().
+            // Matches bookedCountsByTime(): counter capacity counts walk-ins;
+            // a drive has no booking limit (project owner, 2026-11-12).
             ->whereNull('event_id')
             ->active()
             ->lockForUpdate()
@@ -122,18 +119,17 @@ class AppointmentRepository
     }
 
     /**
-     * Count active registrations for a drive, locking the rows for update.
-     *
-     * Same PostgreSQL constraint as lockedSlotCount().
+     * A donor's booking for a drive that is still live: not cancelled and not
+     * a no-show. Walk-in or not, the latest.
      */
-    public function lockedDriveCount(int $eventId): int
+    public function liveDriveBooking(int $eventId, int $donorId): ?DonationAppointment
     {
         return DonationAppointment::query()
             ->where('event_id', $eventId)
-            ->active()
-            ->lockForUpdate()
-            ->get(['id'])
-            ->count();
+            ->where('donor_id', $donorId)
+            ->whereNotIn('status', [AppointmentStatus::Cancelled->value, AppointmentStatus::NoShow->value])
+            ->latest('id')
+            ->first();
     }
 
     /**

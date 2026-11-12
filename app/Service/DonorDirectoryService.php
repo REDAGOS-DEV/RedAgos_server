@@ -44,6 +44,9 @@ use Illuminate\Validation\ValidationException;
  */
 class DonorDirectoryService
 {
+    /** A Personal number another account already holds (project owner, 2026-11-12). */
+    private const PHONE_ON_FILE = 'This number is already on file. Choose Shared if the household shares this phone.';
+
     public function __construct(
         private readonly DonorDirectoryRepository $donorDirectoryRepository,
         private readonly BloodCenterRepository $bloodCenterRepository,
@@ -111,6 +114,36 @@ class DonorDirectoryService
         $donor = $this->donorDirectoryRepository->findByExactIdentifier($type, $value)
             ?? throw $this->refuse(404, 'donor_not_found', 'No donor matches that identifier.');
 
+        return $this->lookedUp($staff, $facility, $donor, $type);
+    }
+
+    /**
+     * Every donor an identifier presented in person names, each as lookup()
+     * shows one: a household's shared mobile number finds the whole family
+     * (project owner, 2026-11-12). Each one is audited as a lookup.
+     *
+     * @return array{data: array<int, array<string, mixed>>}
+     */
+    public function lookupMatches(User $staff, string $type, string $value): array
+    {
+        $facility = $this->requireFacility($staff);
+
+        return [
+            'data' => $this->donorDirectoryRepository->findAllByExactIdentifier($type, $value)
+                ->map(fn (User $donor): array => $this->lookedUp($staff, $facility, $donor, $type))
+                ->values()
+                ->all(),
+        ];
+    }
+
+    /**
+     * One donor found by an exact identifier, audited, in the shape this
+     * caller may see.
+     *
+     * @return array<string, mixed>
+     */
+    private function lookedUp(User $staff, Facility $facility, User $donor, string $type): array
+    {
         $isOwn = $this->donorDirectoryRepository->facilityHasRelationship($donor->id, $facility->id);
 
         $this->auditLogger->record($staff, 'donor.looked_up', $donor, [
@@ -268,8 +301,12 @@ class DonorDirectoryService
     {
         $facility = $this->requireFacility($staff);
 
+        $phone = filled($payload['phone'] ?? null) ? $payload['phone'] : null;
+        $phoneShared = $phone !== null && (bool) ($payload['phone_shared'] ?? false);
+        $this->assertPhoneAllowed($phone, $phoneShared, null, (bool) ($payload['confirm_shared_phone'] ?? false));
+
         try {
-            $donor = DB::transaction(function () use ($payload, $facility, $staff): User {
+            $donor = DB::transaction(function () use ($payload, $phone, $phoneShared, $facility, $staff): User {
                 $user = new User;
 
                 $user->fill([
@@ -277,7 +314,8 @@ class DonorDirectoryService
                     'first_name' => trim($payload['first_name']),
                     'last_name' => trim($payload['last_name']),
                     'email' => $payload['email'] ?? null,
-                    'phone' => $payload['phone'] ?? null,
+                    'phone' => $phone,
+                    'phone_shared' => $phoneShared,
                     'username' => AccountIdentity::buildUsername(
                         $payload['email'] ?? 'donor-'.Str::lower(Str::random(8))
                     ),
@@ -432,7 +470,11 @@ class DonorDirectoryService
         $record = $this->donorDirectoryRepository->facilityRecord($facility->id, $donor->id);
         $editable = $this->editable($donor, $record);
 
-        $userChanges = $this->changed($donor, $payload, ['first_name', 'last_name', 'email', 'phone']);
+        if (array_key_exists('phone_shared', $payload)) {
+            $payload['phone_shared'] = (bool) $payload['phone_shared'];
+        }
+
+        $userChanges = $this->changed($donor, $payload, ['first_name', 'last_name', 'email', 'phone', 'phone_shared']);
         $profileChanges = $this->changed($profile, $payload, ['birth_date', 'gender', 'blood_type_id', 'address', 'occupation', 'last_donation_date']);
 
         $locked = [];
@@ -443,14 +485,35 @@ class DonorDirectoryService
             }
         }
 
-        foreach (['email', 'phone'] as $field) {
+        // Personal or Shared goes with the number, so it is said under the phone.
+        foreach (['email' => 'email', 'phone' => 'phone', 'phone_shared' => 'phone'] as $field => $shownUnder) {
             if (! $editable['contact'] && array_key_exists($field, $userChanges)) {
-                $locked[$field] = ['The donor manages this from their own account.'];
+                $locked[$shownUnder] = ['The donor manages this from their own account.'];
             }
         }
 
         if ($locked !== []) {
             throw ValidationException::withMessages($locked);
+        }
+
+        if (array_key_exists('phone', $userChanges) || array_key_exists('phone_shared', $userChanges)) {
+            $phone = array_key_exists('phone', $userChanges) ? $userChanges['phone'] : $donor->phone;
+            $phoneShared = array_key_exists('phone_shared', $userChanges)
+                ? (bool) $userChanges['phone_shared']
+                : (bool) $donor->phone_shared;
+
+            // No number, nothing to share.
+            if (blank($phone)) {
+                $phoneShared = false;
+            }
+
+            if ($phoneShared !== (bool) $donor->phone_shared) {
+                $userChanges['phone_shared'] = $phoneShared;
+            } else {
+                unset($userChanges['phone_shared']);
+            }
+
+            $this->assertPhoneAllowed($phone, $phoneShared, $donor->id, (bool) ($payload['confirm_shared_phone'] ?? false));
         }
 
         $recordChanges = [];
@@ -750,6 +813,7 @@ class DonorDirectoryService
             'blood_type' => $profile?->bloodType?->code,
             'birth_date' => $profile?->birth_date?->toDateString(),
             'phone' => $donor->phone,
+            'phone_shared' => (bool) $donor->phone_shared,
             'email' => $donor->email,
         ];
     }
@@ -771,6 +835,7 @@ class DonorDirectoryService
             'first_name' => $donor->first_name,
             'last_name' => $donor->last_name,
             'phone' => $donor->phone,
+            'phone_shared' => (bool) $donor->phone_shared,
             'email' => $donor->email,
             ...$standing->toArray(withDeferral: false),
             'contact_only' => true,
@@ -833,8 +898,50 @@ class DonorDirectoryService
         };
 
         throw ValidationException::withMessages([
-            $field => ['A donor with this value was just registered. Search for them instead.'],
+            $field => [$field === 'phone'
+                ? self::PHONE_ON_FILE
+                : 'A donor with this value was just registered. Search for them instead.'],
         ]);
+    }
+
+    /**
+     * Whether a donor may be given this mobile number, Personal or Shared as
+     * staff marked it (project owner, 2026-11-12). In remote areas one phone
+     * serves a household, so a Shared number may repeat:
+     *
+     *  - Personal: no other account may hold it. Said under the phone, so
+     *    staff pick Shared if the household shares it, or fix a typo.
+     *  - Shared, held by others as Shared: allowed.
+     *  - Shared, but another account's Personal number (the son signed up in
+     *    the portal with the family's phone, which staff cannot change):
+     *    staff are asked first, and it is saved once they confirm.
+     *
+     * A closed account still holds its Personal number in the unique index,
+     * so it stops a Personal number but is never asked about for a Shared one.
+     */
+    private function assertPhoneAllowed(?string $phone, bool $shared, ?int $exceptUserId, bool $confirmed): void
+    {
+        if (blank($phone)) {
+            return;
+        }
+
+        $holders = $this->donorDirectoryRepository->phoneHolders($phone, $exceptUserId);
+
+        if (! $shared) {
+            if ($holders->contains(fn (User $holder): bool => ! $holder->trashed() || ! $holder->phone_shared)) {
+                throw ValidationException::withMessages(['phone' => [self::PHONE_ON_FILE]]);
+            }
+
+            return;
+        }
+
+        if (! $confirmed && $holders->contains(fn (User $holder): bool => ! $holder->trashed() && ! $holder->phone_shared)) {
+            throw $this->refuse(
+                409,
+                'phone_personal_elsewhere',
+                'This number is someone else\'s personal number. Save it as Shared anyway?'
+            );
+        }
     }
 
     /**

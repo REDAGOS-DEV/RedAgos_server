@@ -218,7 +218,7 @@ class DonorDirectoryMembershipTest extends TestCase
             ->postJson("/api/blood-center/donations/{$visit}/collection", [
                 'volume_ml' => 450,
                 'blood_bag_type' => 'double',
-                'donation_barcode' => 'SEG-7001',
+                'donation_barcode' => '7001',
                 'started_at' => now()->subMinutes(15)->toISOString(),
                 'ended_at' => now()->subMinutes(5)->toISOString(),
             ])

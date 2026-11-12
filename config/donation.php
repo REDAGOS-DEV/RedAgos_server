@@ -100,6 +100,22 @@ return [
 
     'booking_horizon_days' => env('DONATION_BOOKING_HORIZON_DAYS', 90),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Drive Registration Link (project owner, 2026-11-11 and 2026-11-12)
+    |--------------------------------------------------------------------------
+    |
+    | A person without a portal account registers on a drive's link with no
+    | health questions: they complete screening in person at the drive.
+    | Pre-registrations never turned into a booking are anonymised this many
+    | days after their drive (drives:anonymise-pre-registrations).
+    |
+    */
+
+    'pre_registration_retention_days' => env('DONATION_PRE_REGISTRATION_RETENTION_DAYS', 90),
+
+    'drive_group_max_people' => 200,
+
     'cancellation_window_hours' => env('DONATION_CANCELLATION_WINDOW_HOURS', 0),
 
     /*

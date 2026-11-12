@@ -4,6 +4,7 @@ namespace App\Notifications;
 
 use App\Models\MobileEvent;
 use App\Support\DonorNotificationPreferences;
+use App\Support\SmsName;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
@@ -70,7 +71,8 @@ class DriveCancelled extends Notification implements ShouldQueue
      */
     public function toSms(object $notifiable): string
     {
-        return 'RedAgos: '.$this->centre().' has cancelled '.$this->drive->name
+        // Named: a household may share one phone (2026-11-12).
+        return SmsName::open($notifiable->first_name ?? null, $this->centre().' has cancelled ').$this->drive->name
             .' on '.$this->drive->event_date->format('j M Y')
             .'. Your appointment there is cancelled. You can book another in the RedAgos portal.';
     }

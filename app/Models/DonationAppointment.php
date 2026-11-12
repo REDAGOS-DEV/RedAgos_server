@@ -17,6 +17,7 @@ class DonationAppointment extends Model
         'donor_id',
         'facility_id',
         'event_id',
+        'walk_in',
         'appointment_datetime',
         'status',
         'notes',
@@ -35,6 +36,7 @@ class DonationAppointment extends Model
         return [
             'appointment_datetime' => 'datetime',
             'status' => AppointmentStatus::class,
+            'walk_in' => 'boolean',
         ];
     }
 
@@ -70,6 +72,17 @@ class DonationAppointment extends Model
     public function donation(): HasOne
     {
         return $this->hasOne(Donation::class, 'appointment_id')->latestOfMany();
+    }
+
+    /**
+     * Limit the query to bookings made ahead of their drive that still stand:
+     * not cancelled, and not a walk-in booked at the drive itself. What the
+     * drive's pre-registered donors count counts (project owner, 2026-11-12).
+     */
+    public function scopePreRegistered(Builder $query): Builder
+    {
+        return $query->where('walk_in', false)
+            ->where('status', '!=', AppointmentStatus::Cancelled->value);
     }
 
     /**

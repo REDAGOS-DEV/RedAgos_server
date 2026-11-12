@@ -26,6 +26,7 @@ class MobileEventRepository
         return MobileEvent::query()
             ->with('facility')
             ->withCount(['appointments as registered' => fn ($query) => $query->active()])
+            ->withPreRegisteredCounts()
             ->where('facility_id', $facilityId)
             ->orderByDesc('event_date')
             ->get();
@@ -42,6 +43,8 @@ class MobileEventRepository
         // registered count from withCount(). A new drive has none, but the
         // attribute has to exist or status() would fall back to a query.
         $event->setAttribute('registered', 0);
+        $event->setAttribute('booked_ahead', 0);
+        $event->setAttribute('listed_only', 0);
 
         return $event->load('facility');
     }
@@ -69,6 +72,7 @@ class MobileEventRepository
         return MobileEvent::query()
             ->with('facility')
             ->withCount(['appointments as registered' => fn ($query) => $query->active()])
+            ->withPreRegisteredCounts()
             ->whereKey($eventId)
             ->firstOrFail();
     }

@@ -140,6 +140,18 @@ final class AuditActions
         'drive.registration_closed' => ['appointments', 'edit', 'Closed registration for a blood drive'],
         'drive.registration_reopened' => ['appointments', 'edit', 'Reopened registration for a blood drive'],
         'drive.cancelled' => ['appointments', 'cancel', 'Cancelled a blood drive'],
+        // The drive's registration link and its list (phase 2). The first two
+        // have no actor: a person or a partner wrote them through the link.
+        'drive.pre_registered' => ['appointments', 'create', 'Registered for a blood drive through its link'],
+        'drive.group_submitted' => ['appointments', 'create', 'Sent a partner list for a blood drive'],
+        'drive.pre_registration_withdrawn' => ['appointments', 'cancel', 'Took someone off a drive list'],
+        'drive.pre_registration_matched' => ['appointments', 'edit', 'Linked a drive registration to a donor'],
+        'drive.pre_registration_unmatched' => ['appointments', 'edit', 'Unlinked a drive registration from a donor'],
+        'drive.pre_registrations_anonymised' => ['appointments', 'delete', 'Anonymised a past drive\'s registrations'],
+        // Check-in at the drive (phase 3): on a booking for the drive, so the
+        // donation reaches it through the appointment.
+        'drive.checked_in' => ['collection', 'edit', 'Checked in a donor at a blood drive'],
+        'drive.walk_in' => ['collection', 'create', 'Checked in a walk-in at a blood drive'],
 
         'collection.checked_in' => ['collection', 'edit', 'Checked in a donor'],
         'collection.no_show' => ['collection', 'edit', 'Marked a no-show'],

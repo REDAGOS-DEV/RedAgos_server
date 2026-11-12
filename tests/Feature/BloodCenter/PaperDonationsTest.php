@@ -100,8 +100,8 @@ class PaperDonationsTest extends TestCase
             'weight_kg' => 62,
             'collection' => [
                 'blood_bag_type' => 'single',
-                // Typed in lower case with a trailing space, as staff do.
-                'donation_barcode' => 'pd-0001 ',
+                // Typed with a stray space either side, as staff do.
+                'donation_barcode' => ' 0001 ',
                 'started_at' => $this->at('09:30'),
                 'ended_at' => $this->at('09:41'),
                 'volume_ml' => 450,
@@ -191,7 +191,7 @@ class PaperDonationsTest extends TestCase
         $this->assertTrue($donation->screening->dhq_on_paper);
         $this->assertSame($this->phlebotomist->id, $donation->collection->collected_by);
         $this->assertSame('J. Cruz', $donation->collection->phlebotomist_name);
-        $this->assertSame('PD-0001', $donation->collection->donation_barcode);
+        $this->assertSame('0001', $donation->collection->donation_barcode);
         $this->assertSame($this->heldOn, OperationalDay::dateOf($donation->collection->ended_at));
 
         // The row reads like any other on the Donations list, marked as paper.
@@ -235,7 +235,7 @@ class PaperDonationsTest extends TestCase
         $oldSheet = $this->openSheet(['held_on' => $longAgo]);
 
         $this->record($oldSheet['id'], $this->drawn(['donor_uuid' => $old->uuid], [
-            'donation_barcode' => 'PD-0090',
+            'donation_barcode' => '0090',
             'started_at' => $this->at('09:30', $longAgo),
             'ended_at' => $this->at('09:40', $longAgo),
         ]))->assertCreated();
@@ -304,7 +304,7 @@ class PaperDonationsTest extends TestCase
         $this->record($this->openSheet()['id'], $this->drawn([
             'donor_uuid' => User::factory()->donor()->create()->uuid,
             'not_to_lab' => true,
-        ], ['donation_barcode' => 'PD-0002']))->assertUnprocessable()->assertJsonValidationErrors('not_to_lab_reason');
+        ], ['donation_barcode' => '0002']))->assertUnprocessable()->assertJsonValidationErrors('not_to_lab_reason');
     }
 
     public function test_every_time_must_fall_on_the_drive_day(): void
@@ -330,7 +330,7 @@ class PaperDonationsTest extends TestCase
         $sheet = $this->openSheet();
         $this->record($sheet['id'], $this->drawn())->assertCreated();
 
-        $this->record($sheet['id'], $this->drawn([], ['donation_barcode' => 'PD-0003']))
+        $this->record($sheet['id'], $this->drawn([], ['donation_barcode' => '0003']))
             ->assertConflict()
             ->assertJsonPath('code', 'already_on_sheet');
 

@@ -5,6 +5,7 @@ namespace App\Notifications;
 use App\Enums\ScreeningOutcome;
 use App\Models\Donation;
 use App\Support\DonorNotificationPreferences;
+use App\Support\SmsName;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
@@ -105,7 +106,8 @@ class DonorDeferred extends Notification implements ShouldQueue
             default => '',
         };
 
-        return 'RedAgos: You were not able to donate at '.$this->venue().' today.'
+        // Named: a household may share one phone (2026-11-12).
+        return SmsName::open($notifiable->first_name ?? null, 'you were not able to donate at ').$this->venue().' today.'
             .($this->code ? ' Deferral code: '.$this->code.'.' : '')
             .$next
             .' Questions? Call '.config('donation.support.hotline_label').'.';

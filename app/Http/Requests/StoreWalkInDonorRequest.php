@@ -66,7 +66,15 @@ class StoreWalkInDonorRequest extends FormRequest
             // Optional by decision: a counter-registered donor may have no
             // address, and an invented one is worse than none.
             'email' => ['nullable', 'string', 'email:rfc', 'max:150', 'unique:users,email'],
-            'phone' => ['nullable', 'string', 'regex:/^(?:\+63|63|0)9\d{9}$/', 'unique:users,phone'],
+
+            // Personal or Shared (project owner, 2026-11-12): a household may
+            // share one phone. Whether the number may be used is decided with
+            // the other accounts holding it (DonorDirectoryService), not by a
+            // unique rule: a Shared number repeats, a Personal one does not,
+            // and someone else's Personal number needs staff to confirm.
+            'phone' => ['nullable', 'string', 'regex:/^(?:\+63|63|0)9\d{9}$/'],
+            'phone_shared' => ['sometimes', 'boolean'],
+            'confirm_shared_phone' => ['sometimes', 'boolean'],
 
             'birth_date' => ['required', 'date', 'before_or_equal:'.now()->subYears((int) config('donation.min_age_years'))->toDateString()],
             'gender' => ['nullable', 'string', Rule::in(['male', 'female', 'other', 'prefer_not_to_say'])],
@@ -93,7 +101,6 @@ class StoreWalkInDonorRequest extends FormRequest
             'valid_id_number.required' => 'A valid ID number is required to register a donor at the counter.',
             'valid_id_number.unique' => 'A donor is already registered with this ID. Search for them instead.',
             'email.unique' => 'An account already exists for this email address.',
-            'phone.unique' => 'An account already exists for this phone number.',
             'birth_date.before_or_equal' => 'A donor must be at least '.config('donation.min_age_years').' years old.',
         ];
     }

@@ -77,8 +77,8 @@ class BloodCenterAppointmentService
                     'date' => $drive->event_date?->toDateString(),
                     'start_time' => $drive->start_time ? substr((string) $drive->start_time, 0, 5) : null,
                     'end_time' => $drive->end_time ? substr((string) $drive->end_time, 0, 5) : null,
-                    'max_capacity' => $drive->max_capacity,
-                    'registered' => (int) $drive->registered,
+                    // No booking limit; how many are coming, for the desk.
+                    'pre_registered' => $drive->preRegisteredCount(),
                 ])
                 ->values()
                 ->all(),

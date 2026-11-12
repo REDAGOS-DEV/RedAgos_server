@@ -142,7 +142,8 @@ class CollectionReportService
             ->where('facility_id', $facility->id)
             ->notCancelled()
             ->whereBetween('event_date', [$first->toDateString(), $last->toDateString()])
-            ->get(['id', 'name', 'event_date', 'max_capacity']);
+            ->withPreRegisteredCounts()
+            ->get(['id', 'name', 'event_date']);
 
         return [
             'period' => ['from' => $first->toDateString(), 'to' => $last->toDateString(), 'days' => (int) $first->diffInDays($last) + 1],
@@ -171,7 +172,8 @@ class CollectionReportService
                     'name' => $d->name,
                     'date' => $d->event_date->toDateString(),
                     'booked' => $appointments->where('event_id', $d->id)->count(),
-                    'capacity' => $d->max_capacity,
+                    // The drive has no booking limit; how many said they were coming.
+                    'pre_registered' => $d->preRegisteredCount(),
                 ])->values()->all(),
             ],
             'daily' => array_values($days),

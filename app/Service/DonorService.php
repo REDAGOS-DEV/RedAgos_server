@@ -438,13 +438,26 @@ class DonorService
         // the verification and mail a code to the new address.
         $emailChanged = $email !== $donor->email;
 
-        DB::transaction(function () use ($donor, $profile, $bloodTypeId, $payload, $email, $emailChanged): void {
+        // The donor keeps the number they have, even one staff marked Shared
+        // for their household; a new number is their own, so no other account
+        // may hold it (project owner, 2026-11-12).
+        $phone = $this->normalizePhilippinePhone($payload['phone']);
+        $phoneChanged = $phone !== $donor->phone;
+
+        if ($phoneChanged && $this->donorRepository->existsPhone($phone, $donor->id)) {
+            throw ValidationException::withMessages([
+                'phone' => ['This phone number is already registered.'],
+            ]);
+        }
+
+        DB::transaction(function () use ($donor, $profile, $bloodTypeId, $payload, $email, $emailChanged, $phone, $phoneChanged): void {
             $this->donorRepository->updateUser($donor, [
                 'first_name' => trim($payload['first_name']),
                 'middle_name' => $this->trimmedOrNull($payload['middle_name'] ?? null),
                 'last_name' => trim($payload['last_name']),
                 'email' => $email,
-                'phone' => $this->normalizePhilippinePhone($payload['phone']),
+                'phone' => $phone,
+                ...($phoneChanged ? ['phone_shared' => false] : []),
             ]);
 
             if ($emailChanged) {

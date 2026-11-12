@@ -94,6 +94,14 @@ Schedule::command('payments:purge-events')
     ->withoutOverlapping()
     ->onOneServer();
 
+// Drive pre-registrations never turned into a booking lose their names and
+// contacts about 90 days after the drive (DONATION_PRE_REGISTRATION_RETENTION_DAYS).
+Schedule::command('drives:anonymise-pre-registrations')
+    ->dailyAt('01:30')
+    ->timezone(config('blood_center.timezone'))
+    ->withoutOverlapping()
+    ->onOneServer();
+
 // The blood centres' morning reminders: tomorrow's drives, units close to
 // expiry and counselling referrals nobody has acted on, each to whoever
 // handles it (StaffNotificationTopics). 07:00, before the first shift starts.

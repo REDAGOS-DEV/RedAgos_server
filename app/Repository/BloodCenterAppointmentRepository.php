@@ -84,7 +84,7 @@ class BloodCenterAppointmentRepository
             ->where('facility_id', $facilityId)
             ->openForRegistration()
             ->whereDate('event_date', '>=', OperationalDay::todayAsDate())
-            ->withCount(['appointments as registered' => fn ($query) => $query->active()])
+            ->withPreRegisteredCounts()
             ->orderBy('event_date')
             ->orderBy('start_time')
             ->get();

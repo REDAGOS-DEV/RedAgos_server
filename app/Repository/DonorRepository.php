@@ -46,9 +46,15 @@ class DonorRepository
         return User::where('email', $email)->exists();
     }
 
-    public function existsPhone(string $phone): bool
+    /**
+     * Whether any account but this one holds the number, Personal or Shared:
+     * a number the portal saves is the donor's own (2026-11-12).
+     */
+    public function existsPhone(string $phone, ?int $exceptUserId = null): bool
     {
-        return User::where('phone', $phone)->exists();
+        return User::where('phone', $phone)
+            ->when($exceptUserId !== null, fn ($query) => $query->whereKeyNot($exceptUserId))
+            ->exists();
     }
 
     public function findBloodTypeByCode(string $code): ?BloodType

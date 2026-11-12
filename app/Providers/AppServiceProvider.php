@@ -29,6 +29,19 @@ class AppServiceProvider extends ServiceProvider
     {
         $this->registerDepartmentGates();
         $this->registerCounterRateLimiters();
+        $this->registerDriveLinkRateLimiters();
+    }
+
+    /**
+     * A drive's registration link is public, so its limits go by address.
+     * Opening the page is cheap; a registration writes a row and, for a
+     * partner, up to a few hundred, so it is held much tighter.
+     */
+    private function registerDriveLinkRateLimiters(): void
+    {
+        RateLimiter::for('drive-link', static fn (Request $request): Limit => Limit::perMinute(60)->by((string) $request->ip()));
+
+        RateLimiter::for('drive-registration', static fn (Request $request): Limit => Limit::perMinute(10)->by((string) $request->ip()));
     }
 
     /**

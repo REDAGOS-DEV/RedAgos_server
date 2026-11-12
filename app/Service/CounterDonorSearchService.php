@@ -52,7 +52,7 @@ class CounterDonorSearchService
             ->map(fn (User $donor): array => $this->present($donor, 'own_facility', 'search'))
             ->keyBy('uuid');
 
-        foreach ($this->exactMatches($term) as $matchedBy => $donor) {
+        foreach ($this->exactMatches($term) as [$matchedBy, $donor]) {
             if (! $results->has($donor->uuid)) {
                 $results->put($donor->uuid, $this->present($donor, 'cross_facility', $matchedBy));
             }
@@ -73,29 +73,35 @@ class CounterDonorSearchService
     }
 
     /**
-     * Donors anywhere in the register whose identifier equals the term exactly.
+     * Donors anywhere in the register whose identifier equals the term exactly,
+     * each with what matched. A mobile number may be a household's, shared by
+     * several donors (project owner, 2026-11-12), so it can find more than one.
      *
-     * @return array<string, User>
+     * @return array<int, array{0: string, 1: User}>
      */
     private function exactMatches(string $term): array
     {
         $matches = [];
 
         if (str_contains($term, '@')) {
-            $matches['email'] = $this->donorDirectoryRepository->findByExactIdentifier('email', $term);
+            $matches[] = ['email', $this->donorDirectoryRepository->findByExactIdentifier('email', $term)];
         }
 
         if (preg_match('/^\+?[\d\s-]{7,}$/', $term) === 1) {
-            $matches['phone'] = $this->donorDirectoryRepository
-                ->findByExactIdentifier('phone', AccountIdentity::normalizePhilippinePhone($term));
+            $household = $this->donorDirectoryRepository
+                ->findAllByExactIdentifier('phone', AccountIdentity::normalizePhilippinePhone($term), self::LIMIT);
+
+            foreach ($household as $donor) {
+                $matches[] = ['phone', $donor];
+            }
         }
 
         if (preg_match('/\d/', $term) === 1 && ! str_contains($term, '@')) {
-            $matches['donor_code'] = $this->donorDirectoryRepository->findByExactIdentifier('donor_code', $term);
-            $matches['valid_id_number'] = $this->donorDirectoryRepository->findByExactIdentifier('valid_id_number', $term);
+            $matches[] = ['donor_code', $this->donorDirectoryRepository->findByExactIdentifier('donor_code', $term)];
+            $matches[] = ['valid_id_number', $this->donorDirectoryRepository->findByExactIdentifier('valid_id_number', $term)];
         }
 
-        return array_filter($matches);
+        return array_values(array_filter($matches, fn (array $match): bool => $match[1] !== null));
     }
 
     /**

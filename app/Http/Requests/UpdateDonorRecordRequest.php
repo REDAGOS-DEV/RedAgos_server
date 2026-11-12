@@ -52,7 +52,11 @@ class UpdateDonorRecordRequest extends FormRequest
             'gender' => ['sometimes', 'nullable', 'string', Rule::in(['male', 'female', 'other', 'prefer_not_to_say'])],
             'blood_type_id' => ['sometimes', 'nullable', 'integer', 'exists:blood_types,id'],
             'email' => ['sometimes', 'nullable', 'string', 'email:rfc', 'max:150', Rule::unique('users', 'email')->ignore($uuid, 'uuid')],
-            'phone' => ['sometimes', 'nullable', 'string', 'regex:/^(?:\+63|63|0)9\d{9}$/', Rule::unique('users', 'phone')->ignore($uuid, 'uuid')],
+            // Personal or Shared, checked against the other accounts holding
+            // the number in DonorDirectoryService::update() (2026-11-12).
+            'phone' => ['sometimes', 'nullable', 'string', 'regex:/^(?:\+63|63|0)9\d{9}$/'],
+            'phone_shared' => ['sometimes', 'boolean'],
+            'confirm_shared_phone' => ['sometimes', 'boolean'],
             'address' => ['sometimes', 'nullable', 'string', 'max:255'],
             'occupation' => ['sometimes', 'nullable', 'string', 'max:100'],
             'last_donation_date' => ['sometimes', 'nullable', 'date', 'before_or_equal:today'],
@@ -67,7 +71,6 @@ class UpdateDonorRecordRequest extends FormRequest
     {
         return [
             'email.unique' => 'Another account already uses this email address.',
-            'phone.unique' => 'Another account already uses this phone number.',
             'phone.regex' => 'Enter a Philippine mobile number, such as 09171234567.',
             'birth_date.before_or_equal' => 'A donor must be at least '.config('donation.min_age_years').' years old.',
         ];
