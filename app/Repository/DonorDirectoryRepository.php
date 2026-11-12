@@ -320,6 +320,44 @@ class DonorDirectoryRepository
     }
 
     /**
+     * Every donor an exact identifier names. A mobile number may be a
+     * household's, shared by several donors (2026-11-12); the other
+     * identifiers name one person at most. Exact only, as findByExactIdentifier().
+     *
+     * @return Collection<int, User>
+     */
+    public function findAllByExactIdentifier(string $type, string $value, int $limit = 10): Collection
+    {
+        if ($type === 'phone') {
+            return $this->donorQuery()
+                ->where('phone', trim($value))
+                ->orderBy('users.id')
+                ->limit($limit)
+                ->get();
+        }
+
+        $donor = $this->findByExactIdentifier($type, $value);
+
+        return new Collection($donor === null ? [] : [$donor]);
+    }
+
+    /**
+     * The other accounts holding a mobile number, of any kind and including
+     * closed ones, with whether each marked it Shared: what decides whether a
+     * donor may be given it (DonorDirectoryService::assertPhoneAllowed()). A
+     * closed account still holds its Personal number in the unique index.
+     *
+     * @return Collection<int, User>
+     */
+    public function phoneHolders(string $phone, ?int $exceptUserId = null): Collection
+    {
+        return User::withTrashed()
+            ->where('phone', $phone)
+            ->when($exceptUserId !== null, fn (Builder $query) => $query->whereKeyNot($exceptUserId))
+            ->get(['id', 'phone', 'phone_shared', 'deleted_at']);
+    }
+
+    /**
      * Find a donor by primary key, still constrained to actual donor accounts.
      */
     public function findDonor(string $uuid): ?User

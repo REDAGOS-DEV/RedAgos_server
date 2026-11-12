@@ -103,6 +103,16 @@ class ScheduleRegistrationTest extends TestCase
         $this->assertTrue($event->onOneServer);
     }
 
+    public function test_drive_pre_registrations_are_anonymised_nightly(): void
+    {
+        $event = $this->eventFor('drives:anonymise-pre-registrations');
+
+        $this->assertSame('30 1 * * *', $event->expression);
+        $this->assertSame(config('blood_center.timezone'), $event->timezone);
+        $this->assertTrue($event->withoutOverlapping);
+        $this->assertTrue($event->onOneServer);
+    }
+
     /**
      * The registered sweep, or a failed test saying it is missing.
      */

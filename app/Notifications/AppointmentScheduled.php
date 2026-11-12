@@ -4,6 +4,7 @@ namespace App\Notifications;
 
 use App\Models\DonationAppointment;
 use App\Support\DonorNotificationPreferences;
+use App\Support\SmsName;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
@@ -75,7 +76,8 @@ class AppointmentScheduled extends Notification implements ShouldQueue
      */
     public function toSms(object $notifiable): string
     {
-        return 'RedAgos: Your appointment is booked for '.$this->shortDate().', '.$this->time()
+        // Named: a household may share one phone (2026-11-12).
+        return SmsName::open($notifiable->first_name ?? null, 'your appointment is booked for ').$this->shortDate().', '.$this->time()
             .' at '.$this->venue().'. Ref #'.$this->appointment->id
             .'. Bring a valid ID and your donor QR code.';
     }

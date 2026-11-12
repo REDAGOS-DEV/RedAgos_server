@@ -35,8 +35,8 @@ class CreateDonor extends Command
                             {--birth-date= : YYYY-MM-DD; the donor must be at least 18}
                             {--address= : Home address}
                             {--blood-type= : A+, A-, B+, B-, AB+, AB-, O+ or O-; leave unset if unknown}
-                            {--valid-id-type= : ID the donor will present at the counter, optional}
-                            {--valid-id-number= : Number on that ID, required with --valid-id-type}
+                            {--valid-id-type= : ID the donor will present at the counter, e.g. philsys, passport or drivers_license}
+                            {--valid-id-number= : Number on that ID, in that ID\'s own format}
                             {--password= : Leave unset to be prompted; an argument is visible in shell history}';
 
     protected $description = 'Register a verified donor account';

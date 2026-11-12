@@ -42,7 +42,7 @@ class CorrectionRequestTest extends TestCase
         ]);
 
         BloodCollection::where('donation_id', $this->donation->id)->update([
-            'donation_barcode' => 'SEG-1001',
+            'donation_barcode' => '1001',
             'facility_id' => $this->facility->id,
         ]);
     }
@@ -67,7 +67,7 @@ class CorrectionRequestTest extends TestCase
     /**
      * @return array<string, mixed>
      */
-    private function collectionBox(string $segment = 'SEG-1010'): array
+    private function collectionBox(string $segment = '1010'): array
     {
         return [
             'volume_ml' => 460,
@@ -105,11 +105,11 @@ class CorrectionRequestTest extends TestCase
         $id = $this->ask($phlebotomist, 'collection', $this->collectionBox())
             ->assertCreated()
             ->assertJsonPath('data.status', 'pending')
-            ->assertJsonPath('data.donation_barcode', 'SEG-1001')
+            ->assertJsonPath('data.donation_barcode', '1001')
             ->json('data.id');
 
         // Nothing changes until someone decides.
-        $this->assertSame('SEG-1001', BloodCollection::where('donation_id', $this->donation->id)->value('donation_barcode'));
+        $this->assertSame('1001', BloodCollection::where('donation_id', $this->donation->id)->value('donation_barcode'));
 
         $this->actingAs($physician)
             ->postJson("/api/blood-center/corrections/{$id}/approve", ['note' => 'Checked against the bag.'])
@@ -118,7 +118,7 @@ class CorrectionRequestTest extends TestCase
 
         $collection = BloodCollection::where('donation_id', $this->donation->id)->sole();
 
-        $this->assertSame('SEG-1010', $collection->donation_barcode);
+        $this->assertSame('1010', $collection->donation_barcode);
         $this->assertSame(460, $this->donation->fresh()->volume_ml);
         $this->assertDatabaseHas('audit_logs', ['action' => 'correction.applied']);
     }
@@ -144,11 +144,11 @@ class CorrectionRequestTest extends TestCase
         $this->assertSame($recordedBy, $collection->collected_by);
 
         // A correction that does not mention the name leaves it alone.
-        $correct($this->collectionBox('SEG-1011'));
+        $correct($this->collectionBox('1011'));
         $this->assertSame('Liza Bautista', $collection->fresh()->phlebotomist_name);
 
         // Blanked, the bag goes back to the account that recorded it.
-        $correct([...$this->collectionBox('SEG-1012'), 'phlebotomist_name' => ' ']);
+        $correct([...$this->collectionBox('1012'), 'phlebotomist_name' => ' ']);
         $this->assertNull($collection->fresh()->phlebotomist_name);
     }
 
@@ -180,7 +180,7 @@ class CorrectionRequestTest extends TestCase
 
     public function test_a_correction_may_keep_its_own_donation_barcode(): void
     {
-        $this->ask($this->staff(StaffRole::Phlebotomist), 'collection', $this->collectionBox('SEG-1001'))
+        $this->ask($this->staff(StaffRole::Phlebotomist), 'collection', $this->collectionBox('1001'))
             ->assertCreated();
     }
 
@@ -201,7 +201,7 @@ class CorrectionRequestTest extends TestCase
             ->postJson("/api/blood-center/corrections/{$id}/approve")
             ->assertOk();
 
-        $this->assertSame('SEG-1010', BloodCollection::where('donation_id', $this->donation->id)->value('donation_barcode'));
+        $this->assertSame('1010', BloodCollection::where('donation_id', $this->donation->id)->value('donation_barcode'));
     }
 
     public function test_the_corrected_values_must_pass_the_original_rules(): void
@@ -432,7 +432,7 @@ class CorrectionRequestTest extends TestCase
         $phlebotomist = $this->staff(StaffRole::Phlebotomist);
 
         $this->ask($phlebotomist, 'collection', $this->collectionBox())->assertCreated();
-        $this->ask($phlebotomist, 'collection', $this->collectionBox('SEG-1011'))
+        $this->ask($phlebotomist, 'collection', $this->collectionBox('1011'))
             ->assertStatus(409)
             ->assertJsonPath('code', 'correction_pending');
     }
@@ -455,11 +455,11 @@ class CorrectionRequestTest extends TestCase
             ->assertJsonValidationErrors('note');
 
         $this->actingAs($physician)
-            ->postJson("/api/blood-center/corrections/{$id}/reject", ['note' => 'The bag says SEG-1001.'])
+            ->postJson("/api/blood-center/corrections/{$id}/reject", ['note' => 'The bag says 1001.'])
             ->assertOk()
             ->assertJsonPath('data.status', 'rejected');
 
-        $this->assertSame('SEG-1001', BloodCollection::where('donation_id', $this->donation->id)->value('donation_barcode'));
+        $this->assertSame('1001', BloodCollection::where('donation_id', $this->donation->id)->value('donation_barcode'));
 
         $this->actingAs($physician)
             ->postJson("/api/blood-center/corrections/{$id}/approve")

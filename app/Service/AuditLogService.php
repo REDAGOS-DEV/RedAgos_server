@@ -92,6 +92,171 @@ class AuditLogService
     }
 
     /**
+     * My activity: the user's own rows, in the Audit Log's words, with where
+     * each sign-in came from so they can spot one that was not theirs.
+     *
+     * @param  array<string, mixed>  $filters
+     * @return array<string, mixed>
+     */
+    public function own(User $user, array $filters, int $perPage): array
+    {
+        $page = $this->auditLogs->paginateOwn($user, $filters, $perPage);
+
+        $users = $this->auditLogs->usersByIds(
+            $page->getCollection()
+                ->where('auditable_type', User::class)
+                ->pluck('auditable_id')
+                ->map(fn (string $id): int => (int) $id)
+                ->unique()
+                ->values()
+                ->all()
+        );
+
+        $requests = $this->auditLogs->requestReferences(
+            $page->getCollection()
+                ->map(fn (AuditLog $log): mixed => is_array($log->context) ? ($log->context['request_id'] ?? null) : null)
+                ->filter(fn (mixed $id): bool => is_numeric($id))
+                ->map(fn (mixed $id): int => (int) $id)
+                ->unique()
+                ->values()
+                ->all()
+        );
+
+        return [
+            ...$page->through(function (AuditLog $log) use ($user, $users, $requests): array {
+                $row = $this->format($log, $users, $requests);
+                // The action in words ("Signed in"), as the user reads their own.
+                $row['label'] = AuditActions::describe($log->action)['label'];
+                // Their own account needs no naming on their own list, and a
+                // detail that only repeats the action says nothing more.
+                if ($log->auditable_type === User::class && (string) $log->auditable_id === (string) $user->id) {
+                    $row['record'] = null;
+                }
+                if ($row['details'] === $row['label']) {
+                    $row['details'] = '';
+                }
+                $row['audit'] = $this->auditFields($log, $user);
+                $row['device'] = str_starts_with($log->action, 'auth.') ? $this->device($log->user_agent) : null;
+                $row['ip_address'] = str_starts_with($log->action, 'auth.') ? $log->ip_address : null;
+
+                return $row;
+            })->toArray(),
+            'types' => $this->options(AuditActions::TYPES),
+        ];
+    }
+
+    /**
+     * The row's core audit fields, for the user's own record of it: who (by
+     * reference, never name or email), what, when (UTC, ISO 8601), on what,
+     * from where, how it ended, how they were signed in, and what changed.
+     * Only what the trail holds: no permission check is stored, so none is
+     * claimed.
+     *
+     * @return array<string, mixed>
+     */
+    private function auditFields(AuditLog $log, User $user): array
+    {
+        $context = is_array($log->context) ? $log->context : [];
+        $failed = $log->action === 'auth.sign_in_failed';
+        $actor = $log->actor;
+
+        $changes = [];
+        if (array_key_exists('from', $context) || array_key_exists('to', $context)) {
+            $changes[] = ['field' => 'value', 'from' => $this->plain($context['from'] ?? null), 'to' => $this->plain($context['to'] ?? null)];
+        }
+        foreach ($context as $key => $value) {
+            if (is_string($key) && str_starts_with($key, 'previous_')) {
+                $field = substr($key, strlen('previous_'));
+                $now = $context[$field] ?? ($field === 'days' ? ($context['days_of_week'] ?? null) : null);
+                $changes[] = ['field' => $this->humanise($field), 'from' => $this->plain($value), 'to' => $this->plain($now)];
+            }
+        }
+
+        // What else the row carries, minus what the fields above already say.
+        $skip = ['facility_id', 'from', 'to', 'reason', 'portal', 'via', 'days_of_week'];
+        $extra = [];
+        foreach ($context as $key => $value) {
+            if (! is_string($key) || in_array($key, $skip, true) || str_starts_with($key, 'previous_')) {
+                continue;
+            }
+            $extra[] = ['key' => $this->humanise($key), 'value' => $this->plain($value)];
+        }
+
+        return [
+            'event' => $log->action,
+            'actor' => $actor === null
+                ? ['kind' => $failed ? 'unauthenticated' : 'system', 'id' => null, 'reference' => null]
+                : ['kind' => 'user', 'id' => $actor->id, 'reference' => $actor->employee_id ?: null],
+            'timestamp' => $log->created_at?->copy()->utc()->format('Y-m-d\TH:i:s\Z'),
+            'target' => $log->auditable_type === null ? null : [
+                'type' => Str::headline(class_basename($log->auditable_type)),
+                'id' => $log->auditable_id,
+                'is_you' => $log->auditable_type === User::class && (string) $log->auditable_id === (string) $user->id,
+            ],
+            'origin' => [
+                'ip_address' => $log->ip_address,
+                'device' => $this->device($log->user_agent),
+                'user_agent' => $log->user_agent ?: null,
+            ],
+            'outcome' => $failed
+                ? ['status' => 'failure', 'code' => (string) ($context['reason'] ?? 'refused'), 'reason' => $this->refusal((string) ($context['reason'] ?? ''))]
+                : ['status' => 'success', 'code' => null, 'reason' => null],
+            'auth' => match ($log->action) {
+                'auth.signed_in' => ['method' => (string) ($context['via'] ?? 'password'), 'portal' => $context['portal'] ?? null],
+                'auth.sign_in_failed' => ['method' => 'password', 'portal' => null],
+                default => ['method' => $actor === null ? null : 'session', 'portal' => null],
+            },
+            'changes' => $changes,
+            'context' => $extra,
+        ];
+    }
+
+    /**
+     * A context value as plain text: lists joined, flags as yes or no.
+     */
+    private function plain(mixed $value): ?string
+    {
+        return match (true) {
+            $value === null => null,
+            is_bool($value) => $value ? 'yes' : 'no',
+            is_array($value) => implode(', ', array_map(fn (mixed $v): string => is_scalar($v) ? (string) $v : (string) json_encode($v), $value)),
+            default => (string) $value,
+        };
+    }
+
+    /**
+     * "Chrome on Windows", read from the user agent; null when it says nothing.
+     */
+    private function device(?string $agent): ?string
+    {
+        if ($agent === null || $agent === '') {
+            return null;
+        }
+
+        $browser = match (true) {
+            str_contains($agent, 'Edg/') => 'Edge',
+            str_contains($agent, 'OPR/') => 'Opera',
+            str_contains($agent, 'Chrome/') => 'Chrome',
+            str_contains($agent, 'Firefox/') => 'Firefox',
+            str_contains($agent, 'Safari/') => 'Safari',
+            default => null,
+        };
+        $system = match (true) {
+            str_contains($agent, 'Android') => 'Android',
+            str_contains($agent, 'iPhone'), str_contains($agent, 'iPad') => 'iOS',
+            str_contains($agent, 'Windows') => 'Windows',
+            str_contains($agent, 'Mac OS') => 'macOS',
+            str_contains($agent, 'Linux') => 'Linux',
+            default => null,
+        };
+
+        return match (true) {
+            $browser !== null && $system !== null => "{$browser} on {$system}",
+            default => $browser ?? $system,
+        };
+    }
+
+    /**
      * One row.
      *
      * @param  Collection<int, User>  $users

@@ -170,7 +170,7 @@ class CollectionDashboardTest extends TestCase
 
         $this->assertCount(1, $upcoming['drives']);
         $this->assertSame($drive->id, $upcoming['drives'][0]['id']);
-        $this->assertSame(1, $upcoming['drives'][0]['registered']);
+        $this->assertSame(1, $upcoming['drives'][0]['pre_registered']);
     }
 
     public function test_the_trend_is_thirty_days_of_donations_and_deferrals_ending_today(): void

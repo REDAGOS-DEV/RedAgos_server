@@ -4,6 +4,7 @@ namespace App\Notifications;
 
 use App\Models\Donation;
 use App\Support\DonorNotificationPreferences;
+use App\Support\SmsName;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
@@ -83,7 +84,9 @@ class DonationRecorded extends Notification implements ShouldQueue
      */
     public function toSms(object $notifiable): string
     {
-        return 'RedAgos: Thank you, '.$notifiable->first_name.'! Your donation at '.$this->venue()
+        $name = SmsName::of($notifiable->first_name ?? null);
+
+        return 'RedAgos: Thank you'.($name === '' ? '' : ', '.$name).'! Your donation at '.$this->venue()
             .' on '.$this->shortDate().' is recorded.'
             .($this->nextEligibleDate ? ' You can donate again from '.$this->nextEligibleDate->format('j M Y').'.' : '');
     }

@@ -349,8 +349,8 @@ class DonorRegistrationTest extends TestCase
     {
         Notification::fake();
 
-        // The photo is optional and goes up from the profile's upload after
-        // the first sign-in; a registration carries the type and number only.
+        // The photo is added later from the profile; a registration carries
+        // the type and number only.
         $this->postJson('/api/donors/register', $this->payload())->assertCreated();
 
         $profile = User::where('email', 'juan@example.com')->firstOrFail()->donorProfile;
@@ -434,5 +434,110 @@ class DonorRegistrationTest extends TestCase
         $this->assertNull($profile->civil_status);
         $this->assertNull($profile->occupation);
         $this->assertNull($profile->nationality);
+    }
+
+    // --- Continue on each step: POST /donors/register/check (2026-11-11) ---
+
+    public function test_step_one_says_the_address_is_taken_before_the_rest_is_filled_in(): void
+    {
+        User::factory()->create(['email' => 'juan@example.com']);
+
+        $this->postJson('/api/donors/register/check', [
+            'step' => 1,
+            'email' => 'Juan@Example.com',
+            'password' => 'Password123',
+            'password_confirmation' => 'Password123',
+        ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['email' => 'This email address is already registered.'])
+            ->assertJsonMissingValidationErrors(['first_name', 'phone', 'valid_id_type', 'terms_accepted']);
+    }
+
+    public function test_a_free_address_and_good_password_pass_step_one_and_store_nothing(): void
+    {
+        Notification::fake();
+
+        $this->postJson('/api/donors/register/check', [
+            'step' => 1,
+            'email' => 'juan@example.com',
+            'password' => 'Password123',
+            'password_confirmation' => 'Password123',
+        ])->assertNoContent();
+
+        $this->assertNull(User::where('email', 'juan@example.com')->first());
+        Notification::assertNothingSent();
+    }
+
+    public function test_step_one_applies_the_password_rules(): void
+    {
+        $this->postJson('/api/donors/register/check', [
+            'step' => 1,
+            'email' => 'juan@example.com',
+            'password' => 'password',
+            'password_confirmation' => 'different',
+        ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('password');
+    }
+
+    public function test_step_two_checks_the_age_and_takes_an_unknown_blood_type(): void
+    {
+        $step = [
+            'step' => 2,
+            'first_name' => 'Juan',
+            'last_name' => 'Dela Cruz',
+            'gender' => 'male',
+            'blood_type' => null,
+        ];
+
+        $this->postJson('/api/donors/register/check', [...$step, 'birth_date' => now()->subYears(17)->toDateString()])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('birth_date');
+
+        $this->postJson('/api/donors/register/check', [...$step, 'birth_date' => '1995-05-20'])
+            ->assertNoContent();
+    }
+
+    public function test_step_three_checks_the_phone_and_the_id(): void
+    {
+        $step = [
+            'step' => 3,
+            'phone' => '09171234567',
+            'address' => '123 Rizal Street',
+            'valid_id_type' => 'philsys',
+            'valid_id_number' => '1234567890123456',
+            'terms_accepted' => true,
+        ];
+
+        $this->postJson('/api/donors/register/check', [...$step, 'valid_id_number' => '123456789012'])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['valid_id_number' => 'PhilSys number: 16 digits, e.g. 1234567890123456.']);
+
+        // Looked up as stored (+63…), as the registration looks it up.
+        User::factory()->create(['phone' => '+639171234567']);
+
+        $this->postJson('/api/donors/register/check', $step)
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['phone' => 'This phone number is already registered.']);
+    }
+
+    public function test_an_unknown_step_is_refused(): void
+    {
+        $this->postJson('/api/donors/register/check', ['step' => 4])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('step');
+
+        $this->postJson('/api/donors/register/check', [])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('step');
+    }
+
+    public function test_the_step_check_is_throttled_more_loosely_than_registration(): void
+    {
+        foreach (range(1, 30) as $attempt) {
+            $this->postJson('/api/donors/register/check', ['step' => 1])->assertStatus(422);
+        }
+
+        $this->postJson('/api/donors/register/check', ['step' => 1])->assertStatus(429);
     }
 }

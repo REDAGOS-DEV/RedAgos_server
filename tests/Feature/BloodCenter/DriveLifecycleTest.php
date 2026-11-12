@@ -7,12 +7,15 @@ use App\Enums\StaffRole;
 use App\Models\AuditLog;
 use App\Models\DonationAppointment;
 use App\Models\DonorQrToken;
+use App\Models\DrivePreRegistration;
 use App\Models\Facility;
 use App\Models\FacilityDonor;
 use App\Models\MobileEvent;
 use App\Models\User;
 use App\Notifications\BloodDriveScheduled;
 use App\Notifications\DriveCancelled;
+use App\Notifications\DriveRescheduled;
+use App\Notifications\DriveRescheduledForRegistrant;
 use App\Service\BloodDriveAnnouncer;
 use App\Support\OperationalDay;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
@@ -22,9 +25,10 @@ use Mockery\MockInterface;
 use Tests\TestCase;
 
 /**
- * A drive's lifecycle (drive pre-registration, phase 1): expected participants
- * beside the hard capacity, drafts and publishing, closing registration,
- * editing, and cancelling with the donors told.
+ * A drive's lifecycle (drive pre-registration, phase 1): no booking limit and
+ * one live pre-registered count (project owner, 2026-11-12), drafts and
+ * publishing, closing registration, editing, and cancelling with the donors
+ * told.
  */
 class DriveLifecycleTest extends TestCase
 {
@@ -57,8 +61,6 @@ class DriveLifecycleTest extends TestCase
             'name' => 'UM Matina Bloodletting Drive',
             'location' => 'University of Mindanao, Matina, Davao City',
             'event_date' => now()->addWeek()->toDateString(),
-            'max_capacity' => 60,
-            'expected_participants' => 120,
             'start_time' => '08:00',
             'end_time' => '12:00',
             'assigned_staff' => null,
@@ -111,41 +113,40 @@ class DriveLifecycleTest extends TestCase
             ->all();
     }
 
-    // --- Expected participants and capacity ----------------------------------
+    // --- No limit, one live count (project owner, 2026-11-12) -------------------
 
-    public function test_expected_participants_is_recorded_apart_from_the_capacity(): void
+    public function test_a_drive_has_no_capacity_or_estimate_only_the_live_count(): void
     {
         $this->actingAs($this->staff)
-            ->postJson('/api/blood-center/drives', $this->payload())
+            ->postJson('/api/blood-center/drives', $this->payload(['max_capacity' => 5, 'expected_participants' => 120]))
             ->assertCreated()
-            ->assertJsonPath('capacity', 60)
-            ->assertJsonPath('expected_participants', 120);
-
-        $this->assertDatabaseHas('mobile_events', ['max_capacity' => 60, 'expected_participants' => 120]);
+            ->assertJsonMissingPath('capacity')
+            ->assertJsonMissingPath('expected_participants')
+            ->assertJsonPath('pre_registered_count', 0);
     }
 
-    public function test_the_capacity_is_optional_and_empty_means_no_limit(): void
+    public function test_every_booking_is_taken_and_raises_the_pre_registered_count(): void
     {
-        $id = $this->actingAs($this->staff)
-            ->postJson('/api/blood-center/drives', $this->payload(['max_capacity' => null, 'expected_participants' => null]))
-            ->assertCreated()
-            ->assertJsonPath('capacity', null)
-            ->json('id');
+        $drive = $this->drive();
 
-        $drive = MobileEvent::query()->findOrFail($id);
-        $this->book($drive);
-        $this->book($drive);
+        foreach (range(1, 4) as $i) {
+            $this->donorBooks($drive)->assertCreated();
+        }
 
-        $this->donorBooks($drive)->assertCreated();
+        $listed = $this->actingAs($this->staff)->getJson('/api/blood-center/drives')->assertOk()->json('drives.0');
+        $this->assertSame(4, $listed['pre_registered_count']);
+        $this->assertSame('Upcoming', $listed['status']);
     }
 
-    public function test_the_capacity_still_refuses_a_booking_once_the_drive_is_full(): void
+    public function test_a_cancelled_booking_leaves_the_pre_registered_count(): void
     {
-        $drive = $this->drive(['max_capacity' => 1, 'expected_participants' => 500]);
+        $drive = $this->drive();
         $this->book($drive);
+        $this->book($drive, AppointmentStatus::Cancelled);
 
-        // Expected participants is an estimate; it lends the drive no places.
-        $this->donorBooks($drive)->assertStatus(409)->assertJsonPath('code', 'drive_full');
+        $this->actingAs($this->staff)->getJson('/api/blood-center/drives')
+            ->assertOk()
+            ->assertJsonPath('drives.0.pre_registered_count', 1);
     }
 
     // --- Drafts and publishing -----------------------------------------------
@@ -268,71 +269,229 @@ class DriveLifecycleTest extends TestCase
 
     public function test_editing_saves_the_details_and_audits_which_fields_changed(): void
     {
-        $drive = $this->drive(['max_capacity' => 60]);
+        $drive = $this->drive();
 
         $this->actingAs($this->staff)
             ->patchJson("/api/blood-center/drives/{$drive->id}", $this->payload([
                 'event_date' => $drive->event_date->toDateString(),
                 'name' => 'UM Matina Drive (Gym)',
-                'max_capacity' => 80,
-                'expected_participants' => 150,
             ]))
             ->assertOk()
             ->assertJsonPath('name', 'UM Matina Drive (Gym)')
-            ->assertJsonPath('capacity', 80)
-            ->assertJsonPath('expected_participants', 150);
+            ->assertJsonMissingPath('capacity');
 
         $log = AuditLog::query()->where('action', 'drive.updated')->firstOrFail();
-        $this->assertEqualsCanonicalizing(['name', 'location', 'max_capacity', 'expected_participants'], $log->context['fields']);
+        $this->assertEqualsCanonicalizing(['name', 'location'], $log->context['fields']);
     }
 
-    public function test_the_capacity_cannot_drop_below_the_bookings_held(): void
-    {
-        $drive = $this->drive(['max_capacity' => 10]);
-        $this->book($drive);
-        $this->book($drive, AppointmentStatus::Confirmed);
-        // Neither of these holds a place.
-        $this->book($drive, AppointmentStatus::Cancelled);
-        $this->book($drive, AppointmentStatus::NoShow);
-
-        $edit = fn (?int $capacity) => $this->actingAs($this->staff)->patchJson(
-            "/api/blood-center/drives/{$drive->id}",
-            $this->payload(['event_date' => $drive->event_date->toDateString(), 'max_capacity' => $capacity])
-        );
-
-        $edit(1)->assertUnprocessable()->assertJsonPath('code', 'capacity_below_bookings')->assertJsonValidationErrors('max_capacity');
-        $edit(2)->assertOk()->assertJsonPath('capacity', 2)->assertJsonPath('status', 'Full');
-        $edit(null)->assertOk()->assertJsonPath('capacity', null);
-    }
-
-    public function test_the_date_and_hours_are_fixed_once_a_donor_is_booked(): void
+    public function test_an_edit_cannot_put_back_a_booking_limit(): void
     {
         $drive = $this->drive();
-        $same = ['event_date' => $drive->event_date->toDateString()];
-
-        // Nobody booked yet: the drive can move.
-        $this->actingAs($this->staff)
-            ->patchJson("/api/blood-center/drives/{$drive->id}", $this->payload([...$same, 'start_time' => '09:00']))
-            ->assertOk();
-
+        $this->book($drive);
         $this->book($drive);
 
         $this->actingAs($this->staff)
-            ->patchJson("/api/blood-center/drives/{$drive->id}", $this->payload(['event_date' => now()->addWeeks(2)->toDateString(), 'start_time' => '09:00']))
+            ->patchJson("/api/blood-center/drives/{$drive->id}", $this->payload(['event_date' => $drive->event_date->toDateString(), 'max_capacity' => 1]))
+            ->assertOk()
+            ->assertJsonMissingPath('capacity');
+
+        $this->donorBooks($drive)->assertCreated();
+    }
+
+    // --- No duplicates: same day, same venue (project owner, 2026-11-12) -------
+
+    public function test_a_second_drive_on_the_same_day_at_the_same_venue_is_refused(): void
+    {
+        $existing = $this->drive(['name' => 'UM Matina Drive', 'location' => 'University of Mindanao, Matina, Davao City']);
+
+        // Another name, other hours, and the venue typed with other capitals and spaces.
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/drives', $this->payload([
+                'name' => 'UM Bloodletting',
+                'location' => '  university of mindanao,  Matina, Davao City ',
+                'start_time' => '13:00',
+                'end_time' => '17:00',
+            ]))
             ->assertUnprocessable()
-            ->assertJsonPath('code', 'drive_schedule_locked')
+            ->assertJsonPath('code', 'drive_duplicate')
+            ->assertJsonPath(
+                'errors.location.0',
+                'A drive at University of Mindanao, Matina, Davao City is already set for '
+                    .$existing->event_date->format('j M Y').' (UM Matina Drive). Edit that drive instead.'
+            );
+
+        $this->assertSame(1, MobileEvent::query()->count());
+    }
+
+    public function test_a_draft_counts_as_a_duplicate_but_a_cancelled_drive_does_not(): void
+    {
+        $draft = MobileEvent::factory()->draft()->create([
+            'facility_id' => $this->facility->id,
+            'location' => 'SM Lanang Premier, Davao City',
+            'event_date' => now()->addWeek()->toDateString(),
+        ]);
+        MobileEvent::factory()->cancelled()->create([
+            'facility_id' => $this->facility->id,
+            'location' => 'University of Mindanao, Matina, Davao City',
+            'event_date' => now()->addWeek()->toDateString(),
+        ]);
+
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/drives', $this->payload(['location' => $draft->location]))
+            ->assertUnprocessable()
+            ->assertJsonPath('code', 'drive_duplicate');
+
+        // The cancelled one can be scheduled again on its day.
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/drives', $this->payload())
+            ->assertCreated();
+    }
+
+    public function test_another_day_another_venue_or_another_centre_is_not_a_duplicate(): void
+    {
+        $this->drive(['location' => 'University of Mindanao, Matina, Davao City']);
+        MobileEvent::factory()->create([
+            'facility_id' => Facility::factory()->approved()->create()->id,
+            'location' => 'SM Lanang Premier, Davao City',
+            'event_date' => now()->addWeek()->toDateString(),
+        ]);
+
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/drives', $this->payload(['event_date' => now()->addWeeks(2)->toDateString()]))
+            ->assertCreated();
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/drives', $this->payload(['location' => 'University of Mindanao, Bolton, Davao City']))
+            ->assertCreated();
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/drives', $this->payload(['location' => 'SM Lanang Premier, Davao City']))
+            ->assertCreated();
+    }
+
+    public function test_an_edit_cannot_move_a_drive_onto_another_at_the_same_venue(): void
+    {
+        $this->drive(['location' => 'University of Mindanao, Matina, Davao City']);
+        $later = $this->drive([
+            'location' => 'University of Mindanao, Matina, Davao City',
+            'event_date' => now()->addWeeks(2)->toDateString(),
+        ]);
+
+        $this->actingAs($this->staff)
+            ->patchJson("/api/blood-center/drives/{$later->id}", $this->payload())
+            ->assertUnprocessable()
+            ->assertJsonPath('code', 'drive_duplicate');
+
+        $this->assertSame(now()->addWeeks(2)->toDateString(), $later->fresh()->event_date->toDateString());
+    }
+
+    public function test_an_edit_that_keeps_the_day_and_venue_is_never_refused(): void
+    {
+        // A pair from before the rule: renaming either one still saves.
+        $this->drive(['location' => 'University of Mindanao, Matina, Davao City']);
+        $twin = $this->drive(['location' => 'University of Mindanao, Matina, Davao City']);
+
+        $this->actingAs($this->staff)
+            ->patchJson("/api/blood-center/drives/{$twin->id}", $this->payload([
+                'name' => 'UM Matina Drive (Gym)',
+                'location' => 'UNIVERSITY OF MINDANAO, Matina, Davao City',
+            ]))
+            ->assertOk()
+            ->assertJsonPath('name', 'UM Matina Drive (Gym)');
+    }
+
+    /**
+     * "Should a booked drive be movable with the donors notified - yes"
+     * (project owner, 2026-11-12).
+     */
+    public function test_moving_a_booked_drive_moves_its_bookings_and_tells_everyone(): void
+    {
+        $drive = $this->drive();
+        $first = $this->book($drive);
+        $second = $this->book($drive);
+        $second->update(['appointment_datetime' => $drive->event_date->copy()->setTime(11, 30)]);
+        $cancelled = $this->book($drive, AppointmentStatus::Cancelled);
+        $before = $cancelled->appointment_datetime->toDateTimeString();
+        DrivePreRegistration::factory()->create(['mobile_event_id' => $drive->id, 'email' => 'listed@example.com']);
+        // No questionnaire covers the new day, so the QR goes.
+        $token = DonorQrToken::factory()->create(['donor_id' => $first->donor_id]);
+
+        $newDate = now()->addWeeks(3)->toDateString();
+
+        $this->actingAs($this->staff)
+            ->patchJson("/api/blood-center/drives/{$drive->id}", $this->payload([
+                'event_date' => $newDate,
+                'start_time' => '13:00',
+                'end_time' => '17:00',
+            ]))
+            ->assertOk()
+            ->assertJsonPath('event_date', $newDate)
+            ->assertJsonPath('appointments_moved', 2);
+
+        // Both fall outside the new hours, so both take the new start.
+        $this->assertSame("{$newDate} 13:00:00", $first->fresh()->appointment_datetime->toDateTimeString());
+        $this->assertSame("{$newDate} 13:00:00", $second->fresh()->appointment_datetime->toDateTimeString());
+        $this->assertSame($before, $cancelled->fresh()->appointment_datetime->toDateTimeString());
+        $this->assertNotNull($token->fresh()->revoked_at);
+
+        Notification::assertSentTo(User::query()->findOrFail($first->donor_id), DriveRescheduled::class);
+        Notification::assertSentTo(User::query()->findOrFail($second->donor_id), DriveRescheduled::class);
+        Notification::assertNotSentTo(User::query()->findOrFail($cancelled->donor_id), DriveRescheduled::class);
+        Notification::assertSentOnDemandTimes(DriveRescheduledForRegistrant::class, 1);
+
+        $log = AuditLog::query()->where('action', 'drive.updated')->sole();
+        $this->assertSame(2, $log->context['appointments_moved']);
+        $this->assertSame(2, $log->context['donors_notified']);
+        $this->assertSame(1, $log->context['registrants_notified']);
+    }
+
+    public function test_a_moved_booking_keeps_its_time_when_it_falls_inside_the_new_hours(): void
+    {
+        $drive = $this->drive();
+        $booking = $this->book($drive);
+        $newDate = now()->addWeeks(2)->toDateString();
+
+        $this->actingAs($this->staff)
+            ->patchJson("/api/blood-center/drives/{$drive->id}", $this->payload(['event_date' => $newDate]))
+            ->assertOk()
+            ->assertJsonPath('appointments_moved', 1);
+
+        $this->assertSame("{$newDate} 09:00:00", $booking->fresh()->appointment_datetime->toDateTimeString());
+    }
+
+    public function test_the_date_cannot_move_while_a_donor_is_checked_in(): void
+    {
+        $drive = $this->drive();
+        $this->book($drive, AppointmentStatus::Confirmed);
+        $waiting = $this->book($drive);
+
+        $this->actingAs($this->staff)
+            ->patchJson("/api/blood-center/drives/{$drive->id}", $this->payload(['event_date' => now()->addWeeks(2)->toDateString()]))
+            ->assertUnprocessable()
+            ->assertJsonPath('code', 'drive_in_progress')
             ->assertJsonValidationErrors('event_date');
 
-        $this->actingAs($this->staff)
-            ->patchJson("/api/blood-center/drives/{$drive->id}", $this->payload([...$same, 'end_time' => '13:00', 'start_time' => '09:00']))
-            ->assertUnprocessable()
-            ->assertJsonPath('code', 'drive_schedule_locked');
+        $this->assertSame($drive->event_date->toDateString(), $drive->fresh()->event_date->toDateString());
+        $this->assertSame($drive->event_date->toDateString(), $waiting->fresh()->appointment_datetime->toDateString());
+        Notification::assertNothingSent();
 
-        // The same day and hours, with other details changed, still save.
+        // The hours alone may still change on the day.
         $this->actingAs($this->staff)
-            ->patchJson("/api/blood-center/drives/{$drive->id}", $this->payload([...$same, 'start_time' => '09:00', 'name' => 'Renamed']))
+            ->patchJson("/api/blood-center/drives/{$drive->id}", $this->payload(['event_date' => $drive->event_date->toDateString(), 'end_time' => '13:00']))
+            ->assertOk();
+    }
+
+    public function test_an_edit_that_does_not_move_the_drive_tells_nobody(): void
+    {
+        $drive = $this->drive();
+        $booking = $this->book($drive);
+
+        $this->actingAs($this->staff)
+            ->patchJson("/api/blood-center/drives/{$drive->id}", $this->payload(['event_date' => $drive->event_date->toDateString(), 'name' => 'Renamed']))
             ->assertOk()
-            ->assertJsonPath('name', 'Renamed');
+            ->assertJsonPath('name', 'Renamed')
+            ->assertJsonPath('appointments_moved', 0);
+
+        $this->assertSame('09:00', $booking->fresh()->appointment_datetime->format('H:i'));
+        Notification::assertNotSentTo(User::query()->findOrFail($booking->donor_id), DriveRescheduled::class);
     }
 
     public function test_a_cancelled_or_past_drive_cannot_be_changed(): void

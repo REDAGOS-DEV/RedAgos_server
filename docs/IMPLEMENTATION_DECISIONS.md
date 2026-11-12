@@ -2696,3 +2696,145 @@ Opened from View, the dialog offers Edit or Review when the row allows it. Every
 - The (TF) mark was added for grey copies. The waiting bags carry no mark.
 
 **TESTS:** `HospitalPartnerReservationTest`, `HospitalStockSheetTest`, `HospitalInventoryListingTest`, and `tests/hospitalInventory.spec.ts` and `tests/hospitalInventoryDashboard.spec.ts` in the client.
+
+## Drive registration link and pre-registrations (drive pre-registration, phase 2)
+
+**SOURCE:** the project owner's answers of 2026-11-11 to the phase 1 questions.
+- No partner accounts, and blood centre staff do not type people in: partners put their people on the list through the drive's registration link.
+- Self-registration is for a person without a portal account; account holders book in the portal as before.
+- The link has no capacity: registrations keep coming and the centre expects more.
+- No desk override is needed.
+- Name plus at least one contact are required, birth date and affiliation optional. (A self-check on the link was first asked for, then moved to the portal on 2026-11-12: see the next entry.)
+- Unconverted entries are anonymised about 90 days after the drive.
+- Decisions 7 (new drive published or draft) and 8 (moving a booked drive) were sent back unanswered, so phase 1's behaviour stands: published on save, date and hours locked once booked.
+
+**DECISION (one public link per drive):**
+- `mobile_events.registration_token`: 32 random characters, made when the drive is created (backfilled for existing drives). It answers only while the drive is published: a draft is 404.
+- Public routes, no sign-in:
+  - `GET /api/drive-links/{token}`: the drive's facts and its state (open, closed, cancelled, completed). No counts, no ids, nobody's details, no health questions.
+  - `POST /api/drive-links/{token}/registrations` (a person registering themselves).
+  - `POST /api/drive-links/{token}/group-registrations` (a partner's people, up to 200 per batch).
+- Named limiters by address: `drive-link` 60/min, `drive-registration` 10/min.
+- A registration takes the drive's row lock (the one bookings take) and is refused when the drive is closed, cancelled or past. Capacity is never checked.
+
+**DECISION (the records):**
+- `drive_pre_registrations`: one person, planning data only.
+  - Source is `self` or `partner`. Status is `pre_registered` or `withdrawn`: planning states only.
+  - Personal data: name, lower-cased email, E.164 mobile, optional birth date and affiliation.
+  - Links: `donor_id` is set when staff confirm a match (or the person books in the portal with that verified email); `appointment_id` when a booking stands for the person (see the next entry).
+- `drive_partner_submissions`: a partner's batch, with the organisation and its contact as typed.
+- Nothing creates an account, appointment, screening or donation.
+- Individual and partner entries share `StoreDriveSelfRegistrationRequest::personRules()`: PersonName names, a PH mobile or an email (one required), birth date before today.
+
+**DECISION (duplicates):**
+- On one drive, the same email or mobile number among entries still on the list is added once.
+- The link answers a duplicate exactly as it answers a new entry, and a partner is told how many were received, not how many were new. So the link cannot be used to learn who registered.
+- A withdrawn person may register again.
+
+**DECISION (staff):**
+- `GET /blood-center/drives/{id}/registrations` (drives.view): the drive's roster (see the next entry).
+- Possible donor matches are suggested from an exact email match, or a mobile number held by one donor only (a household may share one).
+- Staff actions (drives.manage): `POST .../{registration}/withdraw`, `/match` (donor_uuid), and `DELETE .../match`. All audited.
+- Staff cannot add entries.
+
+**DECISION (cancellation and retention):**
+- Cancelling a drive also tells everyone still on its list, on demand (`DriveCancelledForRegistrant`): mail to the email, SMS to the mobile while Semaphore is configured. No in-app copy, since they may have no account. The cancel audit row counts `registrants_notified`.
+- `drives:anonymise-pre-registrations`, daily at 01:30 Manila: once a drive is more than `DONATION_PRE_REGISTRATION_RETENTION_DAYS` (90) past, its unconverted entries lose name, contact, birth date, affiliation and donor link, and its partner batches lose their contact. The rows stay, so the figures do. It is audited per drive.
+
+**Client:**
+- `/drives/{token}`: the public page. Register myself, Register a group, and "Sign in to book" for account holders.
+- `/blood-center/drive-registrations/{id}`: the roster (see the next entry).
+- Donation Drives shows each drive's pre-registered donors and a Registrations button on each published drive.
+
+**Migration:** `2026_11_11_000001_create_drive_pre_registrations_table` has run on dev PostgreSQL.
+
+## Drive roster, check-in, and no booking limit (drive pre-registration, phases 3 to 6)
+
+**SOURCE:** the project owner, 2026-11-12, then "FINISH ALL PHASES":
+- "Expected participants: Remove the staff input field. Use one automatic live count only: Pre-registered donors. Every successful portal registration increases this count."
+- "Self-check privacy: Portal donors complete the self-check online. In the drive list, show only the status: Cleared, Needs follow-up, or Not completed. Do not show specific health answers in the general list. Donors without a portal account show Not completed — walk-in/no portal account and complete screening in person."
+- "Portal bookings: Remove the booking capacity or maximum field. The registration link remains open with no booking limit. Each successful portal booking automatically increases the Pre-registered donors count."
+
+**DECISION (no limit, no estimate):**
+- Migration `2026_11_12_000001` drops `mobile_events.max_capacity` and `expected_participants`.
+  - A drive never reads Full; `MobileEvent::status()` is Cancelled, Completed, Draft, Open or Upcoming.
+  - `AppointmentService::guardDriveOpen()` replaces the capacity guard. It keeps the drive row lock, so no booking lands after a cancel or close, but counts nothing.
+  - `slotsFor()` gives a drive's slots `available: null` (no limit).
+- The donor catalogue's `total_slots` and the desk's `max_capacity` are gone. The donor portal no longer shows "slots left" or "Full" for a drive; a drive with no limit used to read 0 slots left and could not be booked.
+
+**DECISION (one live figure, pre-registered donors):**
+- It is the bookings made ahead of the drive that still stand, plus the registration link's list not yet booked. "Bookings that still stand" means `walk_in = false` and not cancelled (`DonationAppointment::scopePreRegistered()`); a no-show still counts, they said they were coming.
+- It is computed by `MobileEvent::scopeWithPreRegisteredCounts()` and `preRegisteredCount()`. Every drive list uses it: Donation Drives (`pre_registered_count`, `total_pre_registered`), the donor catalogue's `registered`, the desk's drive options, the Collection Dashboard's coming-up drives (`pre_registered`) and the centre report's drives (`pre_registered`, which replaces `capacity`).
+- One person is counted once. A list entry is tied to the booking that stands for them (`drive_pre_registrations.appointment_id`), and from then on is counted as that booking. It is tied when:
+  - the donor books the drive in the portal or by the desk (by the donor link, or the donor's verified email);
+  - staff link the entry to a donor already booked;
+  - the person is checked in at the drive.
+
+**DECISION (self-check as a status only):**
+- `DriveRosterService` reads each donor's own portal questionnaire and standing deferrals:
+  - **Cleared**: the current questionnaire (`eligibility_screenings`, not invalidated, `valid_until` ahead) passed.
+  - **Needs follow-up**: it flagged something, or the donor holds a deferral (`DonorDeferralRepository::deferralsFor()`).
+  - **Not completed**: otherwise, which includes everyone on the list with no donor record. They complete screening in person.
+- No answers, reasons or outcomes are sent. The link's own self-check, its `drive_self_check` config, `self_check_*` columns and `review_required` status were removed before release (the phase 2 migration was reshaped, uncommitted).
+
+**DECISION (the roster, phases 4 and 6):**
+- `GET /blood-center/drives/{id}/registrations` returns one row per person. Each row is one of:
+  - a list entry not yet booked (`listed`);
+  - a booking for the drive, from the portal, the desk, or a walk-in (`booking`);
+  - a donation typed in from the drive's paper sheet with no booking (`paper`).
+- Statuses come only from the records that produce them:
+  - a list entry is `pre_registered` or `withdrawn`, never an outcome;
+  - a booking is `booked`, `checked_in` (confirmed, or completed without a donation), `no_show` or `cancelled`;
+  - `deferred` and `collected` come only from the donation's own screening and `blood_collections` row.
+- The summary is built from the rows, so it reconciles:
+  - Planning: `pre_registered_donors` (= `listed` + `booked`), `from_partners`, `withdrawn`.
+  - On the day: `checked_in`, `walk_ins` (walk-in bookings plus paper donations with no booking), `no_show`, `deferred`, `collected`, `cancelled`.
+- The roster's `collected` for a drive held this month equals its share of Donation Drives' "Units collected · At drives this month".
+
+**DECISION (check-in through the appointment path, phase 3):**
+- Routes (appointments.verify, as at the counter), on the drive's own day, for a drive not cancelled (a draft may be held):
+  - `POST /blood-center/drives/{id}/registrations/{entry}/check-in`: for a list entry linked to a donor.
+  - `POST /blood-center/drives/{id}/walk-ins` (`donor_uuid`).
+- Both check the donor in on their live booking for the drive, if any, or on one made now: `event_id` the drive, `confirmed`, `booked_by` the staff member. A walk-in's booking is `walk_in = true`, unless staff had linked them on the list.
+- A second press reuses the same booking. A donor holding a booking elsewhere is refused (`duplicate_appointment`), as everywhere.
+- The client then opens the Donation counter (`?donor=`). Its arrival finds today's booking, and the donation it opens carries `appointment_id`: donation → appointment → drive. No drive column on donations; paper records keep their sheet → drive link.
+- Audited as `drive.checked_in` / `drive.walk_in`.
+- A person with no donor record is registered on Donor Management. The roster's "Register as donor" opens its form prefilled from the entry (`?register=drive…`), and the new donor is linked to the entry when saved.
+
+**Not built (phase 5):** partner organisations, partner accounts and drive assignments. The owner chose no partner accounts (2026-11-11). Partners use the link, and read nothing back.
+
+**Migration:** `2026_11_12_000001_drop_drive_capacity_and_mark_walk_in_appointments` has run on dev PostgreSQL. The reshaped `2026_11_11_000001` was rolled back and re-run there (its tables were empty).
+
+## A booked drive can move; a new drive is a draft or published at once
+
+**SOURCE:** the project owner, 2026-11-12, on the two questions left open: "On draft or publish directly options, should a booked drive be movable with the donors notified - yes". Also confirmed the same day:
+- a no-show still counts as pre-registered;
+- a walk-in is not counted unless staff linked them on the list;
+- the "needs review" state stays dropped.
+
+**DECISION (moving a booked drive):** this replaces phase 1's "date and hours are fixed once anyone is booked" (`drive_schedule_locked` is gone).
+- An edit that changes the date or hours moves every booking still `scheduled` to the new day (`MobileEventService::moveBookings()`). A booking keeps its time if that falls inside the new hours, and takes the new start time otherwise.
+- A donor whose current questionnaire no longer covers the new day loses the QR minted from it, as when they move their own booking (`AppointmentService::reschedule()`).
+- The date cannot move while anyone is checked in (422 `drive_in_progress` on `event_date`). The hours alone may still change on the day.
+- Who is told, after the commit (a mailer failure is logged, never undoes the move):
+  - each moved donor: `DriveRescheduled`, in-app always, with mail and SMS under the appointment switch;
+  - everyone on the drive's list not yet booked: `DriveRescheduledForRegistrant`, by the email and mobile on their entry.
+- The response carries `appointments_moved`. The `drive.updated` audit row adds `appointments_moved`, `donors_notified` and `registrants_notified`.
+- Not checked on a move: a donor's donation interval against an earlier new date. The counter's screening still applies on the day.
+
+**DECISION (draft or publish):** the create dialog offers both, as two buttons: **Save as draft** (`publish: false`) and **Create and publish** (`publish: true`). This replaces the "Publish to donors now" checkbox. The server is unchanged.
+
+**Client:** the edit dialog no longer locks the date and hours. When the edit would move a booked drive (`utils/drives` `movesBookings()`), it warns: "N donors are booked. Their bookings move with the drive, and everyone booked or on its list is notified."
+
+## No duplicate drives: same day, same venue
+
+**SOURCE:** the project owner, 2026-11-12. Asked whether a drive created with the same details is saved, chose: block it, with "the same" meaning the same date and venue.
+
+**DECISION:**
+- Creating or editing a drive is refused (422 `drive_duplicate` on `location`) when another of the centre's drives is set for that day at that venue. The message names the existing drive: "A drive at {venue} is already set for {date} ({name}). Edit that drive instead."
+- Venues are compared with capital letters and extra spaces ignored (`MobileEventService::venueKey()`). The name and hours are not compared.
+- A draft counts. A cancelled drive does not, so it can be scheduled again. Another centre's drives never count.
+- An edit is checked only when it changes the day or the venue, so renaming one of a pair saved before this rule still works.
+- Checked in the service, not by a database index: the venue match is case- and space-insensitive and the tests run on SQLite. Two staff saving the same drive at the same instant could still both get through. The form's buttons are disabled while saving, so one person cannot double-submit.
+
+**Client:** unchanged. The drive dialog already shows the server's first field error.

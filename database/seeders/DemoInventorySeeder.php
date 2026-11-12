@@ -326,7 +326,8 @@ class DemoInventorySeeder extends Seeder
                 'facility_id' => $facility->id,
                 'collected_by' => $staff->id,
                 'blood_bag_type' => $bag,
-                'donation_barcode' => 'DEMO-'.$donation->id,
+                // Digits only, like a real sticker (2026-11-11).
+                'donation_barcode' => (string) (9000000 + $donation->id),
                 'started_at' => $startedAt,
                 'ended_at' => $endedAt,
                 'collection_datetime' => $endedAt,

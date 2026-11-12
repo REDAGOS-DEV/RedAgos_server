@@ -26,7 +26,8 @@ class AppointmentService
     public function __construct(
         private readonly AppointmentRepository $appointmentRepository,
         private readonly EligibilityRepository $eligibilityRepository,
-        private readonly EligibilityRuleEvaluator $evaluator
+        private readonly EligibilityRuleEvaluator $evaluator,
+        private readonly DrivePreRegistrationService $drivePreRegistrations
     ) {}
 
     /**
@@ -54,7 +55,8 @@ class AppointmentService
     }
 
     /**
-     * List upcoming mobile blood drives with their remaining capacity.
+     * List upcoming mobile blood drives with how many donors are coming. A
+     * drive has no booking limit (project owner, 2026-11-12).
      *
      * @return array<int, array<string, mixed>>
      */
@@ -69,8 +71,9 @@ class AppointmentService
                 // Wall-clock 'HH:MM', so the donor's home can say a drive is on now.
                 'start_time' => $event->start_time ? substr($event->start_time, 0, 5) : null,
                 'end_time' => $event->end_time ? substr($event->end_time, 0, 5) : null,
-                'registered' => (int) $event->registered,
-                'total_slots' => $event->max_capacity,
+                // The pre-registered donors count: bookings that stand plus
+                // the registration link's list not yet booked.
+                'registered' => $event->preRegisteredCount(),
                 'status' => $event->status(),
             ])
             ->all();
@@ -160,7 +163,7 @@ class AppointmentService
             $eventId = $payload['drive_id'] ?? null;
 
             if ($eventId !== null) {
-                $this->guardDriveCapacity((int) $eventId);
+                $this->guardDriveOpen((int) $eventId);
             } else {
                 $this->guardSlotAvailable($facilityId, $slot);
             }
@@ -175,6 +178,12 @@ class AppointmentService
         });
 
         $appointment->load(['facility', 'mobileEvent']);
+
+        // The donor's own entry on the drive's list, if they put themselves on
+        // it by the link first, is now counted once, by this booking.
+        if ($appointment->event_id !== null) {
+            $this->drivePreRegistrations->tieToBooking((int) $appointment->event_id, $user, $appointment->id);
+        }
 
         $this->sendConfirmation($user, $appointment);
 
@@ -204,7 +213,7 @@ class AppointmentService
             $eventId = $payload['drive_id'] ?? null;
 
             if ($eventId !== null) {
-                $this->guardDriveCapacity((int) $eventId);
+                $this->guardDriveOpen((int) $eventId);
             } else {
                 $this->guardSlotAvailable($facilityId, $slot, $appointment->id);
             }
@@ -252,7 +261,7 @@ class AppointmentService
      * The portal's own rules, through the same guards, so a booking taken by
      * phone can never be one the donor could not have made: not in the past or
      * beyond the horizon, not before the donation interval has passed, not a
-     * second active booking, and not into a full slot or drive. Two differences,
+     * second active booking, and not into a full slot or a closed drive. Two differences,
      * both because staff are not the donor: no email-verification gate (a
      * walk-in may have no address), and a donor with a standing deferral is
      * refused outright rather than left to the counter to turn away.
@@ -301,7 +310,7 @@ class AppointmentService
 
         $appointment = DB::transaction(function () use ($profile, $facility, $drive, $slot, $payload, $staff): DonationAppointment {
             if ($drive !== null) {
-                $this->guardDriveCapacity($drive->id);
+                $this->guardDriveOpen($drive->id);
             } else {
                 $this->guardSlotAvailable($facility->id, $slot);
             }
@@ -318,6 +327,10 @@ class AppointmentService
         });
 
         $appointment->load(['facility', 'mobileEvent']);
+
+        if ($drive !== null) {
+            $this->drivePreRegistrations->tieToBooking($drive, $donor, $appointment->id);
+        }
 
         // The same confirmation the portal sends: the donor learns of a booking
         // made for them, and gets its date and the questionnaire reminder.
@@ -352,7 +365,7 @@ class AppointmentService
      *
      * At the centre, the portal's own slot grid and per-slot capacity. At a
      * drive, the slots inside the drive's hours (the centre's grid when it set
-     * none), all sharing the drive's one capacity; null when it has no limit.
+     * none), with no limit (null): a drive takes every booking.
      *
      * @return array<int, array{time: string, end: string, available: int|null, total: int|null}>
      */
@@ -382,18 +395,15 @@ class AppointmentService
             }
         }
 
-        $left = $drive->max_capacity === null
-            ? null
-            : max(0, $drive->max_capacity - (int) ($drive->registered ?? $drive->appointments()->active()->count()));
-
-        return array_map(function (string $time) use ($drive, $left, $end): array {
+        return array_map(function (string $time) use ($drive, $end): array {
             $isPast = $drive->event_date->copy()->setTimeFromTimeString($time)->isPast();
 
             return [
                 'time' => $time,
                 'end' => $end($time),
-                'available' => $isPast ? 0 : $left,
-                'total' => $drive->max_capacity,
+                // No booking limit at a drive: null is "no limit".
+                'available' => $isPast ? 0 : null,
+                'total' => null,
             ];
         }, $times);
     }
@@ -567,35 +577,24 @@ class AppointmentService
     }
 
     /**
-     * Reject a registration once a drive has reached capacity, or once it has
-     * stopped taking bookings.
+     * Reject a booking once the drive has stopped taking them: cancelled,
+     * closed to registration, unpublished or past. There is no limit on how
+     * many (project owner, 2026-11-12).
      *
      * Read under the drive's own row lock (AppointmentRepository::lockDrive()),
-     * so concurrent bookings for one drive are counted one at a time, and none
-     * lands after the drive is cancelled or closed.
+     * so no booking lands after the drive is cancelled or closed.
      */
-    private function guardDriveCapacity(int $eventId): void
+    private function guardDriveOpen(int $eventId): void
     {
         $drive = $this->appointmentRepository->lockDrive($eventId);
 
-        if (! $drive || ! $drive->acceptsRegistrations()) {
-            throw ValidationException::withMessages([
-                'drive_id' => ['This blood drive is no longer available.'],
-            ]);
-        }
-
-        if ($drive->max_capacity === null) {
+        if ($drive && $drive->acceptsRegistrations()) {
             return;
         }
 
-        if ($this->appointmentRepository->lockedDriveCount($eventId) < $drive->max_capacity) {
-            return;
-        }
-
-        throw new HttpResponseException(response()->json([
-            'message' => 'This blood drive is fully booked.',
-            'code' => 'drive_full',
-        ], 409));
+        throw ValidationException::withMessages([
+            'drive_id' => ['This blood drive is no longer available.'],
+        ]);
     }
 
     /**

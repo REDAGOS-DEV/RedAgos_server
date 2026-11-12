@@ -215,14 +215,13 @@ class StaffAppointmentsTest extends TestCase
         $this->book($suspended)->assertUnprocessable()->assertJsonPath('code', 'account_closed');
     }
 
-    public function test_a_drive_booking_takes_the_drives_date_and_stays_within_its_hours_and_places(): void
+    public function test_a_drive_booking_takes_the_drives_date_and_stays_within_its_hours(): void
     {
         $drive = MobileEvent::factory()->create([
             'facility_id' => $this->facility->id,
             'event_date' => $this->day(6),
             'start_time' => '10:00',
             'end_time' => '12:00',
-            'max_capacity' => 1,
         ]);
 
         $options = $this->actingAs($this->desk)->getJson("/api/blood-center/appointments/options?drive_id={$drive->id}")->assertOk()->json();
@@ -238,8 +237,11 @@ class StaffAppointmentsTest extends TestCase
             ->assertJsonPath('data.date', $this->day(6))
             ->assertJsonPath('data.place', $drive->name);
 
+        // No booking limit (project owner, 2026-11-12): the next donor is booked too.
         $this->book(User::factory()->donor()->create(), ['drive_id' => $drive->id, 'date' => null, 'time_slot' => '11:00'])
-            ->assertStatus(409)->assertJsonPath('code', 'drive_full');
+            ->assertCreated();
+        $this->assertSame(2, $this->actingAs($this->desk)->getJson('/api/blood-center/appointments/options')->json('drives.0.pre_registered'));
+        $this->assertNull($options['slots'][0]['available']);
 
         $elsewhere = MobileEvent::factory()->create(['event_date' => $this->day(6)]);
         $this->book(User::factory()->donor()->create(), ['drive_id' => $elsewhere->id, 'date' => null])

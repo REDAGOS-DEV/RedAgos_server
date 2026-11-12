@@ -24,7 +24,11 @@ class UpdateDonorProfileRequest extends FormRequest
             'first_name' => ['required', 'string', 'max:150', new PersonName],
             'last_name' => ['required', 'string', 'max:150', new PersonName],
             'email' => ['required', 'string', 'email:rfc', 'max:150', Rule::unique('users', 'email')->ignore($this->user()?->id)],
-            'phone' => ['required', 'string', 'regex:/^(?:\+63|63|0)9\d{9}$/', Rule::unique('users', 'phone')->ignore($this->user()?->id)],
+            // Whether the number is free is decided in DonorService::updateProfile(),
+            // compared as stored (+63…): a donor keeps the number they have even
+            // when their household shares it, and a new one must be their own
+            // (project owner, 2026-11-12).
+            'phone' => ['required', 'string', 'regex:/^(?:\+63|63|0)9\d{9}$/'],
             'birth_date' => ['required', 'date', 'before_or_equal:today'],
             // Nullable for the same reason as registration: a donor whose type
             // is not known yet must be able to edit their address without being

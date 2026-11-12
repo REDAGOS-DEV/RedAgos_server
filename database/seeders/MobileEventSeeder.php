@@ -32,18 +32,17 @@ class MobileEventSeeder extends Seeder
 
         $today = Carbon::today();
 
-        // [name, location, days from today, max capacity]
-        // A null capacity means unlimited, which driveStatus() never marks Full.
+        // [name, location, days from today]
         $drives = [
-            ['UM Matina Bloodletting Drive', 'University of Mindanao, Matina, Davao City', 0, 60],
-            ['SM Lanang Premier Community Drive', 'SM Lanang Premier, J.P. Laurel Ave, Davao City', 3, 80],
-            ['Ateneo de Davao Red Cross Youth Drive', 'Ateneo de Davao University, E. Jacinto St, Davao City', 7, 45],
-            ['Davao City Hall Employees Drive', 'Davao City Hall, San Pedro St, Davao City', 14, 50],
-            ['Gaisano Mall Bajada Weekend Drive', 'Gaisano Mall of Davao, Bajada, Davao City', 21, null],
-            ['Barangay Buhangin Community Drive', 'Buhangin Barangay Hall, Davao City', 30, 35],
+            ['UM Matina Bloodletting Drive', 'University of Mindanao, Matina, Davao City', 0],
+            ['SM Lanang Premier Community Drive', 'SM Lanang Premier, J.P. Laurel Ave, Davao City', 3],
+            ['Ateneo de Davao Red Cross Youth Drive', 'Ateneo de Davao University, E. Jacinto St, Davao City', 7],
+            ['Davao City Hall Employees Drive', 'Davao City Hall, San Pedro St, Davao City', 14],
+            ['Gaisano Mall Bajada Weekend Drive', 'Gaisano Mall of Davao, Bajada, Davao City', 21],
+            ['Barangay Buhangin Community Drive', 'Buhangin Barangay Hall, Davao City', 30],
         ];
 
-        foreach ($drives as $index => [$name, $location, $offsetDays, $capacity]) {
+        foreach ($drives as $index => [$name, $location, $offsetDays]) {
             MobileEvent::updateOrCreate(
                 ['name' => $name],
                 [
@@ -52,7 +51,6 @@ class MobileEventSeeder extends Seeder
                     'facility_id' => $facilities->get($index % $facilities->count())->id,
                     'location' => $location,
                     'event_date' => $today->copy()->addDays($offsetDays),
-                    'max_capacity' => $capacity,
                     // Donors only see published drives.
                     'published_at' => $today,
                 ]

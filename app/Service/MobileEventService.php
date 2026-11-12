@@ -8,14 +8,18 @@ use App\Models\Facility;
 use App\Models\MobileEvent;
 use App\Models\User;
 use App\Notifications\DriveCancelled;
+use App\Notifications\DriveRescheduled;
 use App\Repository\EligibilityRepository;
 use App\Repository\MobileEventRepository;
+use App\Support\AppointmentScreeningWindow;
+use Carbon\CarbonImmutable;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Str;
 use Throwable;
 
 /**
@@ -41,8 +45,6 @@ class MobileEventService
         'event_date',
         'start_time',
         'end_time',
-        'max_capacity',
-        'expected_participants',
         'assigned_staff',
         'announcement',
     ];
@@ -51,7 +53,8 @@ class MobileEventService
         private readonly MobileEventRepository $mobileEventRepository,
         private readonly BloodDriveAnnouncer $bloodDriveAnnouncer,
         private readonly EligibilityRepository $eligibilityRepository,
-        private readonly AuditLogger $auditLogger
+        private readonly AuditLogger $auditLogger,
+        private readonly DrivePreRegistrationService $preRegistrations
     ) {}
 
     /**
@@ -70,12 +73,15 @@ class MobileEventService
 
         return [
             'upcoming_drives_count' => $upcoming->count(),
-            'total_registered' => (int) $upcoming->sum('registered'),
+            // The pre-registered donors coming to the upcoming drives.
+            'total_pre_registered' => (int) $upcoming->sum(fn (MobileEvent $event): int => $event->preRegisteredCount()),
             // Drives only: a drive booking or a paper sheet, with a bag drawn.
             'units_collected_month' => $this->mobileEventRepository->unitsCollectedAtDrivesInMonth(
                 $facility->id,
                 Carbon::today()
             ),
+            // The same, per month ("YYYY-MM" => bags), for the month strip.
+            'units_collected_by_month' => $this->mobileEventRepository->unitsCollectedAtDrivesByMonth($facility->id),
             'drives' => $drives->map(fn (MobileEvent $event): array => $this->format($event))->all(),
         ];
     }
@@ -93,6 +99,8 @@ class MobileEventService
     {
         $facility = $this->requireFacility($staff);
         $publish = (bool) ($payload['publish'] ?? true);
+
+        $this->assertNotDuplicate($facility, (string) $payload['event_date'], (string) $payload['location']);
 
         $event = $this->mobileEventRepository->create([
             ...array_intersect_key($payload, array_flip(self::EDITABLE)),
@@ -119,9 +127,11 @@ class MobileEventService
     /**
      * Change a drive's details.
      *
-     * Its date and hours are fixed once anyone is booked: every booking was
-     * made for a time on that day, and moving them is a cancellation and a new
-     * drive. Capacity never drops below the bookings already held.
+     * A booked drive can move (project owner, 2026-11-12: "should a booked
+     * drive be movable with the donors notified - yes"). Its waiting bookings
+     * move with it and the booked donors and the people on its list are told.
+     * The date cannot move while anyone is checked in. A drive has no booking
+     * limit.
      *
      * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
@@ -130,9 +140,8 @@ class MobileEventService
     {
         $facility = $this->requireFacility($staff);
 
-        $changed = DB::transaction(function () use ($facility, $driveId, $payload): array {
+        [$changed, $moved, $rescheduled] = DB::transaction(function () use ($facility, $driveId, $payload): array {
             $drive = $this->lockChangeable($facility, $driveId);
-            $active = array_sum($this->mobileEventRepository->activeCountsByStatus($drive->id));
 
             $attributes = array_intersect_key($payload, array_flip(self::EDITABLE));
 
@@ -145,38 +154,59 @@ class MobileEventService
 
             $drive->fill($attributes);
 
-            if ($active > 0 && $this->scheduleChanged($drive)) {
-                throw $this->refuseField(
-                    'event_date',
-                    'drive_schedule_locked',
-                    $this->donors($active).' booked for this date and these hours, so they cannot change. Cancel the drive and schedule a new one to move it.'
-                );
+            $rescheduled = $this->scheduleChanged($drive);
+            $dateMoved = $drive->isDirty('event_date')
+                && $drive->event_date->toDateString() !== Carbon::parse($drive->getOriginal('event_date'))->toDateString();
+
+            if ($dateMoved) {
+                $checkedIn = $this->mobileEventRepository->activeCountsByStatus($drive->id)[AppointmentStatus::Confirmed->value] ?? 0;
+
+                if ($checkedIn > 0) {
+                    throw $this->refuseField(
+                        'event_date',
+                        'drive_in_progress',
+                        $this->donors($checkedIn).' checked in at this drive. Finish or close their visits at the counter before moving it.'
+                    );
+                }
             }
 
-            if ($drive->max_capacity !== null && $drive->max_capacity < $active) {
-                throw $this->refuseField(
-                    'max_capacity',
-                    'capacity_below_bookings',
-                    $this->donors($active).' already booked, so the capacity cannot be lower than '.$active.'.'
-                );
+            // Only a new day or venue can make it another drive's duplicate, so
+            // an edit that keeps both never trips over a pair from before the rule.
+            if ($dateMoved || $this->venueKey($drive->location) !== $this->venueKey($drive->getOriginal('location'))) {
+                $this->assertNotDuplicate($facility, $drive->event_date->toDateString(), (string) $drive->location, $drive->id);
             }
 
             $changed = array_keys($drive->getDirty());
             $drive->save();
 
-            return $changed;
+            // The bookings waiting for their donors move with the drive.
+            $moved = $rescheduled ? $this->moveBookings($drive) : collect();
+
+            return [$changed, $moved, $rescheduled];
         });
 
         $drive = $this->mobileEventRepository->fresh($driveId);
+
+        // Everyone who said they were coming hears the new date and hours.
+        $donorsNotified = $rescheduled ? $this->notifyRescheduled($drive, $moved) : 0;
+        $registrantsNotified = $rescheduled ? $this->preRegistrations->notifyDriveRescheduled($drive) : 0;
 
         if ($changed !== []) {
             $this->auditLogger->record($staff, 'drive.updated', $drive, [
                 'facility_id' => $facility->id,
                 'fields' => $changed,
+                ...($rescheduled ? [
+                    'appointments_moved' => $moved->count(),
+                    'donors_notified' => $donorsNotified,
+                    'registrants_notified' => $registrantsNotified,
+                ] : []),
             ]);
         }
 
-        return $this->format($drive);
+        return [
+            ...$this->format($drive),
+            'appointments_moved' => $moved->count(),
+        ];
     }
 
     /**
@@ -298,17 +328,85 @@ class MobileEventService
 
         $drive = $this->mobileEventRepository->fresh($driveId);
         $notified = $this->notifyCancelled($drive, $affected);
+        // And the people on its list, who may hold no account.
+        $registrantsNotified = $this->preRegistrations->notifyDriveCancelled($drive);
 
         $this->auditLogger->record($staff, 'drive.cancelled', $drive, [
             'facility_id' => $facility->id,
             'appointments_cancelled' => $affected->count(),
             'donors_notified' => $notified,
+            'registrants_notified' => $registrantsNotified,
         ]);
 
         return [
             ...$this->format($drive),
             'appointments_cancelled' => $affected->count(),
         ];
+    }
+
+    /**
+     * Move each booking still waiting for its donor to the drive's new day.
+     * It keeps its time when that falls inside the new hours, and takes the
+     * new start otherwise. A donor whose questionnaire no longer covers the
+     * new day loses the QR minted from it, as when a donor moves their own
+     * booking (AppointmentService::reschedule()).
+     *
+     * @return Collection<int, DonationAppointment> the bookings moved, with their donors
+     */
+    private function moveBookings(MobileEvent $drive): Collection
+    {
+        $start = $this->minutes($drive->start_time);
+        $end = $this->minutes($drive->end_time);
+
+        return $this->mobileEventRepository->scheduledAppointments($drive->id)
+            ->each(function (DonationAppointment $appointment) use ($drive, $start, $end): void {
+                $time = $appointment->appointment_datetime->format('H:i');
+
+                if ($start !== null && ($time < $start || ($end !== null && $time >= $end))) {
+                    $time = $start;
+                }
+
+                $appointment->appointment_datetime = $drive->event_date->copy()->setTimeFromTimeString($time);
+                $appointment->save();
+
+                $screening = $this->eligibilityRepository->currentValidScreening((int) $appointment->donor_id);
+
+                if ($screening === null || ! AppointmentScreeningWindow::contains($appointment, CarbonImmutable::parse($screening->screened_at))) {
+                    $this->eligibilityRepository->revokeQrTokens((int) $appointment->donor_id);
+                }
+            });
+    }
+
+    /**
+     * Tell each donor whose booking moved with the drive. After the commit,
+     * and never allowed to undo it.
+     *
+     * @param  Collection<int, DonationAppointment>  $appointments
+     */
+    private function notifyRescheduled(MobileEvent $drive, Collection $appointments): int
+    {
+        $sent = 0;
+
+        foreach ($appointments as $appointment) {
+            $donor = $appointment->donorProfile?->donor;
+
+            if ($donor === null) {
+                continue;
+            }
+
+            try {
+                $donor->notify(new DriveRescheduled($drive, $appointment));
+                $sent++;
+            } catch (Throwable $exception) {
+                Log::warning('Could not tell a donor their drive moved.', [
+                    'mobile_event_id' => $drive->id,
+                    'appointment_id' => $appointment->id,
+                    'exception' => $exception->getMessage(),
+                ]);
+            }
+        }
+
+        return $sent;
     }
 
     /**
@@ -364,6 +462,39 @@ class MobileEventService
     }
 
     /**
+     * Refuse a drive on the same day at the same venue as another of the
+     * centre's drives that was not cancelled (project owner, 2026-11-12:
+     * duplicates are blocked; "the same" is date + venue). A draft counts; a
+     * cancelled drive does not, so it can be scheduled again.
+     */
+    private function assertNotDuplicate(Facility $facility, string $date, string $location, ?int $exceptId = null): void
+    {
+        $venue = $this->venueKey($location);
+
+        $existing = $this->mobileEventRepository->notCancelledOnDate($facility->id, $date, $exceptId)
+            ->first(fn (MobileEvent $drive): bool => $this->venueKey($drive->location) === $venue);
+
+        if ($existing !== null) {
+            throw $this->refuseField(
+                'location',
+                'drive_duplicate',
+                "A drive at {$existing->location} is already set for "
+                    .Carbon::parse($date)->format('j M Y')
+                    ." ({$existing->name}). Edit that drive instead."
+            );
+        }
+    }
+
+    /**
+     * A venue as it is compared for duplicates: capital letters and extra
+     * spaces ignored.
+     */
+    private function venueKey(?string $location): string
+    {
+        return Str::of((string) $location)->squish()->lower()->value();
+    }
+
+    /**
      * Whether the edit moves the drive's day or hours. Times are compared as
      * 'HH:MM', since PostgreSQL hands TIME back with seconds.
      */
@@ -403,11 +534,11 @@ class MobileEventService
             'event_date' => $event->event_date->toDateString(),
             'start_time' => $event->start_time,
             'end_time' => $event->end_time,
-            // The hard limit on active bookings; null is no limit.
-            'capacity' => $event->max_capacity,
-            // A planning estimate, never enforced.
-            'expected_participants' => $event->expected_participants,
+            // Bookings still waiting or under way: what fixes the date and hours.
             'registered_count' => (int) ($event->registered ?? 0),
+            // The one planning figure (project owner, 2026-11-12): bookings
+            // made ahead that stand, plus the link's list not yet booked.
+            'pre_registered_count' => $event->preRegisteredCount(),
             'assigned_staff' => $event->assigned_staff,
             'announcement' => $event->announcement,
             'status' => $event->status(),
@@ -416,9 +547,8 @@ class MobileEventService
             'registration_closed_at' => $event->registration_closed_at?->toIso8601String(),
             'cancelled_at' => $event->cancelled_at?->toIso8601String(),
             'cancellation_reason' => $event->cancellation_reason,
-            // No endpoint lists the donors registered to one drive yet, so the
-            // roster stays empty rather than the page inventing one.
-            'donor_preview' => [],
+            // The registration link's secret part, once there is a link to share.
+            'registration_token' => $event->isPublished() ? $event->registration_token : null,
         ];
     }
 

@@ -92,7 +92,7 @@ class StoreBloodRequestRequest extends FormRequest
                 $code = IndicationCode::tryFrom((string) ($item['indication_code'] ?? ''));
 
                 if ($code === null) {
-                    if ($componentName !== null && IndicationCode::forComponentName($componentName) !== []) {
+                    if ($this->indicationRequired() && $componentName !== null && IndicationCode::forComponentName($componentName) !== []) {
                         $validator->errors()->add(
                             "{$key}.{$index}.indication_code",
                             "Select the indication for {$componentName}."
@@ -151,6 +151,15 @@ class StoreBloodRequestRequest extends FormRequest
     protected function linesKey(): string
     {
         return 'items';
+    }
+
+    /**
+     * Whether a line of a component the DOH form prints codes for must name
+     * its indication. A code that is sent is still checked either way.
+     */
+    protected function indicationRequired(): bool
+    {
+        return true;
     }
 
     /**

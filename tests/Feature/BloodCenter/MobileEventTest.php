@@ -20,7 +20,7 @@ use Illuminate\Support\Facades\Notification;
 use Tests\TestCase;
 
 /**
- * Scheduling mobile blood drives, and the boundary between a drive's capacity
+ * Scheduling mobile blood drives, and the boundary between a drive's bookings
  * and the host centre's own counter slots.
  */
 class MobileEventTest extends TestCase
@@ -51,7 +51,6 @@ class MobileEventTest extends TestCase
             'name' => 'UM Matina Bloodletting Drive',
             'location' => 'University of Mindanao, Matina, Davao City',
             'event_date' => now()->addWeek()->toDateString(),
-            'max_capacity' => 60,
             'start_time' => '08:00',
             'end_time' => '16:00',
             'assigned_staff' => 'Maria Santos, Juan Cruz',
@@ -65,7 +64,8 @@ class MobileEventTest extends TestCase
             ->postJson('/api/blood-center/drives', $this->payload())
             ->assertCreated()
             ->assertJsonPath('name', 'UM Matina Bloodletting Drive')
-            ->assertJsonPath('capacity', 60)
+            ->assertJsonMissingPath('capacity')
+            ->assertJsonPath('pre_registered_count', 0)
             ->assertJsonPath('registered_count', 0)
             ->assertJsonPath('status', 'Upcoming');
 
@@ -183,7 +183,6 @@ class MobileEventTest extends TestCase
         $drive = MobileEvent::factory()->create([
             'facility_id' => $this->facility->id,
             'event_date' => now()->addWeek()->toDateString(),
-            'max_capacity' => 10,
         ]);
 
         $this->registerDonorTo($drive);
@@ -196,9 +195,10 @@ class MobileEventTest extends TestCase
             ->getJson('/api/blood-center/drives')
             ->assertOk()
             ->assertJsonPath('upcoming_drives_count', 1)
-            ->assertJsonPath('total_registered', 2);
+            ->assertJsonPath('total_pre_registered', 2);
 
         $this->assertSame(2, $response->json('drives.0.registered_count'));
+        $this->assertSame(2, $response->json('drives.0.pre_registered_count'));
         $this->assertSame('Upcoming', $response->json('drives.0.status'));
     }
 
@@ -216,20 +216,26 @@ class MobileEventTest extends TestCase
             ->assertJsonPath('drives.0.status', 'Completed');
     }
 
-    public function test_a_drive_at_capacity_reads_as_full(): void
+    /**
+     * A drive has no booking limit (project owner, 2026-11-12), so however
+     * many are booked it never reads as full.
+     */
+    public function test_a_drive_never_reads_as_full(): void
     {
         $drive = MobileEvent::factory()->create([
             'facility_id' => $this->facility->id,
             'event_date' => now()->addWeek()->toDateString(),
-            'max_capacity' => 1,
         ]);
 
-        $this->registerDonorTo($drive);
+        foreach (range(1, 5) as $i) {
+            $this->registerDonorTo($drive);
+        }
 
         $this->actingAs($this->staff)
             ->getJson('/api/blood-center/drives')
             ->assertOk()
-            ->assertJsonPath('drives.0.status', 'Full');
+            ->assertJsonPath('drives.0.status', 'Upcoming')
+            ->assertJsonPath('drives.0.pre_registered_count', 5);
     }
 
     /**
@@ -281,7 +287,10 @@ class MobileEventTest extends TestCase
         $this->actingAs($this->staff)
             ->getJson('/api/blood-center/drives')
             ->assertOk()
-            ->assertJsonPath('units_collected_month', 4);
+            ->assertJsonPath('units_collected_month', 4)
+            // Per month too, for the month strip: this month's four, last month's one.
+            ->assertJsonPath('units_collected_by_month.'.now()->format('Y-m'), 4)
+            ->assertJsonPath('units_collected_by_month.'.now()->subMonthNoOverflow()->format('Y-m'), 1);
     }
 
     /**
@@ -298,7 +307,6 @@ class MobileEventTest extends TestCase
         $drive = MobileEvent::factory()->create([
             'facility_id' => $this->facility->id,
             'event_date' => $date->toDateString(),
-            'max_capacity' => 50,
         ]);
 
         // Three drive registrations at the nominal time — more than the
@@ -354,7 +362,7 @@ class MobileEventTest extends TestCase
             ->assertOk()
             ->assertJsonPath('0.id', $created['id'])
             ->assertJsonPath('0.name', 'UM Matina Bloodletting Drive')
-            ->assertJsonPath('0.total_slots', 60);
+            ->assertJsonMissingPath('0.total_slots');
 
         $this->actingAs($donor)
             ->postJson('/api/donors/appointments', [
@@ -369,7 +377,7 @@ class MobileEventTest extends TestCase
         $this->actingAs($this->staff)
             ->getJson('/api/blood-center/drives')
             ->assertOk()
-            ->assertJsonPath('total_registered', 1)
+            ->assertJsonPath('total_pre_registered', 1)
             ->assertJsonPath('drives.0.registered_count', 1);
     }
 

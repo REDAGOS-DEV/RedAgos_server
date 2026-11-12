@@ -455,7 +455,7 @@ class DonationToInventoryChainTest extends TestCase
         return [
             'volume_ml' => 450,
             'blood_bag_type' => 'double',
-            'donation_barcode' => 'SEG-'.$this->segments,
+            'donation_barcode' => '5000'.$this->segments,
             'started_at' => now()->subMinutes(15)->toISOString(),
             'ended_at' => now()->subMinutes(5)->toISOString(),
         ];

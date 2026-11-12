@@ -9,7 +9,6 @@ use App\Models\Donation;
 use App\Models\DonationAppointment;
 use App\Models\MobileEvent;
 use Carbon\CarbonInterface;
-use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Carbon;
 
@@ -112,7 +111,7 @@ class CollectionDashboardRepository
 
     /**
      * This facility's drives on or between two dates, with how many donors
-     * still hold a place on each. A cancelled drive is not coming.
+     * are pre-registered for each. A cancelled drive is not coming.
      *
      * @return Collection<int, MobileEvent>
      */
@@ -122,7 +121,7 @@ class CollectionDashboardRepository
             ->where('facility_id', $facilityId)
             ->notCancelled()
             ->whereBetween('event_date', [$fromDate, $toDate])
-            ->withCount(['appointments as registered' => fn (Builder $q) => $q->whereIn('status', AppointmentStatus::activeValues())])
+            ->withPreRegisteredCounts()
             ->orderBy('event_date')
             ->orderBy('start_time')
             ->get();

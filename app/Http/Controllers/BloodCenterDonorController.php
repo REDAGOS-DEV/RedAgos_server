@@ -55,6 +55,21 @@ class BloodCenterDonorController extends Controller
     }
 
     /**
+     * Find every donor an identifier names: a shared mobile number may be a
+     * whole household's.
+     */
+    public function lookupMatches(LookupDonorRequest $request): JsonResponse
+    {
+        return response()->json(
+            $this->donorDirectoryService->lookupMatches(
+                $request->user(),
+                $request->validated('type'),
+                $request->validated('value')
+            )
+        );
+    }
+
+    /**
      * Show one donor, in whichever shape this facility is entitled to see.
      */
     public function show(Request $request, string $uuid): JsonResponse

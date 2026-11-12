@@ -71,9 +71,8 @@ class RegisterDonorRequest extends FormRequest
 
             // Required at signup (project owner, 2026-11-10): every portal donor
             // names the ID they will present at the counter, its type and its
-            // number in that type's shape. The photo of it is not taken here;
-            // the registration page sends it, when one was chosen, through the
-            // profile's upload (POST /donors/identity) after the first sign-in.
+            // number in that type's shape. The photo of it is not taken here:
+            // the donor adds it later from the profile (POST /donors/identity).
             'valid_id_type' => ['required', 'string', Rule::in(ValidIdType::values())],
             'valid_id_number' => [
                 'required', 'string', 'max:50',

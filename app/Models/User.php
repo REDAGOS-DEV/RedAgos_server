@@ -33,6 +33,7 @@ use Laravel\Sanctum\HasApiTokens;
     'last_name',
     'email',
     'phone',
+    'phone_shared',
     'username',
     'password',
     'account_status',
@@ -67,6 +68,8 @@ class User extends Authenticatable implements MustVerifyEmail
     {
         return [
             'email_verified_at' => 'datetime',
+            // A household's number, which other donors may hold too (2026-11-12).
+            'phone_shared' => 'boolean',
             'activated_at' => 'datetime',
             // Neither is fillable: both are written with forceFill() by the
             // counter's sign-in slip and the donor's own password change.

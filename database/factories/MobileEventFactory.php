@@ -27,7 +27,6 @@ class MobileEventFactory extends Factory
             'name' => fake()->company().' Blood Drive',
             'location' => fake()->streetAddress(),
             'event_date' => now()->addWeeks(2)->toDateString(),
-            'max_capacity' => 60,
             'published_at' => now(),
         ];
     }

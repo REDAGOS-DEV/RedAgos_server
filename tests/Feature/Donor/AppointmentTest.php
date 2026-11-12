@@ -334,15 +334,15 @@ class AppointmentTest extends TestCase
             ->assertJsonPath('drive_name', $drive->name);
     }
 
-    public function test_a_full_drive_is_refused(): void
+    /**
+     * A drive has no booking limit (project owner, 2026-11-12): however many
+     * are already booked, the next donor is booked too.
+     */
+    public function test_a_drive_takes_every_booking(): void
     {
-        $drive = MobileEvent::factory()->create([
-            'facility_id' => $this->center->id,
-            'max_capacity' => 1,
-        ]);
-        $other = User::factory()->donor()->create();
-        DonationAppointment::factory()->create([
-            'donor_id' => $other->id,
+        $drive = MobileEvent::factory()->create(['facility_id' => $this->center->id]);
+        DonationAppointment::factory()->count(3)->create([
+            'donor_id' => fn () => User::factory()->donor()->create()->id,
             'facility_id' => $this->center->id,
             'event_id' => $drive->id,
         ]);
@@ -353,8 +353,7 @@ class AppointmentTest extends TestCase
                 'drive_id' => $drive->id,
                 'time_slot' => '09:00',
             ])
-            ->assertStatus(409)
-            ->assertJsonPath('code', 'drive_full');
+            ->assertCreated();
     }
 
     public function test_a_donor_can_cancel_their_own_appointment(): void
@@ -553,12 +552,11 @@ class AppointmentTest extends TestCase
             ->assertJsonPath('0.id', $this->center->id);
     }
 
-    public function test_blood_drives_lists_upcoming_drives_with_capacity(): void
+    public function test_blood_drives_lists_upcoming_drives_with_how_many_are_coming(): void
     {
         MobileEvent::factory()->past()->create(['facility_id' => $this->center->id]);
         $upcoming = MobileEvent::factory()->create([
             'facility_id' => $this->center->id,
-            'max_capacity' => 60,
             'start_time' => '08:00:00',
             'end_time' => '16:00:00',
         ]);
@@ -569,7 +567,7 @@ class AppointmentTest extends TestCase
             ->assertJsonCount(1)
             ->assertJsonPath('0.id', $upcoming->id)
             ->assertJsonPath('0.registered', 0)
-            ->assertJsonPath('0.total_slots', 60)
+            ->assertJsonMissingPath('0.total_slots')
             ->assertJsonPath('0.start_time', '08:00')
             ->assertJsonPath('0.end_time', '16:00');
     }

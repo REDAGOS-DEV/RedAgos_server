@@ -167,8 +167,7 @@ class CollectionDashboardService
                 'event_date' => $drive->event_date?->toDateString(),
                 'start_time' => $drive->start_time,
                 'end_time' => $drive->end_time,
-                'max_capacity' => $drive->max_capacity,
-                'registered' => (int) $drive->registered,
+                'pre_registered' => $drive->preRegisteredCount(),
             ])
             ->values()
             ->all();

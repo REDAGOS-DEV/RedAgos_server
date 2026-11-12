@@ -26,6 +26,7 @@ class MobileEventRepository
         return MobileEvent::query()
             ->with('facility')
             ->withCount(['appointments as registered' => fn ($query) => $query->active()])
+            ->withPreRegisteredCounts()
             ->where('facility_id', $facilityId)
             ->orderByDesc('event_date')
             ->get();
@@ -42,8 +43,26 @@ class MobileEventRepository
         // registered count from withCount(). A new drive has none, but the
         // attribute has to exist or status() would fall back to a query.
         $event->setAttribute('registered', 0);
+        $event->setAttribute('booked_ahead', 0);
+        $event->setAttribute('listed_only', 0);
 
         return $event->load('facility');
+    }
+
+    /**
+     * The facility's drives on one day that were not cancelled: what a new or
+     * moved drive is checked against for a duplicate. A draft counts.
+     *
+     * @return Collection<int, MobileEvent>
+     */
+    public function notCancelledOnDate(int $facilityId, string $date, ?int $exceptId = null): Collection
+    {
+        return MobileEvent::query()
+            ->where('facility_id', $facilityId)
+            ->whereDate('event_date', $date)
+            ->notCancelled()
+            ->when($exceptId !== null, fn (Builder $query): Builder => $query->whereKeyNot($exceptId))
+            ->get(['id', 'name', 'location', 'event_date']);
     }
 
     /**
@@ -69,6 +88,7 @@ class MobileEventRepository
         return MobileEvent::query()
             ->with('facility')
             ->withCount(['appointments as registered' => fn ($query) => $query->active()])
+            ->withPreRegisteredCounts()
             ->whereKey($eventId)
             ->firstOrFail();
     }
@@ -113,16 +133,38 @@ class MobileEventRepository
      */
     public function unitsCollectedAtDrivesInMonth(int $facilityId, Carbon $month): int
     {
-        return Donation::query()
-            ->where('facility_id', $facilityId)
+        return $this->drawnAtDrives($facilityId)
             ->whereBetween('donation_date', [
                 $month->copy()->startOfMonth(),
                 $month->copy()->endOfMonth(),
             ])
+            ->count();
+    }
+
+    /**
+     * The same bags, counted for every month that has any, keyed "YYYY-MM",
+     * so the drives screen can follow whichever month it shows.
+     *
+     * @return array<string, int>
+     */
+    public function unitsCollectedAtDrivesByMonth(int $facilityId): array
+    {
+        return $this->drawnAtDrives($facilityId)
+            ->pluck('donation_date')
+            ->countBy(fn ($date): string => Carbon::parse($date)->format('Y-m'))
+            ->all();
+    }
+
+    /**
+     * Donations at this facility's drives with a bag drawn (see above).
+     */
+    private function drawnAtDrives(int $facilityId): Builder
+    {
+        return Donation::query()
+            ->where('facility_id', $facilityId)
             ->where(fn (Builder $query) => $query
                 ->whereNotNull('paper_sheet_id')
                 ->orWhereHas('appointment', fn (Builder $appointment) => $appointment->whereNotNull('event_id')))
-            ->whereHas('collection')
-            ->count();
+            ->whereHas('collection');
     }
 }

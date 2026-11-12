@@ -28,10 +28,6 @@ class StoreMobileEventRequest extends FormRequest
             'name' => ['required', 'string', 'max:150'],
             'location' => ['required', 'string', 'max:150'],
             'event_date' => ['required', 'date_format:Y-m-d', 'after_or_equal:today'],
-            // The hard limit on active bookings; empty is no limit.
-            'max_capacity' => ['nullable', 'integer', 'min:1', 'max:100000'],
-            // A planning estimate only, never enforced.
-            'expected_participants' => ['nullable', 'integer', 'min:1', 'max:100000'],
             'start_time' => ['nullable', 'date_format:H:i'],
             'end_time' => ['nullable', 'date_format:H:i', 'after:start_time'],
             'assigned_staff' => ['nullable', 'string', 'max:255'],
@@ -52,8 +48,6 @@ class StoreMobileEventRequest extends FormRequest
             'location.required' => 'Please enter the venue for this drive.',
             'event_date.required' => 'Please choose a date for this drive.',
             'event_date.after_or_equal' => 'A drive cannot be scheduled in the past.',
-            'max_capacity.min' => 'Registration capacity must be at least one donor.',
-            'expected_participants.min' => 'Expected participants must be at least one.',
             'end_time.after' => 'The end time must be later than the start time.',
         ];
     }

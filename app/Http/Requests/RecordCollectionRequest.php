@@ -63,16 +63,16 @@ class RecordCollectionRequest extends FormRequest
 
             // The pre-printed barcode sticker: the same number is on the form,
             // every bag and tube, and the CUE slip. Each bag's unit number is
-            // built from it (see BagNumbers), which is why it is held to what
-            // a unit id may contain and short enough to leave room for the
-            // component code. Unique per facility, checked here for a friendly
+            // built from it (see BagNumbers). Digits only (project owner,
+            // 2026-11-11), and short enough to leave room for the component
+            // code. Unique per facility, checked here for a friendly
             // error; the unique index is what holds under a race, and the
             // service turns its violation into the same error.
             $prefix.'donation_barcode' => [
                 'required',
                 'string',
                 'max:30',
-                'regex:/^[A-Z0-9-]+$/',
+                'regex:/^[0-9]+$/',
                 Rule::unique('blood_collections', 'donation_barcode')
                     ->where('facility_id', $facilityId)
                     ->ignore($ignoreDonationId, 'donation_id'),
@@ -136,7 +136,7 @@ class RecordCollectionRequest extends FormRequest
             $prefix.'blood_bag_type.in' => 'A blood bag is single, double or triple.',
             $prefix.'donation_barcode.required' => 'Scan or type the donation barcode.',
             $prefix.'donation_barcode.unique' => 'This barcode is already recorded at this facility. Scan the sticker again.',
-            $prefix.'donation_barcode.regex' => 'A donation barcode may contain only letters, numbers and dashes.',
+            $prefix.'donation_barcode.regex' => 'A donation barcode may contain only numbers.',
             $prefix.'donation_barcode.max' => 'A donation barcode is at most 30 characters.',
             $prefix.'started_at.before_or_equal' => 'A collection cannot start in the future.',
             $prefix.'ended_at.before_or_equal' => 'A collection cannot end in the future.',

@@ -25,6 +25,7 @@ use App\Http\Controllers\BloodCenterDonationRecordController;
 use App\Http\Controllers\BloodCenterDonorController;
 use App\Http\Controllers\BloodCenterDonorQuestionnaireController;
 use App\Http\Controllers\BloodCenterDriveController;
+use App\Http\Controllers\BloodCenterDrivePreRegistrationController;
 use App\Http\Controllers\BloodCenterEmailTemplateController;
 use App\Http\Controllers\BloodCenterFacilityController;
 use App\Http\Controllers\BloodCenterFinancialReportController;
@@ -56,6 +57,7 @@ use App\Http\Controllers\DonorIdentityVerificationController;
 use App\Http\Controllers\DonorNotificationController;
 use App\Http\Controllers\DonorProfileController;
 use App\Http\Controllers\DonorRegistrationController;
+use App\Http\Controllers\DriveRegistrationLinkController;
 use App\Http\Controllers\EmailVerificationController;
 use App\Http\Controllers\FacilityApprovalController;
 use App\Http\Controllers\FacilityManagementController;
@@ -72,6 +74,7 @@ use App\Http\Controllers\HospitalStaffController;
 use App\Http\Controllers\HospitalStockSheetController;
 use App\Http\Controllers\HospitalTransfusionRequestController;
 use App\Http\Controllers\HospitalWeeklyRequestController;
+use App\Http\Controllers\MyActivityController;
 use App\Http\Controllers\PasswordResetController;
 use App\Http\Controllers\StaffNotificationPreferencesController;
 use App\Http\Controllers\StockThresholdController;
@@ -87,6 +90,11 @@ Route::post('/login/google', [AuthController::class, 'googleLogin'])
     ->middleware('throttle:5,1');
 Route::post('/donors/register', [DonorRegistrationController::class, 'register'])
     ->middleware('throttle:5,1');
+// Continue on the registration page: one step's fields, checked as the
+// registration would check them (the address already taken, say). Stores
+// nothing, so it is allowed more tries than the registration itself.
+Route::post('/donors/register/check', [DonorRegistrationController::class, 'checkStep'])
+    ->middleware('throttle:30,1');
 
 Route::post('/forgot-password', [PasswordResetController::class, 'sendResetLink'])
     ->middleware('throttle:3,10')
@@ -111,6 +119,8 @@ Route::post('/email/resend-verification', [EmailVerificationController::class, '
     ->name('verification.resend');
 
 Route::middleware('auth:sanctum')->group(function (): void {
+    // My activity: the signed-in user's own audit trail, in any portal.
+    Route::get('/me/activity', [MyActivityController::class, 'index']);
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::post('/logout-all', [AuthController::class, 'logoutFromAllDevices']);
     Route::post('/email/verification-notification', [EmailVerificationController::class, 'resend'])
@@ -209,6 +219,20 @@ Route::middleware('auth:sanctum')->group(function (): void {
 });
 
 Route::get('/support/contact-info', fn () => response()->json(config('donation.support')));
+
+// A drive's registration link (drive pre-registration, phase 2; project
+// owner, 2026-11-11): people without a portal account, and partner
+// organisations for their people, put themselves on the drive's list. Public
+// by design, so the token is the only key, nothing personal is ever answered,
+// and the writes have their own per-address limiter (AppServiceProvider).
+Route::prefix('drive-links/{token}')->where(['token' => '[A-Za-z0-9]{32}'])->group(function (): void {
+    Route::get('/', [DriveRegistrationLinkController::class, 'show'])
+        ->middleware('throttle:drive-link');
+    Route::post('/registrations', [DriveRegistrationLinkController::class, 'storeSelf'])
+        ->middleware('throttle:drive-registration');
+    Route::post('/group-registrations', [DriveRegistrationLinkController::class, 'storeGroup'])
+        ->middleware('throttle:drive-registration');
+});
 
 // Xendit's webhooks. Public by necessity — Xendit is the caller — and admitted
 // only with the account's callback token, compared in constant time. The body
@@ -705,6 +729,11 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
             Route::get('/lookup', [BloodCenterDonorController::class, 'lookup'])
                 ->middleware('can:appointments.verify');
 
+            // Everyone an identifier names: a household's shared mobile number
+            // finds the whole family (project owner, 2026-11-12).
+            Route::get('/lookup/matches', [BloodCenterDonorController::class, 'lookupMatches'])
+                ->middleware('can:appointments.verify');
+
             Route::post('/', [BloodCenterDonorController::class, 'store'])
                 ->middleware('can:donors.manage');
 
@@ -823,6 +852,25 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
                 ->middleware('can:drives.manage')->whereNumber('drive');
             Route::post('/{drive}/cancel', [BloodCenterDriveController::class, 'cancel'])
                 ->middleware('can:drives.manage')->whereNumber('drive');
+
+            // The drive's roster: its registration-link list, bookings and
+            // walk-ins (drive pre-registration). Staff read and tidy the list;
+            // they do not type entries in (project owner, 2026-11-11).
+            Route::get('/{drive}/registrations', [BloodCenterDrivePreRegistrationController::class, 'index'])
+                ->middleware('can:drives.view')->whereNumber('drive');
+            Route::post('/{drive}/registrations/{registration}/withdraw', [BloodCenterDrivePreRegistrationController::class, 'withdraw'])
+                ->middleware('can:drives.manage')->whereNumber(['drive', 'registration']);
+            Route::post('/{drive}/registrations/{registration}/match', [BloodCenterDrivePreRegistrationController::class, 'match'])
+                ->middleware('can:drives.manage')->whereNumber(['drive', 'registration']);
+            Route::delete('/{drive}/registrations/{registration}/match', [BloodCenterDrivePreRegistrationController::class, 'unmatch'])
+                ->middleware('can:drives.manage')->whereNumber(['drive', 'registration']);
+            // On the drive's day: check-in, the same hands as at the counter.
+            // Both go through an appointment for the drive, so the counter
+            // ties the donation to it (appointment -> drive).
+            Route::post('/{drive}/registrations/{registration}/check-in', [BloodCenterDrivePreRegistrationController::class, 'checkIn'])
+                ->middleware('can:appointments.verify')->whereNumber(['drive', 'registration']);
+            Route::post('/{drive}/walk-ins', [BloodCenterDrivePreRegistrationController::class, 'walkIn'])
+                ->middleware('can:appointments.verify')->whereNumber('drive');
         });
 
         // The Donor/Collection dashboard. donations.view, which every role at

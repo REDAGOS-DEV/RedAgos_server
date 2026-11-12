@@ -33,6 +33,9 @@ class CreateDonorTest extends TestCase
         '--birth-date' => '1995-05-20',
         '--address' => '123 Rizal Street, Davao City',
         '--blood-type' => 'o+',
+        // Required at sign-up since 2026-11-10, and the command is held to the same rules.
+        '--valid-id-type' => 'philsys',
+        '--valid-id-number' => '1234567890123456',
         '--password' => 'Sup3rSecret',
     ];
 

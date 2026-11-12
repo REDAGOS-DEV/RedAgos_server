@@ -61,17 +61,7 @@ class DonorService
         $normalizedEmail = Str::lower(trim($payload['email']));
         $normalizedPhone = $this->normalizePhilippinePhone($payload['phone']);
 
-        if ($this->donorRepository->existsEmail($normalizedEmail)) {
-            throw ValidationException::withMessages([
-                'email' => ['This email address is already registered.'],
-            ]);
-        }
-
-        if ($this->donorRepository->existsPhone($normalizedPhone)) {
-            throw ValidationException::withMessages([
-                'phone' => ['This phone number is already registered.'],
-            ]);
-        }
+        $this->assertRegistrationAvailable($payload);
 
         $donor = DB::transaction(function () use ($payload, $normalizedEmail, $normalizedPhone, $verified): User {
             // A donor who does not know their type registers without one. The
@@ -438,13 +428,26 @@ class DonorService
         // the verification and mail a code to the new address.
         $emailChanged = $email !== $donor->email;
 
-        DB::transaction(function () use ($donor, $profile, $bloodTypeId, $payload, $email, $emailChanged): void {
+        // The donor keeps the number they have, even one staff marked Shared
+        // for their household; a new number is their own, so no other account
+        // may hold it (project owner, 2026-11-12).
+        $phone = $this->normalizePhilippinePhone($payload['phone']);
+        $phoneChanged = $phone !== $donor->phone;
+
+        if ($phoneChanged && $this->donorRepository->existsPhone($phone, $donor->id)) {
+            throw ValidationException::withMessages([
+                'phone' => ['This phone number is already registered.'],
+            ]);
+        }
+
+        DB::transaction(function () use ($donor, $profile, $bloodTypeId, $payload, $email, $emailChanged, $phone, $phoneChanged): void {
             $this->donorRepository->updateUser($donor, [
                 'first_name' => trim($payload['first_name']),
                 'middle_name' => $this->trimmedOrNull($payload['middle_name'] ?? null),
                 'last_name' => trim($payload['last_name']),
                 'email' => $email,
-                'phone' => $this->normalizePhilippinePhone($payload['phone']),
+                'phone' => $phone,
+                ...($phoneChanged ? ['phone_shared' => false] : []),
             ]);
 
             if ($emailChanged) {
@@ -663,6 +666,33 @@ class DonorService
     {
         return $this->eligibilityRepository->lastBloodDrawnAt($profile->donor_id)
             ?? $profile->last_donation_date;
+    }
+
+    /**
+     * The email address and phone number, whichever the payload holds, are
+     * not on another account. Compared as they would be stored (lower-case
+     * address, E.164 phone), which the request's unique rules do not do.
+     *
+     * Shared by register() and the registration page's step check, so Continue
+     * says what Create account would.
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    public function assertRegistrationAvailable(array $payload): void
+    {
+        if (filled($payload['email'] ?? null)
+            && $this->donorRepository->existsEmail(Str::lower(trim($payload['email'])))) {
+            throw ValidationException::withMessages([
+                'email' => ['This email address is already registered.'],
+            ]);
+        }
+
+        if (filled($payload['phone'] ?? null)
+            && $this->donorRepository->existsPhone($this->normalizePhilippinePhone($payload['phone']))) {
+            throw ValidationException::withMessages([
+                'phone' => ['This phone number is already registered.'],
+            ]);
+        }
     }
 
     private function normalizePhilippinePhone(string $phone): string
