@@ -61,17 +61,7 @@ class DonorService
         $normalizedEmail = Str::lower(trim($payload['email']));
         $normalizedPhone = $this->normalizePhilippinePhone($payload['phone']);
 
-        if ($this->donorRepository->existsEmail($normalizedEmail)) {
-            throw ValidationException::withMessages([
-                'email' => ['This email address is already registered.'],
-            ]);
-        }
-
-        if ($this->donorRepository->existsPhone($normalizedPhone)) {
-            throw ValidationException::withMessages([
-                'phone' => ['This phone number is already registered.'],
-            ]);
-        }
+        $this->assertRegistrationAvailable($payload);
 
         $donor = DB::transaction(function () use ($payload, $normalizedEmail, $normalizedPhone, $verified): User {
             // A donor who does not know their type registers without one. The
@@ -676,6 +666,33 @@ class DonorService
     {
         return $this->eligibilityRepository->lastBloodDrawnAt($profile->donor_id)
             ?? $profile->last_donation_date;
+    }
+
+    /**
+     * The email address and phone number, whichever the payload holds, are
+     * not on another account. Compared as they would be stored (lower-case
+     * address, E.164 phone), which the request's unique rules do not do.
+     *
+     * Shared by register() and the registration page's step check, so Continue
+     * says what Create account would.
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    public function assertRegistrationAvailable(array $payload): void
+    {
+        if (filled($payload['email'] ?? null)
+            && $this->donorRepository->existsEmail(Str::lower(trim($payload['email'])))) {
+            throw ValidationException::withMessages([
+                'email' => ['This email address is already registered.'],
+            ]);
+        }
+
+        if (filled($payload['phone'] ?? null)
+            && $this->donorRepository->existsPhone($this->normalizePhilippinePhone($payload['phone']))) {
+            throw ValidationException::withMessages([
+                'phone' => ['This phone number is already registered.'],
+            ]);
+        }
     }
 
     private function normalizePhilippinePhone(string $phone): string
