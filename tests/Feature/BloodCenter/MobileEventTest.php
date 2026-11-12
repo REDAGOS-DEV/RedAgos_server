@@ -281,7 +281,10 @@ class MobileEventTest extends TestCase
         $this->actingAs($this->staff)
             ->getJson('/api/blood-center/drives')
             ->assertOk()
-            ->assertJsonPath('units_collected_month', 4);
+            ->assertJsonPath('units_collected_month', 4)
+            // Per month too, for the month strip: this month's four, last month's one.
+            ->assertJsonPath('units_collected_by_month.'.now()->format('Y-m'), 4)
+            ->assertJsonPath('units_collected_by_month.'.now()->subMonthNoOverflow()->format('Y-m'), 1);
     }
 
     /**

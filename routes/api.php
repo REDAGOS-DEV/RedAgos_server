@@ -72,6 +72,7 @@ use App\Http\Controllers\HospitalStaffController;
 use App\Http\Controllers\HospitalStockSheetController;
 use App\Http\Controllers\HospitalTransfusionRequestController;
 use App\Http\Controllers\HospitalWeeklyRequestController;
+use App\Http\Controllers\MyActivityController;
 use App\Http\Controllers\PasswordResetController;
 use App\Http\Controllers\StaffNotificationPreferencesController;
 use App\Http\Controllers\StockThresholdController;
@@ -111,6 +112,8 @@ Route::post('/email/resend-verification', [EmailVerificationController::class, '
     ->name('verification.resend');
 
 Route::middleware('auth:sanctum')->group(function (): void {
+    // My activity: the signed-in user's own audit trail, in any portal.
+    Route::get('/me/activity', [MyActivityController::class, 'index']);
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::post('/logout-all', [AuthController::class, 'logoutFromAllDevices']);
     Route::post('/email/verification-notification', [EmailVerificationController::class, 'resend'])
