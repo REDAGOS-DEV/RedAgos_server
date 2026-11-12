@@ -298,6 +298,106 @@ class DriveLifecycleTest extends TestCase
         $this->donorBooks($drive)->assertCreated();
     }
 
+    // --- No duplicates: same day, same venue (project owner, 2026-11-12) -------
+
+    public function test_a_second_drive_on_the_same_day_at_the_same_venue_is_refused(): void
+    {
+        $existing = $this->drive(['name' => 'UM Matina Drive', 'location' => 'University of Mindanao, Matina, Davao City']);
+
+        // Another name, other hours, and the venue typed with other capitals and spaces.
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/drives', $this->payload([
+                'name' => 'UM Bloodletting',
+                'location' => '  university of mindanao,  Matina, Davao City ',
+                'start_time' => '13:00',
+                'end_time' => '17:00',
+            ]))
+            ->assertUnprocessable()
+            ->assertJsonPath('code', 'drive_duplicate')
+            ->assertJsonPath(
+                'errors.location.0',
+                'A drive at University of Mindanao, Matina, Davao City is already set for '
+                    .$existing->event_date->format('j M Y').' (UM Matina Drive). Edit that drive instead.'
+            );
+
+        $this->assertSame(1, MobileEvent::query()->count());
+    }
+
+    public function test_a_draft_counts_as_a_duplicate_but_a_cancelled_drive_does_not(): void
+    {
+        $draft = MobileEvent::factory()->draft()->create([
+            'facility_id' => $this->facility->id,
+            'location' => 'SM Lanang Premier, Davao City',
+            'event_date' => now()->addWeek()->toDateString(),
+        ]);
+        MobileEvent::factory()->cancelled()->create([
+            'facility_id' => $this->facility->id,
+            'location' => 'University of Mindanao, Matina, Davao City',
+            'event_date' => now()->addWeek()->toDateString(),
+        ]);
+
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/drives', $this->payload(['location' => $draft->location]))
+            ->assertUnprocessable()
+            ->assertJsonPath('code', 'drive_duplicate');
+
+        // The cancelled one can be scheduled again on its day.
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/drives', $this->payload())
+            ->assertCreated();
+    }
+
+    public function test_another_day_another_venue_or_another_centre_is_not_a_duplicate(): void
+    {
+        $this->drive(['location' => 'University of Mindanao, Matina, Davao City']);
+        MobileEvent::factory()->create([
+            'facility_id' => Facility::factory()->approved()->create()->id,
+            'location' => 'SM Lanang Premier, Davao City',
+            'event_date' => now()->addWeek()->toDateString(),
+        ]);
+
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/drives', $this->payload(['event_date' => now()->addWeeks(2)->toDateString()]))
+            ->assertCreated();
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/drives', $this->payload(['location' => 'University of Mindanao, Bolton, Davao City']))
+            ->assertCreated();
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/drives', $this->payload(['location' => 'SM Lanang Premier, Davao City']))
+            ->assertCreated();
+    }
+
+    public function test_an_edit_cannot_move_a_drive_onto_another_at_the_same_venue(): void
+    {
+        $this->drive(['location' => 'University of Mindanao, Matina, Davao City']);
+        $later = $this->drive([
+            'location' => 'University of Mindanao, Matina, Davao City',
+            'event_date' => now()->addWeeks(2)->toDateString(),
+        ]);
+
+        $this->actingAs($this->staff)
+            ->patchJson("/api/blood-center/drives/{$later->id}", $this->payload())
+            ->assertUnprocessable()
+            ->assertJsonPath('code', 'drive_duplicate');
+
+        $this->assertSame(now()->addWeeks(2)->toDateString(), $later->fresh()->event_date->toDateString());
+    }
+
+    public function test_an_edit_that_keeps_the_day_and_venue_is_never_refused(): void
+    {
+        // A pair from before the rule: renaming either one still saves.
+        $this->drive(['location' => 'University of Mindanao, Matina, Davao City']);
+        $twin = $this->drive(['location' => 'University of Mindanao, Matina, Davao City']);
+
+        $this->actingAs($this->staff)
+            ->patchJson("/api/blood-center/drives/{$twin->id}", $this->payload([
+                'name' => 'UM Matina Drive (Gym)',
+                'location' => 'UNIVERSITY OF MINDANAO, Matina, Davao City',
+            ]))
+            ->assertOk()
+            ->assertJsonPath('name', 'UM Matina Drive (Gym)');
+    }
+
     /**
      * "Should a booked drive be movable with the donors notified - yes"
      * (project owner, 2026-11-12).

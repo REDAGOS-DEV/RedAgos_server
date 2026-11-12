@@ -19,6 +19,7 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Str;
 use Throwable;
 
 /**
@@ -99,6 +100,8 @@ class MobileEventService
         $facility = $this->requireFacility($staff);
         $publish = (bool) ($payload['publish'] ?? true);
 
+        $this->assertNotDuplicate($facility, (string) $payload['event_date'], (string) $payload['location']);
+
         $event = $this->mobileEventRepository->create([
             ...array_intersect_key($payload, array_flip(self::EDITABLE)),
             // Both come from the token, never from the payload.
@@ -165,6 +168,12 @@ class MobileEventService
                         $this->donors($checkedIn).' checked in at this drive. Finish or close their visits at the counter before moving it.'
                     );
                 }
+            }
+
+            // Only a new day or venue can make it another drive's duplicate, so
+            // an edit that keeps both never trips over a pair from before the rule.
+            if ($dateMoved || $this->venueKey($drive->location) !== $this->venueKey($drive->getOriginal('location'))) {
+                $this->assertNotDuplicate($facility, $drive->event_date->toDateString(), (string) $drive->location, $drive->id);
             }
 
             $changed = array_keys($drive->getDirty());
@@ -450,6 +459,39 @@ class MobileEventService
         }
 
         return $drive;
+    }
+
+    /**
+     * Refuse a drive on the same day at the same venue as another of the
+     * centre's drives that was not cancelled (project owner, 2026-11-12:
+     * duplicates are blocked; "the same" is date + venue). A draft counts; a
+     * cancelled drive does not, so it can be scheduled again.
+     */
+    private function assertNotDuplicate(Facility $facility, string $date, string $location, ?int $exceptId = null): void
+    {
+        $venue = $this->venueKey($location);
+
+        $existing = $this->mobileEventRepository->notCancelledOnDate($facility->id, $date, $exceptId)
+            ->first(fn (MobileEvent $drive): bool => $this->venueKey($drive->location) === $venue);
+
+        if ($existing !== null) {
+            throw $this->refuseField(
+                'location',
+                'drive_duplicate',
+                "A drive at {$existing->location} is already set for "
+                    .Carbon::parse($date)->format('j M Y')
+                    ." ({$existing->name}). Edit that drive instead."
+            );
+        }
+    }
+
+    /**
+     * A venue as it is compared for duplicates: capital letters and extra
+     * spaces ignored.
+     */
+    private function venueKey(?string $location): string
+    {
+        return Str::of((string) $location)->squish()->lower()->value();
     }
 
     /**

@@ -2825,3 +2825,16 @@ Opened from View, the dialog offers Edit or Review when the row allows it. Every
 **DECISION (draft or publish):** the create dialog offers both, as two buttons: **Save as draft** (`publish: false`) and **Create and publish** (`publish: true`). This replaces the "Publish to donors now" checkbox. The server is unchanged.
 
 **Client:** the edit dialog no longer locks the date and hours. When the edit would move a booked drive (`utils/drives` `movesBookings()`), it warns: "N donors are booked. Their bookings move with the drive, and everyone booked or on its list is notified."
+
+## No duplicate drives: same day, same venue
+
+**SOURCE:** the project owner, 2026-11-12. Asked whether a drive created with the same details is saved, chose: block it, with "the same" meaning the same date and venue.
+
+**DECISION:**
+- Creating or editing a drive is refused (422 `drive_duplicate` on `location`) when another of the centre's drives is set for that day at that venue. The message names the existing drive: "A drive at {venue} is already set for {date} ({name}). Edit that drive instead."
+- Venues are compared with capital letters and extra spaces ignored (`MobileEventService::venueKey()`). The name and hours are not compared.
+- A draft counts. A cancelled drive does not, so it can be scheduled again. Another centre's drives never count.
+- An edit is checked only when it changes the day or the venue, so renaming one of a pair saved before this rule still works.
+- Checked in the service, not by a database index: the venue match is case- and space-insensitive and the tests run on SQLite. Two staff saving the same drive at the same instant could still both get through. The form's buttons are disabled while saving, so one person cannot double-submit.
+
+**Client:** unchanged. The drive dialog already shows the server's first field error.

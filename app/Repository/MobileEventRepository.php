@@ -50,6 +50,22 @@ class MobileEventRepository
     }
 
     /**
+     * The facility's drives on one day that were not cancelled: what a new or
+     * moved drive is checked against for a duplicate. A draft counts.
+     *
+     * @return Collection<int, MobileEvent>
+     */
+    public function notCancelledOnDate(int $facilityId, string $date, ?int $exceptId = null): Collection
+    {
+        return MobileEvent::query()
+            ->where('facility_id', $facilityId)
+            ->whereDate('event_date', $date)
+            ->notCancelled()
+            ->when($exceptId !== null, fn (Builder $query): Builder => $query->whereKeyNot($exceptId))
+            ->get(['id', 'name', 'location', 'event_date']);
+    }
+
+    /**
      * One of the facility's drives, locked for the rest of the transaction.
      *
      * The same row lock bookings take (AppointmentRepository::lockDrive()), so
