@@ -50,6 +50,33 @@ class AuditLogRepository
     }
 
     /**
+     * One user's own trail, wherever it was filed: what they did, and the
+     * sign-ins refused on their account (written with nobody signed in, the
+     * account as the subject). Filters: type, from, to. Newest first.
+     *
+     * @param  array<string, mixed>  $filters
+     * @return LengthAwarePaginator<int, AuditLog>
+     */
+    public function paginateOwn(User $user, array $filters, int $perPage): LengthAwarePaginator
+    {
+        return AuditLog::query()
+            ->with(['actor' => fn ($actor) => $actor->withTrashed()])
+            ->where(fn (Builder $q) => $q
+                ->where('actor_id', $user->id)
+                ->orWhere(fn (Builder $refused) => $refused
+                    ->whereNull('actor_id')
+                    ->where('action', 'auth.sign_in_failed')
+                    ->where('auditable_type', User::class)
+                    ->where('auditable_id', (string) $user->id)))
+            ->when(isset($filters['type']), fn (Builder $q) => $q->whereIn('action', AuditActions::ofType($filters['type'])))
+            ->when(isset($filters['from']), fn (Builder $q) => $q->where('created_at', '>=', OperationalDay::boundsFor($filters['from'])[0]))
+            ->when(isset($filters['to']), fn (Builder $q) => $q->where('created_at', '<=', OperationalDay::boundsFor($filters['to'])[1]))
+            ->orderByDesc('created_at')
+            ->orderByDesc('id')
+            ->paginate($perPage);
+    }
+
+    /**
      * @param  array<string, mixed>  $filters
      * @return LengthAwarePaginator<int, AuditLog>
      */

@@ -79,6 +79,8 @@ class MobileEventService
                 $facility->id,
                 Carbon::today()
             ),
+            // The same, per month ("YYYY-MM" => bags), for the month strip.
+            'units_collected_by_month' => $this->mobileEventRepository->unitsCollectedAtDrivesByMonth($facility->id),
             'drives' => $drives->map(fn (MobileEvent $event): array => $this->format($event))->all(),
         ];
     }
