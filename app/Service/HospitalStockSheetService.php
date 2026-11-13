@@ -311,9 +311,9 @@ class HospitalStockSheetService
             'transfused' => $unit->status === HospitalUnitStatus::Transfused,
             // Held for a patient but not yet crossmatched: on the shelf, marked.
             'tagged' => $unit->status === HospitalUnitStatus::TagAssigned,
-            // Untagged and held for a blood donor partner (project owner,
-            // 2026-11-07). Once tagged, the bag prints as tagged.
-            'reserved' => $unit->status === HospitalUnitStatus::Available && $unit->isPartnerReserved(),
+            // Set aside for the blood donor partner program (project owner,
+            // 2026-11-07; its own status since 2026-11-13). Printed purple.
+            'reserved' => $unit->status === HospitalUnitStatus::PartnerReserved,
         ];
     }
 

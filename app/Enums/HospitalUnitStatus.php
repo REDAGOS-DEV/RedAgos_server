@@ -18,12 +18,19 @@ namespace App\Enums;
  * Received is where every bag starts (project owner, 2026-10-11): it has
  * arrived and is in the hospital's custody, but is not stock until inventory
  * staff stock it in, naming where it is stored. Only then is it Available.
+ *
+ * Partner Reserved (project owner, 2026-11-13) is a bag set aside for the
+ * blood donor partner program. It stays in storage but is not issuable: it
+ * cannot be tagged to a patient and counts in no available figure, until
+ * staff release it back to Available. It still expires and may be discarded.
  */
 enum HospitalUnitStatus: string
 {
     case Received = 'received';
 
     case Available = 'available';
+
+    case PartnerReserved = 'partner_reserved';
 
     case TagAssigned = 'tag_assigned';
 
@@ -55,6 +62,7 @@ enum HospitalUnitStatus: string
         return match ($this) {
             self::Received => 'Awaiting stock-in',
             self::Available => 'Available',
+            self::PartnerReserved => 'Reserved for Donor Partner',
             self::TagAssigned => 'Tag Assigned',
             self::TagCrossmatched => 'Tag Crossmatched',
             self::PendingReturn => 'Pending Return',
@@ -78,7 +86,9 @@ enum HospitalUnitStatus: string
         return match ($this) {
             // Damaged on arrival is discarded before it is ever stocked.
             self::Received => [self::Available, self::Expired, self::Discarded],
-            self::Available => [self::TagAssigned, self::Expired, self::Discarded],
+            self::Available => [self::TagAssigned, self::PartnerReserved, self::Expired, self::Discarded],
+            // Released back to the shelf, or lost to it like any stored bag.
+            self::PartnerReserved => [self::Available, self::Expired, self::Discarded],
             self::TagAssigned => [self::TagCrossmatched, self::Available],
             self::TagCrossmatched => [self::Transfused, self::PendingReturn],
             self::PendingReturn => [self::Available, self::Discarded],

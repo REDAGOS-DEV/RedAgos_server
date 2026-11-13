@@ -422,28 +422,29 @@ class HospitalInventoryService
     }
 
     /**
-     * Reserve a bag on the shelf for a blood donor partner.
+     * Reserve a bag on the shelf for the blood donor partner program.
      *
-     * Project owner, 2026-11-07: staff open a bag on Blood Bank Inventory and
-     * reserve it for a blood donor partner, and the Inventory Report prints it
-     * purple. Only an untagged bag in date, on the shelf, may be reserved.
-     *
-     * The bag stays Available: the reservation is a mark, not a status. It may
-     * still be tagged to a patient, and the reservation outlasts the tag, so a
-     * tag that ends returns the bag to its partner rather than to the shelf at
-     * large. Staff release it when the partner no longer needs it.
-     *
-     * The partner's name lives on the bag only: audit_logs carries identifiers.
+     * Project owner, 2026-11-13: a reserved bag is set aside for the program
+     * alone. It becomes Partner Reserved, a status of its own: it stays in
+     * storage but cannot be tagged to a patient and counts in no available
+     * figure (the dashboard, the rings, thresholds, what a request form
+     * offers), until staff release it. No partner is named. Only an untagged
+     * bag in date, on the shelf, may be reserved. The Inventory Report still
+     * prints it purple.
      *
      * @return array<string, mixed>
      */
-    public function reserveForPartner(User $user, string $unitId, string $partner): array
+    public function reserveForPartner(User $user, string $unitId): array
     {
         $facilityId = $this->requireFacilityId($user);
         $now = now()->startOfSecond()->toImmutable();
 
-        $unit = DB::transaction(function () use ($user, $unitId, $facilityId, $partner, $now): HospitalUnit {
+        $unit = DB::transaction(function () use ($user, $unitId, $facilityId, $now): HospitalUnit {
             $unit = $this->lockUnit($unitId, $facilityId);
+
+            if ($unit->status === HospitalUnitStatus::PartnerReserved) {
+                throw $this->refuse(409, 'unit_already_reserved', 'This bag is already reserved for the blood donor partner program.');
+            }
 
             if ($unit->status !== HospitalUnitStatus::Available) {
                 throw $this->refuse(409, 'unit_not_available', match ($unit->status) {
@@ -454,30 +455,24 @@ class HospitalInventoryService
                 });
             }
 
-            if ($unit->isPartnerReserved()) {
-                throw $this->refuse(409, 'unit_already_reserved', 'This bag is already reserved for a blood donor partner.');
-            }
-
             $this->guardBagInDate($unit);
 
-            $unit->partner_name = trim($partner);
             $unit->partner_reserved_at = $now;
             $unit->partner_reserved_by = $user->id;
-            $unit->save();
+            $this->advance($unit, HospitalUnitStatus::PartnerReserved);
 
-            $this->audit($user, 'hospital_inventory.partner_reserved', $unit, null, $unit->status);
+            $this->audit($user, 'hospital_inventory.partner_reserved', $unit, null, HospitalUnitStatus::Available);
 
             return $unit;
         });
 
-        return $this->respond('Blood unit reserved for the blood donor partner.', $unit, $facilityId);
+        return $this->respond('Blood unit reserved for the blood donor partner program.', $unit, $facilityId);
     }
 
     /**
-     * Release a bag's blood donor partner reservation.
+     * Release a bag from the blood donor partner program back to the shelf.
      *
-     * Allowed whatever the bag's stage: a tagged bag keeps its patient, and an
-     * untagged one is free to tag to anybody.
+     * It is Available again: issuable, and free to tag to any patient.
      *
      * @return array<string, mixed>
      */
@@ -488,21 +483,20 @@ class HospitalInventoryService
         $unit = DB::transaction(function () use ($user, $unitId, $facilityId): HospitalUnit {
             $unit = $this->lockUnit($unitId, $facilityId);
 
-            if (! $unit->isPartnerReserved()) {
-                throw $this->refuse(409, 'unit_not_reserved', 'This bag is not reserved for a blood donor partner.');
+            if ($unit->status !== HospitalUnitStatus::PartnerReserved) {
+                throw $this->refuse(409, 'unit_not_reserved', 'This bag is not reserved for the blood donor partner program.');
             }
 
-            $unit->partner_name = null;
             $unit->partner_reserved_at = null;
             $unit->partner_reserved_by = null;
-            $unit->save();
+            $this->advance($unit, HospitalUnitStatus::Available);
 
-            $this->audit($user, 'hospital_inventory.partner_released', $unit, null, $unit->status);
+            $this->audit($user, 'hospital_inventory.partner_released', $unit, null, HospitalUnitStatus::PartnerReserved);
 
             return $unit;
         });
 
-        return $this->respond('Reservation released.', $unit, $facilityId);
+        return $this->respond('Reservation released. The bag is available again.', $unit, $facilityId);
     }
 
     /**
@@ -915,6 +909,7 @@ class HospitalInventoryService
         return match ($status) {
             HospitalUnitStatus::TagAssigned, HospitalUnitStatus::TagCrossmatched => 'This bag is already tagged to another patient.',
             HospitalUnitStatus::PendingReturn => 'This bag is awaiting return to storage. Confirm the return before tagging it.',
+            HospitalUnitStatus::PartnerReserved => 'This bag is reserved for the blood donor partner program. Release the reservation before tagging it to a patient.',
             default => "A bag that is {$status->label()} cannot be tagged.",
         };
     }
@@ -958,9 +953,10 @@ class HospitalInventoryService
             'stocked_at' => ($unit->stocked_at ?? ($unit->status === HospitalUnitStatus::Received ? null : $unit->created_at))?->toIso8601String(),
             'stocked_by' => $unit->stockedBy === null ? null : trim($unit->stockedBy->first_name.' '.$unit->stockedBy->last_name),
             'storage_location' => $unit->storage_location,
-            // Held for a blood donor partner (project owner, 2026-11-07).
+            // Set aside for the blood donor partner program (status
+            // partner_reserved since 2026-11-13): when, and by whom. No partner
+            // is named.
             'partner_reservation' => $unit->isPartnerReserved() ? [
-                'partner' => $unit->partner_name,
                 'reserved_at' => $unit->partner_reserved_at?->toIso8601String(),
                 'reserved_by' => $unit->partnerReservedBy?->signatureName(),
             ] : null,
