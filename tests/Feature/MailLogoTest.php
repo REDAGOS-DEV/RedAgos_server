@@ -20,6 +20,10 @@ class MailLogoTest extends TestCase
 {
     private const LOGO = 'https://portal.example.test/images/mail-logo.png';
 
+    // Not an example.com address: RedAgos never mails those (ReservedContacts),
+    // and the array transport sends nothing anywhere.
+    private const DONOR = 'donor@redagos.org';
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -34,7 +38,7 @@ class MailLogoTest extends TestCase
 
     public function test_the_logo_is_linked_and_nothing_is_attached(): void
     {
-        Notification::route('mail', 'donor@example.com')->notifyNow(new VerifyEmailNotification('123456'));
+        Notification::route('mail', self::DONOR)->notifyNow(new VerifyEmailNotification('123456'));
 
         $email = $this->lastSent();
 
@@ -46,7 +50,7 @@ class MailLogoTest extends TestCase
     {
         config(['app.frontend_url' => 'https://portal.example.test', 'app.url' => 'https://api.example.test']);
 
-        Notification::route('mail', 'donor@example.com')->notifyNow(new VerifyEmailNotification('123456'));
+        Notification::route('mail', self::DONOR)->notifyNow(new VerifyEmailNotification('123456'));
 
         $html = (string) $this->lastSent()->getHtmlBody();
 
@@ -56,7 +60,7 @@ class MailLogoTest extends TestCase
 
     public function test_a_centres_own_email_shows_no_logo(): void
     {
-        Mail::to('donor@example.com')->sendNow(new DonorCenterEmail(
+        Mail::to(self::DONOR)->sendNow(new DonorCenterEmail(
             'SNBC', 'snbc@example.com', null, null, 'Thank you', ['Thank you for donating.'],
         ));
 
