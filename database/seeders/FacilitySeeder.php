@@ -21,12 +21,12 @@ class FacilitySeeder extends Seeder
         FacilityType::firstOrCreate(['name' => 'blood_bank']);
 
         $centers = [
-            ['Sub-National Blood Center', 'Davao City', 'Mon - Fri 8 AM - 3 PM', '08:00', '15:00'],
-            ['PRC Davao Blood Services', 'Davao City', 'Mon - Sat 7 AM - 4 PM', '07:00', '16:00'],
-            ['SPMC Blood Bank', 'Davao City', '24/7', '00:00', '23:30'],
+            ['Sub-National Blood Center', 'SNBC', 'Davao City', 'Mon - Fri 8 AM - 3 PM', '08:00', '15:00'],
+            ['PRC Davao Blood Services', 'PRC', 'Davao City', 'Mon - Sat 7 AM - 4 PM', '07:00', '16:00'],
+            ['SPMC Blood Bank', 'SPMC', 'Davao City', '24/7', '00:00', '23:30'],
         ];
 
-        foreach ($centers as [$name, $address, $hours, $startsAt, $endsAt]) {
+        foreach ($centers as [$name, $abbreviation, $address, $hours, $startsAt, $endsAt]) {
             // facilities soft-deletes and carries unique(facility_type_id, name),
             // so a trashed row must be restored rather than re-inserted.
             $facility = Facility::withTrashed()->firstOrNew([
@@ -47,6 +47,10 @@ class FacilitySeeder extends Seeder
                 'slots_start_at' => $startsAt,
                 'slots_end_at' => $endsAt,
             ]);
+
+            // Every bag the centre books starts with it (BagNumbers). Only
+            // set where there is none: once a bag carries it, it is fixed.
+            $facility->abbreviation ??= $abbreviation;
 
             // status is not mass-assignable by design, so it is set directly.
             // These are the centres donors already book against; they are

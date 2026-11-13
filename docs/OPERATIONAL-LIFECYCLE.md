@@ -22,43 +22,43 @@ A step-by-step guide to the whole internal process, from the donor's QR code bei
 
 ## 1. The process at a glance
 
-| # | Process | Who does it (role and login email) | Result in the system | Next |
+| # | Process | Who does it (role and SNBC login) | Result in the system | Next |
 |---|---|---|---|---|
-| | **Collection** (front desk and counter) | **Head (approves change requests):**<br>Donor Screening Physician<br>`screening.physician@redagos.test` | | |
-| 1 | **Scan the QR** (check in) | **Medical Receptionist**<br>`medical.receptionist@redagos.test` | Donor identified; appointment `scheduled` → `confirmed` | 2 |
-| 2 | **Open the donation** | **Medical Receptionist**<br>`medical.receptionist@redagos.test` | Donation `registered` | 3 |
-| 3 | **Screening: review the questionnaire** | **Donor Screening Physician**<br>`screening.physician@redagos.test` | Answers read, and changed where needed | 4 |
-| 4 | **Physical screening** | **Donor Screening Physician**<br>`screening.physician@redagos.test` | Vitals and the physical exam recorded | 5 |
-| 5 | **Accept or defer** | **Donor Screening Physician**<br>`screening.physician@redagos.test` | `screening` (accepted) or `rejected` (deferred; ends here) | 6 |
-| 6 | **Collect the blood** | **Phlebotomist**<br>`phlebotomist@redagos.test`<br>or **Apheresis Specialist**<br>`apheresis.specialist@redagos.test` | Donation `collected`, with its barcode sticker | 7 and 9, together |
-| | **Testing** (starts together with Processing) | **Head (approves change requests):**<br>Laboratory Supervisor<br>`lab.supervisor@redagos.test` | | |
-| 7 | **Testing: blood typing** | **Serology Technologist**<br>`serology.technologist@redagos.test`<br>or **Laboratory Supervisor**<br>`lab.supervisor@redagos.test` | Immunohematology clearance token | 12 |
-| 8 | **Testing: serology (TTI)** | **Serology Technologist**<br>`serology.technologist@redagos.test`<br>or **Laboratory Supervisor**<br>`lab.supervisor@redagos.test` | TTI clearance token, or `rejected` + counselling referral | 12 |
-| | **Processing** (starts together with Testing) | **Head (approves change requests):**<br>Component Technologist<br>`component.technologist@redagos.test` | | |
-| 9 | **Processing: declare components, print base labels** | **Processing Assistant**<br>`processing.assistant@redagos.test`<br>or **Component Technologist**<br>`component.technologist@redagos.test` | Bags and volumes declared | 10 |
-| 10 | **Processing: complete** | **Component Technologist**<br>`component.technologist@redagos.test` | Donation `completed` (bags handed to Issuance) | 11 |
-| | **Issuance** (stock) | **Head (approves change requests):**<br>Inventory Control Officer (ICO)<br>`inventory.control.officer@redagos.test` | | |
-| 11 | **Book in** (Stock Intake) | **ICO**<br>`inventory.control.officer@redagos.test` | Bags `quarantined` | 12 |
-| 12 | **Release from quarantine** | **ICO**<br>`inventory.control.officer@redagos.test` | Bags `available`; final labels printed | 13, 15 |
-| 13 | **Shelf monitoring** (continuous) | **ICO**<br>`inventory.control.officer@redagos.test`<br>**Dispatch Coordinator** (view)<br>`dispatch.coordinator@redagos.test`<br>**IT Data Entry Clerk** (view, audit)<br>`it.data.clerk@redagos.test`<br>**Center Admin**<br>`supervisor@redagos.test` | Minimums watched; expired bags found | 15 |
-| | **Hospital Blood Bank** (no departments, so no head) | Every account does every action | | |
-| 14 | **Raise a request** | **Any blood-bank account**<br>`user@redagos.ph` (SPMC Blood Bank) | Request `pending` at the center | 15 |
-| | **Issuance** (requests) | **Head (approves change requests):**<br>ICO<br>`inventory.control.officer@redagos.test` | | |
-| 15 | **Review and tag** (patient request) or **confirm** (replenishment) | **ICO**<br>`inventory.control.officer@redagos.test`<br>Confirm or reject: **ICO** or **Dispatch Coordinator**<br>`dispatch.coordinator@redagos.test` | Patient request: bags tagged, billing statement raised. Replenishment: order confirmed, nothing held | 16 (patient), 17 (replenishment) |
-| | **Billing** | **Head (approves change requests):**<br>Billing Supervisor<br>`billing.supervisor@redagos.test` | | |
-| 16 | **Billing** | **Billing Clerk**<br>`billing.clerk@redagos.test`<br>or **Billing Supervisor**<br>`billing.supervisor@redagos.test` | Statement `paid` or `subsidised` (taken at the Billing Counter) | 17 |
-| | **Issuance** (dispatch) | **Head (approves change requests):**<br>ICO<br>`inventory.control.officer@redagos.test` | | |
-| 17 | **Dispatch** | **Dispatch Coordinator**<br>`dispatch.coordinator@redagos.test`<br>or **ICO**<br>`inventory.control.officer@redagos.test` | Bags `issued`; request Partially Fulfilled / Fulfilled | 18 |
-| | **Hospital Blood Bank** (roles since 2026-10-11) | **Blood Bank Head** (every action; keeps the staff):<br>`user@redagos.ph` | | |
-| 18 | **Confirm receipt** | **Requesting Staff** or the **Head** | Bags enter the hospital's custody as `received` (awaiting stock-in) | 18b |
-| 18b | **Stock in** | **Inventory Staff** or the **Head** | Bags `available`, each with its storage location (required) | 19 |
-| 19 | **Tag, crossmatch, transfuse** | **Inventory Staff** or the **Head** | `tag_assigned` → `tag_crossmatched` → `transfused` | End |
+| | **Collection** (front desk and counter) | **Head (approves change requests):**<br>Donor Screening Physician<br>`snbc-screening-physician` | | |
+| 1 | **Scan the QR** (check in) | **Medical Receptionist**<br>`snbc-medical-receptionist` | Donor identified; appointment `scheduled` → `confirmed` | 2 |
+| 2 | **Open the donation** | **Medical Receptionist**<br>`snbc-medical-receptionist` | Donation `registered` | 3 |
+| 3 | **Screening: review the questionnaire** | **Donor Screening Physician**<br>`snbc-screening-physician` | Answers read, and changed where needed | 4 |
+| 4 | **Physical screening** | **Donor Screening Physician**<br>`snbc-screening-physician` | Vitals and the physical exam recorded | 5 |
+| 5 | **Accept or defer** | **Donor Screening Physician**<br>`snbc-screening-physician` | `screening` (accepted) or `rejected` (deferred; ends here) | 6 |
+| 6 | **Collect the blood** | **Phlebotomist**<br>`snbc-phlebotomist`<br>or **Apheresis Specialist**<br>`snbc-apheresis-specialist` | Donation `collected`, with its barcode sticker | 7 and 9, together |
+| | **Testing** (starts together with Processing) | **Head (approves change requests):**<br>Laboratory Supervisor<br>`snbc-lab-supervisor` | | |
+| 7 | **Testing: blood typing** | **Serology Technologist**<br>`snbc-serology-technologist`<br>or **Laboratory Supervisor**<br>`snbc-lab-supervisor` | Immunohematology clearance token | 12 |
+| 8 | **Testing: serology (TTI)** | **Serology Technologist**<br>`snbc-serology-technologist`<br>or **Laboratory Supervisor**<br>`snbc-lab-supervisor` | TTI clearance token, or `rejected` + counselling referral | 12 |
+| | **Processing** (starts together with Testing) | **Head (approves change requests):**<br>Component Technologist<br>`snbc-component-technologist` | | |
+| 9 | **Processing: declare components, print base labels** | **Processing Assistant**<br>`snbc-processing-assistant`<br>or **Component Technologist**<br>`snbc-component-technologist` | Bags and volumes declared | 10 |
+| 10 | **Processing: complete** | **Component Technologist**<br>`snbc-component-technologist` | Donation `completed` (bags handed to Issuance) | 11 |
+| | **Issuance** (stock) | **Head (approves change requests):**<br>Inventory Control Officer (ICO)<br>`snbc-inventory-control-officer` | | |
+| 11 | **Book in** (Stock Intake) | **ICO**<br>`snbc-inventory-control-officer` | Bags `quarantined` | 12 |
+| 12 | **Release from quarantine** | **ICO**<br>`snbc-inventory-control-officer` | Bags `available`; final labels printed | 13, 15 |
+| 13 | **Shelf monitoring** (continuous) | **ICO**<br>`snbc-inventory-control-officer`<br>**Dispatch Coordinator** (view)<br>`snbc-dispatch-coordinator`<br>**IT Data Entry Clerk** (view, audit)<br>`snbc-it-data-clerk`<br>**Center Admin**<br>`snbc-supervisor` | Minimums watched; expired bags found | 15 |
+| | **Hospital Blood Bank** (requests; roles since 2026-10-11) | **Blood Bank Head** (every action; keeps the staff):<br>`spmch-head` | | |
+| 14 | **Raise a request** | **Requesting Staff** or the **Head**<br>`spmch-requesting` (SPMC Hospital Blood Bank) | Request `pending` at the center | 15 |
+| | **Issuance** (requests) | **Head (approves change requests):**<br>ICO<br>`snbc-inventory-control-officer` | | |
+| 15 | **Review and tag** (patient request) or **confirm** (replenishment) | **ICO**<br>`snbc-inventory-control-officer`<br>Confirm or reject: **ICO** or **Dispatch Coordinator**<br>`snbc-dispatch-coordinator` | Patient request: bags tagged, billing statement raised. Replenishment: order confirmed, nothing held | 16 (patient), 17 (replenishment) |
+| | **Billing** | **Head (approves change requests):**<br>Billing Supervisor<br>`snbc-billing-supervisor` | | |
+| 16 | **Billing** | **Billing Clerk**<br>`snbc-billing-clerk`<br>or **Billing Supervisor**<br>`snbc-billing-supervisor` | Statement `paid` or `subsidised` (taken at the Billing Counter) | 17 |
+| | **Issuance** (dispatch) | **Head (approves change requests):**<br>ICO<br>`snbc-inventory-control-officer` | | |
+| 17 | **Dispatch** | **Dispatch Coordinator**<br>`snbc-dispatch-coordinator`<br>or **ICO**<br>`snbc-inventory-control-officer` | Bags `issued`; request Partially Fulfilled / Fulfilled | 18 |
+| | **Hospital Blood Bank** (roles since 2026-10-11) | **Blood Bank Head** (every action; keeps the staff):<br>`spmch-head` | | |
+| 18 | **Confirm receipt** | **Requesting Staff** or the **Head**<br>`spmch-requesting` | Bags enter the hospital's custody as `received` (awaiting stock-in) | 18b |
+| 18b | **Stock in** | **Inventory Staff** or the **Head**<br>`spmch-inventory` | Bags `available`, each with its storage location (required) | 19 |
+| 19 | **Tag, crossmatch, transfuse** | **Inventory Staff** or the **Head**<br>`spmch-inventory` | `tag_assigned` → `tag_crossmatched` → `transfused` | End |
 
-**About the heads and the emails.**
+**About the heads and the logins.**
 
-- **Heads.** A department's head approves its *change requests* (corrections to records already saved; see §5.1). Nobody decides their own request, so when a **head** files one it goes to the **Center Admin** (`supervisor@redagos.test`). A hospital blood bank has no departments and no change-request approval.
-- **Emails.** The addresses are the demo accounts that `BloodCenterStaffSeeder` creates for Sub-National Blood Center, plus the SPMC Blood Bank account in the local database. They exist only on local and test setups. On any other deployment, use the real account for each role. Passwords are deliberately not listed here.
-- **Demo stock.** On a local setup, Sub-National Blood Center's shelves come from `DemoInventorySeeder`: **50 available units of every component in every blood type** (2,800 units), each behind a cleared donation. Its 1,200 demo donors (`demo-donor-…@redagos.test`) exist only to give the units a donation; they hold no password anyone knows. The seeder stocks only components whose shelf life the centre has configured, and needs the staff accounts first.
+- **Heads.** A department's head approves its *change requests* (corrections to records already saved; see §5.1). Nobody decides their own request, so when a **head** files one it goes to the **Center Admin** (`snbc-supervisor`). A hospital blood bank has no departments and no change-request approval.
+- **Logins.** The usernames above are Sub-National Blood Center's and SPMC Hospital Blood Bank's. PRC and SPMC have the same set as `prc-…` and `spmc-…`, and Davao Doctors as `ddh-…`. Every account is listed in [`STAFF-ACCOUNTS.md`](STAFF-ACCOUNTS.md). They exist only in the local demo data and all sign in with the demo password `Password123`; on any other deployment, use the real account for each role, each with its own password.
+- **Demo stock.** On a local setup, each blood centre's shelves come from `DemoInventorySeeder`: **50 available units of every component in every blood type** (2,800 units per centre), each behind a cleared, labelled donation with its own barcode sticker and numbered like a real bag (`SNBC-21000123-PRBC`). Collection dates are spread so expiry runs from tomorrow to the full shelf life. Its 1,200 demo donors per centre (`donor.<centre>.…@example.com`, phones `+63 900…`) exist only to give the units a donation; they hold no password anyone knows, and RedAgos sends nothing to those addresses or numbers. The seeder stocks only components whose shelf life the centre has configured, and needs the staff accounts and the centre's abbreviation first.
 
 **The order of Testing and Processing.** Steps 7–8 (Testing) and 9–10 (Processing) start the moment the donation is `collected`, and neither waits for the other. Processing does *not* wait for test results, because plasma has to be frozen within hours of the draw. The two meet at **Step 12**: a bag cannot leave quarantine until Processing has handed it over (Step 11 needs a `completed` donation) *and* Testing has issued both clearance tokens. Steps 7 and 8 can also be done in either order, by two people.
 
@@ -116,12 +116,18 @@ flowchart TD
 | **IT Data Entry Clerk** | Blood Center | Issuance | Blood Inventory | 13 (audit, view only) |
 | **Billing Clerk**, **Billing Supervisor** | Blood Center | Billing | Billing Counter, Statements, Receipts, Billing Transactions | 16 |
 | **Center Admin** | Blood Center | none (a supervisor) | Center Overview | Any step; plus the approvals in §5.1 |
-| **Blood-bank account** | Hospital Blood Bank | none | Dashboard | 14, 18, 19 |
+| **Requesting Staff** | Hospital Blood Bank | none | Dashboard | 14, 18 |
+| **Inventory Staff** | Hospital Blood Bank | none | Dashboard | 18b, 19 |
+| **Blood Bank Head** | Hospital Blood Bank | none | Dashboard | 14, 18, 18b, 19; keeps the staff |
 
 - **A role is a fixed post.** It decides the department and exactly what the person may do. A custom typed role inherits only its department's abilities, never `corrections.approve`, `inventory.audit` or `inventory.thresholds`.
 - **The Center Admin holds every ability** but is bound by the same hard rules as everyone else (§5.2). It is the fallback approver when a department head files their own correction.
-- **A hospital blood bank has no departments or abilities.** Any account at the same hospital can do everything the Blood Bank does.
+- **A hospital blood bank has no departments, but it has roles** (since 2026-10-11). Requesting Staff raise and close requests, keep the request days and confirm arrivals. Inventory Staff stock bags in and tag, crossmatch, transfuse or discard them. The Head can do both and is the only one who manages the staff accounts.
 - **Facility isolation.** A user only ever sees their own facility's stock and requests; the facility comes from the login, never from what a page sends. Email must be verified and the facility approved before either portal lets an account operate.
+
+### Accounts by facility
+
+Every staff account at each facility, with its role, username and email, and what each role does, is listed in [`STAFF-ACCOUNTS.md`](STAFF-ACCOUNTS.md).
 
 ---
 

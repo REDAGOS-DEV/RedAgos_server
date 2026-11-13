@@ -53,6 +53,11 @@ class StoreFacilityRequest extends FormRequest
             $merge['email'] = Str::lower(trim((string) $this->input('email')));
         }
 
+        // Stored and compared the way it prints on every bag: in capitals.
+        if (is_string($this->input('abbreviation'))) {
+            $merge['abbreviation'] = strtoupper(trim($this->input('abbreviation')));
+        }
+
         $account = $this->input('primary_account');
 
         if (is_array($account)) {
@@ -93,6 +98,9 @@ class StoreFacilityRequest extends FormRequest
             'facility_type.in' => 'Choose either a blood center or a hospital blood bank.',
             'name.required' => 'Facility name is required.',
             'name.unique' => 'A facility of this type is already registered under this name.',
+            'abbreviation.required' => 'Enter the blood center’s abbreviation, such as SNBC.',
+            'abbreviation.regex' => 'An abbreviation is 2 to 6 letters, such as SNBC.',
+            'abbreviation.unique' => 'Another blood center already uses this abbreviation.',
             'doh_license_number.required' => 'DOH license number is required.',
             'doh_license_number.unique' => 'This DOH license number belongs to another facility.',
             'address.required' => 'Address is required.',
@@ -138,6 +146,17 @@ class StoreFacilityRequest extends FormRequest
                 Rule::unique('facilities', 'name')
                     ->where('facility_type_id', $this->scopedTypeId())
                     ->where(fn ($query) => $query->where('status', '!=', FacilityStatus::Unregistered->value)),
+            ],
+
+            // The first part of every bag number the centre books,
+            // SNBC-21627990-PRBC (project owner, 2026-11-13). A blood centre
+            // must have one; a hospital blood bank books no bags of its own,
+            // so whatever it sends is left out. Unique across retired
+            // facilities too, whose bags still carry theirs.
+            'abbreviation' => [
+                'exclude_unless:facility_type,'.FacilityTypeName::BloodCenter->value,
+                'required', 'string', 'regex:/^[A-Z]{2,6}$/',
+                Rule::unique('facilities', 'abbreviation'),
             ],
 
             'doh_license_number' => ['required', 'string', 'max:50', 'unique:facilities,doh_license_number'],

@@ -97,6 +97,24 @@ class DonationRecordsTest extends TestCase
         $this->assertSame([$open->id], $ids(['from' => OperationalDay::todayAsDate(), 'to' => OperationalDay::todayAsDate()]));
     }
 
+    public function test_a_scanned_sticker_or_a_full_bag_number_finds_its_donation(): void
+    {
+        $this->facility->forceFill(['abbreviation' => 'SNBC'])->save();
+
+        $drawn = $this->visit(DonationStatus::Completed, 1);
+        $drawn->collection->forceFill(['donation_barcode' => '21627990'])->save();
+        $this->visit(DonationStatus::Completed, 2)->collection->forceFill(['donation_barcode' => '31415926'])->save();
+
+        $ids = fn (array $q) => array_column($this->rows($this->desk, $q), 'id');
+
+        $this->assertSame([$drawn->id], $ids(['search' => '21627990']));
+        $this->assertSame([$drawn->id], $ids(['search' => 'SNBC-21627990-PRBC']));
+        $this->assertSame([$drawn->id], $ids(['search' => 'snbc-21627990-ffp-2']));
+
+        // Another centre's bag is not this centre's donation.
+        $this->assertSame([], $ids(['search' => 'PRC-21627990-PRBC']));
+    }
+
     public function test_an_open_visit_is_closed_from_the_list_through_the_counters_route(): void
     {
         $open = $this->visit(DonationStatus::Registered);

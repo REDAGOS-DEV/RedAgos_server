@@ -146,9 +146,9 @@ class FinalLabelService
             );
         }
 
-        // Every bag is labelled by its number, which Stock Intake books it
-        // under. A donation without a barcode, or a breakdown recorded before
-        // volumes were kept, has bags without one.
+        // Every bag is labelled by its number, [centre]-[barcode]-[component],
+        // which Stock Intake books it under. A donation without a barcode, or
+        // from a centre without an abbreviation, has bags without one.
         $bags = array_merge(...array_values($slots));
 
         if (BagNumbers::barcode($donation) === null) {
@@ -159,11 +159,19 @@ class FinalLabelService
             );
         }
 
+        if (BagNumbers::centre($donation) === null) {
+            throw $this->refuse(
+                409,
+                'centre_abbreviation_missing',
+                'Your blood center has no abbreviation yet, so its bags have no numbers to print. Ask the RedAgos administrator to set one.'
+            );
+        }
+
         if (in_array(null, array_column($bags, 'bag_number'), true)) {
             throw $this->refuse(
                 409,
                 'bags_unnumbered',
-                'Some bags were recorded before bag numbers were kept. Correct the breakdown on the Processed list first.'
+                'Some bags have no number. Correct the breakdown on the Processed list first.'
             );
         }
 

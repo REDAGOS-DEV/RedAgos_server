@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Console\Commands\Concerns\PromptsForAccountDetails;
 use App\Console\Commands\Concerns\ResolvesActingAdministrator;
+use App\Enums\FacilityTypeName;
 use App\Http\Requests\StoreFacilityRequest;
 use App\Service\FacilityManagementService;
 use Illuminate\Console\Command;
@@ -35,6 +36,7 @@ class CreateFacility extends Command
     protected $signature = 'facility:create
                             {--type= : blood_center or blood_bank}
                             {--name= : Registered facility name}
+                            {--abbreviation= : Blood centers only: 2 to 6 letters that open every bag number, e.g. SNBC}
                             {--doh-license= : DOH license number}
                             {--address= : Street address}
                             {--email= : Facility contact address}
@@ -117,9 +119,15 @@ class CreateFacility extends Command
      */
     private function collectPayload(): ?array
     {
+        $type = Str::lower($this->optionOrAsk('type', 'Facility type (blood_center or blood_bank)'));
+
         $facility = [
-            'facility_type' => Str::lower($this->optionOrAsk('type', 'Facility type (blood_center or blood_bank)')),
+            'facility_type' => $type,
             'name' => $this->optionOrAsk('name', 'Facility name'),
+            // Only a blood centre numbers bags, so only one is asked.
+            'abbreviation' => $type === FacilityTypeName::BloodCenter->value
+                ? strtoupper(trim((string) $this->optionOrAsk('abbreviation', 'Abbreviation, 2 to 6 letters (e.g. SNBC)')))
+                : null,
             'doh_license_number' => $this->optionOrAsk('doh-license', 'DOH license number'),
             'address' => $this->optionOrAsk('address', 'Address'),
             'email' => $this->emailOrAsk('email', 'Facility email'),

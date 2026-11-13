@@ -47,7 +47,7 @@ class TwoPhaseLabelingTest extends TestCase
     {
         parent::setUp();
 
-        $this->facility = Facility::factory()->approved()->create(['name' => 'Sub-National Blood Center - Mindanao']);
+        $this->facility = Facility::factory()->approved()->create(['name' => 'Sub-National Blood Center - Mindanao', 'abbreviation' => 'SNBC']);
         $this->officer = User::factory()->bloodCenterStaff($this->facility, StaffRole::InventoryControlOfficer)->create([
             'first_name' => 'Ana',
             'last_name' => 'Reyes',
@@ -185,12 +185,12 @@ class TwoPhaseLabelingTest extends TestCase
 
     // --- Bag numbers ---------------------------------------------------------
 
-    public function test_bags_are_numbered_from_the_sticker_and_what_they_hold(): void
+    public function test_bags_are_numbered_from_the_centre_the_sticker_and_what_they_hold(): void
     {
         $this->declareBags();
 
         $this->assertSame(
-            ['1234567-PRBC', '1234567-FFP', '1234567-PRBC-2'],
+            ['SNBC-1234567-PRBC', 'SNBC-1234567-FFP', 'SNBC-1234567-PRBC-2'],
             array_values(BagNumbers::forRows($this->donation))
         );
     }
@@ -206,8 +206,8 @@ class TwoPhaseLabelingTest extends TestCase
             ->getJson("/api/blood-center/laboratory/donations/{$this->donation->id}")
             ->assertOk()
             ->assertJsonPath('donation_barcode', '1234567')
-            ->assertJsonPath('components.0.bag_number', '1234567-PRBC')
-            ->assertJsonPath('components.2.bag_number', '1234567-PRBC-2');
+            ->assertJsonPath('components.0.bag_number', 'SNBC-1234567-PRBC')
+            ->assertJsonPath('components.2.bag_number', 'SNBC-1234567-PRBC-2');
     }
 
     public function test_a_component_without_a_code_is_numbered_by_its_initials(): void
@@ -221,7 +221,7 @@ class TwoPhaseLabelingTest extends TestCase
             'volume_ml' => 450,
         ]);
 
-        $this->assertSame(['1234567-WB'], array_values(BagNumbers::forRows($this->donation)));
+        $this->assertSame(['SNBC-1234567-WB'], array_values(BagNumbers::forRows($this->donation)));
     }
 
     public function test_a_donation_without_a_barcode_has_no_bag_numbers(): void
@@ -232,7 +232,7 @@ class TwoPhaseLabelingTest extends TestCase
         $this->assertSame([null, null, null], array_values(BagNumbers::forRows($this->donation)));
     }
 
-    public function test_a_legacy_row_standing_for_several_bags_gets_no_number(): void
+    public function test_a_legacy_row_standing_for_several_bags_numbers_each_of_them(): void
     {
         DonationComponent::factory()->create([
             'donation_id' => $this->donation->id,
@@ -241,7 +241,20 @@ class TwoPhaseLabelingTest extends TestCase
             'volume_ml' => null,
         ]);
 
-        $this->assertSame([null], array_values(BagNumbers::forRows($this->donation)));
+        // There is no generated id to fall back on any more (2026-11-13).
+        $this->assertSame(
+            ['SNBC-1234567-PRBC', 'SNBC-1234567-PRBC-2', 'SNBC-1234567-PRBC-3'],
+            array_column(BagNumbers::slots($this->donation)[$this->prbc->id], 'bag_number')
+        );
+    }
+
+    public function test_a_centre_without_an_abbreviation_has_no_bag_numbers(): void
+    {
+        $this->facility->forceFill(['abbreviation' => null])->save();
+        $this->declareBags();
+
+        $this->assertSame([null, null, null], array_values(BagNumbers::forRows($this->donation->fresh())));
+        $this->assertSame('centre_abbreviation_missing', BagNumbers::missing($this->donation->fresh()));
     }
 
     public function test_a_corrected_sticker_renumbers_the_bags_before_intake(): void
@@ -250,7 +263,24 @@ class TwoPhaseLabelingTest extends TestCase
         $this->barcode('7654321');
 
         // Computed on read, so nothing stored can go stale.
-        $this->assertSame('7654321-PRBC', array_values(BagNumbers::forRows($this->donation->fresh()))[0]);
+        $this->assertSame('SNBC-7654321-PRBC', array_values(BagNumbers::forRows($this->donation->fresh()))[0]);
+    }
+
+    public function test_the_laboratory_scan_finds_a_donation_by_a_full_bag_number(): void
+    {
+        $this->donation->update(['status' => DonationStatus::Collected]);
+        $this->declareBags();
+
+        $technologist = User::factory()->bloodCenterStaff($this->facility, StaffRole::ComponentTechnologist)->create();
+
+        $find = fn (string $code): array => array_column($this->actingAs($technologist)
+            ->getJson('/api/blood-center/laboratory/queue?barcode='.urlencode($code))
+            ->assertOk()
+            ->json('data'), 'id');
+
+        $this->assertSame([$this->donation->id], $find('1234567'));
+        $this->assertSame([$this->donation->id], $find('snbc-1234567-prbc-2'));
+        $this->assertSame([], $find('PRC-1234567-PRBC'));
     }
 
     // --- Booking in ----------------------------------------------------------
@@ -261,31 +291,45 @@ class TwoPhaseLabelingTest extends TestCase
 
         $units = BloodUnit::where('donation_id', $this->donation->id)->orderBy('id')->get();
 
-        $this->assertSame(['1234567-FFP', '1234567-PRBC', '1234567-PRBC-2'], $units->pluck('id')->all());
-        $this->assertSame(220, $units->firstWhere('id', '1234567-FFP')->volume_ml);
-        $this->assertSame(250, $units->firstWhere('id', '1234567-PRBC')->volume_ml);
-        $this->assertSame(200, $units->firstWhere('id', '1234567-PRBC-2')->volume_ml);
+        $this->assertSame(['SNBC-1234567-FFP', 'SNBC-1234567-PRBC', 'SNBC-1234567-PRBC-2'], $units->pluck('id')->all());
+        $this->assertSame(220, $units->firstWhere('id', 'SNBC-1234567-FFP')->volume_ml);
+        $this->assertSame(250, $units->firstWhere('id', 'SNBC-1234567-PRBC')->volume_ml);
+        $this->assertSame(200, $units->firstWhere('id', 'SNBC-1234567-PRBC-2')->volume_ml);
     }
 
-    public function test_a_typed_unit_number_is_refused_for_a_barcoded_donation(): void
+    public function test_a_typed_unit_number_is_ignored(): void
     {
         $this->declareBags();
         $this->handOver();
 
+        // Every bag is numbered from its donation, never from the request.
         $this->bookIn([['component_id' => $this->prbc->id, 'unit_id' => 'MY-OWN-1']])
-            ->assertStatus(422)
-            ->assertJsonValidationErrors('units.0.unit_id');
+            ->assertCreated()
+            ->assertJsonPath('units.0.id', 'SNBC-1234567-PRBC');
 
-        $this->assertSame(0, BloodUnit::where('donation_id', $this->donation->id)->count());
+        $this->assertDatabaseMissing('blood_units', ['id' => 'MY-OWN-1']);
     }
 
-    public function test_a_bag_number_already_used_elsewhere_is_refused(): void
+    public function test_another_centre_printing_the_same_sticker_series_does_not_collide(): void
     {
         $this->declareBags();
         $this->handOver();
 
-        // Another centre printing the same sticker series.
-        BloodUnit::factory()->create(['id' => '1234567-PRBC']);
+        // The centre's abbreviation keeps the two apart.
+        BloodUnit::factory()->create(['id' => 'PRC-1234567-PRBC']);
+
+        $this->bookIn([['component_id' => $this->prbc->id]])
+            ->assertCreated()
+            ->assertJsonPath('units.0.id', 'SNBC-1234567-PRBC');
+    }
+
+    public function test_a_bag_number_already_in_stock_is_refused(): void
+    {
+        $this->declareBags();
+        $this->handOver();
+
+        // A sticker used twice at this centre.
+        BloodUnit::factory()->create(['id' => 'SNBC-1234567-PRBC']);
 
         $this->bookIn([['component_id' => $this->prbc->id]])
             ->assertStatus(409)
@@ -313,9 +357,27 @@ class TwoPhaseLabelingTest extends TestCase
         $packed = collect($rows[0]['components'])->firstWhere('component_id', $this->prbc->id);
 
         $this->assertSame(
-            [['bag_number' => '1234567-PRBC', 'volume_ml' => 250], ['bag_number' => '1234567-PRBC-2', 'volume_ml' => 200]],
+            [['bag_number' => 'SNBC-1234567-PRBC', 'volume_ml' => 250], ['bag_number' => 'SNBC-1234567-PRBC-2', 'volume_ml' => 200]],
             $packed['outstanding_bags']
         );
+        $this->assertNull($rows[0]['numbers_missing']);
+    }
+
+    public function test_the_intake_queue_finds_a_donation_by_a_full_bag_number(): void
+    {
+        $this->declareBags();
+
+        $find = fn (string $code): array => $this->actingAs($this->officer)
+            ->getJson('/api/blood-center/inventory/intake-queue?barcode='.urlencode($code))
+            ->assertOk()
+            ->json('data');
+
+        // Typed in any case, a second bag's number too.
+        $this->assertSame([$this->donation->id], array_column($find('snbc-1234567-prbc-2'), 'donation_id'));
+        $this->assertSame([$this->donation->id], array_column($find('SNBC-1234567-FFP'), 'donation_id'));
+
+        // Another centre's bag names none of this centre's donations.
+        $this->assertSame([], $find('PRC-1234567-PRBC'));
     }
 
     // --- Processing's final label (project owner, 2026-10-22) --------------------
@@ -330,9 +392,9 @@ class TwoPhaseLabelingTest extends TestCase
             ->assertJsonPath('facility', 'Sub-National Blood Center - Mindanao')
             ->assertJsonCount(3, 'units')
             // In the order Processing declared the bags, under their Phase 1 numbers.
-            ->assertJsonPath('units.0.unit_id', '1234567-PRBC')
-            ->assertJsonPath('units.1.unit_id', '1234567-FFP')
-            ->assertJsonPath('units.2.unit_id', '1234567-PRBC-2')
+            ->assertJsonPath('units.0.unit_id', 'SNBC-1234567-PRBC')
+            ->assertJsonPath('units.1.unit_id', 'SNBC-1234567-FFP')
+            ->assertJsonPath('units.2.unit_id', 'SNBC-1234567-PRBC-2')
             ->assertJsonPath('units.0.labelled_by', 'Lea Navarro')
             ->assertJsonPath('labelled_by', 'Lea Navarro')
             ->assertJsonPath('clearances.0.label', 'TTI cleared')
@@ -351,7 +413,7 @@ class TwoPhaseLabelingTest extends TestCase
     {
         $this->readyToLabel();
 
-        $label = collect($this->printLabels()->assertOk()->json('units'))->firstWhere('unit_id', '1234567-FFP');
+        $label = collect($this->printLabels()->assertOk()->json('units'))->firstWhere('unit_id', 'SNBC-1234567-FFP');
 
         $this->assertSame($this->donation->donorProfile->bloodType->code, $label['blood_type']);
         $this->assertSame('Fresh Frozen Plasma', $label['component']);
@@ -448,7 +510,7 @@ class TwoPhaseLabelingTest extends TestCase
             ['component_id' => $this->prbc->id],
         ])->assertCreated()->assertJsonPath('message', '3 blood units booked into stock.');
 
-        $unit = BloodUnit::findOrFail('1234567-PRBC');
+        $unit = BloodUnit::findOrFail('SNBC-1234567-PRBC');
         $this->assertSame(BloodUnitStatus::Available, $unit->status);
         $this->assertNotNull($unit->released_at);
         $this->assertSame($this->officer->id, (int) $unit->released_by);
@@ -498,7 +560,7 @@ class TwoPhaseLabelingTest extends TestCase
 
         $this->bookIn([['component_id' => $this->prbc->id]])->assertCreated();
 
-        $this->assertSame(BloodUnitStatus::Available, BloodUnit::findOrFail('1234567-PRBC')->status);
+        $this->assertSame(BloodUnitStatus::Available, BloodUnit::findOrFail('SNBC-1234567-PRBC')->status);
     }
 
     public function test_issuance_has_no_quarantine_release_any_more(): void

@@ -3,12 +3,14 @@
 namespace Tests\Feature\BloodCenter;
 
 use App\Enums\BloodUnitStatus;
+use App\Models\BloodCollection;
 use App\Models\BloodComponent;
 use App\Models\BloodType;
 use App\Models\BloodUnit;
 use App\Models\Donation;
 use App\Models\DonationComponent;
 use App\Models\DonorProfile;
+use App\Models\Facility;
 use App\Models\User;
 use App\Repository\InventoryRepository;
 use App\Support\OperationalDay;
@@ -35,9 +37,10 @@ use Tests\TestCase;
  * again once the rollback has finished, which is where a competing request's
  * row would have been all along.
  *
- * Sequence derivation itself is covered in InventoryIntakeTest — a second
- * intake continues at -02, and a donation sitting at -99 goes to -100 rather
- * than back to -01.
+ * Numbering itself is covered in InventoryIntakeTest: a bag takes its
+ * donation's number, [centre]-[barcode]-[component], and a second bag of the
+ * same component ends -2. With nothing generated there is nothing to retry: a
+ * number already taken is refused.
  */
 class InventoryIdCollisionTest extends TestCase
 {
@@ -63,7 +66,9 @@ class InventoryIdCollisionTest extends TestCase
         $this->facilityId = $this->staff->facility_id;
 
         $this->bloodType = BloodType::firstOrCreate(['code' => 'O+'], ['label' => 'O+']);
-        $this->component = BloodComponent::factory()->create(['name' => 'Packed RBC']);
+        $this->component = BloodComponent::factory()->create(['name' => 'Packed RBC', 'code' => 'PRBC']);
+
+        Facility::whereKey($this->facilityId)->update(['abbreviation' => 'SNBC']);
 
         $this->donorProfile = DonorProfile::factory()->create([
             'donor_id' => User::factory()->create()->id,
@@ -86,6 +91,7 @@ class InventoryIdCollisionTest extends TestCase
             'declared_by' => $this->staff->id,
         ]);
 
+        BloodCollection::where('donation_id', $this->donation->id)->update(['donation_barcode' => '21627990']);
     }
 
     public function test_intake_asks_for_the_donation_row_lock(): void
@@ -100,89 +106,42 @@ class InventoryIdCollisionTest extends TestCase
         $this->assertStringEndsWith('for update', $queries[0]['query']);
     }
 
-    public function test_a_generated_id_taken_from_underneath_is_retried(): void
+    public function test_a_bag_number_taken_from_underneath_is_refused_cleanly(): void
     {
         $attempts = $this->countInsertAttempts();
         $this->stealTheFirstUnitId();
 
-        $response = $this->actingAs($this->staff)
+        $this->actingAs($this->staff)
             ->postJson('/api/blood-center/inventory', $this->payload())
-            ->assertCreated();
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'bag_number_taken');
 
-        // Not a 500 on a request that should have succeeded, and not the same
-        // id twice: the retry re-derives the sequence against what the donation
-        // now has.
-        $this->assertSame($this->prefix().'02', $response->json('units.0.id'));
-        $this->assertSame(2, $attempts->value);
+        // Not a 500, and not retried: the number is the donation's, so a
+        // retry could only collide again.
+        $this->assertSame(1, $attempts->value);
     }
 
-    public function test_a_generated_id_that_collides_every_time_is_refused_cleanly(): void
+    public function test_a_bag_number_already_in_stock_is_refused_before_anything_is_written(): void
     {
-        // Committed under a DIFFERENT donation, so it is invisible to the
-        // sequence derivation — which is namespaced by donation — while still
-        // owning the primary key every attempt wants.
-        $this->seedUnit($this->prefix().'01', $this->otherDonationAtThisFacility()->id);
+        // The same sticker booked under another donation at this centre.
+        $this->seedUnit('SNBC-21627990-PRBC', $this->otherDonationAtThisFacility()->id);
 
         $attempts = $this->countInsertAttempts();
 
         $this->actingAs($this->staff)
             ->postJson('/api/blood-center/inventory', $this->payload())
             ->assertStatus(409)
-            ->assertJsonPath('code', 'unit_id_generation_failed');
+            ->assertJsonPath('code', 'bag_number_taken')
+            ->assertJsonPath('message', 'Bag SNBC-21627990-PRBC already exists. Check the sticker on the bag.');
 
-        // A bounded loop, and a refusal at the end of it rather than a leaked
-        // QueryException.
-        $this->assertSame(3, $attempts->value);
-    }
-
-    public function test_a_supplied_id_lost_to_a_concurrent_intake_comes_back_as_a_field_error(): void
-    {
-        $attempts = $this->countInsertAttempts();
-        $this->stealTheFirstUnitId();
-
-        $payload = $this->payload();
-        $payload['units'][0]['unit_id'] = 'BAG-778812';
-
-        $this->actingAs($this->staff)
-            ->postJson('/api/blood-center/inventory', $payload)
-            ->assertStatus(422)
-            ->assertJsonValidationErrors('units.0.unit_id');
-
-        // The same 422 the validator would have returned a moment earlier. It is
-        // deliberately not retried: the conflict is deterministic, so a retry
-        // would fail identically three times and turn a field error into a 409.
-        $this->assertSame(1, $attempts->value);
-    }
-
-    public function test_a_supplied_id_error_names_the_entry_it_belongs_to(): void
-    {
-        $attempts = $this->countInsertAttempts();
-        $this->stealTheFirstUnitId(skip: 1);
-
-        $payload = $this->payload();
-        $payload['units'][0]['unit_id'] = 'BAG-778812';
-        $payload['units'][] = [
-            'component_id' => $this->component->id,
-            'unit_id' => 'BAG-778813',
-            'storage_location' => 'Cold Storage A-1',
-            'expiry_date' => $this->inDays(30),
-        ];
-
-        $this->actingAs($this->staff)
-            ->postJson('/api/blood-center/inventory', $payload)
-            ->assertStatus(422)
-            ->assertJsonValidationErrors('units.1.unit_id')
-            ->assertJsonMissingValidationErrors('units.0.unit_id');
-
-        $this->assertSame(2, $attempts->value);
+        $this->assertSame(0, $attempts->value);
     }
 
     /**
      * Count how many unit inserts the request attempts.
      *
      * Returned as an object so the closure and the assertion share one value:
-     * this is what separates "retried" from "gave up" and, on the supplied-id
-     * path, what proves a deterministic conflict was not retried at all.
+     * this is what proves a taken number is refused rather than retried.
      */
     private function countInsertAttempts(): object
     {
@@ -261,11 +220,6 @@ class InventoryIdCollisionTest extends TestCase
             'donor_id' => $this->donorProfile->donor_id,
             'status' => 'completed',
         ]);
-    }
-
-    private function prefix(): string
-    {
-        return "RA{$this->facilityId}-{$this->donation->id}-";
     }
 
     /**

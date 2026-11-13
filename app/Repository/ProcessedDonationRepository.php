@@ -8,6 +8,7 @@ use App\Models\BloodComponent;
 use App\Models\CorrectionRequest;
 use App\Models\Donation;
 use App\Models\DonationComponent;
+use App\Support\BagNumbers;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 
@@ -71,7 +72,7 @@ class ProcessedDonationRepository
                     ->where('subject', CorrectionSubject::Components->value)
                     ->where('status', 'pending')
             ))
-            ->when(filled($filters['search'] ?? null), fn (Builder $q) => $this->applySearch($q, (string) $filters['search'], $searchIdentity));
+            ->when(filled($filters['search'] ?? null), fn (Builder $q) => $this->applySearch($q, (string) $filters['search'], $searchIdentity, $facilityId));
 
         return ($filters['sort'] ?? null) === 'oldest'
             ? $query->orderBy($processedAt)->orderBy('donations.id')
@@ -116,21 +117,23 @@ class ProcessedDonationRepository
         return BloodComponent::query()->whereIn('id', $componentIds)->pluck('name', 'id')->all();
     }
 
-    private function applySearch(Builder $query, string $term, bool $searchIdentity): Builder
+    private function applySearch(Builder $query, string $term, bool $searchIdentity, int $facilityId): Builder
     {
         $term = trim($term);
         $compact = mb_strtoupper(preg_replace('/\s+/', '', $term) ?? $term);
         $barcode = '%'.$compact.'%';
+        $sticker = BagNumbers::barcodeFrom($term, BagNumbers::centreOf($facilityId));
         $like = '%'.mb_strtolower($term).'%';
         $donationId = preg_match('/^(?:DON-?|#)(\d{1,10})$/i', $term, $m) === 1 ? (int) $m[1] : null;
         $donorId = preg_match('/^DONOR-(\d{1,10})$/i', $term, $d) === 1 ? (int) $d[1] : null;
 
-        return $query->where(function (Builder $inner) use ($barcode, $compact, $like, $donationId, $donorId, $searchIdentity): void {
-            // A bag number is the sticker plus its component (1234567-PRBC),
-            // so a scanned or typed one finds the donation it came from.
+        return $query->where(function (Builder $inner) use ($barcode, $sticker, $like, $donationId, $donorId, $searchIdentity): void {
+            // A bag number is the centre, the sticker and the component
+            // (SNBC-1234567-PRBC), so a scanned or typed one finds the
+            // donation it came from.
             $inner->whereHas('collection', fn (Builder $c) => $c
                 ->whereRaw('UPPER(donation_barcode) LIKE ?', [$barcode])
-                ->orWhereRaw("? LIKE UPPER(donation_barcode) || '-%'", [$compact]))
+                ->when($sticker !== null, fn (Builder $q) => $q->orWhere('donation_barcode', $sticker)))
                 ->when($donationId !== null, fn (Builder $q) => $q->orWhere('donations.id', $donationId))
                 ->when($searchIdentity, fn (Builder $q) => $q->orWhereHas('donorProfile.donor', fn (Builder $donor) => $donor
                     ->whereRaw('LOWER(first_name) LIKE ?', [$like])

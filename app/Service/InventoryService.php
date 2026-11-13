@@ -35,11 +35,6 @@ use Illuminate\Validation\ValidationException;
 class InventoryService
 {
     /**
-     * How many times intake will retry a generated-id collision before giving up.
-     */
-    private const ID_ATTEMPTS = 3;
-
-    /**
      * The donation status whose bags may be booked in.
      *
      * Kept as the named gate even though DonationStatus::acceptsIntake() is
@@ -133,11 +128,17 @@ class InventoryService
         // property of this facility's configuration, not of a donation.
         $settings = $this->bloodComponentRepository->settingsFor($facilityId);
 
-        // A scanned sticker, normalised as the counter stored it.
-        $barcode = $barcode === null ? null : strtoupper((string) preg_replace('/[\s\p{Cc}]+/u', '', $barcode));
+        // A scanned sticker, or a bag number typed in full, as the donation
+        // barcode it names. Something that names none of this centre's
+        // donations (another centre's bag) lists nothing.
+        $wanted = null;
+
+        if ($barcode !== null && BagNumbers::normalise($barcode) !== '') {
+            $wanted = BagNumbers::barcodeFrom($barcode, BagNumbers::centreOf($facilityId)) ?? '';
+        }
 
         return $this->inventoryRepository
-            ->paginateIntakeQueue($facilityId, $perPage, $barcode === '' ? null : $barcode)
+            ->paginateIntakeQueue($facilityId, $perPage, $wanted)
             ->through(fn (Donation $donation): array => $this->formatIntake($donation, $settings, $user));
     }
 
@@ -168,9 +169,10 @@ class InventoryService
                 // Null for a bag declared before volumes were kept.
                 'volumes' => array_column($bags, 'volume_ml'),
                 'outstanding_volumes' => array_column($outstanding, 'volume_ml'),
-                // The bags still to be shelved, by the number on their Phase 1
-                // label. Booking one in gives the unit that number. Null for a
-                // donation with no barcode, which keeps the generated RA… ids.
+                // The bags still to be shelved, by the number on their label.
+                // Booking one in gives the unit that number. Null for a
+                // donation with no barcode or a centre with no abbreviation,
+                // which cannot be booked until it has both (numbers_missing).
                 'outstanding_bags' => array_map(fn (array $slot): array => [
                     'bag_number' => $slot['bag_number'],
                     'volume_ml' => $slot['volume_ml'],
@@ -203,6 +205,9 @@ class InventoryService
 
             // What is printed on the bag, so it can be matched without a name.
             'donation_barcode' => $donation->collection?->donation_barcode,
+            // Why its bags have no numbers: barcode_missing or
+            // centre_abbreviation_missing. Null when they have them.
+            'numbers_missing' => BagNumbers::missing($donation),
             'components' => $rows,
             // Whether the bags can be booked in: cleared and labelled. Only a
             // donation handed over before labelling moved to Processing
@@ -352,10 +357,11 @@ class InventoryService
     /**
      * Record collected units against a completed donation.
      *
-     * Wrapped in a bounded retry because the donation lock cannot cover
-     * everything: a staff-supplied unit_id is checked by the validator and
-     * inserted later, potentially against concurrent intake for a DIFFERENT
-     * donation, which no donation lock serialises.
+     * Each unit takes its bag's number (BagNumbers), so the ids are decided
+     * by the donation, not by this call. The donation lock serialises two
+     * bookings of one donation; the unit-id index is what catches the same
+     * sticker booked under two donations at once, and that is refused the
+     * way recordUnits() refuses a number already in stock.
      *
      * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
@@ -364,33 +370,24 @@ class InventoryService
     {
         $facilityId = $this->requireFacilityId($user);
 
-        foreach (range(1, self::ID_ATTEMPTS) as $attempt) {
-            try {
-                $units = DB::transaction(
-                    fn (): array => $this->recordUnits($user, $facilityId, $payload)
-                );
-
-                return [
-                    'message' => count($units) === 1
-                        ? 'Blood unit booked into stock.'
-                        : count($units).' blood units booked into stock.',
-                    'units' => array_map(fn (BloodUnit $unit): array => $this->format($unit), $units),
-                ];
-            } catch (QueryException $exception) {
-                if (! $this->isUniqueViolation($exception)) {
-                    throw $exception;
-                }
-
-                // A staff-supplied id that is now taken is deterministic —
-                // retrying would fail identically three times, so it returns the
-                // same 422 the validator would have given a moment earlier.
-                if ($collided = $this->suppliedIdsNowTaken($payload)) {
-                    throw ValidationException::withMessages($collided);
-                }
+        try {
+            $units = DB::transaction(
+                fn (): array => $this->recordUnits($user, $facilityId, $payload)
+            );
+        } catch (QueryException $exception) {
+            if (! $this->isUniqueViolation($exception)) {
+                throw $exception;
             }
+
+            throw $this->refuse(409, 'bag_number_taken', 'One of these bags was booked in a moment ago. Check the sticker on the bag.');
         }
 
-        throw $this->refuse(409, 'unit_id_generation_failed', 'Could not allocate a unit number. Please try again.');
+        return [
+            'message' => count($units) === 1
+                ? 'Blood unit booked into stock.'
+                : count($units).' blood units booked into stock.',
+            'units' => array_map(fn (BloodUnit $unit): array => $this->format($unit), $units),
+        ];
     }
 
     /**
@@ -548,15 +545,29 @@ class InventoryService
 
         $bloodTypeId = $this->requireDonorBloodType($donation);
 
+        // Every bag is numbered [centre]-[barcode]-[component] (project owner,
+        // 2026-11-13). There is no generated fallback any more: a donation
+        // without a barcode, or from a centre without an abbreviation, waits
+        // until it has both.
+        match (BagNumbers::missing($donation)) {
+            'barcode_missing' => throw $this->refuse(
+                409,
+                'barcode_missing',
+                'This donation has no barcode, so its bags have no numbers to book them under. Correct the collection record first.'
+            ),
+            'centre_abbreviation_missing' => throw $this->refuse(
+                409,
+                'centre_abbreviation_missing',
+                'Your blood center has no abbreviation yet, so its bags have no numbers. Ask the RedAgos administrator to set one.'
+            ),
+            default => null,
+        };
+
         $this->guardAgainstLaboratoryDeclaration($donation, $payload['units']);
 
-        $prefix = $this->generatedIdPrefix($facilityId, $donation->id);
-        $sequence = $this->nextSequence($donation->id, $prefix);
-
         // Each unit is the next un-booked bag of its component: it takes that
-        // bag's volume and, when the donation has a barcode, that bag's
-        // number (BagNumbers). The donation lock held above is what makes
-        // "next" safe.
+        // bag's volume and number (BagNumbers). The donation lock held above
+        // is what makes "next" safe.
         $slots = BagNumbers::slots($donation);
         $booked = array_map(
             fn (array $row): int => $row['recorded'],
@@ -564,35 +575,26 @@ class InventoryService
         );
 
         $plan = [];
+        $bagNumbers = [];
 
-        foreach ($payload['units'] as $index => $entry) {
+        foreach ($payload['units'] as $entry) {
             $componentId = (int) $entry['component_id'];
             $slot = $slots[$componentId][$booked[$componentId] ?? 0] ?? null;
             $booked[$componentId] = ($booked[$componentId] ?? 0) + 1;
 
-            $bagNumber = $slot['bag_number'] ?? null;
-            $supplied = $entry['unit_id'] ?? null;
+            // The ledger check above caps each component at what Processing
+            // declared, so every unit here has a slot, and every slot of a
+            // barcoded donation at a centre with an abbreviation a number.
+            $bagNumber = $slot['bag_number']
+                ?? throw $this->refuse(409, 'bag_number_missing', 'This bag has no number to book it under. Ask Processing to check the donation.');
 
-            // A barcoded bag is numbered from its sticker, which is already on
-            // the Phase 1 label. A typed number could only disagree with it.
-            if ($bagNumber !== null && $supplied !== null && $supplied !== $bagNumber) {
-                throw ValidationException::withMessages([
-                    "units.{$index}.unit_id" => ['Bags from a barcoded donation are numbered from their sticker.'],
-                ]);
-            }
-
-            $plan[] = [$entry, $slot['volume_ml'] ?? null, $bagNumber ?? $supplied];
-
-            if ($bagNumber !== null) {
-                $bagNumbers[] = $bagNumber;
-            }
+            $plan[] = [$entry, $slot['volume_ml'] ?? null, $bagNumber];
+            $bagNumbers[] = $bagNumber;
         }
 
-        // Unit ids are global and a sticker series only unique per centre,
-        // so this is where two centres printing the same numbers would meet.
-        // A typed number (legacy donations) is the validator's to refuse.
-        $bagNumbers ??= [];
-
+        // Unit ids are global and a sticker series only unique per centre;
+        // the centre prefix keeps two centres apart, so a collision here is a
+        // sticker used twice at this centre.
         foreach ($this->inventoryRepository->existingIdsAmong($bagNumbers) as $taken) {
             throw $this->refuse(409, 'bag_number_taken', "Bag {$taken} already exists. Check the sticker on the bag.");
         }
@@ -603,11 +605,6 @@ class InventoryService
         $units = [];
 
         foreach ($plan as [$entry, $volume, $unitId]) {
-            if ($unitId === null) {
-                $unitId = $prefix.str_pad((string) $sequence, 2, '0', STR_PAD_LEFT);
-                $sequence++;
-            }
-
             $units[] = $this->inventoryRepository->createUnit([
                 'id' => $unitId,
                 'facility_id' => $facilityId,
@@ -638,38 +635,6 @@ class InventoryService
         }
 
         return $units;
-    }
-
-    /**
-     * The prefix generated ids for this donation share.
-     */
-    private function generatedIdPrefix(int $facilityId, int $donationId): string
-    {
-        return "RA{$facilityId}-{$donationId}-";
-    }
-
-    /**
-     * The next sequence number for a donation's generated ids.
-     *
-     * Parsed in PHP rather than taken from a lexicographic MAX(id), which is
-     * wrong the moment the sequence passes 99 ('RA4-118-100' < 'RA4-118-99'),
-     * and rather than counting the donation's units, which is wrong the moment
-     * one was recorded with a staff-supplied id. The set is one donation's
-     * units — a handful of rows, not a table scan.
-     */
-    private function nextSequence(int $donationId, string $prefix): int
-    {
-        $highest = 0;
-
-        foreach ($this->inventoryRepository->existingUnitIds($donationId, $prefix) as $existingId) {
-            $suffix = substr($existingId, strlen($prefix));
-
-            if (ctype_digit($suffix)) {
-                $highest = max($highest, (int) $suffix);
-            }
-        }
-
-        return $highest + 1;
     }
 
     /**
@@ -772,31 +737,6 @@ class InventoryService
             'discarded_at' => $unit->discarded_at?->toIso8601String(),
             'discard_reason' => $unit->discard_reason,
         ];
-    }
-
-    /**
-     * Which supplied unit ids are now taken, mapped back to their input field.
-     *
-     * @param  array<string, mixed>  $payload
-     * @return array<string, array<int, string>>
-     */
-    private function suppliedIdsNowTaken(array $payload): array
-    {
-        $supplied = [];
-
-        foreach ($payload['units'] as $index => $entry) {
-            if (isset($entry['unit_id'])) {
-                $supplied[$entry['unit_id']] = "units.{$index}.unit_id";
-            }
-        }
-
-        $errors = [];
-
-        foreach ($this->inventoryRepository->existingIdsAmong(array_keys($supplied)) as $takenId) {
-            $errors[$supplied[$takenId]] = ['This unit number has already been recorded.'];
-        }
-
-        return $errors;
     }
 
     /**

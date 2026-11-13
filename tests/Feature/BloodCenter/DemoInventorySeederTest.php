@@ -12,6 +12,8 @@ use App\Models\Facility;
 use App\Models\FacilityBloodComponent;
 use App\Models\User;
 use App\Support\OperationalDay;
+use App\Support\ReservedContacts;
+use Carbon\CarbonImmutable;
 use Database\Seeders\BloodComponentSeeder;
 use Database\Seeders\DemoInventorySeeder;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
@@ -142,6 +144,67 @@ class DemoInventorySeederTest extends TestCase
             $this->assertGreaterThan($today, $unit->expiry_date->toDateString(), "Unit {$unit->id} was seeded expired.");
             $this->assertSame($unit->donation->donorProfile->blood_type_id, $unit->blood_type_id);
         }
+    }
+
+    public function test_every_bag_is_numbered_from_its_centre_its_own_barcode_and_its_component(): void
+    {
+        $this->facility->forceFill(['abbreviation' => 'SNBC'])->save();
+
+        $this->seed(DemoInventorySeeder::class);
+
+        $barcodes = [];
+
+        foreach (BloodUnit::with(['component', 'donation.collection'])->get() as $unit) {
+            $barcode = $unit->donation->collection->donation_barcode;
+
+            $this->assertMatchesRegularExpression('/^\d{8}$/', $barcode);
+            $this->assertSame("SNBC-{$barcode}-{$unit->component->code}", $unit->id);
+            $barcodes[$unit->donation_id] = $barcode;
+        }
+
+        // One sticker per donation.
+        $this->assertSame(count($barcodes), count(array_unique($barcodes)));
+    }
+
+    public function test_expiry_dates_spread_from_tomorrow_to_weeks_away(): void
+    {
+        $this->app->when(DemoInventorySeeder::class)->needs('$unitsPerComponent')->give(10);
+
+        $this->seed(DemoInventorySeeder::class);
+
+        $packedRbc = BloodComponent::where('name', 'Packed RBC')->value('id');
+        $today = CarbonImmutable::parse(OperationalDay::todayAsDate());
+        $daysLeft = BloodUnit::where('component_id', $packedRbc)->get()
+            ->map(fn (BloodUnit $unit): int => (int) $today->diffInDays($unit->expiry_date))
+            ->unique();
+
+        $this->assertGreaterThanOrEqual(1, $daysLeft->min());
+        $this->assertLessThanOrEqual(3, $daysLeft->min(), 'No Packed RBC is close to expiry.');
+        $this->assertGreaterThanOrEqual(30, $daysLeft->max(), 'Packed RBC expiry dates do not spread.');
+    }
+
+    public function test_demo_donors_reach_no_one(): void
+    {
+        $this->seed(DemoInventorySeeder::class);
+
+        $donors = User::whereHas('donorProfile')->get();
+
+        $this->assertNotEmpty($donors);
+        $this->assertSame($donors->count(), $donors->pluck('phone')->unique()->count());
+
+        foreach ($donors as $donor) {
+            $this->assertStringEndsWith('@example.com', $donor->email);
+            $this->assertTrue(ReservedContacts::isDemoMobile($donor->phone), "{$donor->phone} is not a demo number.");
+        }
+    }
+
+    public function test_a_centre_without_an_abbreviation_is_left_alone(): void
+    {
+        $this->facility->forceFill(['abbreviation' => null])->save();
+
+        $this->seed(DemoInventorySeeder::class);
+
+        $this->assertSame(0, BloodUnit::count());
     }
 
     public function test_re_running_it_does_not_duplicate(): void
