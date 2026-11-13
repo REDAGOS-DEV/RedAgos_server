@@ -69,6 +69,17 @@ class HospitalInventoryListingTest extends TestCase
             ->assertJsonPath('data.0.active_tag', null);
     }
 
+    public function test_a_bag_number_is_found_in_any_case(): void
+    {
+        [$bag] = $this->receiveStock(1);
+
+        $this->actingAs($this->requester)
+            ->getJson('/api/hospital/inventory?search='.urlencode(strtolower($bag->unit_id)))
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.unit_id', $bag->unit_id);
+    }
+
     public function test_the_list_can_open_on_the_newest_arrival(): void
     {
         $first = $this->receiveOne(expiresInDays: 3);

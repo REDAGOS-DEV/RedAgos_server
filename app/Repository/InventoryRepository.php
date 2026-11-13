@@ -200,7 +200,7 @@ class InventoryRepository
     public function paginateIntakeQueue(int $facilityId, int $perPage, ?string $barcode = null): LengthAwarePaginator
     {
         return Donation::query()
-            ->with(['donorProfile.donor', 'donorProfile.bloodType', 'testResult.bloodType', 'components.component', 'collection'])
+            ->with(['donorProfile.donor', 'donorProfile.bloodType', 'testResult.bloodType', 'components.component', 'collection', 'facility'])
             ->where('facility_id', $facilityId)
             ->where('status', DonationStatus::Completed->value)
             // A scanned sticker: the donation whose bags are on the counter.
@@ -241,24 +241,6 @@ class InventoryRepository
             ->whereKey($donationId)
             ->lockForUpdate()
             ->first();
-    }
-
-    /**
-     * The unit ids already issued under a donation's generated-id prefix.
-     *
-     * Read under the donation lock, and returned as ids rather than a count:
-     * counting is wrong the moment one unit was recorded with a staff-supplied
-     * id, which does not carry the prefix at all.
-     *
-     * @return array<int, string>
-     */
-    public function existingUnitIds(int $donationId, string $prefix): array
-    {
-        return BloodUnit::query()
-            ->where('donation_id', $donationId)
-            ->where('id', 'like', $prefix.'%')
-            ->pluck('id')
-            ->all();
     }
 
     /**

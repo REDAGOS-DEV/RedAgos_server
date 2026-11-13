@@ -267,6 +267,23 @@ class InventoryTest extends TestCase
         $this->assertSame(['FREEZER-01'], array_column($byId->json('data'), 'id'));
     }
 
+    public function test_the_search_finds_a_bag_by_its_sticker_or_its_full_number_in_any_case(): void
+    {
+        $this->makeUnit(['id' => 'SNBC-21627990-PRBC']);
+        $this->makeUnit(['id' => 'SNBC-21627990-FFP']);
+        $this->makeUnit(['id' => 'SNBC-31415926-PRBC']);
+
+        $ids = fn (string $search): array => array_column($this->actingAs($this->staff)
+            ->getJson('/api/blood-center/inventory?search='.urlencode($search))
+            ->assertOk()
+            ->json('data'), 'id');
+
+        // The scanned sticker: every bag from that donation.
+        $this->assertEqualsCanonicalizing(['SNBC-21627990-PRBC', 'SNBC-21627990-FFP'], $ids('21627990'));
+        // The full number, as typed.
+        $this->assertSame(['SNBC-21627990-PRBC'], $ids('snbc-21627990-prbc'));
+    }
+
     public function test_a_listed_unit_carries_its_collection_date(): void
     {
         $unit = $this->makeUnit(['id' => 'DATED-01']);

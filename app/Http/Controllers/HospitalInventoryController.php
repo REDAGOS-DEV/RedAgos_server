@@ -7,7 +7,6 @@ use App\Http\Requests\ListHospitalInventoryRequest;
 use App\Http\Requests\ListInventoryActivityRequest;
 use App\Http\Requests\ListUnitTagEventsRequest;
 use App\Http\Requests\ReleaseUnitTagRequest;
-use App\Http\Requests\ReserveHospitalUnitRequest;
 use App\Http\Requests\StockInHospitalUnitsRequest;
 use App\Http\Requests\TagHospitalUnitRequest;
 use App\Service\HospitalInventoryService;
@@ -96,12 +95,15 @@ class HospitalInventoryController extends Controller
     }
 
     /**
-     * Reserve a bag on the shelf for a blood donor partner.
+     * Reserve a bag on the shelf for the blood donor partner program.
+     *
+     * No partner is named (project owner, 2026-11-13): the bag simply leaves
+     * the issuable stock.
      */
-    public function reserve(ReserveHospitalUnitRequest $request, string $unit): JsonResponse
+    public function reserve(Request $request, string $unit): JsonResponse
     {
         return response()->json(
-            $this->hospitalInventoryService->reserveForPartner($request->user(), $unit, $request->validated()['partner'])
+            $this->hospitalInventoryService->reserveForPartner($request->user(), $unit)
         );
     }
 

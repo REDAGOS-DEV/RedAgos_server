@@ -144,7 +144,7 @@ Every account is verified and active, signs in to the **Blood Center** portal, a
 Password: Password123
 ```
 
-The seeder refuses to run outside the `local` and `testing` environments, even with `--force`: it creates verified accounts that share a known password. Re-running it creates nothing new and never resets a password. Run it **before** `DemoInventorySeeder`, which attributes its records to the facility's first staff account and skips a facility with none.
+The seeder refuses to run outside the `local` and `testing` environments, even with `--force`: it creates verified accounts that share a known password. Re-running it creates nothing new and never resets a password. Run it **before** `DemoInventorySeeder`, which attributes each step to the staff member holding that role (or the facility's first staff account), and skips a centre with no staff, no abbreviation or no configured shelf life.
 
 ★ marks each department's **head**, who approves that department's correction requests. A head's own correction needs no other approval: it is applied as soon as it is sent.
 

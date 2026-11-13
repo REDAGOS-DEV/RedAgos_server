@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Requests\ListFacilitiesRequest;
 use App\Http\Requests\StoreFacilityRequest;
+use App\Http\Requests\UpdateFacilityAbbreviationRequest;
 use App\Service\FacilityManagementService;
 use Illuminate\Http\JsonResponse;
 
@@ -42,6 +43,16 @@ class FacilityManagementController extends Controller
         return response()->json(
             $this->facilityManagementService->create($request->user(), $request->validated()),
             201
+        );
+    }
+
+    /**
+     * Set or correct a blood centre's abbreviation, until it has booked a bag.
+     */
+    public function updateAbbreviation(UpdateFacilityAbbreviationRequest $request, int $facility): JsonResponse
+    {
+        return response()->json(
+            $this->facilityManagementService->setAbbreviation($request->user(), $facility, $request->validated('abbreviation'))
         );
     }
 }

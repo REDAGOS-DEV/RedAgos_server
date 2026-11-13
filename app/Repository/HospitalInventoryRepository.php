@@ -141,6 +141,8 @@ class HospitalInventoryRepository
             ->where(fn (Builder $listed): Builder => $listed
                 ->whereIn('hospital_units.status', [
                     HospitalUnitStatus::Available->value,
+                    // Printed purple, (R), under Uncrossmatched.
+                    HospitalUnitStatus::PartnerReserved->value,
                     HospitalUnitStatus::TagAssigned->value,
                     HospitalUnitStatus::TagCrossmatched->value,
                 ])
@@ -594,7 +596,12 @@ class HospitalInventoryRepository
     public function dueUnits(string $operationalDate): Builder
     {
         return HospitalUnit::query()
-            ->whereIn('hospital_units.status', [HospitalUnitStatus::Available->value, HospitalUnitStatus::Received->value])
+            // A bag set aside for the blood donor partner program still expires.
+            ->whereIn('hospital_units.status', [
+                HospitalUnitStatus::Available->value,
+                HospitalUnitStatus::PartnerReserved->value,
+                HospitalUnitStatus::Received->value,
+            ])
             ->whereHas('bloodUnit', fn (Builder $bag): Builder => $bag->whereDate('expiry_date', '<', $operationalDate));
     }
 
@@ -686,7 +693,9 @@ class HospitalInventoryRepository
             ->where('unit_tags.patient_surname', 'like', $like)
             ->orWhere('unit_tags.patient_first_name', 'like', $like)
             ->orWhere('unit_tags.patient_record_number', 'like', $like)
-            ->orWhereHas('hospitalUnit', fn (Builder $unit): Builder => $unit->where('unit_id', 'like', $like))
+            // Bag numbers in any case: SNBC-21627990-PRBC typed as it is
+            // read, or the sticker's digits alone.
+            ->orWhereHas('hospitalUnit', fn (Builder $unit): Builder => $unit->whereRaw('UPPER(unit_id) LIKE ?', [mb_strtoupper($like)]))
             ->orWhereHas(
                 'hospitalUnit.bloodUnit.directDistribution',
                 fn (Builder $delivery): Builder => $delivery->where('external_unit_number', 'like', $like)
@@ -710,10 +719,8 @@ class HospitalInventoryRepository
                         HospitalUnitStatus::TagAssigned->value,
                         HospitalUnitStatus::TagCrossmatched->value,
                     ]),
-                    // On the shelf, untagged, reserved for a blood donor partner.
-                    'reserved' => $query
-                        ->where('hospital_units.status', HospitalUnitStatus::Available->value)
-                        ->whereNotNull('hospital_units.partner_name'),
+                    // The older name for the status, kept for links already shared.
+                    'reserved' => $query->where('hospital_units.status', HospitalUnitStatus::PartnerReserved->value),
                     default => $query->where('hospital_units.status', $filters['status']),
                 }
             )
@@ -764,7 +771,8 @@ class HospitalInventoryRepository
             ->when(
                 isset($filters['search']),
                 fn (Builder $query): Builder => $query->where(fn (Builder $search): Builder => $search
-                    ->where('hospital_units.unit_id', 'like', '%'.$filters['search'].'%')
+                    // A bag number in any case, or the sticker's digits alone.
+                    ->whereRaw('UPPER(hospital_units.unit_id) LIKE ?', ['%'.mb_strtoupper((string) $filters['search']).'%'])
                     ->orWhereHas(
                         'bloodUnit.directDistribution',
                         fn (Builder $delivery): Builder => $delivery->where('external_unit_number', 'like', '%'.$filters['search'].'%')

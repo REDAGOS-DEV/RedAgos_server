@@ -6,8 +6,11 @@ use App\Models\User;
 use App\Support\AdminPrivileges;
 use App\Support\DepartmentPermissions;
 use App\Support\HospitalPermissions;
+use App\Support\ReservedContacts;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
+use Illuminate\Mail\Events\MessageSending;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
@@ -30,6 +33,22 @@ class AppServiceProvider extends ServiceProvider
         $this->registerDepartmentGates();
         $this->registerCounterRateLimiters();
         $this->registerDriveLinkRateLimiters();
+        $this->skipReservedAddresses();
+    }
+
+    /**
+     * Send no mail to an address that belongs to no one (example.com, .test…),
+     * which demo people carry. Nothing would arrive, and the bounce would land
+     * in the sender's inbox. A mail with no one real left on it is not sent.
+     */
+    private function skipReservedAddresses(): void
+    {
+        // false cancels the send; null lets it through and leaves any other
+        // MessageSending listener its turn (the event halts on non-null).
+        Event::listen(
+            MessageSending::class,
+            static fn (MessageSending $event): ?bool => ReservedContacts::screen($event->message) ? null : false
+        );
     }
 
     /**

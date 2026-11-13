@@ -147,6 +147,56 @@ class FacilityManagementService
     }
 
     /**
+     * Set or correct a blood centre's abbreviation, until it has booked a bag.
+     *
+     * The abbreviation opens every bag number the centre books, so once one
+     * is on a bag it stays (project owner, 2026-11-13); before that, a typo at
+     * creation can be corrected. The request has checked the format and that
+     * no other facility holds it.
+     *
+     * @return array<string, mixed>
+     */
+    public function setAbbreviation(User $admin, int $facilityId, string $abbreviation): array
+    {
+        [$facility, $previous] = DB::transaction(function () use ($facilityId, $abbreviation): array {
+            $facility = Facility::query()->with('facilityType')->lockForUpdate()->findOrFail($facilityId);
+
+            if (FacilityTypeName::tryFrom((string) $facility->facilityType?->name) !== FacilityTypeName::BloodCenter) {
+                throw ValidationException::withMessages([
+                    'abbreviation' => ['Only a blood center has an abbreviation.'],
+                ]);
+            }
+
+            $previous = $facility->abbreviation;
+
+            if ($previous !== $abbreviation && $facility->abbreviationLocked()) {
+                throw ValidationException::withMessages([
+                    'abbreviation' => ["{$facility->name} has booked bags numbered {$previous}-…, so its abbreviation can no longer change."],
+                ]);
+            }
+
+            $facility->abbreviation = $abbreviation;
+            $facility->save();
+
+            return [$facility, $previous];
+        });
+
+        if ($previous !== $facility->abbreviation) {
+            $this->auditLogger->record($admin, 'facility.abbreviation_set', $facility, [
+                'super_admin_id' => $admin->id,
+                'facility_id' => $facility->id,
+                'previous_abbreviation' => $previous,
+                'abbreviation' => $facility->abbreviation,
+            ]);
+        }
+
+        return [
+            'message' => "{$facility->name}'s abbreviation is now {$facility->abbreviation}.",
+            'data' => $this->format($facility),
+        ];
+    }
+
+    /**
      * Build the facility columns, keeping the operating fields to the types they apply to.
      *
      * @param  array<string, mixed>  $payload
@@ -177,6 +227,8 @@ class FacilityManagementService
 
         return [
             ...$attributes,
+            // Only a blood centre numbers bags (SNBC-21627990-PRBC).
+            'abbreviation' => $payload['abbreviation'] ?? null,
             'is_accepting_donations' => $payload['is_accepting_donations'] ?? true,
             'slot_capacity' => $payload['slot_capacity'] ?? 4,
             'slot_interval_minutes' => $payload['slot_interval_minutes'] ?? 30,
@@ -240,6 +292,7 @@ class FacilityManagementService
 
         $field = match (true) {
             str_contains($message, 'doh_license_number') => 'doh_license_number',
+            str_contains($message, 'abbreviation') => 'abbreviation',
             str_contains($message, 'username') => 'primary_account.username',
             str_contains($message, 'email') => $isAccount ? 'primary_account.email' : 'email',
             str_contains($message, 'phone') => $isAccount ? 'primary_account.phone' : 'phone',
@@ -263,9 +316,15 @@ class FacilityManagementService
         // rather than crash the page it appears on.
         $type = FacilityTypeName::tryFrom((string) $facility->facilityType?->name);
 
+        $isCentre = $type === FacilityTypeName::BloodCenter;
+
         return [
             'id' => $facility->id,
             'name' => $facility->name,
+            'abbreviation' => $facility->abbreviation,
+            // Fixed once a bag carries it; editable before. Null for a
+            // hospital blood bank, which has none.
+            'abbreviation_locked' => $isCentre ? $facility->abbreviationLocked() : null,
             'facility_type' => $facility->facilityType?->name,
             'facility_type_label' => $type?->label(),
             'doh_license_number' => $facility->doh_license_number,

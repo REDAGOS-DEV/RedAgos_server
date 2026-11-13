@@ -24,6 +24,8 @@ class FacilityFactory extends Factory
             // across facilities rather than recreated per factory call.
             'facility_type_id' => fn (): int => FacilityType::firstOrCreate(['name' => 'blood_center'])->id,
             'name' => fake()->unique()->company().' Blood Center',
+            // Every blood centre numbers its bags from one (BagNumbers).
+            'abbreviation' => strtoupper(fake()->unique()->lexify('?????')),
             'doh_license_number' => 'DOH-BC-'.fake()->unique()->numerify('########'),
             'contact_person' => fake()->name(),
             'email' => fake()->unique()->companyEmail(),
@@ -50,6 +52,8 @@ class FacilityFactory extends Factory
         return $this->state(fn (array $attributes): array => [
             'facility_type_id' => FacilityType::firstOrCreate(['name' => 'blood_bank'])->id,
             'name' => fake()->unique()->company().' Hospital Blood Bank',
+            // A hospital blood bank books no bags of its own.
+            'abbreviation' => null,
             'doh_license_number' => 'DOH-BB-'.fake()->unique()->numerify('########'),
             'is_accepting_donations' => false,
             'slots_start_at' => null,

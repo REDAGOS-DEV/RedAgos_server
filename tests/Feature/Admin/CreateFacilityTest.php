@@ -29,6 +29,8 @@ class CreateFacilityTest extends TestCase
      */
     private const FACILITY = [
         '--name' => 'Davao Regional Blood Center',
+        // Asked of a blood center only; ignored for a blood bank.
+        '--abbreviation' => 'drbc',
         '--doh-license' => 'DOH-BC-99887766',
         '--address' => 'Davao City',
         '--email' => 'center@redagos.test',
@@ -59,6 +61,8 @@ class CreateFacilityTest extends TestCase
         $this->assertSame(FacilityStatus::Approved, $facility->status);
         $this->assertSame($this->admin->id, $facility->approved_by);
         $this->assertNotNull($facility->approved_at);
+        // Every bag it books starts with it.
+        $this->assertSame('DRBC', $facility->abbreviation);
     }
 
     public function test_the_primary_account_runs_the_facility_portal(): void

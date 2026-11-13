@@ -107,6 +107,12 @@ class DonationFactory extends Factory
                     'source' => 'factory',
                 ]);
             }
+
+            // A labelled donation carries its barcode sticker: its bags are
+            // numbered from it, and none can be booked without one.
+            $donation->collection()
+                ->whereNull('donation_barcode')
+                ->update(['donation_barcode' => (string) (10000000 + $donation->id)]);
         });
     }
 

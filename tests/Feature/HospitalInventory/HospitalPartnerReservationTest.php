@@ -11,15 +11,20 @@ use App\Models\HospitalUnit;
 use App\Models\User;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Testing\TestResponse;
 use Tests\Feature\HospitalInventory\Concerns\BuildsHospitalStock;
 use Tests\TestCase;
 
 /**
- * A bag on the hospital's shelf reserved for a blood donor partner (project
- * owner, 2026-11-07): set from Blood Bank Inventory, printed purple on the
- * Inventory Report.
+ * A bag on the hospital's shelf reserved for the blood donor partner program.
+ *
+ * Project owner, 2026-11-07: reserved from Blood Bank Inventory, printed
+ * purple on the Inventory Report. Since 2026-11-13 it is a status of its own,
+ * Reserved for Donor Partner: kept for the program alone, never tagged to a
+ * patient, and counted in no available figure until it is released. No
+ * partner is named.
  */
 class HospitalPartnerReservationTest extends TestCase
 {
@@ -33,55 +38,52 @@ class HospitalPartnerReservationTest extends TestCase
         $this->travelTo(CarbonImmutable::parse('2026-10-02 02:00:00')); // 10:00 Manila
     }
 
-    private function reserve(HospitalUnit $unit, string $partner = 'Davao Rotary Club', ?User $as = null): TestResponse
+    private function reserve(HospitalUnit $unit, ?User $as = null, array $payload = []): TestResponse
     {
         return $this->actingAs($as ?? $this->requester)
-            ->postJson("/api/hospital/inventory/{$unit->unit_id}/reserve", ['partner' => $partner]);
+            ->postJson("/api/hospital/inventory/{$unit->unit_id}/reserve", $payload);
     }
 
-    public function test_a_bag_on_the_shelf_is_reserved_for_the_partner_and_stays_available(): void
+    public function test_reserving_a_bag_moves_it_to_reserved_for_donor_partner(): void
     {
         $unit = $this->receiveOne();
 
-        $this->reserve($unit, '  Davao Rotary Club  ')
+        // A partner name, if a client still sends one, is neither needed nor kept.
+        $this->reserve($unit, payload: ['partner' => 'Davao Rotary Club'])
             ->assertOk()
-            ->assertJsonPath('message', 'Blood unit reserved for the blood donor partner.')
-            ->assertJsonPath('unit.status', HospitalUnitStatus::Available->value)
-            ->assertJsonPath('unit.partner_reservation.partner', 'Davao Rotary Club')
+            ->assertJsonPath('message', 'Blood unit reserved for the blood donor partner program.')
+            ->assertJsonPath('unit.status', HospitalUnitStatus::PartnerReserved->value)
+            ->assertJsonPath('unit.status_label', 'Reserved for Donor Partner')
             ->assertJsonPath('unit.partner_reservation.reserved_at', '2026-10-02T02:00:00+00:00')
-            ->assertJsonPath('unit.partner_reservation.reserved_by', $this->requester->signatureName());
+            ->assertJsonPath('unit.partner_reservation.reserved_by', $this->requester->signatureName())
+            ->assertJsonMissingPath('unit.partner_reservation.partner');
 
         $fresh = $unit->fresh();
-        $this->assertSame(HospitalUnitStatus::Available, $fresh->status);
+        $this->assertSame(HospitalUnitStatus::PartnerReserved, $fresh->status);
+        $this->assertNull($fresh->partner_name);
         $this->assertSame($this->requester->id, $fresh->partner_reserved_by);
 
-        // Audited against the bag, without the partner's name.
         $entry = AuditLog::query()->where('action', 'hospital_inventory.partner_reserved')->sole();
         $this->assertSame($unit->unit_id, $entry->auditable_id);
-        $this->assertStringNotContainsString('Rotary', json_encode($entry->context));
+        $this->assertSame('available', $entry->context['previous_status']);
+        $this->assertSame('partner_reserved', $entry->context['new_status']);
 
         $this->actingAs($this->requester)
             ->getJson('/api/hospital/inventory/activity')
             ->assertJsonPath('data.0.kind', 'reserved');
     }
 
-    public function test_only_an_untagged_bag_in_date_not_yet_reserved_may_be_reserved(): void
+    public function test_only_an_untagged_bag_in_date_on_the_shelf_may_be_reserved(): void
     {
         [$tagged, $reserved] = $this->receiveStock(2);
         $this->tagUnit($tagged)->assertOk();
         $this->reserve($reserved)->assertOk();
 
         $this->reserve($tagged)->assertStatus(409)->assertJsonPath('code', 'unit_not_available');
-        $this->reserve($reserved, 'Another partner')->assertStatus(409)->assertJsonPath('code', 'unit_already_reserved');
-        $this->assertSame('Davao Rotary Club', $reserved->fresh()->partner_name);
+        $this->reserve($reserved)->assertStatus(409)->assertJsonPath('code', 'unit_already_reserved');
 
         [$unstocked] = $this->receiveUnstocked(1);
         $this->reserve($unstocked)->assertStatus(409)->assertJsonPath('code', 'unit_not_available');
-
-        $this->actingAs($this->requester)
-            ->postJson("/api/hospital/inventory/{$reserved->unit_id}/reserve", ['partner' => ''])
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors(['partner' => 'Name the blood donor partner the bag is reserved for.']);
 
         // Past its date, still Available until the expiry sweep runs.
         $lapsing = $this->receiveOne(expiresInDays: 2);
@@ -89,58 +91,100 @@ class HospitalPartnerReservationTest extends TestCase
         $this->reserve($lapsing)->assertStatus(409)->assertJsonPath('code', 'bag_expired');
     }
 
-    public function test_a_reserved_bag_may_be_tagged_and_returns_to_its_partner_when_the_tag_ends(): void
+    public function test_a_reserved_bag_cannot_be_tagged_to_a_patient(): void
     {
         $unit = $this->receiveOne();
         $this->reserve($unit)->assertOk();
 
         $this->tagUnit($unit)
-            ->assertOk()
-            ->assertJsonPath('unit.status', HospitalUnitStatus::TagAssigned->value)
-            ->assertJsonPath('unit.partner_reservation.partner', 'Davao Rotary Club');
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'unit_not_available')
+            ->assertJsonPath('message', 'This bag is reserved for the blood donor partner program. Release the reservation before tagging it to a patient.');
 
-        $this->act($unit, 'release', ['reason' => 'Crossmatch incompatible'])
-            ->assertOk()
-            ->assertJsonPath('unit.status', HospitalUnitStatus::Available->value)
-            ->assertJsonPath('unit.partner_reservation.partner', 'Davao Rotary Club');
+        $this->assertSame(HospitalUnitStatus::PartnerReserved, $unit->fresh()->status);
+        $this->assertSame(0, DB::table('unit_tags')->count());
     }
 
-    public function test_releasing_the_reservation_frees_the_bag(): void
+    public function test_a_reserved_bag_counts_in_no_available_figure(): void
+    {
+        // Ten bags of one type and component, three of them reserved.
+        $bags = $this->receiveStock(10);
+        foreach ($bags->take(3) as $bag) {
+            $this->reserve($bag)->assertOk();
+        }
+
+        $summary = $this->actingAs($this->requester)->getJson('/api/hospital/inventory/summary')->assertOk();
+        $this->assertSame(7, $summary->json('totals.available'));
+        $this->assertSame(3, $summary->json('totals.partner_reserved'));
+        $this->assertSame(7, $summary->json('by_blood_type.0.available'));
+
+        $this->actingAs($this->requester)->getJson('/api/hospital/dashboard')
+            ->assertOk()
+            ->assertJsonPath('units_available', 7);
+
+        // The live stock grid, which thresholds and alerts judge.
+        $cells = $this->actingAs($this->requester)->getJson('/api/hospital/inventory/thresholds')->assertOk()->json('cells');
+        $this->assertSame(7, collect($cells)->sum('available'));
+
+        // Listed under Available only once released.
+        $available = fn (): array => collect($this->actingAs($this->requester)->getJson('/api/hospital/inventory?status=available')->json('data'))
+            ->pluck('unit_id')->all();
+        $this->assertNotContains($bags[0]->unit_id, $available());
+
+        $this->act($bags[0], 'unreserve')->assertOk();
+        $this->assertContains($bags[0]->unit_id, $available());
+    }
+
+    public function test_releasing_the_reservation_returns_the_bag_to_the_shelf(): void
     {
         $unit = $this->receiveOne();
         $this->reserve($unit)->assertOk();
 
         $this->act($unit, 'unreserve')
             ->assertOk()
-            ->assertJsonPath('message', 'Reservation released.')
+            ->assertJsonPath('message', 'Reservation released. The bag is available again.')
+            ->assertJsonPath('unit.status', HospitalUnitStatus::Available->value)
             ->assertJsonPath('unit.partner_reservation', null);
 
         $fresh = $unit->fresh();
-        $this->assertNull($fresh->partner_name);
         $this->assertNull($fresh->partner_reserved_at);
         $this->assertNull($fresh->partner_reserved_by);
         $this->assertSame(1, AuditLog::query()->where('action', 'hospital_inventory.partner_released')->count());
 
         $this->act($unit, 'unreserve')->assertStatus(409)->assertJsonPath('code', 'unit_not_reserved');
+
+        // Free to tag to a patient again.
+        $this->tagUnit($unit)->assertOk()->assertJsonPath('unit.status', HospitalUnitStatus::TagAssigned->value);
     }
 
-    public function test_the_status_filter_lists_reserved_bags_on_the_shelf(): void
+    public function test_a_reserved_bag_still_expires_and_may_be_discarded(): void
     {
-        [$free, $reserved, $reservedThenTagged] = $this->receiveStock(3);
-        $this->reserve($reserved)->assertOk();
-        $this->reserve($reservedThenTagged)->assertOk();
-        $this->tagUnit($reservedThenTagged)->assertOk();
+        [$lapsing, $damaged] = $this->receiveStock(2, expiresInDays: 2);
+        $this->reserve($lapsing)->assertOk();
+        $this->reserve($damaged)->assertOk();
 
-        $this->actingAs($this->requester)
-            ->getJson('/api/hospital/inventory?status=reserved')
+        $this->act($damaged, 'discard', ['reason' => 'Bag leaking'])
             ->assertOk()
-            ->assertJsonCount(1, 'data')
-            ->assertJsonPath('data.0.unit_id', $reserved->unit_id);
+            ->assertJsonPath('unit.status', HospitalUnitStatus::Discarded->value);
 
-        // Reserved bags are still on the shelf, so Available lists them too.
-        $available = collect($this->actingAs($this->requester)->getJson('/api/hospital/inventory?status=available')->json('data'))
-            ->pluck('unit_id');
-        $this->assertEqualsCanonicalizing([$free->unit_id, $reserved->unit_id], $available->all());
+        $this->travel(4)->days();
+        $this->artisan('hospital:expire-units')->assertSuccessful();
+
+        $this->assertSame(HospitalUnitStatus::Expired, $lapsing->fresh()->status);
+    }
+
+    public function test_the_status_filter_lists_reserved_bags(): void
+    {
+        [$free, $reserved] = $this->receiveStock(2);
+        $this->reserve($reserved)->assertOk();
+
+        foreach (['partner_reserved', 'reserved'] as $filter) {
+            $this->actingAs($this->requester)
+                ->getJson("/api/hospital/inventory?status={$filter}")
+                ->assertOk()
+                ->assertJsonCount(1, 'data')
+                ->assertJsonPath('data.0.unit_id', $reserved->unit_id);
+        }
     }
 
     public function test_the_inventory_report_prints_a_reserved_bag_purple_and_a_tagged_one_pink(): void
@@ -151,8 +195,6 @@ class HospitalPartnerReservationTest extends TestCase
 
         [$free, $reserved, $tagged] = $this->receiveStock(3);
         $this->reserve($reserved)->assertOk();
-        // Reserved, then tagged to the partner's patient: the tag is what prints.
-        $this->reserve($tagged, 'Another partner')->assertOk();
         $this->tagUnit($tagged)->assertOk();
 
         $sheet = $this->actingAs($this->requester)
@@ -180,16 +222,41 @@ class HospitalPartnerReservationTest extends TestCase
         $unit = $this->receiveOne();
 
         $requesting = User::factory()->bloodBankStaff($this->hospital)->hospitalRole(HospitalRole::RequestingStaff)->create();
-        $this->reserve($unit, as: $requesting)->assertForbidden();
+        $this->reserve($unit, $requesting)->assertForbidden();
         $this->actingAs($requesting)->postJson("/api/hospital/inventory/{$unit->unit_id}/unreserve")->assertForbidden();
 
         $inventory = User::factory()->bloodBankStaff($this->hospital)->hospitalRole(HospitalRole::InventoryStaff)->create();
-        $this->reserve($unit, as: $inventory)->assertOk();
+        $this->reserve($unit, $inventory)->assertOk();
 
         $otherHospital = Facility::factory()->bloodBank()->approved()->create();
         $otherStaff = User::factory()->bloodBankStaff($otherHospital)->create();
         $this->actingAs($otherStaff)->postJson("/api/hospital/inventory/{$unit->unit_id}/unreserve")->assertNotFound();
 
-        $this->assertSame('Davao Rotary Club', $unit->fresh()->partner_name);
+        $this->assertSame(HospitalUnitStatus::PartnerReserved, $unit->fresh()->status);
+    }
+
+    public function test_the_migration_turns_the_old_mark_into_the_status(): void
+    {
+        // No tags: SQLite rebuilds the table to widen the status column, and
+        // inside the test's transaction it cannot set aside unit_tags' key.
+        [$marked, $markedThenExpired] = $this->receiveStock(2);
+
+        // The old mark: an available bag carrying a partner name. The other
+        // carried it until the bag left the shelf.
+        DB::table('hospital_units')->whereIn('id', [$marked->id, $markedThenExpired->id])
+            ->update(['partner_name' => 'Davao Rotary Club', 'partner_reserved_at' => now(), 'partner_reserved_by' => $this->requester->id]);
+        DB::table('hospital_units')->where('id', $markedThenExpired->id)->update(['status' => 'expired']);
+
+        $migration = require database_path('migrations/2026_11_13_000002_add_partner_reserved_hospital_unit_status.php');
+        $migration->up();
+
+        $this->assertSame(HospitalUnitStatus::PartnerReserved, $marked->fresh()->status);
+        $this->assertNull($marked->fresh()->partner_name);
+        $this->assertNotNull($marked->fresh()->partner_reserved_at);
+
+        // A bag no longer on the shelf keeps its status and loses the mark.
+        $this->assertSame(HospitalUnitStatus::Expired, $markedThenExpired->fresh()->status);
+        $this->assertNull($markedThenExpired->fresh()->partner_name);
+        $this->assertNull($markedThenExpired->fresh()->partner_reserved_at);
     }
 }

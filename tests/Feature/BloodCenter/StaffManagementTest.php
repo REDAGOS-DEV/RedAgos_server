@@ -11,8 +11,10 @@ use App\Models\AuditLog;
 use App\Models\Facility;
 use App\Models\User;
 use App\Notifications\VerifyEmailNotification;
+use App\Support\Uploads;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 class StaffManagementTest extends TestCase
@@ -469,6 +471,62 @@ class StaffManagementTest extends TestCase
             ->assertOk();
 
         $this->assertNotSoftDeleted('users', ['id' => $staff->id]);
+    }
+
+    public function test_the_staff_profile_carries_the_activation_date_and_no_secrets(): void
+    {
+        $staff = User::factory()->bloodCenterStaff($this->facility)->create([
+            'activated_at' => '2026-09-01 08:30:00',
+        ]);
+        $staff->createToken('api-token');
+
+        $response = $this->actingAs($this->admin)
+            ->getJson("/api/blood-center/staff/{$staff->uuid}")
+            ->assertOk()
+            ->assertJsonPath('uuid', $staff->uuid)
+            ->assertJsonPath('username', $staff->username)
+            ->assertJsonPath('email_verified', true)
+            ->assertJsonPath('activated_at', $staff->activated_at->toISOString())
+            ->assertJsonPath('avatar_url', null);
+
+        foreach (['password', 'remember_token', 'tokens', 'email_verification_code', 'temporary_password'] as $secret) {
+            $response->assertJsonMissingPath($secret);
+        }
+    }
+
+    public function test_an_account_not_yet_verified_has_no_activation_date(): void
+    {
+        $staff = User::factory()->bloodCenterStaff($this->facility)->unverified()->create();
+
+        $this->actingAs($this->admin)
+            ->getJson("/api/blood-center/staff/{$staff->uuid}")
+            ->assertOk()
+            ->assertJsonPath('email_verified', false)
+            ->assertJsonPath('activated_at', null);
+    }
+
+    public function test_the_staff_profile_links_the_photo_except_on_a_removed_account(): void
+    {
+        Storage::fake(Uploads::diskName());
+        Uploads::disk()->put('staff-avatars/face.jpg', 'jpeg bytes');
+
+        $staff = User::factory()->bloodCenterStaff($this->facility)->create([
+            'profile_image_path' => 'staff-avatars/face.jpg',
+        ]);
+
+        $link = $this->actingAs($this->admin)
+            ->getJson("/api/blood-center/staff/{$staff->uuid}")
+            ->assertOk()
+            ->json('avatar_url');
+
+        $this->assertStringContainsString("/staff/{$staff->uuid}/avatar", (string) $link);
+
+        $staff->delete();
+
+        $this->actingAs($this->admin)
+            ->getJson("/api/blood-center/staff/{$staff->uuid}")
+            ->assertOk()
+            ->assertJsonPath('avatar_url', null);
     }
 
     public function test_restoring_an_active_account_is_refused(): void

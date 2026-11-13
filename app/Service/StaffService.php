@@ -14,6 +14,7 @@ use App\Repository\BloodCenterRepository;
 use App\Repository\StaffRepository;
 use App\Support\AccountIdentity;
 use App\Support\DepartmentPermissions;
+use App\Support\StaffAvatar;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Exceptions\HttpResponseException;
@@ -54,11 +55,23 @@ class StaffService
     /**
      * Show one staff account from the caller's facility.
      *
+     * The roster's fields plus what only the Staff Profile shows: the date
+     * the account was activated, and the photo. Kept off the roster because
+     * the photo link checks the disk, once per account.
+     *
      * @return array<string, mixed>
      */
     public function show(User $actor, string $uuid): array
     {
-        return $this->format($this->findOrFail($actor, $uuid, withTrashed: true));
+        $staff = $this->findOrFail($actor, $uuid, withTrashed: true);
+
+        return [
+            ...$this->format($staff),
+            'activated_at' => $staff->activated_at?->toISOString(),
+            // A removed account's photo is not served (staff.avatar.show finds
+            // live accounts only), so it gets no link: the initials instead.
+            'avatar_url' => $staff->trashed() ? null : StaffAvatar::urlFor($staff),
+        ];
     }
 
     /**

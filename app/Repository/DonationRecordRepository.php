@@ -5,6 +5,7 @@ namespace App\Repository;
 use App\Enums\DonationStatus;
 use App\Models\Donation;
 use App\Support\AccountIdentity;
+use App\Support\BagNumbers;
 use App\Support\OperationalDay;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
@@ -52,7 +53,7 @@ class DonationRecordRepository
             ))
             ->when(isset($filters['from']), fn (Builder $q) => $q->where('donation_date', '>=', OperationalDay::boundsFor($filters['from'])[0]))
             ->when(isset($filters['to']), fn (Builder $q) => $q->where('donation_date', '<=', OperationalDay::boundsFor($filters['to'])[1]))
-            ->when(filled($filters['search'] ?? null), fn (Builder $q) => $this->applySearch($q, (string) $filters['search']))
+            ->when(filled($filters['search'] ?? null), fn (Builder $q) => $this->applySearch($q, (string) $filters['search'], $facilityId))
             ->orderByDesc('donation_date')
             ->orderByDesc('id');
     }
@@ -66,7 +67,7 @@ class DonationRecordRepository
         return $this->query($facilityId, $filters)->paginate($perPage);
     }
 
-    private function applySearch(Builder $query, string $term): Builder
+    private function applySearch(Builder $query, string $term, int $facilityId): Builder
     {
         $term = trim($term);
         $like = '%'.mb_strtolower($term).'%';
@@ -75,8 +76,11 @@ class DonationRecordRepository
         $phone = preg_replace('/[\s-]+/', '', $term) ?? $term;
         $localPhone = preg_match('/^0(9\d*)$/', $phone, $p) === 1 ? '%+63'.$p[1].'%' : null;
         $barcode = AccountIdentity::normalizeValidIdNumber($term);
+        // A scanned sticker or a bag number typed in full
+        // (SNBC-21627990-PRBC) finds the donation the bag came from.
+        $sticker = BagNumbers::barcodeFrom($term, BagNumbers::centreOf($facilityId));
 
-        return $query->where(function (Builder $inner) use ($like, $donationId, $donorId, $phone, $localPhone, $term, $barcode): void {
+        return $query->where(function (Builder $inner) use ($like, $donationId, $donorId, $phone, $localPhone, $term, $barcode, $sticker): void {
             $inner->whereHas('donorProfile.donor', fn (Builder $donor) => $donor
                 ->whereRaw('LOWER(first_name) LIKE ?', [$like])
                 ->orWhereRaw('LOWER(last_name) LIKE ?', [$like])
@@ -86,7 +90,8 @@ class DonationRecordRepository
                 ->when($donorId !== null, fn (Builder $q) => $q->orWhere('users.id', $donorId)))
                 ->orWhereHas('collection', fn (Builder $c) => $c
                     ->where('donation_barcode', $term)
-                    ->when($barcode !== null && $barcode !== $term, fn (Builder $q) => $q->orWhere('donation_barcode', $barcode)))
+                    ->when($barcode !== null && $barcode !== $term, fn (Builder $q) => $q->orWhere('donation_barcode', $barcode))
+                    ->when($sticker !== null && $sticker !== $term, fn (Builder $q) => $q->orWhere('donation_barcode', $sticker)))
                 ->when($donationId !== null, fn (Builder $q) => $q->orWhere('donations.id', $donationId));
         });
     }

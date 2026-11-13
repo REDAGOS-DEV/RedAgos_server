@@ -29,9 +29,8 @@ class StoreBloodUnitsRequest extends FormRequest
             // Every bag is booked onto a shelf (project owner, 2026-10-13).
             'units.*.storage_location' => ['required', 'string', 'max:100'],
 
-            // Checked here and caught again at the index: this is check-then-
-            // insert, so a concurrent intake can still take the id in between.
-            'units.*.unit_id' => ['nullable', 'string', 'max:50', 'unique:blood_units,id'],
+            // No unit_id: every bag takes its number from the donation
+            // (BagNumbers), never from the request (project owner, 2026-11-13).
 
             // after_or_equal, not after: a bag stamped with today's date is
             // usable for the rest of today, and the sweep only expires
@@ -50,7 +49,6 @@ class StoreBloodUnitsRequest extends FormRequest
     {
         return [
             'units.*.expiry_date.after_or_equal' => 'An expiry date that has already passed cannot be recorded.',
-            'units.*.unit_id.unique' => 'This unit number has already been recorded.',
             'units.*.storage_location.required' => 'Every bag needs a storage location.',
         ];
     }

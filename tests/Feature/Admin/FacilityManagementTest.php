@@ -8,6 +8,8 @@ use App\Enums\FacilityTypeName;
 use App\Enums\HospitalRole;
 use App\Enums\RoleName;
 use App\Models\AuditLog;
+use App\Models\BloodUnit;
+use App\Models\Donation;
 use App\Models\Facility;
 use App\Models\FacilityType;
 use App\Models\User;
@@ -43,6 +45,7 @@ class FacilityManagementTest extends TestCase
         return array_replace_recursive([
             'facility_type' => FacilityTypeName::BloodCenter->value,
             'name' => 'Davao Regional Blood Center',
+            'abbreviation' => 'DRBC',
             'doh_license_number' => 'DOH-BC-2026-00412',
             'address' => 'Quirino Ave, Davao City',
             'email' => 'info@drbc.ph',
@@ -565,6 +568,140 @@ class FacilityManagementTest extends TestCase
 
         $this->assertNotEmpty($types);
         $this->assertSame(['blood_bank'], array_values(array_unique($types)));
+    }
+
+    // --- Abbreviation (project owner, 2026-11-13) ----------------------------
+
+    public function test_a_blood_center_needs_an_abbreviation(): void
+    {
+        $payload = $this->payload();
+        unset($payload['abbreviation']);
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/admin/facilities', $payload)
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('abbreviation');
+    }
+
+    public function test_the_abbreviation_is_two_to_six_letters_stored_in_capitals(): void
+    {
+        $admin = $this->admin();
+
+        foreach (['D', 'DRBC1', 'ABCDEFG', 'DR-BC'] as $bad) {
+            $this->actingAs($admin)
+                ->postJson('/api/admin/facilities', $this->payload(['abbreviation' => $bad]))
+                ->assertStatus(422)
+                ->assertJsonValidationErrors('abbreviation');
+        }
+
+        $this->actingAs($admin)
+            ->postJson('/api/admin/facilities', $this->payload(['abbreviation' => ' drbc ']))
+            ->assertCreated()
+            ->assertJsonPath('data.abbreviation', 'DRBC');
+    }
+
+    public function test_an_abbreviation_another_centre_holds_is_refused(): void
+    {
+        Facility::factory()->approved()->create(['abbreviation' => 'DRBC']);
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/admin/facilities', $this->payload(['abbreviation' => 'drbc']))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('abbreviation');
+    }
+
+    public function test_a_hospital_blood_bank_has_no_abbreviation(): void
+    {
+        $this->actingAs($this->admin())
+            ->postJson('/api/admin/facilities', $this->bloodBankPayload(['abbreviation' => 'SPMC']))
+            ->assertCreated()
+            ->assertJsonPath('data.abbreviation', null)
+            ->assertJsonPath('data.abbreviation_locked', null);
+
+        $payload = $this->bloodBankPayload([
+            'name' => 'Davao Doctors Hospital Blood Bank',
+            'doh_license_number' => 'DOH-BB-2026-00982',
+            'email' => 'bloodbank@ddh.ph',
+            'phone' => '09211234567',
+            'primary_account' => ['email' => 'head@ddh.ph', 'phone' => '09221234567'],
+        ]);
+        unset($payload['abbreviation']);
+
+        $this->actingAs($this->admin())->postJson('/api/admin/facilities', $payload)->assertCreated();
+    }
+
+    public function test_the_abbreviation_can_be_corrected_until_the_centre_books_a_bag(): void
+    {
+        $admin = $this->admin();
+        $centre = Facility::factory()->approved()->create(['abbreviation' => 'DRCB']);
+
+        $this->actingAs($admin)
+            ->patchJson("/api/admin/facilities/{$centre->id}/abbreviation", ['abbreviation' => 'drbc'])
+            ->assertOk()
+            ->assertJsonPath('data.abbreviation', 'DRBC')
+            ->assertJsonPath('data.abbreviation_locked', false);
+
+        $this->assertDatabaseHas('audit_logs', [
+            'action' => 'facility.abbreviation_set',
+            'auditable_id' => (string) $centre->id,
+        ]);
+
+        // Its first bag is booked: the prefix is on a bag now.
+        $donation = Donation::factory()->handedOver()->create(['facility_id' => $centre->id]);
+        BloodUnit::factory()->create(['id' => 'DRBC-10000001-PRBC', 'facility_id' => $centre->id, 'donation_id' => $donation->id]);
+
+        $this->actingAs($admin)
+            ->patchJson("/api/admin/facilities/{$centre->id}/abbreviation", ['abbreviation' => 'DRB'])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('abbreviation');
+
+        $this->assertSame('DRBC', $centre->fresh()->abbreviation);
+
+        $row = collect($this->actingAs($admin)->getJson('/api/admin/facilities')->json('data'))->firstWhere('id', $centre->id);
+        $this->assertTrue($row['abbreviation_locked']);
+    }
+
+    public function test_the_lock_holds_outside_the_endpoint_too(): void
+    {
+        $centre = Facility::factory()->approved()->create(['abbreviation' => 'DRBC']);
+        $donation = Donation::factory()->handedOver()->create(['facility_id' => $centre->id]);
+        BloodUnit::factory()->create(['id' => 'DRBC-10000001-PRBC', 'facility_id' => $centre->id, 'donation_id' => $donation->id]);
+
+        $this->expectException(\LogicException::class);
+
+        $centre->update(['abbreviation' => 'DRB']);
+    }
+
+    public function test_a_centre_without_one_can_be_given_an_abbreviation_at_any_time(): void
+    {
+        $centre = Facility::factory()->approved()->create(['abbreviation' => null]);
+
+        $this->actingAs($this->admin())
+            ->patchJson("/api/admin/facilities/{$centre->id}/abbreviation", ['abbreviation' => 'NEW'])
+            ->assertOk()
+            ->assertJsonPath('data.abbreviation', 'NEW');
+    }
+
+    public function test_a_hospital_cannot_be_given_an_abbreviation(): void
+    {
+        $hospital = Facility::factory()->bloodBank()->approved()->create();
+
+        $this->actingAs($this->admin())
+            ->patchJson("/api/admin/facilities/{$hospital->id}/abbreviation", ['abbreviation' => 'SPMC'])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('abbreviation');
+
+        $this->assertNull($hospital->fresh()->abbreviation);
+    }
+
+    public function test_only_an_administrator_sets_an_abbreviation(): void
+    {
+        $centre = Facility::factory()->approved()->create(['abbreviation' => 'DRBC']);
+        $staff = User::factory()->bloodCenterStaff($centre)->create();
+
+        $this->actingAs($staff)
+            ->patchJson("/api/admin/facilities/{$centre->id}/abbreviation", ['abbreviation' => 'XYZ'])
+            ->assertForbidden();
     }
 
     public function test_the_list_rejects_an_unknown_facility_type_filter(): void

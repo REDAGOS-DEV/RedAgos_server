@@ -2,6 +2,7 @@
 
 namespace App\Service;
 
+use App\Support\ReservedContacts;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\RequestException;
@@ -43,10 +44,17 @@ class SemaphoreSms
      * not a Philippine mobile.
      *
      * users.phone is E.164, but older rows may still be local (09…), and a
-     * landline is stored too. Landlines cannot receive a text, so they are null.
+     * landline is stored too. Landlines cannot receive a text, so they are
+     * null, as is a demo number (+63 900…), which belongs to no one.
      */
     public static function recipient(?string $phone): ?string
     {
+        // A demo person's number reaches no one, so it is never texted
+        // (ReservedContacts). Every text is checked here first.
+        if (ReservedContacts::isDemoMobile($phone)) {
+            return null;
+        }
+
         $digits = preg_replace('/\D+/', '', (string) $phone) ?? '';
 
         if (preg_match('/^09\d{9}$/', $digits) === 1) {

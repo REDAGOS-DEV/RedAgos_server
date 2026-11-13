@@ -102,6 +102,7 @@ final class AuditActions
         'facility.email_template_reset' => ['settings', 'edit', 'Reset an email template'],
         'facility.xendit_account_set' => ['settings', 'edit', 'Changed the online payment account'],
         'facility.created' => ['settings', 'create', 'Facility created'],
+        'facility.abbreviation_set' => ['settings', 'edit', 'Changed the blood center abbreviation'],
         'facility.approved' => ['settings', 'approve', 'Facility approved'],
         'facility.rejected' => ['settings', 'reject', 'Facility rejected'],
 

@@ -1130,7 +1130,7 @@ It never carries the donor's name.
 **DECISION (printing):** Labels print from the browser as text, one per 100 mm × 100 mm page (`BagLabelSheet.vue`, `useLabelPrint`). The sheet is the only thing printed, which also fixes the Blood Inventory print that used to print the whole dashboard. No barcode is drawn, because the sticker already is one.
 
 **KNOWN LIMITATIONS:**
-- Bag numbers are global. If two centres use the same sticker series, the second booking is refused. The remedy then is a facility prefix on the number.
+- Bag numbers are global. If two centres use the same sticker series, the second booking is refused. The remedy then is a facility prefix on the number. (Done 2026-11-13: see "Bag numbers start with the centre".)
 - Labels carry no printed barcode. One can be added later (e.g. JsBarcode) without changing the data.
 
 ## Hospital Blood Bank inventory and tagging
@@ -2838,3 +2838,47 @@ Opened from View, the dialog offers Edit or Review when the row allows it. Every
 - Checked in the service, not by a database index: the venue match is case- and space-insensitive and the tests run on SQLite. Two staff saving the same drive at the same instant could still both get through. The form's buttons are disabled while saving, so one person cannot double-submit.
 
 **Client:** unchanged. The drive dialog already shows the server's first field error.
+
+## Bag numbers start with the centre: SNBC-21627990-PRBC
+
+**SOURCE:** the project owner, 2026-11-13: "every bag from a RedAgos blood centre uses one format: [Centre abbreviation]-[Barcode]-[Component abbreviation]". This settles the known limitation under "Two-phase labelling" (two centres using the same sticker series).
+
+**DECISION (abbreviation):**
+- `facilities.abbreviation` (migration `2026_11_13_000001`): 2 to 6 capital letters, unique across every facility including retired ones. PostgreSQL also holds the format as a CHECK.
+- Required of a blood centre when it is created (`StoreFacilityRequest`, `facility:create --abbreviation`). A hospital blood bank has none; what it sends is left out.
+- The Super Admin can set or correct it (`PATCH /admin/facilities/{facility}/abbreviation`, `admin.facility.manage`, audited as `facility.abbreviation_set`) until the centre books its first bag. After that it is fixed: 422 on `abbreviation`, and `Facility`'s saving hook throws on any other path. Setting one where there was none is always allowed.
+- The admin list carries `abbreviation` and `abbreviation_locked` (null for a hospital).
+
+**DECISION (numbering):**
+- `BagNumbers` builds every number as `{abbreviation of the centre that collected the donation}-{barcode}-{component code}`, with `-2`, `-3`… for further bags of one component. A legacy row standing for several bags is numbered bag by bag.
+- The generated `RA{facility}-{donation}-NN` ids are gone, and so is the typed `unit_id` at Stock Intake (now ignored). A donation without a barcode is refused with 409 `barcode_missing`, and a centre without an abbreviation with 409 `centre_abbreviation_missing`, at both final labelling and Stock Intake. The intake queue says which (`numbers_missing`).
+- A number already in stock is still refused (409 `bag_number_taken`). The prefix keeps two centres apart, so that now only means a sticker used twice at one centre.
+- Component codes were already required and unique: a new component must have one, the index is unique, and codes cannot be edited.
+- Bags a hospital receives from outside RedAgos keep their `DD-…` ids.
+
+**DECISION (finding a bag):** a scanned sticker (digits only) or a full bag number in any case finds the bag or its donation in every search:
+- Server: the Donations list, Laboratory/Testing scan, Stock Intake scan, Processed and Serology Results searches read a full number through `BagNumbers::barcodeFrom()`. A bag number from another centre finds none of this centre's donations, since stickers are unique per centre only. Blood Inventory and the hospital inventory and tag searches match unit ids as substrings, regardless of case.
+- Client: `utils/bagNumber.ts`. The hospital's Stock Intake scan, the weekly delivery scan and the fulfilment picker take a sticker as "the next bag of that donation not yet scanned".
+
+**DECISION (demo contacts):** demo people carry contacts that reach no one, and RedAgos sends them nothing (`ReservedContacts`):
+- Mail to example.com/.net/.org or a .test, .example, .invalid or .localhost address is dropped before the transport (a `MessageSending` listener); a mail with nobody real left is not sent.
+- The Philippines has no fictional mobile range, so RedAgos keeps one: `+63 900 xxx xxxx`. `SemaphoreSms::recipient()` returns null for it, so it is never texted.
+
+**DEMO DATA:** `DemoInventorySeeder` numbers its bags through `BagNumbers`. Each donation has its own eight-digit sticker (`21000000 + donation id`). Collection dates are spread over each bag's shelf life, so expiry runs from tomorrow to the full shelf life. Its donors get example.com addresses and demo numbers.
+
+## Reserved for Donor Partner is a status
+
+**SOURCE:** the project owner, 2026-11-13: "Reserve for Blood Donor Partner should change the unit's status to Reserved for Donor Partner. A reserved unit is allocated exclusively for the blood donor partner program and must not be available for regular patient requests, issuance, or allocation. The reservation does not require selecting or storing a specific donor partner name at this stage." For example, if 10 PRBC remain and some are reserved, those are left out of the issuable count. This replaces "the reservation is a mark" in "Inventory Report colour code, and bags reserved for a blood donor partner", and settles three of its unruled choices.
+
+**DECISION:**
+- `hospital_units.status` gains `partner_reserved`, labelled "Reserved for Donor Partner" (migration `2026_11_13_000002`, which also widens the PostgreSQL CHECK). Moves: Available → Partner Reserved; Partner Reserved → Available (released), Expired (the sweep) or Discarded.
+- `POST /hospital/inventory/{unit}/reserve` takes no body: no partner is named. `partner_reserved_at` and `partner_reserved_by` still record when and by whom; `partner_name` stays as an unwritten column. `ReserveHospitalUnitRequest` was removed.
+- A reserved bag cannot be tagged to a patient (409 `unit_not_available`, "This bag is reserved for the blood donor partner program. Release the reservation before tagging it to a patient."). Releasing it makes it Available again.
+- It counts in no available figure, because every one of them counts `available` only: the summary and blood type rings, the dashboard's units available, the stock-threshold grid and its alerts, Expiring Soon. `totals.partner_reserved` reports them apart.
+- The Inventory Report still lists it under Uncrossmatched, purple (R).
+- The list filter is `status=partner_reserved`; `status=reserved` still works as its older name.
+- The migration turns an available bag that carried the old mark into Partner Reserved. A tagged or no-longer-stocked bag keeps its status and loses the mark.
+
+**Client:** the badge "Reserved for Donor Partner" (purple) comes from the status. Reserve is a plain confirm ("It stays in storage but is no longer for patients…"), with no name box. A reserved bag offers only Release reservation and Discard. The partner lines, the tag dialog's reserved warning and the "Reserved for partner" filter option are gone (the status is in the list).
+
+**TESTS:** `HospitalPartnerReservationTest` (rewritten), and in the client `tests/hospitalInventory.spec.ts` and `tests/hospitalInventoryDashboard.spec.ts`.

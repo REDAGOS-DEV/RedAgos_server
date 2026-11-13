@@ -6,6 +6,7 @@ use App\Enums\BloodUnitStatus;
 use App\Enums\RoleName;
 use App\Enums\StaffRole;
 use App\Models\AuditLog;
+use App\Models\BloodCollection;
 use App\Models\BloodComponent;
 use App\Models\BloodType;
 use App\Models\BloodUnit;
@@ -42,7 +43,9 @@ class InventoryIntakeTest extends TestCase
         $this->facilityId = $this->staff->facility_id;
 
         $this->bloodType = BloodType::firstOrCreate(['code' => 'O+'], ['label' => 'O+']);
-        $this->component = BloodComponent::factory()->create(['name' => 'Packed RBC']);
+        $this->component = BloodComponent::factory()->create(['name' => 'Packed RBC', 'code' => 'PRBC']);
+
+        Facility::whereKey($this->facilityId)->update(['abbreviation' => 'SNBC']);
 
         $this->donorProfile = DonorProfile::factory()->create([
             'donor_id' => User::factory()->create()->id,
@@ -65,6 +68,7 @@ class InventoryIntakeTest extends TestCase
             'declared_by' => $this->staff->id,
         ]);
 
+        BloodCollection::where('donation_id', $this->donation->id)->update(['donation_barcode' => '21627990']);
     }
 
     public function test_a_completed_donation_yields_units_carrying_the_donors_blood_type(): void
@@ -94,19 +98,16 @@ class InventoryIntakeTest extends TestCase
         $this->assertSame('O+', $response->json('units.0.blood_type.code'));
     }
 
-    public function test_a_generated_id_follows_the_scheme(): void
+    public function test_a_unit_is_numbered_from_its_centre_its_barcode_and_its_component(): void
     {
         $response = $this->actingAs($this->staff)
             ->postJson('/api/blood-center/inventory', $this->payload())
             ->assertCreated();
 
-        $this->assertSame(
-            "RA{$this->facilityId}-{$this->donation->id}-01",
-            $response->json('units.0.id')
-        );
+        $this->assertSame('SNBC-21627990-PRBC', $response->json('units.0.id'));
     }
 
-    public function test_a_second_intake_continues_the_sequence(): void
+    public function test_a_second_bag_of_the_same_component_ends_in_two(): void
     {
         $this->actingAs($this->staff)
             ->postJson('/api/blood-center/inventory', $this->payload())
@@ -116,57 +117,61 @@ class InventoryIntakeTest extends TestCase
             ->postJson('/api/blood-center/inventory', $this->payload())
             ->assertCreated();
 
-        // Not -01 again: the sequence is derived from what the donation already
-        // has, under the donation lock.
-        $this->assertSame(
-            "RA{$this->facilityId}-{$this->donation->id}-02",
-            $response->json('units.0.id')
-        );
+        // The next bag of the donation, under the donation lock.
+        $this->assertSame('SNBC-21627990-PRBC-2', $response->json('units.0.id'));
     }
 
-    public function test_the_sequence_is_not_derived_lexicographically(): void
+    public function test_a_tenth_bag_is_numbered_ten(): void
     {
-        BloodUnit::factory()->create([
-            'id' => "RA{$this->facilityId}-{$this->donation->id}-99",
-            'facility_id' => $this->facilityId,
-            'blood_type_id' => $this->bloodType->id,
-            'component_id' => $this->component->id,
-            'donation_id' => $this->donation->id,
-        ]);
+        $payload = $this->payload();
+
+        for ($i = 1; $i < 10; $i++) {
+            $payload['units'][] = $payload['units'][0];
+        }
 
         $response = $this->actingAs($this->staff)
-            ->postJson('/api/blood-center/inventory', $this->payload())
+            ->postJson('/api/blood-center/inventory', $payload)
             ->assertCreated();
 
-        // A lexicographic MAX(id) would read '-99' as the highest forever.
-        $this->assertSame(
-            "RA{$this->facilityId}-{$this->donation->id}-100",
-            $response->json('units.0.id')
-        );
+        $this->assertSame('SNBC-21627990-PRBC-10', $response->json('units.9.id'));
     }
 
-    public function test_a_supplied_unit_id_is_honoured(): void
+    public function test_a_typed_unit_number_is_ignored(): void
     {
         $payload = $this->payload();
         $payload['units'][0]['unit_id'] = 'BAG-778812';
 
+        // The number comes from the donation, never from the request.
         $this->actingAs($this->staff)
             ->postJson('/api/blood-center/inventory', $payload)
             ->assertCreated()
-            ->assertJsonPath('units.0.id', 'BAG-778812');
+            ->assertJsonPath('units.0.id', 'SNBC-21627990-PRBC');
+
+        $this->assertDatabaseMissing('blood_units', ['id' => 'BAG-778812']);
     }
 
-    public function test_a_duplicate_supplied_unit_id_is_refused(): void
+    public function test_a_donation_without_a_barcode_cannot_be_booked(): void
     {
-        $payload = $this->payload();
-        $payload['units'][0]['unit_id'] = 'BAG-778812';
-
-        $this->actingAs($this->staff)->postJson('/api/blood-center/inventory', $payload)->assertCreated();
+        BloodCollection::where('donation_id', $this->donation->id)->update(['donation_barcode' => null]);
 
         $this->actingAs($this->staff)
-            ->postJson('/api/blood-center/inventory', $payload)
-            ->assertStatus(422)
-            ->assertJsonValidationErrors('units.0.unit_id');
+            ->postJson('/api/blood-center/inventory', $this->payload())
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'barcode_missing');
+
+        $this->assertSame(0, BloodUnit::count());
+    }
+
+    public function test_a_centre_without_an_abbreviation_cannot_book(): void
+    {
+        Facility::whereKey($this->facilityId)->update(['abbreviation' => null]);
+
+        $this->actingAs($this->staff)
+            ->postJson('/api/blood-center/inventory', $this->payload())
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'centre_abbreviation_missing');
+
+        $this->assertSame(0, BloodUnit::count());
     }
 
     public function test_several_units_may_be_recorded_from_one_donation(): void
@@ -179,7 +184,7 @@ class InventoryIntakeTest extends TestCase
             ->assertCreated();
 
         $this->assertSame(
-            ["RA{$this->facilityId}-{$this->donation->id}-01", "RA{$this->facilityId}-{$this->donation->id}-02"],
+            ['SNBC-21627990-PRBC', 'SNBC-21627990-PRBC-2'],
             array_column($response->json('units'), 'id')
         );
     }

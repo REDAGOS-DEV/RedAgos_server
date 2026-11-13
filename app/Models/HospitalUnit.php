@@ -58,11 +58,12 @@ class HospitalUnit extends Model
     }
 
     /**
-     * Whether the bag is reserved for a blood donor partner.
+     * Whether the bag is reserved for the blood donor partner program: a
+     * status of its own since 2026-11-13, not a mark on an available bag.
      */
     public function isPartnerReserved(): bool
     {
-        return $this->partner_name !== null;
+        return $this->status === HospitalUnitStatus::PartnerReserved;
     }
 
     /**

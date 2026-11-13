@@ -9,6 +9,7 @@ use App\Enums\SerologyMarker;
 use App\Models\BloodUnit;
 use App\Models\CorrectionRequest;
 use App\Models\DonationSerology;
+use App\Support\BagNumbers;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 
@@ -56,7 +57,7 @@ class SerologyResultRepository
                     ->where('subject', CorrectionSubject::Serology->value)
                     ->where('status', 'pending')
             ))
-            ->when(filled($filters['search'] ?? null), fn (Builder $q) => $this->applySearch($q, (string) $filters['search'], $searchIdentity));
+            ->when(filled($filters['search'] ?? null), fn (Builder $q) => $this->applySearch($q, (string) $filters['search'], $searchIdentity, $facilityId));
 
         if (($filters['sort'] ?? null) === 'reactive_first') {
             $markers = implode(' OR ', array_map(
@@ -122,16 +123,20 @@ class SerologyResultRepository
         }
     }
 
-    private function applySearch(Builder $query, string $term, bool $searchIdentity): Builder
+    private function applySearch(Builder $query, string $term, bool $searchIdentity, int $facilityId): Builder
     {
         $term = trim($term);
         $barcode = '%'.mb_strtoupper(preg_replace('/\s+/', '', $term) ?? $term).'%';
+        // A bag number typed in full (SNBC-21627990-PRBC) finds its donation.
+        $sticker = BagNumbers::barcodeFrom($term, BagNumbers::centreOf($facilityId));
         $like = '%'.mb_strtolower($term).'%';
         $donationId = preg_match('/^(?:DON-?|#)(\d{1,10})$/i', $term, $m) === 1 ? (int) $m[1] : null;
         $donorId = preg_match('/^DONOR-(\d{1,10})$/i', $term, $d) === 1 ? (int) $d[1] : null;
 
-        return $query->where(function (Builder $inner) use ($barcode, $like, $donationId, $donorId, $searchIdentity): void {
-            $inner->whereHas('donation.collection', fn (Builder $c) => $c->whereRaw('UPPER(donation_barcode) LIKE ?', [$barcode]))
+        return $query->where(function (Builder $inner) use ($barcode, $sticker, $like, $donationId, $donorId, $searchIdentity): void {
+            $inner->whereHas('donation.collection', fn (Builder $c) => $c
+                ->whereRaw('UPPER(donation_barcode) LIKE ?', [$barcode])
+                ->when($sticker !== null, fn (Builder $q) => $q->orWhere('donation_barcode', $sticker)))
                 ->when($donationId !== null, fn (Builder $q) => $q->orWhere('donation_serology.donation_id', $donationId))
                 ->when($searchIdentity, fn (Builder $q) => $q->orWhereHas('donation.donorProfile.donor', fn (Builder $donor) => $donor
                     ->whereRaw('LOWER(first_name) LIKE ?', [$like])

@@ -120,10 +120,10 @@ class ProcessedDonationsTest extends TestCase
 
     public function test_the_list_is_this_centres_processed_donations_newest_first(): void
     {
-        $first = $this->drawn('BC-0001');
-        $second = $this->drawn('BC-0002');
-        $unprocessed = $this->drawn('BC-0003');
-        $elsewhere = $this->drawn('BC-9999', at: Facility::factory()->approved()->create());
+        $first = $this->drawn('70001');
+        $second = $this->drawn('70002');
+        $unprocessed = $this->drawn('70003');
+        $elsewhere = $this->drawn('79999', at: Facility::factory()->approved()->create());
 
         Carbon::setTestNow(now()->subHour());
         $this->process($first);
@@ -134,7 +134,7 @@ class ProcessedDonationsTest extends TestCase
 
         $this->assertSame([$second->id, $first->id], array_column($rows, 'donation_id'));
         $this->assertSame('DON-'.str_pad((string) $second->id, 6, '0', STR_PAD_LEFT), $rows[0]['code']);
-        $this->assertSame('BC-0002', $rows[0]['bag']['barcode']);
+        $this->assertSame('70002', $rows[0]['bag']['barcode']);
         $this->assertSame(2, $rows[0]['bag_count']);
         $this->assertSame(480, $rows[0]['processed_volume_ml']);
         $this->assertSame(['Packed RBC', 'Packed RBC'], array_column($rows[0]['components'], 'component'));
@@ -151,8 +151,8 @@ class ProcessedDonationsTest extends TestCase
 
     public function test_a_processed_unit_leaves_the_component_processing_queue(): void
     {
-        $waiting = $this->drawn('BC-1001');
-        $processed = $this->drawn('BC-1002');
+        $waiting = $this->drawn('71001');
+        $processed = $this->drawn('71002');
         $this->process($processed);
 
         $queue = $this->actingAs($this->technologist)
@@ -169,7 +169,7 @@ class ProcessedDonationsTest extends TestCase
 
     public function test_only_the_component_technologist_is_offered_the_hand_over(): void
     {
-        $donation = $this->drawn('BC-2001');
+        $donation = $this->drawn('72001');
         $this->process($donation);
 
         // Not before Testing has cleared it and its final labels are printed.
@@ -203,9 +203,9 @@ class ProcessedDonationsTest extends TestCase
 
     public function test_the_hand_over_moves_the_row_along_and_closes_it(): void
     {
-        $handed = $this->drawn('BC-3001');
-        $rejected = $this->drawn('BC-3002');
-        $waiting = $this->drawn('BC-3003');
+        $handed = $this->drawn('73001');
+        $rejected = $this->drawn('73002');
+        $waiting = $this->drawn('73003');
 
         foreach ([$handed, $rejected, $waiting] as $donation) {
             $this->process($donation);
@@ -254,9 +254,9 @@ class ProcessedDonationsTest extends TestCase
 
     public function test_each_row_says_whether_its_breakdown_can_still_be_corrected(): void
     {
-        $open = $this->drawn('BC-4001');
-        $handed = $this->drawn('BC-4002');
-        $rejected = $this->drawn('BC-4003');
+        $open = $this->drawn('74001');
+        $handed = $this->drawn('74002');
+        $rejected = $this->drawn('74003');
 
         foreach ([$open, $handed, $rejected] as $donation) {
             $this->process($donation);
@@ -286,7 +286,7 @@ class ProcessedDonationsTest extends TestCase
 
     public function test_the_component_technologist_decides_an_assistants_correction_from_the_list(): void
     {
-        $donation = $this->drawn('BC-4501');
+        $donation = $this->drawn('74501');
         $this->process($donation);
 
         $this->fileCorrection($donation, $this->assistant)->assertCreated();
@@ -317,7 +317,7 @@ class ProcessedDonationsTest extends TestCase
 
     public function test_the_component_technologists_own_correction_applies_as_it_is_filed(): void
     {
-        $donation = $this->drawn('BC-5101');
+        $donation = $this->drawn('75101');
         $this->process($donation);
 
         $this->fileCorrection($donation, $this->technologist, [240])
@@ -331,20 +331,20 @@ class ProcessedDonationsTest extends TestCase
 
     public function test_it_finds_a_bag_a_bag_number_or_a_donation_but_never_a_name(): void
     {
-        $donation = $this->drawn('BC-5001', 'Maria');
-        $other = $this->drawn('BC-6002');
+        $donation = $this->drawn('75001', 'Maria');
+        $other = $this->drawn('76002');
         $this->process($donation);
         $this->process($other);
 
-        $this->assertSame([$donation->id], array_column($this->rows($this->technologist, ['search' => 'bc-50']), 'donation_id'));
+        $this->assertSame([$donation->id], array_column($this->rows($this->technologist, ['search' => '750']), 'donation_id'));
         $this->assertSame([$donation->id], array_column($this->rows($this->technologist, ['search' => 'DON-'.$donation->id]), 'donation_id'));
 
-        $bagNumber = $this->rows($this->technologist, ['search' => 'BC-5001'])[0]['components'][0]['bag_number'];
+        $bagNumber = $this->rows($this->technologist, ['search' => '75001'])[0]['components'][0]['bag_number'];
         $this->assertNotNull($bagNumber);
         $this->assertSame([$donation->id], array_column($this->rows($this->technologist, ['search' => $bagNumber]), 'donation_id'));
 
         // Processing works blind: no name, and no finding a unit by one.
-        $donor = $this->rows($this->technologist, ['search' => 'BC-5001'])[0]['donor'];
+        $donor = $this->rows($this->technologist, ['search' => '75001'])[0]['donor'];
         $this->assertTrue($donor['blinded']);
         $this->assertArrayNotHasKey('full_name', $donor);
         $this->assertSame([], $this->rows($this->technologist, ['search' => 'Maria']));
@@ -364,7 +364,7 @@ class ProcessedDonationsTest extends TestCase
 
     public function test_the_export_is_the_filtered_list_as_csv_and_is_audited(): void
     {
-        $this->process($this->drawn('BC-7001', 'Pedro'));
+        $this->process($this->drawn('77001', 'Pedro'));
 
         $csv = $this->actingAs($this->technologist)
             ->get('/api/blood-center/laboratory/processed/export')
@@ -372,7 +372,7 @@ class ProcessedDonationsTest extends TestCase
             ->streamedContent();
 
         $this->assertStringStartsWith("\xEF\xBB\xBFDonationID,Bag,Donor,DonorID,BloodGroup,Components,Bags,ProcessedVolumeMl", $csv);
-        $this->assertStringContainsString('BC-7001', $csv);
+        $this->assertStringContainsString('77001', $csv);
         $this->assertStringContainsString('Awaiting testing', $csv);
         $this->assertStringNotContainsString('Pedro', $csv);
         $this->assertDatabaseHas('audit_logs', ['action' => 'laboratory.processed_exported', 'actor_id' => $this->technologist->id]);

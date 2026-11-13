@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use LogicException;
 
 class Facility extends Model
 {
@@ -26,6 +27,9 @@ class Facility extends Model
     protected $fillable = [
         'facility_type_id',
         'name',
+        // A blood centre's bag-number prefix (SNBC-21627990-PRBC). Locked
+        // once the centre has booked a bag: see booted().
+        'abbreviation',
         'doh_license_number',
         'contact_person',
         'email',
@@ -70,6 +74,53 @@ class Facility extends Model
             'open_days' => 'array',
             'closed_dates' => 'array',
         ];
+    }
+
+    /**
+     * Keep the abbreviation as it prints, and fixed once a bag carries it.
+     *
+     * Every bag a centre books is numbered from its abbreviation
+     * (BagNumbers), so changing it after the first bag would leave the
+     * centre's bags under two prefixes and the labels on the shelf disagreeing
+     * with the stock record (project owner, 2026-11-13). Setting one where
+     * there was none is always allowed. The requests refuse the change with a
+     * field message first; this holds it on every other path.
+     */
+    protected static function booted(): void
+    {
+        static::saving(function (Facility $facility): void {
+            if (! $facility->isDirty('abbreviation')) {
+                return;
+            }
+
+            $abbreviation = strtoupper(trim((string) $facility->abbreviation));
+            $facility->abbreviation = $abbreviation === '' ? null : $abbreviation;
+
+            if ($facility->exists
+                && $facility->getOriginal('abbreviation') !== null
+                && $facility->abbreviation !== $facility->getOriginal('abbreviation')
+                && $facility->hasBookedBags()) {
+                throw new LogicException('A blood center\'s abbreviation cannot change once it has booked a bag.');
+            }
+        });
+    }
+
+    /**
+     * Whether a bag from one of this centre's donations is in stock or ever was.
+     */
+    public function hasBookedBags(): bool
+    {
+        return $this->exists && BloodUnit::query()
+            ->whereIn('donation_id', Donation::query()->select('id')->where('facility_id', $this->getKey()))
+            ->exists();
+    }
+
+    /**
+     * Whether the abbreviation can no longer change: it is on a booked bag.
+     */
+    public function abbreviationLocked(): bool
+    {
+        return $this->getOriginal('abbreviation') !== null && $this->hasBookedBags();
     }
 
     /**

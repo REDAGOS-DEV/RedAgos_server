@@ -1185,6 +1185,10 @@ Route::middleware(['auth:sanctum', 'role:admin', 'throttle:60,1'])
             ->middleware('can:admin.facility.manage');
         Route::post('/', [FacilityManagementController::class, 'store'])
             ->middleware('can:admin.facility.manage');
+        // A blood centre's bag-number prefix, correctable until its first
+        // bag is booked (project owner, 2026-11-13).
+        Route::patch('/{facility}/abbreviation', [FacilityManagementController::class, 'updateAbbreviation'])
+            ->whereNumber('facility')->middleware('can:admin.facility.manage');
 
         // Legacy: facilities left in pending_approval by the removed public
         // registration flow. Their records are preserved rather than deleted,
