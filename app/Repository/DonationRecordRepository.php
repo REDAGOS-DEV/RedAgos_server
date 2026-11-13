@@ -11,12 +11,15 @@ use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
 
 /**
- * One centre's donations as the Donations list shows them: every visit opened
- * at its counter, from registration to completion or closing.
+ * Donations as the Donations list shows them: every visit opened at a
+ * counter, from registration to completion or closing. The list reads every
+ * centre's (project owner, 2026-11-13); the export and a drive's paper sheet
+ * read one centre's.
  */
 class DonationRecordRepository
 {
     private const WITH = [
+        'facility:id,name,abbreviation',
         'donorProfile.donor',
         'donorProfile.bloodType',
         'screening.recorder',
@@ -32,15 +35,15 @@ class DonationRecordRepository
      * barcode), status (a DonationStatus value, or "open" for a visit not yet
      * drawn), blood_type_id, from and to (operational dates, inclusive), and
      * paper_sheet_id (the rows typed from one drive's paper sheet). Newest
-     * first.
+     * first. One centre's, or every centre's with no facility.
      *
      * @param  array<string, mixed>  $filters
      */
-    public function query(int $facilityId, array $filters): Builder
+    public function query(?int $facilityId, array $filters): Builder
     {
         return Donation::query()
             ->with(self::WITH)
-            ->where('facility_id', $facilityId)
+            ->when($facilityId !== null, fn (Builder $q) => $q->where('facility_id', $facilityId))
             ->when(($filters['status'] ?? null) === 'open', fn (Builder $q) => $q->whereIn('status', [
                 DonationStatus::Registered->value,
                 DonationStatus::Screening->value,
@@ -62,12 +65,12 @@ class DonationRecordRepository
      * @param  array<string, mixed>  $filters
      * @return LengthAwarePaginator<int, Donation>
      */
-    public function paginate(int $facilityId, array $filters, int $perPage): LengthAwarePaginator
+    public function paginate(?int $facilityId, array $filters, int $perPage): LengthAwarePaginator
     {
         return $this->query($facilityId, $filters)->paginate($perPage);
     }
 
-    private function applySearch(Builder $query, string $term, int $facilityId): Builder
+    private function applySearch(Builder $query, string $term, ?int $facilityId): Builder
     {
         $term = trim($term);
         $like = '%'.mb_strtolower($term).'%';
@@ -77,10 +80,13 @@ class DonationRecordRepository
         $localPhone = preg_match('/^0(9\d*)$/', $phone, $p) === 1 ? '%+63'.$p[1].'%' : null;
         $barcode = AccountIdentity::normalizeValidIdNumber($term);
         // A scanned sticker or a bag number typed in full
-        // (SNBC-21627990-PRBC) finds the donation the bag came from.
-        $sticker = BagNumbers::barcodeFrom($term, BagNumbers::centreOf($facilityId));
+        // (SNBC-21627990-PRBC) finds the donation the bag came from. Stickers
+        // are unique per centre, so across every centre a full bag number
+        // finds only the donation at the centre it names.
+        $sticker = BagNumbers::barcodeFrom($term, $facilityId === null ? null : BagNumbers::centreOf($facilityId));
+        $stickerCentre = $facilityId === null ? BagNumbers::parse($term)['centre'] ?? null : null;
 
-        return $query->where(function (Builder $inner) use ($like, $donationId, $donorId, $phone, $localPhone, $term, $barcode, $sticker): void {
+        return $query->where(function (Builder $inner) use ($like, $donationId, $donorId, $phone, $localPhone, $term, $barcode, $sticker, $stickerCentre): void {
             $inner->whereHas('donorProfile.donor', fn (Builder $donor) => $donor
                 ->whereRaw('LOWER(first_name) LIKE ?', [$like])
                 ->orWhereRaw('LOWER(last_name) LIKE ?', [$like])
@@ -90,8 +96,13 @@ class DonationRecordRepository
                 ->when($donorId !== null, fn (Builder $q) => $q->orWhere('users.id', $donorId)))
                 ->orWhereHas('collection', fn (Builder $c) => $c
                     ->where('donation_barcode', $term)
-                    ->when($barcode !== null && $barcode !== $term, fn (Builder $q) => $q->orWhere('donation_barcode', $barcode))
-                    ->when($sticker !== null && $sticker !== $term, fn (Builder $q) => $q->orWhere('donation_barcode', $sticker)))
+                    ->when($barcode !== null && $barcode !== $term, fn (Builder $q) => $q->orWhere('donation_barcode', $barcode)))
+                ->when($sticker !== null && $sticker !== $term, fn (Builder $q) => $q->orWhere(fn (Builder $bag) => $bag
+                    ->whereHas('collection', fn (Builder $c) => $c->where('donation_barcode', $sticker))
+                    ->when($stickerCentre !== null, fn (Builder $q) => $q->whereHas(
+                        'facility',
+                        fn (Builder $f) => $f->where('abbreviation', $stickerCentre)
+                    ))))
                 ->when($donationId !== null, fn (Builder $q) => $q->orWhere('donations.id', $donationId));
         });
     }

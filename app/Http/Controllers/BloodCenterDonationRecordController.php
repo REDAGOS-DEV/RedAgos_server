@@ -8,8 +8,9 @@ use Illuminate\Http\JsonResponse;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
- * The Donations list: every visit opened at this centre's counter. Closing a
- * visit left open goes through the counter's own status route.
+ * The Donations list: every visit opened at any centre's counter, another
+ * centre's read only; the export is this centre's. Closing a visit left open
+ * goes through the counter's own status route.
  */
 class BloodCenterDonationRecordController extends Controller
 {
