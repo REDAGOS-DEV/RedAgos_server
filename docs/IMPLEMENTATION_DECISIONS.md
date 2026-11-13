@@ -2882,3 +2882,17 @@ Opened from View, the dialog offers Edit or Review when the row allows it. Every
 **Client:** the badge "Reserved for Donor Partner" (purple) comes from the status. Reserve is a plain confirm ("It stays in storage but is no longer for patients…"), with no name box. A reserved bag offers only Release reservation and Discard. The partner lines, the tag dialog's reserved warning and the "Reserved for partner" filter option are gone (the status is in the list).
 
 **TESTS:** `HospitalPartnerReservationTest` (rewritten), and in the client `tests/hospitalInventory.spec.ts` and `tests/hospitalInventoryDashboard.spec.ts`.
+
+## The Donations list holds every centre's donations
+
+**SOURCE:** The project owner, 2026-11-13: a donor who gave blood at SPMC was not found on PRC's Donations page ("even if I refresh it and search it there is no result but it is recorded in center"). Donor Management was already the same at every centre; Donations was each centre's alone.
+
+**DECISION:**
+- `GET /donation-records` lists every centre's donations (`DonationRecordRepository::query()` with no facility), as Donor Management lists every centre's donors. Each row carries `scope` (own_facility | cross_facility) and `centre` { id, name, abbreviation }.
+- Another centre's visit is read only. `can.close` is false and the status route still refuses it (404), Continue and the paper sheet link are hidden, and its deferral reason, laboratory rejection reason and "Rejected after testing" label stay with the centre that recorded it (`donors.view_clinical` reads them only on this centre's rows). The deferral code still shows.
+- Search reaches every centre. A full bag number finds only the donation at the centre it names (PRC-21627990-PRBC); a bare sticker finds every centre's donation with those digits, since stickers are unique per centre only.
+- Unchanged: the export (`/donation-records/export`) and a drive's paper sheet stay this centre's own, as Donor Management's export does. The donor profile's Donation History stays this centre's donations.
+
+**Client:** another centre's row shows its abbreviation as a chip beside the donation ID (the name on hover), and the detail says "Recorded at <centre>".
+
+**TESTS:** `DonationRecordsTest` (`test_another_centres_donations_are_listed_read_only`, the sticker test, the export test), and in the client `tests/donationsPage.spec.ts`.

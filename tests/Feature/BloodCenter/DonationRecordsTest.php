@@ -19,8 +19,9 @@ use Tests\TestCase;
  * The Donations list (project owner, 2026-10-17).
  *
  * What is locked in: a visit left open is visible and can be closed from the
- * list, the list is this centre's alone, and a closed visit says why only as
- * far as the viewer may know.
+ * list, the list holds every centre's donations with another centre's read
+ * only (project owner, 2026-11-13), the export is this centre's alone, and a
+ * closed visit says why only as far as the viewer may know.
  */
 class DonationRecordsTest extends TestCase
 {
@@ -61,15 +62,16 @@ class DonationRecordsTest extends TestCase
             ->json('data');
     }
 
-    public function test_the_list_is_this_centres_newest_first_with_open_visits_marked(): void
+    public function test_the_list_is_newest_first_with_open_visits_marked(): void
     {
         $older = $this->visit(DonationStatus::Completed, 3);
         $open = $this->visit(DonationStatus::Registered);
-        $this->visit(DonationStatus::Registered, at: Facility::factory()->approved()->create());
 
         $rows = $this->rows($this->desk);
 
         $this->assertSame([$open->id, $older->id], array_column($rows, 'id'));
+        $this->assertSame('own_facility', $rows[0]['scope']);
+        $this->assertSame($this->facility->id, $rows[0]['centre']['id']);
         $this->assertSame('DON-'.str_pad((string) $open->id, 6, '0', STR_PAD_LEFT), $rows[0]['code']);
         $this->assertTrue($rows[0]['open']);
         $this->assertTrue($rows[0]['can']['close']);
@@ -79,6 +81,40 @@ class DonationRecordsTest extends TestCase
         // Recorded at the counter, not typed from a drive's paper sheet.
         $this->assertSame('counter', $rows[0]['source']);
         $this->assertNull($rows[0]['paper_sheet']);
+    }
+
+    public function test_another_centres_donations_are_listed_read_only(): void
+    {
+        $other = Facility::factory()->approved()->create(['abbreviation' => 'SPMC']);
+        $given = $this->visit(DonationStatus::Completed, 1, at: $other);
+        $given->donorProfile->donor->forceFill(['first_name' => 'Kai', 'last_name' => 'Licong'])->save();
+        $open = $this->visit(DonationStatus::Registered, at: $other);
+        $deferred = $this->visit(DonationStatus::Rejected, 2, at: $other);
+        DonationScreening::factory()->deferred()->create(['donation_id' => $deferred->id, 'facility_id' => $other->id]);
+        $here = $this->visit(DonationStatus::Completed, 3);
+
+        $rows = collect($this->rows($this->desk))->keyBy('id');
+
+        $this->assertEqualsCanonicalizing([$given->id, $open->id, $deferred->id, $here->id], $rows->keys()->all());
+        $this->assertSame('cross_facility', $rows[$given->id]['scope']);
+        $this->assertSame(['id' => $other->id, 'name' => $other->name, 'abbreviation' => 'SPMC'], $rows[$given->id]['centre']);
+        $this->assertSame('own_facility', $rows[$here->id]['scope']);
+
+        // Found by name at the next centre.
+        $this->assertSame([$given->id], array_column($this->rows($this->desk, ['search' => 'kai']), 'id'));
+
+        // Not closed from here: the visit is the other centre's.
+        $this->assertTrue($rows[$open->id]['open']);
+        $this->assertFalse($rows[$open->id]['can']['close']);
+        $this->actingAs($this->desk)
+            ->patchJson("/api/blood-center/donations/{$open->id}/status", ['status' => 'rejected'])
+            ->assertNotFound();
+
+        // The deferral's code shows; its reason stays with the centre that recorded it.
+        $physician = User::factory()->bloodCenterStaff($this->facility, StaffRole::ScreeningPhysician)->create();
+        $clinical = collect($this->rows($physician))->keyBy('id');
+        $this->assertSame('Deferred', $clinical[$deferred->id]['status_label']);
+        $this->assertNull($clinical[$deferred->id]['screening']['deferral_reason']);
     }
 
     public function test_it_filters_open_visits_and_searches_donor_code_and_bag(): void
@@ -111,8 +147,15 @@ class DonationRecordsTest extends TestCase
         $this->assertSame([$drawn->id], $ids(['search' => 'SNBC-21627990-PRBC']));
         $this->assertSame([$drawn->id], $ids(['search' => 'snbc-21627990-ffp-2']));
 
-        // Another centre's bag is not this centre's donation.
-        $this->assertSame([], $ids(['search' => 'PRC-21627990-PRBC']));
+        // The same sticker at another centre: its bag number finds that
+        // centre's donation, the sticker alone finds both.
+        $prc = Facility::factory()->approved()->create(['abbreviation' => 'PRC']);
+        $there = $this->visit(DonationStatus::Completed, 3, at: $prc);
+        $there->collection->forceFill(['donation_barcode' => '21627990'])->save();
+
+        $this->assertSame([$there->id], $ids(['search' => 'PRC-21627990-PRBC']));
+        $this->assertSame([$drawn->id], $ids(['search' => 'SNBC-21627990-PRBC']));
+        $this->assertSame([$drawn->id, $there->id], $ids(['search' => '21627990']));
     }
 
     public function test_an_open_visit_is_closed_from_the_list_through_the_counters_route(): void
@@ -154,11 +197,15 @@ class DonationRecordsTest extends TestCase
             ->assertForbidden();
     }
 
-    public function test_the_export_is_the_filtered_list_as_csv(): void
+    public function test_the_export_is_this_centres_filtered_list_as_csv(): void
     {
-        $this->visit(DonationStatus::Completed, 1);
+        $here = $this->visit(DonationStatus::Completed, 1);
+        $there = $this->visit(DonationStatus::Completed, 1, at: Facility::factory()->approved()->create());
 
         $csv = $this->actingAs($this->desk)->get('/api/blood-center/donation-records/export')->assertOk()->streamedContent();
+
+        $this->assertStringContainsString('DON-'.str_pad((string) $here->id, 6, '0', STR_PAD_LEFT), $csv);
+        $this->assertStringNotContainsString('DON-'.str_pad((string) $there->id, 6, '0', STR_PAD_LEFT), $csv);
 
         $this->assertStringStartsWith("\xEF\xBB\xBFDonationID,Donor,DonorID,BloodGroup,Date,Time,Status", $csv);
         $this->assertDatabaseHas('audit_logs', ['action' => 'donations.exported', 'actor_id' => $this->desk->id]);
