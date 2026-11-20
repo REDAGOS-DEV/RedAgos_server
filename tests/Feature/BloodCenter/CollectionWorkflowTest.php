@@ -372,6 +372,93 @@ class CollectionWorkflowTest extends TestCase
         $this->assertSame(AppointmentStatus::Completed, $appointment->fresh()->status);
     }
 
+    public function test_a_draw_cancels_the_bookings_the_donor_can_no_longer_keep(): void
+    {
+        // Booked for tomorrow, came in today (project owner, 2026-11-20).
+        $tomorrow = DonationAppointment::factory()->create([
+            'donor_id' => $this->donor->id,
+            'facility_id' => $this->facility->id,
+            'appointment_datetime' => now()->addDay()->setTime(9, 0),
+            'status' => 'scheduled',
+        ]);
+        // Past the next eligible date: still a booking they can keep.
+        $later = DonationAppointment::factory()->create([
+            'donor_id' => $this->donor->id,
+            'facility_id' => $this->facility->id,
+            'appointment_datetime' => now()->addDays((int) config('donation.interval_days') + 5)->setTime(9, 0),
+            'status' => 'scheduled',
+        ]);
+        // Already missed before today: its record stays as it was.
+        $missed = DonationAppointment::factory()->create([
+            'donor_id' => $this->donor->id,
+            'facility_id' => $this->facility->id,
+            'appointment_datetime' => now()->subDays(2)->setTime(9, 0),
+            'status' => 'scheduled',
+        ]);
+
+        $id = $this->openDonation();
+        $this->screenDonation($id);
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload())
+            ->assertCreated();
+
+        $this->assertSame(AppointmentStatus::Cancelled, $tomorrow->fresh()->status);
+        $this->assertSame(AppointmentStatus::Scheduled, $later->fresh()->status);
+        $this->assertSame(AppointmentStatus::Scheduled, $missed->fresh()->status);
+    }
+
+    public function test_a_visit_resumed_weeks_later_counts_from_the_draw_not_the_day_it_opened(): void
+    {
+        // Opened six weeks ago and left at screening, drawn today.
+        $id = $this->openDonation();
+        $this->screenDonation($id);
+        Donation::query()->whereKey($id)->update(['donation_date' => now()->subWeeks(6)]);
+
+        $missed = DonationAppointment::factory()->create([
+            'donor_id' => $this->donor->id,
+            'facility_id' => $this->facility->id,
+            'appointment_datetime' => now()->subWeeks(4)->setTime(9, 0),
+            'status' => 'scheduled',
+        ]);
+        $tomorrow = DonationAppointment::factory()->create([
+            'donor_id' => $this->donor->id,
+            'facility_id' => $this->facility->id,
+            'appointment_datetime' => now()->addDay()->setTime(9, 0),
+            'status' => 'scheduled',
+        ]);
+
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload())
+            ->assertCreated();
+
+        $this->assertSame(AppointmentStatus::Scheduled, $missed->fresh()->status);
+        $this->assertSame(AppointmentStatus::Cancelled, $tomorrow->fresh()->status);
+    }
+
+    public function test_the_receipt_says_which_booking_the_draw_cancelled(): void
+    {
+        Notification::fake();
+
+        DonationAppointment::factory()->create([
+            'donor_id' => $this->donor->id,
+            'facility_id' => $this->facility->id,
+            'appointment_datetime' => now()->addDay()->setTime(9, 0),
+            'status' => 'scheduled',
+        ]);
+
+        $id = $this->openDonation();
+        $this->screenDonation($id);
+        $this->actingAs($this->staff)
+            ->postJson("/api/blood-center/donations/{$id}/collection", $this->collectionPayload())
+            ->assertCreated();
+
+        Notification::assertSentTo(
+            $this->donor,
+            DonationRecorded::class,
+            fn (DonationRecorded $notification): bool => str_contains($notification->toDatabase($this->donor)['desc'], 'was cancelled')
+        );
+    }
+
     public function test_recording_a_qualifying_screening_moves_the_donation_to_screening(): void
     {
         $id = $this->openDonation();
