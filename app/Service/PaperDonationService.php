@@ -31,6 +31,7 @@ use App\Repository\PaperDonationSheetRepository;
 use App\Support\OperationalDay;
 use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Facades\DB;
@@ -364,6 +365,11 @@ class PaperDonationService
                     $booking->save();
                 }
 
+                // As at the counter: a later booking the donor can no longer keep goes with the draw.
+                $donation->setRelation('cancelledBookings', $drawn
+                    ? $this->collectionService->cancelMootBookings($donation, $box['ended_at'] ?? null)
+                    : new Collection);
+
                 return [$donation, $sheet];
             });
         } catch (QueryException $exception) {
@@ -508,11 +514,14 @@ class PaperDonationService
         }
 
         if ($drawn) {
+            $cancelled = $donation->relationLoaded('cancelledBookings') ? $donation->getRelation('cancelledBookings') : [];
+
             $this->donorNotifier->send(
                 $donation,
                 fn (User $donor): DonationRecorded => new DonationRecorded(
                     $donation,
-                    $this->evaluator->nextEligibleDate($donation->donation_date)
+                    $this->evaluator->nextEligibleDate($donation->donation_date),
+                    DonationRecorded::describeBookings($cancelled)
                 ),
                 'donation receipt'
             );
