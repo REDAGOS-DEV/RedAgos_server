@@ -2896,3 +2896,33 @@ Opened from View, the dialog offers Edit or Review when the row allows it. Every
 **Client:** another centre's row shows its abbreviation as a chip beside the donation ID (the name on hover), and the detail says "Recorded at <centre>".
 
 **TESTS:** `DonationRecordsTest` (`test_another_centres_donations_are_listed_read_only`, the sticker test, the export test), and in the client `tests/donationsPage.spec.ts`.
+
+## Donor Management filters by eligibility
+
+**SOURCE:** the project owner, 2026-11-19: "instead of active/inactive status, change to eligibility status". The request was about the Donor Management filter (All statuses / Active / Inactive). The Status column still shows Active or Inactive.
+
+**DECISION:**
+- `GET /blood-center/donors`, its export and the eligibility reminders take `eligibility` = eligible | waiting | deferred | in_progress (`DonorStanding::ELIGIBILITIES`); anything else is a 422.
+- Eligibility is worked out, not stored, so `DonorStandingResolver::narrowToEligibility()` walks the filtered query 500 donors at a time, keeps the ids whose `eligibility()` matches, and narrows the query to them (`whereIntegerInRaw`). The list's order, paging and total are then the query's own. `DonorDirectoryRepository::browseNetwork()` became `networkQuery()`, and the service pages it.
+- The reminders honour the filter like the other filters. Filtered to Deferred, Not yet eligible or Visit in progress, a run reaches no one, and every donor is counted under the reason they are skipped. The export's audit entry records the filter.
+- `status` (active | inactive) is still accepted. The page no longer sends it.
+
+**Client:** the dropdown reads All eligibility / Eligible / Not yet eligible / Deferred / Visit in progress. Not yet eligible is the list's "From <date>".
+
+**TESTS:** `DonorRecordsTest::test_the_list_export_and_reminders_filter_by_eligibility`, and in the client `tests/donorRecords.spec.ts`.
+
+## Every blood centre sees every hospital's Blood Requests
+
+**SOURCE:** the project owner, 2026-11-19. A walk-in's duplicate check named PTR-4-0001 ("Open request for the same patient"), but PRC Davao could not find it anywhere: all of it was Sub-National's share, and Incoming Requests lists only the shares sent to the centre. The owner: "the patient request should be global … but request that specifically a blood bank attach for or sent to blood facilities should display to their incoming request". The owner picked where it lives (Request Fulfillment) and what other centres see, and asked that a centre can add its share straight from it.
+
+**DECISION:**
+- Incoming Requests is unchanged: a centre works only the shares (RQ-…) sent to it.
+- `GET /blood-center/transfusion-requests` (`requests.view`) lists every hospital's Blood Requests (PTR-…), open ones first, emergencies first among them, then newest. `scope` = open (default) | all; `search` matches the PTR, any share's RQ, the patient's name and the hospital's name. Each row is a stub only: hospital (and whether it is on RedAgos), the patient's full name, blood type, urgency, status, request and needed-by dates, per component needed/approved/released/unallocated, and each live share's centre, RQ, quantity and status. No age, sex, ward, physician, indication, bag numbers, billing or watcher's details. Only this centre's own share carries its id.
+- `POST /blood-center/transfusion-requests/{id}/share` (`requests.record`, the walk-in's ability) adds this centre's share of the unallocated units: `lines` = [{transfusion_request_item_id, quantity}]. Under the hospital's facility lock, then the requirement's, through `TransfusionAllocationWriter`, so the same checks apply as for the hospital's own asks: never more than is unallocated, and not while this centre is still reviewing an earlier share. A closed Blood Request is refused (409 `request_closed`), and so is one for a hospital not on RedAgos (409 `hospital_not_registered`: nobody there receives a delivery or settles a bill; the watcher's walk-in is the way).
+- The share is written as a portal share (`request_source` blood_bank_portal: billed to and dispatched to the hospital, payment may be deferred). `requested_by` is null and the centre's staff member is `recorded_by`. `TransfusionAllocationWriter` now names the requester only when the writer belongs to the hospital, which leaves portal and walk-in shares as they were.
+- History: the share's own "Submitted" and the Blood Request's "allocations added" ("<centre> added its share: N unit(s)"). Audit `request.share_added`. The hospital's accounts are told (`TransfusionShareTakenUp`, in-app) and may withdraw the share while it is pending, as with any share.
+- Incoming Requests' search (and the hospital's own list) also matches the PTR a share belongs to.
+
+**Client:** Request Fulfillment has two tabs, Awaiting Payment (the queue as before) and All Blood Requests (`NetworkBloodRequests.vue`, `?tab=all`). A card shows the components table beside the centres holding a share; this centre's share links to Incoming Requests, which now opens `?request=ID` in its review. "Add this center's share — N unallocated" opens a dialog per component (all unallocated by default). A centre-added share reads "Added by <name> at this center" on Incoming Requests, and "Added by the center" / "Added by <centre>" on the hospital's screens.
+
+**TESTS:** `NetworkTransfusionRequestTest`.

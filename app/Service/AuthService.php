@@ -56,6 +56,10 @@ class AuthService
      * gave the browser, checked with Google, for the account that already uses
      * that address. Google signs nobody up; a donor registers first.
      *
+     * With no account, the refusal names the address Google confirmed
+     * (2026-11-22), so the sign-in screen can offer to register with it. Only
+     * the holder of the ID token learns it, and the token already carries it.
+     *
      * @return array<string, mixed>
      */
     public function loginWithGoogle(string $credential): array
@@ -67,6 +71,7 @@ class AuthService
             throw new HttpResponseException(response()->json([
                 'message' => 'No RedAgos account uses this Google address. Register as a donor, or sign in with your password.',
                 'code' => 'google_account_not_found',
+                'email' => $email,
             ], 404));
         }
 

@@ -422,6 +422,9 @@ class BloodRequestRepository
 
         return $query->where(fn (Builder $inner): Builder => $inner
             ->whereRaw('LOWER(reference_number) LIKE ?', [$like])
+            // The Blood Request it is a share of, by its PTR reference
+            // (2026-11-19): what a watcher's paperwork or the walk-in check names.
+            ->orWhereHas('transfusionRequest', fn (Builder $requirement): Builder => $requirement->whereRaw('LOWER(reference_number) LIKE ?', [$like]))
             ->orWhereRaw('LOWER(patient_surname) LIKE ?', [$like])
             ->orWhereRaw('LOWER(patient_first_name) LIKE ?', [$like])
             ->orWhereRaw("LOWER(patient_first_name || ' ' || patient_surname) LIKE ?", [$like])

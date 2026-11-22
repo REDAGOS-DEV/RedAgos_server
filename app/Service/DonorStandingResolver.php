@@ -6,6 +6,7 @@ use App\Models\User;
 use App\Repository\DonorDeferralRepository;
 use App\Repository\DonorDirectoryRepository;
 use App\Support\DonorStanding;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Carbon;
 
 /**
@@ -19,6 +20,9 @@ use Illuminate\Support\Carbon;
  */
 class DonorStandingResolver
 {
+    /** Donors worked out at a time when a list is filtered by eligibility. */
+    private const CHUNK = 500;
+
     public function __construct(
         private readonly DonorDirectoryRepository $donorDirectoryRepository,
         private readonly DonorDeferralRepository $donorDeferralRepository,
@@ -67,5 +71,36 @@ class DonorStandingResolver
     public function forDonor(int $facilityId, User $donor): DonorStanding
     {
         return $this->forDonors($facilityId, [$donor])[$donor->id];
+    }
+
+    /**
+     * Narrow a donor query to the donors whose eligibility is $eligibility
+     * (DonorStanding::ELIGIBILITIES); no narrowing when it is null.
+     *
+     * Eligibility is worked out, not stored: three sources of deferral, a
+     * visit open at this centre and the donation interval. So the query is
+     * walked a chunk at a time, as the reminders walk it, and narrowed to the
+     * ids that match. The caller keeps its own order and paging.
+     *
+     * @param  Builder<User>  $donors  a query over users with donorProfile eager-loaded
+     * @return Builder<User>
+     */
+    public function narrowToEligibility(Builder $donors, int $facilityId, ?string $eligibility): Builder
+    {
+        if ($eligibility === null) {
+            return $donors;
+        }
+
+        $ids = [];
+
+        (clone $donors)->reorder()->chunkById(self::CHUNK, function ($chunk) use ($facilityId, $eligibility, &$ids): void {
+            foreach ($this->forDonors($facilityId, $chunk) as $id => $standing) {
+                if ($standing->eligibility() === $eligibility) {
+                    $ids[] = $id;
+                }
+            }
+        }, 'users.id', 'id');
+
+        return $donors->whereIntegerInRaw('users.id', $ids);
     }
 }

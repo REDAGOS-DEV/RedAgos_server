@@ -74,11 +74,13 @@ class GoogleLoginTest extends TestCase
 
     public function test_google_signs_nobody_up(): void
     {
-        $this->googleSays('stranger@gmail.com');
+        $this->googleSays('Stranger@gmail.com');
 
+        // The address comes back so the sign-in screen can offer to register with it.
         $this->postJson('/api/login/google', ['credential' => 'id-token'])
             ->assertNotFound()
-            ->assertJsonPath('code', 'google_account_not_found');
+            ->assertJsonPath('code', 'google_account_not_found')
+            ->assertJsonPath('email', 'stranger@gmail.com');
 
         $this->assertDatabaseMissing('users', ['email' => 'stranger@gmail.com']);
     }

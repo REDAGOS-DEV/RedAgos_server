@@ -141,7 +141,7 @@ class TransfusionRequestProjector
         ];
     }
 
-    private function allocationStatusLabel(BloodRequest $allocation): string
+    public function allocationStatusLabel(BloodRequest $allocation): string
     {
         return match ($allocation->status) {
             BloodRequestStatus::Pending => 'Awaiting review',

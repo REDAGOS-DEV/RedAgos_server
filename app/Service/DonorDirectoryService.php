@@ -78,7 +78,11 @@ class DonorDirectoryService
         // Everyone checked in at any centre, whichever it was (project owner,
         // 2026-10-25 and 2026-11-01). A Donor Portal account or a booking
         // alone is found only by an exact identifier (lookup()).
-        $page = $this->donorDirectoryRepository->browseNetwork($filters, $perPage);
+        $page = $this->donorStandingResolver->narrowToEligibility(
+            $this->donorDirectoryRepository->networkQuery($filters),
+            $facility->id,
+            $filters['eligibility'] ?? null,
+        )->paginate($perPage);
 
         // Counts and deferrals for the whole page in a fixed number of
         // queries, rather than more per row.

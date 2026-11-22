@@ -131,6 +131,7 @@ final class AuditActions
         'appointment.booked_by_staff' => ['appointments', 'create', 'Booked an appointment'],
         'appointment.marked_collected' => ['appointments', 'edit', 'Marked an appointment completed'],
         'appointment.cancelled_by_staff' => ['appointments', 'cancel', 'Cancelled an appointment'],
+        'appointment.cancelled_after_donation' => ['appointments', 'cancel', 'Cancelled a booking the donation made moot'],
         'appointment.deleted' => ['appointments', 'delete', 'Deleted an appointment'],
         'appointments.exported' => ['appointments', 'export', 'Exported appointments'],
 
@@ -213,6 +214,7 @@ final class AuditActions
         'request.submitted' => ['requests', 'create', 'Submitted a blood request'],
         'request.walk_in_recorded' => ['requests', 'create', 'Recorded a walk-in request'],
         'request.allocation_created' => ['requests', 'create', 'Created a request allocation'],
+        'request.share_added' => ['requests', 'create', 'Added a share to a blood request'],
         'request.allocated' => ['requests', 'issue', 'Tagged units for a request'],
         'request.released' => ['requests', 'issue', 'Released a request'],
         'request.rejected' => ['requests', 'reject', 'Rejected a blood request'],

@@ -6,6 +6,7 @@ use App\Enums\AppointmentStatus;
 use App\Models\DonationAppointment;
 use App\Models\Facility;
 use App\Models\MobileEvent;
+use App\Support\OperationalDay;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 
@@ -51,6 +52,23 @@ class AppointmentRepository
             ->withPreRegisteredCounts()
             ->whereDate('event_date', '>=', now()->toDateString())
             ->orderBy('event_date')
+            ->get();
+    }
+
+    /**
+     * The drives the public landing page lists: open for registration (as in
+     * the donor catalogue) from the operational today on, soonest first.
+     * Whether today's drive is over is the caller's to check.
+     *
+     * @return Collection<int, MobileEvent>
+     */
+    public function publicDrives(): Collection
+    {
+        return MobileEvent::query()
+            ->openForRegistration()
+            ->whereDate('event_date', '>=', OperationalDay::todayAsDate())
+            ->orderBy('event_date')
+            ->orderBy('start_time')
             ->get();
     }
 

@@ -3,6 +3,7 @@
 namespace App\Repository;
 
 use App\Enums\BloodRequestStatus;
+use App\Enums\UrgencyLevel;
 use App\Models\BloodRequest;
 use App\Models\TransfusionRequest;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
@@ -13,12 +14,27 @@ use Illuminate\Database\Eloquent\Collection;
  * Every read and write of Patient Transfusion Requests, scoped to the hospital that raised them.
  *
  * A requirement belongs to one hospital blood bank. The centres asked for
- * shares of it see those shares — their facility allocations, through
- * BloodRequestRepository — and never the requirement's other allocations, so
- * nothing here is scoped to a centre.
+ * shares of it work those shares — their facility allocations, through
+ * BloodRequestRepository. Since 2026-11-19 every blood centre may also read
+ * every hospital's requirements, whoever holds them (paginateForCentres()),
+ * as a stub: who the patient is, what they need and which centre holds each
+ * share (project owner).
  */
 class TransfusionRequestRepository
 {
+    /**
+     * What a blood centre's read of every hospital's requirements needs.
+     *
+     * @var array<int, string>
+     */
+    private const NETWORK_RELATIONS = [
+        ...self::FIGURE_RELATIONS,
+        'bloodType',
+        'hospital',
+        'items.component',
+        'facilityAllocations.targetFacility',
+    ];
+
     /**
      * What TransfusionRequestResolver needs to work out the figures.
      *
@@ -87,6 +103,61 @@ class TransfusionRequestRepository
             ->orderByDesc('id')
             ->paginate($perPage)
             ->withQueryString();
+    }
+
+    /**
+     * Every hospital's requirements, for any blood centre to read (project owner, 2026-11-19).
+     *
+     * Open ones first — emergencies first among them — then newest first.
+     * `scope` is `open` (the default: still pending, processing or partly
+     * filled, and not closed) or `all`. The search matches the PTR reference,
+     * the RQ reference of any of its shares, the patient's name and the
+     * hospital's name, in any case.
+     *
+     * @param  array<string, mixed>  $filters
+     * @return LengthAwarePaginator<int, TransfusionRequest>
+     */
+    public function paginateForCentres(array $filters, int $perPage): LengthAwarePaginator
+    {
+        $open = [
+            BloodRequestStatus::Pending->value,
+            BloodRequestStatus::Processing->value,
+            BloodRequestStatus::Partial->value,
+        ];
+        $placeholders = implode(', ', array_fill(0, count($open), '?'));
+        $isOpen = "(status IN ({$placeholders}) AND closed_at IS NULL)";
+
+        return TransfusionRequest::query()
+            ->when(
+                ($filters['scope'] ?? 'open') === 'open',
+                fn (Builder $query): Builder => $query->whereIn('status', $open)->whereNull('closed_at')
+            )
+            ->when(filled($filters['search'] ?? null), function (Builder $query) use ($filters): Builder {
+                $like = '%'.mb_strtolower(trim((string) $filters['search'])).'%';
+
+                return $query->where(fn (Builder $inner): Builder => $inner
+                    ->whereRaw('LOWER(reference_number) LIKE ?', [$like])
+                    ->orWhereRaw('LOWER(patient_surname) LIKE ?', [$like])
+                    ->orWhereRaw('LOWER(patient_first_name) LIKE ?', [$like])
+                    ->orWhereRaw("LOWER(patient_first_name || ' ' || patient_surname) LIKE ?", [$like])
+                    ->orWhereHas('hospital', fn (Builder $hospital): Builder => $hospital->whereRaw('LOWER(name) LIKE ?', [$like]))
+                    ->orWhereHas('facilityAllocations', fn (Builder $shares): Builder => $shares->whereRaw('LOWER(reference_number) LIKE ?', [$like])));
+            })
+            ->with(self::NETWORK_RELATIONS)
+            ->orderByRaw("CASE WHEN {$isOpen} THEN 0 ELSE 1 END", $open)
+            ->orderByRaw("CASE WHEN {$isOpen} AND urgency_level = ? THEN 0 ELSE 1 END", [...$open, UrgencyLevel::Emergency->value])
+            ->orderByDesc('request_date')
+            ->orderByDesc('id')
+            ->paginate($perPage)
+            ->withQueryString();
+    }
+
+    /**
+     * Re-read one requirement as paginateForCentres() reads it.
+     */
+    public function findForCentres(int $id): ?TransfusionRequest
+    {
+        return TransfusionRequest::query()->whereKey($id)->with(self::NETWORK_RELATIONS)->first();
     }
 
     public function findRaisedBy(int $id, int $facilityId): ?TransfusionRequest

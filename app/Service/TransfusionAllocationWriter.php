@@ -157,16 +157,19 @@ class TransfusionAllocationWriter
         RequestEventType $event = RequestEventType::Submitted,
         ?string $note = null,
     ): BloodRequest {
+        // The hospital user who asked, from the portal. On a walk-in, or a
+        // share a centre took up from the hospital's request itself
+        // (2026-11-19), nobody at the hospital did, and the centre staff
+        // member who keyed it is named instead.
+        $byHospital = (int) $user->facility_id === (int) $request->facility_id;
+
         $allocation = BloodRequest::query()->create([
             'reference_number' => $this->bloodRequestRepository->nextReference((int) $request->facility_id),
             'transfusion_request_id' => $request->id,
             'facility_id' => $request->facility_id,
             'target_facility_id' => $facility->id,
-            // The hospital user who asked, from the portal; on a walk-in
-            // nobody at the hospital did, and the centre staff member who
-            // recorded it is named instead.
-            'requested_by' => $source->isWalkIn() ? null : $user->id,
-            'recorded_by' => $source->isWalkIn() ? $user->id : null,
+            'requested_by' => $byHospital ? $user->id : null,
+            'recorded_by' => $byHospital ? null : $user->id,
             'request_purpose' => RequestPurpose::PatientTransfusion,
             'request_source' => $source,
             'patient_surname' => $request->patient_surname,
