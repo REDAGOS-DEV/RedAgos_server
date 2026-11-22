@@ -22,8 +22,10 @@ use App\Repository\EligibilityRepository;
 use App\Support\OperationalDay;
 use App\Support\ScreeningVitals;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Exceptions\HttpResponseException;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -585,11 +587,15 @@ class CollectionService
             'phlebotomist_name' => $payload['phlebotomist_name'] ?? null,
         ]);
 
+        $cancelled = $donation->getRelation('cancelledBookings');
+        $this->recordCancelledBookings($staff, $donation, $cancelled);
+
         $this->donorNotifier->send(
             $donation,
             fn (User $donor): DonationRecorded => new DonationRecorded(
                 $donation,
-                $this->evaluator->nextEligibleDate($donation->donation_date)
+                $this->evaluator->nextEligibleDate($donation->donation_date),
+                DonationRecorded::describeBookings($cancelled)
             ),
             'donation receipt'
         );
@@ -735,6 +741,9 @@ class CollectionService
 
             // The visit is over from the counter's point of view.
             $this->closeAppointmentFor($locked, $facility->id);
+
+            // A later booking the donor can no longer keep goes with it.
+            $locked->setRelation('cancelledBookings', $this->cancelMootBookings($locked, $payload['ended_at']));
 
             return $locked;
         });
@@ -905,6 +914,45 @@ class CollectionService
      *
      * Must run inside the caller's transaction, with the donation already locked.
      */
+    /**
+     * Cancel the donor's bookings this draw has made moot: from the day of the
+     * donation up to the next eligible date, except the one the visit used.
+     * Public for a drive's paper record, which draws blood the same way.
+     *
+     * @return Collection<int, DonationAppointment>
+     */
+    public function cancelMootBookings(Donation $donation, \DateTimeInterface|string|null $drawnAt = null): Collection
+    {
+        // From when the blood was actually drawn: a visit resumed days after it
+        // opened still draws today, and a booking missed in between keeps its record.
+        $drawn = Carbon::parse($drawnAt ?? $donation->donation_date);
+        $drawnOn = $drawn->copy()->startOfDay();
+        $nextEligible = $this->evaluator->nextEligibleDate($drawn) ?? $drawnOn;
+
+        return $this->collectionRepository->cancelBookingsMadeMoot(
+            (int) $donation->donor_id,
+            $donation->appointment_id === null ? null : (int) $donation->appointment_id,
+            $drawnOn,
+            $nextEligible
+        );
+    }
+
+    /**
+     * Put each booking a draw cancelled in the audit trail, against the staff member who recorded it.
+     *
+     * @param  iterable<int, DonationAppointment>  $bookings
+     */
+    public function recordCancelledBookings(User $staff, Donation $donation, iterable $bookings): void
+    {
+        foreach ($bookings as $booking) {
+            $this->auditLogger->record($staff, 'appointment.cancelled_after_donation', $booking, [
+                'facility_id' => $booking->facility_id,
+                'donation_id' => $donation->id,
+                'appointment_datetime' => $booking->appointment_datetime?->toIso8601String(),
+            ]);
+        }
+    }
+
     private function closeAppointmentFor(Donation $donation, int $facilityId): void
     {
         if ($donation->appointment_id === null) {

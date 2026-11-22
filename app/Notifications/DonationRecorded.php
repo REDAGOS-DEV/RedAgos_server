@@ -3,6 +3,7 @@
 namespace App\Notifications;
 
 use App\Models\Donation;
+use App\Models\DonationAppointment;
 use App\Support\DonorNotificationPreferences;
 use App\Support\SmsName;
 use Illuminate\Bus\Queueable;
@@ -28,10 +29,40 @@ class DonationRecorded extends Notification implements ShouldQueue
 {
     use Queueable;
 
+    /**
+     * @param  array<int, string>  $cancelledBookings  Each booking the donation cancelled, as "21 Nov 2026, 9:00 AM at …".
+     */
     public function __construct(
         private readonly Donation $donation,
-        private readonly ?Carbon $nextEligibleDate = null
+        private readonly ?Carbon $nextEligibleDate = null,
+        private readonly array $cancelledBookings = []
     ) {}
+
+    /**
+     * Name the bookings a donation cancelled, as the receipt says them.
+     *
+     * @param  iterable<int, DonationAppointment>  $bookings
+     * @return array<int, string>
+     */
+    public static function describeBookings(iterable $bookings): array
+    {
+        $out = [];
+
+        foreach ($bookings as $booking) {
+            $out[] = $booking->appointment_datetime?->format('j M Y, g:i A')
+                .' at '.($booking->facility?->name ?? 'a RedAgos blood centre');
+        }
+
+        return $out;
+    }
+
+    private function cancelledLine(): string
+    {
+        $count = count($this->cancelledBookings);
+
+        return 'Since you have donated, your appointment'.($count === 1 ? '' : 's').' on '
+            .implode('; ', $this->cancelledBookings).($count === 1 ? ' was' : ' were').' cancelled.';
+    }
 
     /**
      * Mailed and stored, dropping mail for a counter-registered donor with no address.
@@ -73,6 +104,10 @@ class DonationRecorded extends Notification implements ShouldQueue
             $message->line('**You can donate again from:** '.$this->nextEligibleDate->format('j F Y'));
         }
 
+        if ($this->cancelledBookings !== []) {
+            $message->line($this->cancelledLine());
+        }
+
         return $message
             ->action('View my donation history', $frontend.'/donor/history')
             ->line('Rest, keep drinking fluids, and avoid heavy lifting for the next few hours.')
@@ -88,7 +123,8 @@ class DonationRecorded extends Notification implements ShouldQueue
 
         return 'RedAgos: Thank you'.($name === '' ? '' : ', '.$name).'! Your donation at '.$this->venue()
             .' on '.$this->shortDate().' is recorded.'
-            .($this->nextEligibleDate ? ' You can donate again from '.$this->nextEligibleDate->format('j M Y').'.' : '');
+            .($this->nextEligibleDate ? ' You can donate again from '.$this->nextEligibleDate->format('j M Y').'.' : '')
+            .($this->cancelledBookings !== [] ? ' '.$this->cancelledLine() : '');
     }
 
     /**
@@ -101,7 +137,8 @@ class DonationRecorded extends Notification implements ShouldQueue
         return [
             'category' => 'donation',
             'title' => 'Donation recorded',
-            'desc' => ($this->donation->volume_ml ?? '—').' mL recorded at '.$this->venue().'.',
+            'desc' => ($this->donation->volume_ml ?? '—').' mL recorded at '.$this->venue().'.'
+                .($this->cancelledBookings !== [] ? ' '.$this->cancelledLine() : ''),
             'meta' => $this->nextEligibleDate
                 ? 'You can donate again from '.$this->nextEligibleDate->format('j M Y')
                 : 'Reference #'.$this->donation->id,
