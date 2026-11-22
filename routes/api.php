@@ -221,6 +221,11 @@ Route::middleware('auth:sanctum')->group(function (): void {
 
 Route::get('/support/contact-info', fn () => response()->json(config('donation.support')));
 
+// The landing page's upcoming drives (project owner, 2026-11-19): public, so
+// only a drive's name, place, date and times, never its counts.
+Route::get('/public/drives', [BookingCatalogController::class, 'publicDrives'])
+    ->middleware('throttle:60,1');
+
 // A drive's registration link (drive pre-registration, phase 2; project
 // owner, 2026-11-11): people without a portal account, and partner
 // organisations for their people, put themselves on the drive's list. Public

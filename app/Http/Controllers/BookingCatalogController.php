@@ -34,6 +34,14 @@ class BookingCatalogController extends Controller
     }
 
     /**
+     * List the upcoming drives for the public landing page. No sign-in.
+     */
+    public function publicDrives(): JsonResponse
+    {
+        return response()->json($this->appointmentService->publicDrives());
+    }
+
+    /**
      * List bookable time slots for a centre on a given date.
      */
     public function timeSlots(Request $request): JsonResponse

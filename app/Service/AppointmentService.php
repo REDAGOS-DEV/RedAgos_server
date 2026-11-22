@@ -80,6 +80,37 @@ class AppointmentService
     }
 
     /**
+     * The landing page's upcoming drives, for anyone, signed in or not
+     * (project owner, 2026-11-19: only drives a centre has created, and none
+     * once over). A drive on today's date leaves at its end time, in Manila
+     * wall-clock time like the times themselves. Public details only: no
+     * counts, no centre-internal fields.
+     *
+     * @return array<int, array{id: int, name: string, location: string, date: string, start_time: ?string, end_time: ?string}>
+     */
+    public function publicDrives(): array
+    {
+        $now = OperationalDay::today();
+        $today = $now->toDateString();
+        $clock = $now->format('H:i');
+
+        return $this->appointmentRepository->publicDrives()
+            ->reject(fn (MobileEvent $event): bool => $event->event_date->toDateString() === $today
+                && $event->end_time !== null
+                && substr($event->end_time, 0, 5) <= $clock)
+            ->map(fn (MobileEvent $event): array => [
+                'id' => $event->id,
+                'name' => $event->name,
+                'location' => $event->location,
+                'date' => $event->event_date->toDateString(),
+                'start_time' => $event->start_time ? substr($event->start_time, 0, 5) : null,
+                'end_time' => $event->end_time ? substr($event->end_time, 0, 5) : null,
+            ])
+            ->values()
+            ->all();
+    }
+
+    /**
      * Build the bookable time slots for a centre on a given date.
      *
      * Slots are derived from the facility's operating window and per-slot
