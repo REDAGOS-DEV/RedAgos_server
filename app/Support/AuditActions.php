@@ -131,6 +131,7 @@ final class AuditActions
         'appointment.booked_by_staff' => ['appointments', 'create', 'Booked an appointment'],
         'appointment.marked_collected' => ['appointments', 'edit', 'Marked an appointment completed'],
         'appointment.cancelled_by_staff' => ['appointments', 'cancel', 'Cancelled an appointment'],
+        'appointment.cancelled_after_donation' => ['appointments', 'cancel', 'Cancelled a booking the donation made moot'],
         'appointment.deleted' => ['appointments', 'delete', 'Deleted an appointment'],
         'appointments.exported' => ['appointments', 'export', 'Exported appointments'],
 

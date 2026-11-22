@@ -234,4 +234,35 @@ class CollectionRepository
     {
         return DonationScreening::query()->where('donation_id', $donationId)->exists();
     }
+
+    /**
+     * Cancel the donor's other live bookings that a donation has made moot.
+     *
+     * Once blood is drawn the donor cannot give again until their next
+     * eligible date, so a booking from the day of the donation up to that date
+     * would only turn into a "missed appointment" (project owner, 2026-11-20).
+     * The booking the visit itself used is left to the caller, and a booking
+     * that had already passed before the donation keeps its record as it was.
+     *
+     * @return Collection<int, DonationAppointment>
+     */
+    public function cancelBookingsMadeMoot(int $donorId, ?int $usedAppointmentId, \DateTimeInterface $from, \DateTimeInterface $until): Collection
+    {
+        $bookings = DonationAppointment::query()
+            ->with('facility')
+            ->where('donor_id', $donorId)
+            ->whereIn('status', [AppointmentStatus::Scheduled->value, AppointmentStatus::Confirmed->value])
+            ->when($usedAppointmentId !== null, fn (Builder $query) => $query->whereKeyNot($usedAppointmentId))
+            ->where('appointment_datetime', '>=', $from)
+            ->where('appointment_datetime', '<', $until)
+            ->lockForUpdate()
+            ->get();
+
+        foreach ($bookings as $booking) {
+            $booking->status = AppointmentStatus::Cancelled;
+            $booking->save();
+        }
+
+        return $bookings;
+    }
 }
