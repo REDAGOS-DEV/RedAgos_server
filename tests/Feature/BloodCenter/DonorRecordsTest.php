@@ -253,6 +253,65 @@ class DonorRecordsTest extends TestCase
             ->assertJsonPath('data.status', 'active');
     }
 
+    public function test_the_list_export_and_reminders_filter_by_eligibility(): void
+    {
+        // The page's filter is eligibility, not Active/Inactive (project owner, 2026-11-19).
+        $eligible = $this->donorWhoGave(now()->subYear()->toDateTimeString());
+        $waiting = $this->donorWhoGave(now()->subDays(5)->toDateTimeString());
+
+        $deferred = $this->donorWhoGave(now()->subYear()->toDateTimeString());
+        DonationScreening::factory()->permanentlyDeferred()->create([
+            'donation_id' => Donation::where('donor_id', $deferred->id)->value('id'),
+            'facility_id' => $this->facility->id,
+            'screened_at' => now()->subYear(),
+        ]);
+
+        $inVisit = User::factory()->donor()->create();
+        Donation::factory()->create([
+            'donor_id' => $inVisit->id,
+            'facility_id' => $this->facility->id,
+            'donation_date' => now(),
+            'status' => DonationStatus::Registered,
+        ]);
+
+        foreach (['eligible' => $eligible, 'waiting' => $waiting, 'deferred' => $deferred, 'in_progress' => $inVisit] as $eligibility => $donor) {
+            $this->actingAs($this->receptionist)
+                ->getJson('/api/blood-center/donors?eligibility='.$eligibility)
+                ->assertOk()
+                ->assertJsonPath('total', 1)
+                ->assertJsonPath('data.0.uuid', $donor->uuid)
+                ->assertJsonPath('data.0.eligibility', $eligibility);
+        }
+
+        $this->actingAs($this->receptionist)
+            ->getJson('/api/blood-center/donors?eligibility=active')
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('eligibility');
+
+        $code = fn (User $donor): string => 'DONOR-'.str_pad((string) $donor->id, 6, '0', STR_PAD_LEFT);
+        $csv = $this->actingAs($this->receptionist)
+            ->get('/api/blood-center/donors/export?eligibility=deferred')
+            ->assertOk()
+            ->streamedContent();
+
+        $this->assertStringContainsString($code($deferred), $csv);
+        $this->assertStringNotContainsString($code($eligible), $csv);
+
+        // A reminder goes only to the eligible, so the Deferred list reaches no one.
+        $this->actingAs($this->receptionist)
+            ->getJson('/api/blood-center/donors/eligibility-reminders?eligibility=deferred')
+            ->assertOk()
+            ->assertJsonPath('recipients', 0)
+            ->assertJsonPath('skipped.deferred', 1)
+            ->assertJsonPath('skipped.not_yet_eligible', 0);
+
+        $this->actingAs($this->receptionist)
+            ->getJson('/api/blood-center/donors/eligibility-reminders?eligibility=eligible')
+            ->assertOk()
+            ->assertJsonPath('recipients', 1)
+            ->assertJsonPath('skipped.deferred', 0);
+    }
+
     // --- Editing ---------------------------------------------------------------
 
     public function test_the_counter_corrects_a_blood_type_and_the_change_is_traced(): void

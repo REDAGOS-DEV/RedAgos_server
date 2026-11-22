@@ -66,13 +66,17 @@ class DonorExportService
             'code' => 'facility_missing',
         ], 404));
 
-        $query = $this->donorDirectoryRepository->facilityDonorQuery($facility->id, $filters);
+        $query = $this->donorStandingResolver->narrowToEligibility(
+            $this->donorDirectoryRepository->facilityDonorQuery($facility->id, $filters),
+            $facility->id,
+            $filters['eligibility'] ?? null,
+        );
 
         // Who took the list, how much of it and with which filters. Not the
         // rows themselves: the audit trail is not a second copy of them.
         $this->auditLogger->record($staff, 'donors.exported', $facility, [
             'rows' => (clone $query)->count(),
-            'filters' => array_intersect_key($filters, array_flip(['search', 'blood_type_id', 'status'])),
+            'filters' => array_intersect_key($filters, array_flip(['search', 'blood_type_id', 'status', 'eligibility'])),
         ]);
 
         $filename = 'donors-'.Str::slug($facility->name).'-'.now()->format('Y-m-d').'.csv';

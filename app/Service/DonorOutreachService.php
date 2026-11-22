@@ -273,12 +273,18 @@ class DonorOutreachService
      */
     private function eachCandidate(Facility $facility, array $filters, callable $handle): void
     {
-        $filters = array_intersect_key($filters, array_flip(['search', 'blood_type_id', 'status']));
+        $filters = array_intersect_key($filters, array_flip(['search', 'blood_type_id', 'status', 'eligibility']));
 
         $cooldownStart = now()->subDays(self::REMINDER_COOLDOWN_DAYS);
 
-        $this->donorDirectoryRepository
-            ->facilityDonorQuery($facility->id, $filters)
+        // Filtered to Deferred or Not yet eligible, the run reaches no one:
+        // every donor on that list is skipped for the reason they are on it.
+        $this->donorStandingResolver
+            ->narrowToEligibility(
+                $this->donorDirectoryRepository->facilityDonorQuery($facility->id, $filters),
+                $facility->id,
+                $filters['eligibility'] ?? null,
+            )
             ->reorder()
             ->chunkById(self::CHUNK, function ($donors) use ($facility, $cooldownStart, $handle): void {
                 $standings = $this->donorStandingResolver->forDonors($facility->id, $donors);

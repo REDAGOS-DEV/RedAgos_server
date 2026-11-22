@@ -6,6 +6,7 @@ use App\Models\BloodRequest;
 use App\Models\User;
 use App\Notifications\BloodRequestDecided;
 use App\Notifications\BloodRequestSubmitted;
+use App\Notifications\TransfusionShareTakenUp;
 use App\Notifications\WalkInRequestRecorded;
 use App\Support\StaffNotificationTopics;
 use Illuminate\Support\Collection;
@@ -74,6 +75,17 @@ class BloodRequestNotifier
     public function walkInRecorded(BloodRequest $request): void
     {
         Notification::send($this->hospitalAccounts($request), new WalkInRequestRecorded($request));
+    }
+
+    /**
+     * Tell the hospital that a blood centre took up a share of its Blood Request itself.
+     *
+     * Nobody at the hospital asked that centre (2026-11-19), so the hospital's
+     * own accounts are told it now has another share to follow.
+     */
+    public function shareTakenUp(BloodRequest $share): void
+    {
+        Notification::send($this->hospitalAccounts($share), new TransfusionShareTakenUp($share));
     }
 
     /**

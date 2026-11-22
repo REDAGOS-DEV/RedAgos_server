@@ -46,6 +46,7 @@ use App\Http\Controllers\BloodCenterStaffController;
 use App\Http\Controllers\BloodCenterStatementController;
 use App\Http\Controllers\BloodCenterTestingDashboardController;
 use App\Http\Controllers\BloodCenterTestingReportController;
+use App\Http\Controllers\BloodCenterTransfusionRequestController;
 use App\Http\Controllers\BloodCenterWalkInController;
 use App\Http\Controllers\BookingCatalogController;
 use App\Http\Controllers\DonorAppointmentController;
@@ -409,6 +410,19 @@ Route::middleware(['auth:sanctum', 'role:blood_center', 'facility.operational'])
         Route::post('/inventory/{unit}/discard', [BloodCenterInventoryController::class, 'discard'])
             ->middleware('can:inventory.discard')
             ->where('unit', '[A-Za-z0-9\-]+');
+
+        // Every hospital's Blood Requests (project owner, 2026-11-19): any
+        // centre reads them on Request Fulfillment, whoever holds the shares,
+        // and may add its own share of units nobody was asked for — as a
+        // walk-in continuation can, so with the walk-in's ability.
+        Route::prefix('transfusion-requests')->group(function (): void {
+            Route::get('/', [BloodCenterTransfusionRequestController::class, 'index'])
+                ->middleware('can:requests.view');
+
+            Route::post('/{transfusionRequest}/share', [BloodCenterTransfusionRequestController::class, 'share'])
+                ->middleware(['can:requests.record', 'throttle:30,1'])
+                ->whereNumber('transfusionRequest');
+        });
 
         // Incoming blood requests. The abilities these carry have existed in
         // DepartmentPermissions since the RBAC foundation landed with nothing

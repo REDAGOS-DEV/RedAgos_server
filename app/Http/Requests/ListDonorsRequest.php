@@ -22,6 +22,7 @@ class ListDonorsRequest extends FormRequest
             'search' => ['sometimes', 'string', 'max:150'],
             'blood_type_id' => ['sometimes', 'integer', 'exists:blood_types,id'],
             'status' => ['sometimes', 'string', Rule::in([DonorStanding::ACTIVE, DonorStanding::INACTIVE])],
+            'eligibility' => ['sometimes', 'string', Rule::in(DonorStanding::ELIGIBILITIES)],
             'sort' => ['sometimes', 'string', Rule::in(['newest', 'oldest', 'name'])],
             'per_page' => ['sometimes', 'integer', 'min:1', 'max:100'],
         ];

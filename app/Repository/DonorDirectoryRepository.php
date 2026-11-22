@@ -10,7 +10,6 @@ use App\Models\FacilityDonor;
 use App\Models\User;
 use App\Support\AccountIdentity;
 use App\Support\DonorStanding;
-use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Query\Builder as QueryBuilder;
@@ -43,14 +42,17 @@ class DonorDirectoryRepository
      * The export, the eligibility reminders, drive announcements and the
      * dashboard's pool keep facilityDonorQuery(): this centre's own donors only.
      *
+     * The eligibility filter is not applied here: eligibility is worked out
+     * per donor (DonorStandingResolver::narrowToEligibility()).
+     *
      * @param  array<string, mixed>  $filters
-     * @return LengthAwarePaginator<int, User>
+     * @return Builder<User>
      */
-    public function browseNetwork(array $filters, int $perPage): LengthAwarePaginator
+    public function networkQuery(array $filters): Builder
     {
         $query = $this->donorQuery()->where(fn (Builder $query): Builder => $this->attendedAt($query, null));
 
-        return $this->filtered($query, $filters)->paginate($perPage);
+        return $this->filtered($query, $filters);
     }
 
     /**
@@ -78,14 +80,15 @@ class DonorDirectoryRepository
      * This facility's own donors, filtered and sorted as the Donors page
      * asks: the export and the eligibility reminders, drive announcements and
      * the dashboard's pool, while the page itself lists every centre's
-     * (browseNetwork()).
+     * (networkQuery()).
      *
      * Own means the donor came in person here (attendedAt()). With
      * $withBookings, also anyone booked here who has not come yet: a drive's
      * paper record is typed for the people on its roster.
      *
      * Filters: search, blood_type_id, status (active|inactive), sort
-     * (newest|oldest|name; newest by default).
+     * (newest|oldest|name; newest by default). The eligibility filter is
+     * DonorStandingResolver::narrowToEligibility()'s.
      *
      * @param  array<string, mixed>  $filters
      */

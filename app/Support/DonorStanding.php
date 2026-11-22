@@ -31,6 +31,12 @@ final class DonorStanding
     public const IN_PROGRESS = 'in_progress';
 
     /**
+     * Every value eligibility() returns, which the Donors list filters by
+     * (project owner, 2026-11-19).
+     */
+    public const ELIGIBILITIES = [self::ELIGIBLE, self::IN_PROGRESS, self::WAITING, self::DEFERRED];
+
+    /**
      * Gave blood within the last ACTIVE_MONTHS months. Worked out from the
      * last donation, never set by staff (project owner, 2026-11-03).
      */

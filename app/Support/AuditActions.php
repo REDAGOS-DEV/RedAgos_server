@@ -213,6 +213,7 @@ final class AuditActions
         'request.submitted' => ['requests', 'create', 'Submitted a blood request'],
         'request.walk_in_recorded' => ['requests', 'create', 'Recorded a walk-in request'],
         'request.allocation_created' => ['requests', 'create', 'Created a request allocation'],
+        'request.share_added' => ['requests', 'create', 'Added a share to a blood request'],
         'request.allocated' => ['requests', 'issue', 'Tagged units for a request'],
         'request.released' => ['requests', 'issue', 'Released a request'],
         'request.rejected' => ['requests', 'reject', 'Rejected a blood request'],
