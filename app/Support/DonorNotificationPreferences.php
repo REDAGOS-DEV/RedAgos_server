@@ -40,12 +40,16 @@ final class DonorNotificationPreferences
     /** Email for the same drive notice. */
     public const DRIVES_EMAIL = 'drives_email';
 
+    /** Email (and text) when blood the donor gave has been given to a patient (DonatedBloodTransfused). */
+    public const TRANSFUSION_EMAIL = 'transfusion_email';
+
     public const DEFAULTS = [
         self::APPOINTMENTS_EMAIL => true,
         self::RESULTS_EMAIL => true,
         self::ELIGIBILITY_RENEWAL => true,
         self::DRIVES_IN_APP => true,
         self::DRIVES_EMAIL => false,
+        self::TRANSFUSION_EMAIL => true,
     ];
 
     /**
@@ -105,7 +109,8 @@ final class DonorNotificationPreferences
      *
      * With `$sms`, the notice is also texted under the same switch, to a donor
      * with a mobile number, once Semaphore is configured. The project owner
-     * chose one switch for both (2026-11-03): Settings has no SMS column.
+     * chose one switch for both (2026-11-03): Settings has no SMS column of
+     * its own; the email column is headed "Email & SMS" (2026-11-26).
      *
      * @return array<int, string>
      */

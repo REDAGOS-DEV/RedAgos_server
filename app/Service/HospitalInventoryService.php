@@ -9,11 +9,13 @@ use App\Enums\UntagReason;
 use App\Models\AuditLog;
 use App\Models\BloodUnit;
 use App\Models\DirectDistribution;
+use App\Models\Donation;
 use App\Models\HospitalUnit;
 use App\Models\RequestAllocation;
 use App\Models\TransfusionRequest;
 use App\Models\UnitTag;
 use App\Models\User;
+use App\Notifications\DonatedBloodTransfused;
 use App\Repository\HospitalInventoryRepository;
 use App\Support\OperationalDay;
 use Carbon\CarbonImmutable;
@@ -91,7 +93,8 @@ class HospitalInventoryService
 
     public function __construct(
         private readonly HospitalInventoryRepository $repository,
-        private readonly AuditLogger $auditLogger
+        private readonly AuditLogger $auditLogger,
+        private readonly DonorNotifier $donorNotifier
     ) {}
 
     /**
@@ -559,8 +562,9 @@ class HospitalInventoryService
     {
         $facilityId = $this->requireFacilityId($user);
         $now = now()->startOfSecond()->toImmutable();
+        $thankDonationId = null;
 
-        $unit = DB::transaction(function () use ($user, $unitId, $facilityId, $now): HospitalUnit {
+        $unit = DB::transaction(function () use ($user, $unitId, $facilityId, $now, &$thankDonationId): HospitalUnit {
             $unit = $this->lockUnit($unitId, $facilityId);
             $tag = $this->repository->lockActiveTag($unit->id);
 
@@ -588,10 +592,62 @@ class HospitalInventoryService
                 'deadline_at' => $tag->transfusion_deadline_at?->toIso8601String(),
             ]);
 
+            $thankDonationId = $this->claimDonorThanks($unit, $now);
+
             return $unit;
         });
 
+        if ($thankDonationId !== null) {
+            $this->thankDonor($thankDonationId);
+        }
+
         return $this->respond('Transfusion recorded.', $unit, $facilityId);
+    }
+
+    /**
+     * Claim the donor's "your blood helped a patient" notice for the bag's
+     * donation, unless another of its bags already sent it.
+     *
+     * Inside the transfusion's transaction, so a transfusion that rolls back
+     * claims nothing; the conditional update means two bags of one donation
+     * transfused at the same moment claim it once. A bag delivered from
+     * outside RedAgos (direct distribution) has no donation and no donor here.
+     *
+     * @return int|null the donation to thank its donor for
+     */
+    private function claimDonorThanks(HospitalUnit $unit, CarbonImmutable $now): ?int
+    {
+        $donationId = $unit->bloodUnit?->donation_id;
+
+        if ($donationId === null) {
+            return null;
+        }
+
+        $claimed = Donation::query()
+            ->whereKey($donationId)
+            ->whereNull('donor_told_transfused_at')
+            ->update(['donor_told_transfused_at' => $now]);
+
+        return $claimed === 1 ? $donationId : null;
+    }
+
+    /**
+     * Send the notice after the commit. DonorNotifier never fails the
+     * request: the transfusion is recorded whatever the mailer does.
+     */
+    private function thankDonor(int $donationId): void
+    {
+        $donation = Donation::query()->with(['facility', 'donorProfile.donor'])->find($donationId);
+
+        if ($donation === null) {
+            return;
+        }
+
+        $this->donorNotifier->send(
+            $donation,
+            fn (User $donor): DonatedBloodTransfused => new DonatedBloodTransfused($donation),
+            'transfusion thank-you'
+        );
     }
 
     /**
