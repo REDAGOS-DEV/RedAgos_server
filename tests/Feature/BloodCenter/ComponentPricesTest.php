@@ -65,7 +65,7 @@ class ComponentPricesTest extends TestCase
                 ['component_id' => $plasma->id, 'no_charge' => true, 'price' => null],
             ]])
             ->assertOk()
-            ->assertJsonPath('message', "2 prices saved for {$this->billingSupervisor->facility->name}.")
+            ->assertJsonPath('message', "2 prices saved for {$this->billingSupervisor->facility->name}. Bills already raised keep their prices.")
             ->assertJsonPath('meta.unpriced', 0)
             ->assertJsonPath('data.0.name', 'Fresh Frozen Plasma')
             ->assertJsonPath('data.0.no_charge', true)

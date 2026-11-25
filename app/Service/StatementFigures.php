@@ -7,6 +7,7 @@ use App\Models\Billing;
 use App\Models\BloodRequest;
 use App\Repository\BloodComponentRepository;
 use App\Support\Money;
+use Illuminate\Support\Collection;
 
 /**
  * What a statement asks for and what it has collected, worked out from the records.
@@ -23,12 +24,17 @@ class StatementFigures
     ) {}
 
     /**
-     * The request's billable lines: each component with units held, priced at the fulfilling facility's rate.
+     * The request's billable lines: each component with units held, at the price it was billed at.
      *
      * Held means claimed — reserved or released — because a statement covers
      * what the centre has committed to the request. Priced by the facility
      * fulfilling the request (target_facility_id), never the hospital that
      * asked; an unset price is zero. A line with nothing held is left out.
+     *
+     * A line keeps the price it was first billed at (lockPrices()), so a
+     * centre changing its price leaves every bill already raised as it was
+     * (project owner, 2026-11-26). Only a line not billed yet reads the
+     * centre's present price.
      *
      * On a weekly request whose lines differ in blood type, each line is named
      * with its type, so A+ and O+ packed cells are two lines a reader can tell
@@ -41,10 +47,7 @@ class StatementFigures
         $request->loadMissing(['items.component', 'items.bloodType']);
         $mixed = $request->blood_type_id === null;
 
-        $held = $request->allocations()->claiming()
-            ->groupBy('request_item_id')
-            ->selectRaw('request_item_id, COUNT(*) as held')
-            ->pluck('held', 'request_item_id');
+        $held = $this->heldPerLine($request);
 
         $lines = [];
 
@@ -55,7 +58,9 @@ class StatementFigures
                 continue;
             }
 
-            $unitPrice = $this->unitPriceFor($request, (int) $item->component_id);
+            $unitPrice = $item->billed_unit_price !== null
+                ? Money::toCentavos($item->billed_unit_price)
+                : $this->unitPriceFor($request, (int) $item->component_id);
 
             $lines[] = [
                 'request_item_id' => (int) $item->id,
@@ -70,6 +75,37 @@ class StatementFigures
         }
 
         return $lines;
+    }
+
+    /**
+     * Lock the price of every line going on the bill for the first time.
+     *
+     * The centre's present price is copied onto each line that has units held
+     * and no price yet; a line that has one keeps it. The bill is a record of
+     * what was charged when it was raised, so a price changed afterwards
+     * applies only to lines billed after the change (project owner,
+     * 2026-11-26). Units tagged later on a line already billed go on at that
+     * line's price, as does a unit swapped for another.
+     *
+     * Called by BillingService::syncFor() on every tagging and dispatch, the
+     * only ways a line comes onto a bill, before the bill reads its lines.
+     * Must run inside a transaction that holds the request lock.
+     */
+    public function lockPrices(BloodRequest $request): void
+    {
+        $request->loadMissing('items');
+        $held = $this->heldPerLine($request);
+
+        foreach ($request->items as $item) {
+            if ($item->billed_unit_price !== null || (int) ($held[$item->id] ?? 0) < 1) {
+                continue;
+            }
+
+            $item->forceFill([
+                'billed_unit_price' => Money::toDecimal($this->unitPriceFor($request, (int) $item->component_id)),
+                'priced_at' => now(),
+            ])->save();
+        }
     }
 
     /**
@@ -135,7 +171,20 @@ class StatementFigures
     }
 
     /**
-     * One component's unit price at the facility fulfilling the request.
+     * How many units each of the request's lines holds, keyed by line.
+     *
+     * @return Collection<int, int>
+     */
+    private function heldPerLine(BloodRequest $request): Collection
+    {
+        return $request->allocations()->claiming()
+            ->groupBy('request_item_id')
+            ->selectRaw('request_item_id, COUNT(*) as held')
+            ->pluck('held', 'request_item_id');
+    }
+
+    /**
+     * One component's present unit price at the facility fulfilling the request.
      */
     private function unitPriceFor(BloodRequest $request, int $componentId): int
     {

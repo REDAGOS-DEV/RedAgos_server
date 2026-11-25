@@ -31,7 +31,8 @@ class BloodRequestItem extends Model
     /**
      * The closure columns are deliberately absent. Closing a line is a decision
      * with an owner, made through RequestLineCloser, so no mass-assignment path
-     * may reach it. So is committed_quantity, which only SupplyPlanService sets.
+     * may reach it. So is committed_quantity, which only SupplyPlanService sets,
+     * and billed_unit_price, which only StatementFigures::lockPrices() sets.
      */
     protected $fillable = [
         'request_id',
@@ -49,6 +50,8 @@ class BloodRequestItem extends Model
             'indication_code' => IndicationCode::class,
             'quantity' => 'integer',
             'committed_quantity' => 'integer',
+            'billed_unit_price' => 'decimal:2',
+            'priced_at' => 'immutable_datetime',
             'closed_at' => 'immutable_datetime',
             'closure_reason' => LineClosureReason::class,
         ];
