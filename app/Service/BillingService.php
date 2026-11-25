@@ -40,6 +40,8 @@ use Illuminate\Validation\ValidationException;
  * statement this raises comes to zero and is settled on creation. That is a
  * pricing fact, not an architectural one: the charge is computed from
  * the fulfilling facility's own price for the component, which is unset today.
+ * Each line is charged the price of the day it was first billed: a later
+ * price change applies to new bills only (project owner, 2026-11-26).
  * Setting it turns the release gate on by itself, with no change here or in
  * FulfillmentService — which is why the gate is written and tested now rather
  * than deferred until money appears. It is held per facility so that one centre
@@ -126,12 +128,20 @@ class BillingService
      * longer shows. One already awaiting verification is left alone, because
      * money may already be on its way.
      *
+     * Each line going on the bill for the first time has its price locked
+     * first, at the centre's present price; a line already billed keeps its
+     * own, so a price change never reprices a bill already raised (project
+     * owner, 2026-11-26). Locked even on a bill settled by decision, whose
+     * later units still go on the hospital's Statement of Account.
+     *
      * Must be called inside a transaction that already holds the request lock,
      * as the allocating and dispatching ones do. The statement is then locked here, which
      * completes request, then billing.
      */
     public function syncFor(BloodRequest $request, User $actor): Billing
     {
+        $this->figures->lockPrices($request);
+
         $lines = $this->figures->linesFor($request);
         $total = $this->figures->totalOf($lines);
 
@@ -533,8 +543,9 @@ class BillingService
                     'The subsidy record is missing, so this statement cannot be reopened automatically.'
                 );
 
-            // Prices and held units may have changed since the subsidy was
-            // applied. Restore the live statement rather than a stale amount.
+            // Held units may have changed since the subsidy was applied.
+            // Restore the live statement rather than a stale amount; each line
+            // keeps the price it was billed at.
             $restored = $this->figures->totalOf($this->figures->linesFor($request));
             $collected = $this->collectedFor($statement);
 

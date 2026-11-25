@@ -65,6 +65,25 @@ class HospitalStaffTest extends TestCase
         $this->assertDatabaseHas('audit_logs', ['action' => 'hospital_staff.created', 'actor_id' => $this->head->id]);
     }
 
+    public function test_a_colleague_with_a_reserved_address_starts_verified_with_no_code(): void
+    {
+        Notification::fake();
+
+        $this->actingAs($this->head)
+            ->postJson('/api/hospital/staff', [
+                'first_name' => 'Rosa',
+                'last_name' => 'Lim',
+                'email' => 'rosa.lim@example.com',
+                'hospital_role' => HospitalRole::InventoryStaff->value,
+                'password' => 'Secret123',
+                'password_confirmation' => 'Secret123',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('data.email_verified', true);
+
+        Notification::assertNothingSent();
+    }
+
     public function test_the_roster_lists_the_blood_banks_staff_and_the_roles(): void
     {
         User::factory()->bloodBankStaff($this->hospital)->hospitalRole(HospitalRole::RequestingStaff)->create();

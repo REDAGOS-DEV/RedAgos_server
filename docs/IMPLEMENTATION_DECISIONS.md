@@ -2885,6 +2885,8 @@ Opened from View, the dialog offers Edit or Review when the row allows it. Every
 
 ## The Donations list holds every centre's donations
 
+**SUPERSEDED** on 2026-11-26 by "The Donations list is each centre's own again".
+
 **SOURCE:** The project owner, 2026-11-13: a donor who gave blood at SPMC was not found on PRC's Donations page ("even if I refresh it and search it there is no result but it is recorded in center"). Donor Management was already the same at every centre; Donations was each centre's alone.
 
 **DECISION:**
@@ -2926,3 +2928,29 @@ Opened from View, the dialog offers Edit or Review when the row allows it. Every
 **Client:** Request Fulfillment has two tabs, Awaiting Payment (the queue as before) and All Blood Requests (`NetworkBloodRequests.vue`, `?tab=all`). A card shows the components table beside the centres holding a share; this centre's share links to Incoming Requests, which now opens `?request=ID` in its review. "Add this center's share — N unallocated" opens a dialog per component (all unallocated by default). A centre-added share reads "Added by <name> at this center" on Incoming Requests, and "Added by the center" / "Added by <centre>" on the hospital's screens.
 
 **TESTS:** `NetworkTransfusionRequestTest`.
+
+## The Donations list is each centre's own again
+
+**SOURCE:** The project owner, 2026-11-26: "the donation should not be global, so it only display in its own donations in blood center. The only global is Donor management." This reverses "The Donations list holds every centre's donations" (2026-11-13).
+
+**DECISION:**
+- `GET /donation-records` lists this centre's donations only, as the export and a drive's paper sheet already did (`DonationRecordRepository::query()` takes the centre again, never null). Rows no longer carry `scope` or `centre`.
+- Search reaches this centre's donations only. A full bag number with another centre's prefix (PRC-21627990-PRBC) finds nothing here.
+- Donor Management stays global: a donor who gave blood at another centre is still found there, with their full record.
+
+**Client:** the centre chip, "Recorded at <centre>" and the read-only guards on Continue, Close and Open the sheet are gone. The table's rows are also plain, one value per column, as on Donor Management: no avatar, no donor ID under the name, and no pill, chip, dot or second line in any cell. The ID, donor name, group, date and time, bag, appointment (or Walk-in) and status are shown as text. The volume, drive and paper sheet are in the record dialog, and the ID cell's tooltip still says when a row was typed from paper.
+
+**TESTS:** `DonationRecordsTest` (back to `test_the_list_is_this_centres_newest_first_with_open_visits_marked`, and another centre's bag number finds nothing), and in the client `tests/donationsPage.spec.ts`.
+
+## A price change applies to new bills only
+
+**SOURCE:** The project owner, 2026-11-26: "In billing when I update the price the past transaction should not be affected because they are part of the old price."
+
+**DECISION:**
+- Each request line keeps the unit price it was first billed at: `blood_request_items.billed_unit_price` and `priced_at`, set only by `StatementFigures::lockPrices()`, which `BillingService::syncFor()` calls on every tagging and dispatch before the bill reads its lines. Locked even on a subsidised or voided bill, whose later units still go on the hospital's Statement of Account.
+- `StatementFigures::linesFor()` reads the locked price, and the centre's present price only for a line not billed yet. So the bill, the counter, invoices issued later, a discount, removing a subsidy and the Financial Reports (by component) all keep the old price.
+- Units tagged later on a line already billed, and a unit swapped for another, go on at that line's price. A request first billed after the change takes the new price.
+- Migration `2026_11_26_000002` locked the lines already on a bill at the price their latest invoice showed, else the centre's present price.
+- Saving Component Prices says "Bills already raised keep their prices."
+
+**TESTS:** `BillingPriceLockTest`, `BilledPriceBackfillTest`, `ComponentPricesTest` (message).

@@ -48,6 +48,8 @@ class Donation extends Model
             'volume_ml' => 'integer',
             'labelled_at' => 'datetime',
             'donation_type' => DonationType::class,
+            // Written only by HospitalInventoryService::transfuse(), never from a request.
+            'donor_told_transfused_at' => 'datetime',
         ];
     }
 

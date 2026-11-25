@@ -7,6 +7,7 @@ use App\Enums\RoleName;
 use App\Http\Resources\UserResource;
 use App\Models\User;
 use App\Repository\AuthRepository;
+use App\Support\ReservedContacts;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Password;
@@ -230,6 +231,28 @@ class AuthService
     }
 
     /**
+     * Start verification on an account made by someone else: a colleague added
+     * by a facility, or a facility's primary account made by a super admin.
+     *
+     * A reserved address (ReservedContacts: example.com and the like) reaches
+     * no inbox, so a code sent there could never be typed. Such an account
+     * starts verified instead (project owner, 2026-11-26: registering staff
+     * with @example.com "should never require me to enter code"). Only staff
+     * roles qualify, never donors: anyone can type an example.com address
+     * into self-registration.
+     */
+    public function startStaffVerification(User $user): void
+    {
+        if ($this->opensWithoutCode($user)) {
+            $this->authRepository->markVerified($user);
+
+            return;
+        }
+
+        $user->sendEmailVerificationNotification();
+    }
+
+    /**
      * Mail a new code when the address is still unverified.
      */
     public function resendVerificationEmail(User $user): void
@@ -262,6 +285,15 @@ class AuthService
         }
 
         $user->sendEmailVerificationNotification();
+    }
+
+    /**
+     * Whether a staff account's address is one no code can reach.
+     */
+    private function opensWithoutCode(User $user): bool
+    {
+        return ReservedContacts::isReservedEmail($user->email)
+            && ($user->hasRole(RoleName::BloodCenter) || $user->hasRole(RoleName::BloodBank));
     }
 
     /**
@@ -322,6 +354,15 @@ class AuthService
     private function guardEmailVerified(User $user): void
     {
         if ($user->hasVerifiedEmail() || $user->sign_in_issued_at !== null) {
+            return;
+        }
+
+        // Staff made with a reserved address before those started verified
+        // (see startStaffVerification): verified now rather than sent a code
+        // that could never arrive.
+        if ($this->opensWithoutCode($user)) {
+            $this->authRepository->markVerified($user);
+
             return;
         }
 

@@ -36,7 +36,8 @@ class StaffService
     public function __construct(
         private readonly StaffRepository $staffRepository,
         private readonly BloodCenterRepository $bloodCenterRepository,
-        private readonly AuditLogger $auditLogger
+        private readonly AuditLogger $auditLogger,
+        private readonly AuthService $authService
     ) {}
 
     /**
@@ -81,7 +82,8 @@ class StaffService
      * as self-registration leaves an applicant. That is deliberate: the
      * operational gate already refuses an unverified account with
      * email_unverified while still letting it sign in to change its own
-     * password, so no additional onboarding gate is needed.
+     * password, so no additional onboarding gate is needed. An example.com
+     * address starts verified instead (AuthService::startStaffVerification).
      *
      * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
@@ -141,7 +143,7 @@ class StaffService
         }
 
         // Sent after the commit so a rolled-back creation never mails a live link.
-        $staff->sendEmailVerificationNotification();
+        $this->authService->startStaffVerification($staff);
 
         $this->auditLogger->record($actor, 'staff.created', $staff, [
             'facility_id' => $facility->id,

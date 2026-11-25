@@ -208,6 +208,10 @@ class BloodComponentService
      * Unchanged lines are skipped, so a save that sends the whole list writes
      * and audits only what changed.
      *
+     * A new price applies to bills raised after it. A bill already raised
+     * keeps the price each of its lines was billed at (project owner,
+     * 2026-11-26; see StatementFigures::lockPrices()).
+     *
      * @param  array<int, array{component_id: int, no_charge: bool, price?: int|float|string|null}>  $lines
      * @return array<string, mixed>
      */
@@ -249,8 +253,8 @@ class BloodComponentService
         return [
             'message' => match ($changed) {
                 0 => 'No prices changed.',
-                1 => "1 price saved for {$facility->name}.",
-                default => "{$changed} prices saved for {$facility->name}.",
+                1 => "1 price saved for {$facility->name}. Bills already raised keep their prices.",
+                default => "{$changed} prices saved for {$facility->name}. Bills already raised keep their prices.",
             },
         ] + $this->prices($staff);
     }
