@@ -218,6 +218,19 @@ class FacilityManagementTest extends TestCase
         Notification::assertSentTo($primary, VerifyEmailNotification::class);
     }
 
+    public function test_a_primary_account_with_a_reserved_address_starts_verified_with_no_code(): void
+    {
+        Notification::fake();
+
+        $this->actingAs($this->admin())
+            ->postJson('/api/admin/facilities', $this->payload(['primary_account' => ['email' => 'maria.santos@example.com']]))
+            ->assertCreated()
+            ->assertJsonPath('data.primary_account.email_verified', true)
+            ->assertJsonPath('message', 'Davao Regional Blood Center has been created. The primary account can sign in now.');
+
+        Notification::assertNothingSent();
+    }
+
     public function test_a_verified_primary_account_can_sign_in_to_its_own_portal(): void
     {
         $this->actingAs($this->admin())

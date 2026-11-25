@@ -46,7 +46,9 @@ class StaffManagementTest extends TestCase
         return [
             'first_name' => 'Maria',
             'last_name' => 'Guerra',
-            'email' => 'maria.guerra@example.com',
+            // Not example.com: a reserved address starts verified (see
+            // test_a_reserved_address_starts_verified_with_no_code).
+            'email' => 'maria.guerra@snbc.ph',
             'phone' => '09171234567',
             'credentials' => 'RMT',
             'staff_role' => StaffRole::SerologyTechnologist->value,
@@ -198,6 +200,49 @@ class StaffManagementTest extends TestCase
         $created = User::where('uuid', $response->json('data.uuid'))->firstOrFail();
 
         Notification::assertSentTo($created, VerifyEmailNotification::class);
+    }
+
+    public function test_a_reserved_address_starts_verified_with_no_code(): void
+    {
+        $response = $this->actingAs($this->admin)
+            ->postJson('/api/blood-center/staff', $this->payload(['email' => 'maria.guerra@example.com']))
+            ->assertCreated()
+            ->assertJsonPath('data.account_status', AccountStatus::Active->value)
+            ->assertJsonPath('data.email_verified', true);
+
+        $created = User::where('uuid', $response->json('data.uuid'))->firstOrFail();
+
+        Notification::assertNotSentTo($created, VerifyEmailNotification::class);
+
+        $this->postJson('/api/login', ['login' => 'maria.guerra@example.com', 'password' => 'Password123'])
+            ->assertOk();
+    }
+
+    public function test_staff_made_earlier_with_a_reserved_address_sign_in_without_a_code(): void
+    {
+        $staff = User::factory()->unverified()->bloodCenterStaff($this->facility)->create([
+            'email' => 'earlier@example.com',
+            'password' => 'Password123',
+        ]);
+
+        $this->postJson('/api/login', ['login' => 'earlier@example.com', 'password' => 'Password123'])
+            ->assertOk();
+
+        $this->assertTrue($staff->fresh()->hasVerifiedEmail());
+        $this->assertSame(AccountStatus::Active, $staff->fresh()->account_status);
+        Notification::assertNothingSent();
+    }
+
+    public function test_a_donor_with_a_reserved_address_still_needs_the_code(): void
+    {
+        User::factory()->unverified()->donor()->create([
+            'email' => 'donor@example.com',
+            'password' => 'Password123',
+        ]);
+
+        $this->postJson('/api/login', ['login' => 'donor@example.com', 'password' => 'Password123'])
+            ->assertStatus(403)
+            ->assertJsonPath('code', 'email_not_verified');
     }
 
     public function test_an_account_without_a_level_must_be_given_a_role(): void

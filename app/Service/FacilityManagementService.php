@@ -39,7 +39,8 @@ class FacilityManagementService
     public function __construct(
         private readonly FacilityRepository $facilityRepository,
         private readonly AuthRepository $authRepository,
-        private readonly AuditLogger $auditLogger
+        private readonly AuditLogger $auditLogger,
+        private readonly AuthService $authService
     ) {}
 
     /**
@@ -127,8 +128,8 @@ class FacilityManagementService
 
         if (! $verified) {
             // Sent after the commit so a rolled-back creation never mails a live
-            // verification code.
-            $primary->sendEmailVerificationNotification();
+            // verification code. An example.com address starts verified instead.
+            $this->authService->startStaffVerification($primary);
         }
 
         $this->auditLogger->record($admin, 'facility.created', $facility, [
@@ -139,7 +140,7 @@ class FacilityManagementService
         ]);
 
         return [
-            'message' => $verified
+            'message' => $primary->hasVerifiedEmail()
                 ? $facility->name.' has been created. The primary account can sign in now.'
                 : $facility->name.' has been created. The primary account must verify its email address before signing in.',
             'data' => $this->format($facility),

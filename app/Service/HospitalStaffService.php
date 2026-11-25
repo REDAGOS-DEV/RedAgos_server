@@ -34,7 +34,8 @@ class HospitalStaffService
 {
     public function __construct(
         private readonly BloodCenterRepository $accounts,
-        private readonly AuditLogger $auditLogger
+        private readonly AuditLogger $auditLogger,
+        private readonly AuthService $authService
     ) {}
 
     /**
@@ -105,7 +106,7 @@ class HospitalStaffService
         }
 
         // Sent after the commit so a rolled-back creation never mails a live link.
-        $staff->sendEmailVerificationNotification();
+        $this->authService->startStaffVerification($staff);
 
         $this->auditLogger->record($actor, 'hospital_staff.created', $staff, [
             'facility_id' => $facility->id,
