@@ -16,14 +16,8 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
  * The Donations list (project owner, 2026-10-17), built like Donor
- * Management: every visit opened at a counter, where it got to, and a way to
- * find and close a visit left open.
- *
- * It lists every centre's donations (project owner, 2026-11-13), as Donor
- * Management lists every centre's donors: a donor who gave blood at one
- * centre is found at the next. Another centre's visit is read only: it cannot
- * be closed or carried on here, and why it was deferred or rejected stays
- * with the centre that recorded it. The export stays this centre's own.
+ * Management: every visit opened at this centre's counter, where it got to,
+ * and a way to find and close a visit left open.
  *
  * It exists because a visit opened and never finished kept the counter
  * refusing that donor ("already has a donation in progress") while nothing on
@@ -48,10 +42,10 @@ class DonationRecordService
      */
     public function list(User $staff, array $filters, int $perPage): LengthAwarePaginator
     {
-        $this->requireFacility($staff);
+        $facility = $this->requireFacility($staff);
 
         return $this->donations
-            ->paginate(null, $filters, $perPage)
+            ->paginate($facility->id, $filters, $perPage)
             ->through(fn (Donation $donation): array => $this->format($donation, $staff));
     }
 
@@ -106,8 +100,7 @@ class DonationRecordService
     /**
      * One row. `open` marks a visit not yet drawn — the one the counter
      * refuses a second visit over — and `can.close` whether this viewer may
-     * close it from the list. `scope` says whether the visit is this
-     * centre's or another's, and `centre` where it was recorded.
+     * close it from the list.
      *
      * Public for a drive's paper sheet (PaperDonationService), whose rows are
      * these same rows and must follow the same rules about who is told what.
@@ -120,10 +113,7 @@ class DonationRecordService
         // timezone, as the counter writes it.
         $at = CarbonImmutable::instance($donation->donation_date);
         $status = $donation->status;
-        $own = (int) $donation->facility_id === (int) $viewer->facility_id;
-        // A deferral's reason or a laboratory rejection is the recording
-        // centre's clinical record, never another centre's.
-        $clinical = $own && $viewer->can('donors.view_clinical');
+        $clinical = $viewer->can('donors.view_clinical');
         $screening = $donation->screening;
         $deferredAtScreening = $screening?->outcome?->isDeferral() ?? false;
         $open = in_array($status, [DonationStatus::Registered, DonationStatus::Screening], true);
@@ -150,12 +140,6 @@ class DonationRecordService
             'status' => $status->value,
             'status_label' => $label,
             'open' => $open,
-            'scope' => $own ? 'own_facility' : 'cross_facility',
-            'centre' => $donation->facility === null ? null : [
-                'id' => $donation->facility->id,
-                'name' => $donation->facility->name,
-                'abbreviation' => $donation->facility->abbreviation,
-            ],
             'donor' => DonorBlinding::block(
                 $donation->donorProfile?->donor,
                 $donation->donorProfile?->bloodType?->code,
@@ -199,9 +183,8 @@ class DonationRecordService
             ],
             'rejection_reason' => $clinical ? $donation->rejection_reason : null,
             'can' => [
-                // The same act as the counter's Cancel visit, through its route,
-                // and only for a visit opened here.
-                'close' => $open && $own && $viewer->can('donations.close'),
+                // The same act as the counter's Cancel visit, through its route.
+                'close' => $open && $viewer->can('donations.close'),
             ],
         ];
     }
