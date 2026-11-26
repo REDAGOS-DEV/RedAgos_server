@@ -378,6 +378,33 @@ class HospitalInventoryRepository
     }
 
     /**
+     * Bags this hospital transfused since a moment, by blood type and component.
+     *
+     * Read off the tags, where the transfusion is recorded with its time. The
+     * blood bank's use, for days of cover (project owner, 2026-11-27).
+     *
+     * @return array<int, array{blood_type_id: int, component_id: int, units: int}>
+     */
+    public function transfusedCountsByTypeAndComponentSince(int $facilityId, CarbonImmutable $since): array
+    {
+        return UnitTag::query()
+            ->where('unit_tags.status', UnitTagStatus::Transfused->value)
+            ->where('unit_tags.transfused_at', '>=', $since)
+            ->join('hospital_units', 'hospital_units.id', '=', 'unit_tags.hospital_unit_id')
+            ->where('hospital_units.facility_id', $facilityId)
+            ->join('blood_units', 'blood_units.id', '=', 'hospital_units.unit_id')
+            ->groupBy('blood_units.blood_type_id', 'blood_units.component_id')
+            ->selectRaw('blood_units.blood_type_id, blood_units.component_id, COUNT(*) as units')
+            ->get()
+            ->map(fn ($row): array => [
+                'blood_type_id' => (int) $row->blood_type_id,
+                'component_id' => (int) $row->component_id,
+                'units' => (int) $row->units,
+            ])
+            ->all();
+    }
+
+    /**
      * Available bags whose date falls within the next few days, today included.
      */
     public function expiringWithinCount(int $facilityId, string $operationalDate, int $days): int

@@ -47,6 +47,16 @@ class HospitalInventoryController extends Controller
     }
 
     /**
+     * How many days each blood type and component would last at the recent rate of use.
+     */
+    public function daysOfCover(Request $request): JsonResponse
+    {
+        return response()->json(
+            $this->hospitalInventoryService->daysOfCover($request->user())
+        );
+    }
+
+    /**
      * What has happened to the caller's hospital stock, newest first.
      */
     public function activity(ListInventoryActivityRequest $request): JsonResponse
