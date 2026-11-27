@@ -812,7 +812,7 @@ class CorrectionService
             CorrectionSubject::Screening => DonationScreening::query()->where('donation_id', $record->id)->first()?->only([
                 'outcome', 'deferral_code', 'deferral_reason', 'systolic_bp', 'diastolic_bp', 'pulse_bpm', 'temperature_c',
                 'weight_kg', 'haemoglobin_g_dl', 'fingerprick_blood_type_id', 'sleep', 'meal', 'meds', 'allergies',
-                'general_appearance', 'skin', 'heent', 'heart_and_lungs', 'notes',
+                'general_appearance', 'skin', 'heent', 'heart_and_lungs', 'notes', 'out_of_range_reason',
             ]),
             CorrectionSubject::Collection => ($collection = BloodCollection::query()->where('donation_id', $record->id)->first()) === null ? null : [
                 'blood_bag_type' => $collection->blood_bag_type?->value,

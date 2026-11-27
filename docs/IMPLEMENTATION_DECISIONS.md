@@ -2239,6 +2239,16 @@ Opened from View, the dialog offers Edit or Review when the row allows it. Every
 - Defer donor opens the Deferrals page's form, now one component (`DeferralFormDialog.vue`) used by both pages. At the counter the donor is fixed, From is today, the locked codes are left out, and the first out-of-range reading's code is pre-selected. The old inline radios and code picker are gone.
 - `donation_screenings.deferred_until` (migration `2026_10_24_000006`): a temporary counter deferral's last day, required for one (`deferred_until`, today or later). `DonorDeferralRepository::deferralsFor()` holds such a deferral until that date, not until the next screening, so the Donors list and the donor's portal say "until". The donor's notice says so too ("Deferred until 23 Nov 2026"). Paper records and rows from before keep the old reading.
 
+## Counter: accepting over a reading out of range takes a reason
+
+**SOURCE:** The project owner, 2026-11-27, asking whether a donor with a reading out of range still goes on to collection (they did, on Accepted, with only the field marked). Offered a hard block or acceptance with a required reason, the owner chose the reason.
+
+**DECISION:**
+- The physician may still accept. When any of the six readings is out of this donor's range (`ScreeningVitals::findings()`), Accepted takes `out_of_range_reason` (≤ 255), stored on `donation_screenings.out_of_range_reason` (migration `2026_11_27_000001`). Without it the server answers 422 on `out_of_range_reason`, naming the readings ("Give the reason for accepting with Systolic BP above range."). It is checked in `RecordScreeningRequest::after()` (so a screening correction is refused when filed too) and again in `CollectionService::recordScreening()`.
+- Kept only for an acceptance over a reading out of range; dropped for a deferral, for normal readings, and never sent by a paper record.
+- Clinical, like a deferral's reason: on the counter's screening and the Donations list's visit timeline only for `donors.view_clinical`. The audit entry (`collection.screening_recorded`) carries `out_of_range` (the fields) and `out_of_range_reason`; the Audit Log page's Details show neither, as it shows no outcomes, results or reasons.
+- Counter: Accepted with a reading out of range opens an in-app dialog listing the readings and asking "Reason for accepting"; Accept donor stays disabled until one is typed.
+
 ## The Donation counter is reached from Donations and Donor Management
 
 **SOURCE:** The project owner, 2026-10-24: Donor Management gets an action that "proceed[s] directly to donations so that it will not search it [in the] donation counter", "only the eligible must proceed"; then "remove the donation counter and transfer the Scan the Donor Portal QR in the upper right of Donations, make it buttons and it popup to scan". Asked whether that meant the Donations button only or the sidebar link and the counter's own scan and search too, the owner chose the latter.

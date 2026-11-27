@@ -60,6 +60,9 @@ class DonationScreening extends Model
         // donor profile and never used to pre-fill the laboratory's typing.
         'fingerprick_blood_type_id',
         'notes',
+        // Why the physician accepted a donor with a reading out of range;
+        // null otherwise (project owner, 2026-11-27).
+        'out_of_range_reason',
         // The donor answered the printed DHQ instead of the onsite one.
         'dhq_on_paper',
         'screened_at',

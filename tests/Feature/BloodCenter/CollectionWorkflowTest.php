@@ -533,6 +533,8 @@ class CollectionWorkflowTest extends TestCase
             ->postJson("/api/blood-center/donations/{$id}/screening", $this->withVitals([
                 'outcome' => 'accepted',
                 'haemoglobin_g_dl' => 12.1,
+                // Out of range, so accepting it takes a reason (2026-11-27).
+                'out_of_range_reason' => 'Recheck pending.',
             ]))->assertCreated();
 
         // Saving over it is refused: a saved screening changes only through
