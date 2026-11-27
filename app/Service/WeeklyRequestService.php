@@ -358,6 +358,19 @@ class WeeklyRequestService
                 'not_supplied' => $notSupplied,
             ],
             'requests' => $requests->all(),
+            // The list's step times, when its query loaded them (2026-11-26).
+            ...(array_key_exists('confirmed_step_at', $weekly->getAttributes()) ? [
+                'step_times' => [
+                    'submitted' => $weekly->created_at?->toIso8601String(),
+                    ...collect(array_keys(WeeklyRequestRepository::STEP_EVENTS))
+                        ->mapWithKeys(fn (string $alias): array => [
+                            str_replace('_step_at', '', $alias) => $weekly->getAttribute($alias) === null
+                                ? null
+                                : CarbonImmutable::parse($weekly->getAttribute($alias))->toIso8601String(),
+                        ])
+                        ->all(),
+                ],
+            ] : []),
         ];
     }
 

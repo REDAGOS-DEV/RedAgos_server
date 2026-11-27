@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 
 /**
  * A hospital blood bank's scheduled restock, sent to one centre on one of its request days.
@@ -69,6 +70,14 @@ class WeeklyRequest extends Model
     public function bloodRequests(): HasMany
     {
         return $this->hasMany(BloodRequest::class)->orderBy('id');
+    }
+
+    /**
+     * Everything that happened to its replenishment request(s), from their history.
+     */
+    public function events(): HasManyThrough
+    {
+        return $this->hasManyThrough(BloodRequestEvent::class, BloodRequest::class, 'weekly_request_id', 'request_id');
     }
 
     /**

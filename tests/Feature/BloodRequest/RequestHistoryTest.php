@@ -114,6 +114,41 @@ class RequestHistoryTest extends TestCase
         $this->assertSame(2, collect($timeline[0]['lines'])->firstWhere('component', 'Fresh Frozen Plasma')['required']);
     }
 
+    public function test_the_hospital_list_says_when_each_step_last_happened(): void
+    {
+        $this->freezeSecond();
+        $requirement = $this->scenarioTransfusion();
+        $allocation = $this->allocationAt($requirement, $this->centre);
+
+        $row = fn (): array => collect($this->actingAs($this->requester)
+            ->getJson('/api/hospital/transfusion-requests')
+            ->assertOk()
+            ->json('data'))->firstWhere('id', $requirement->id);
+
+        // Nothing past submission yet.
+        $this->assertSame(
+            ['submitted' => $requirement->request_date->toIso8601String(), 'approved' => null, 'released' => null, 'received' => null],
+            $row()['step_times']
+        );
+
+        $this->travel(10)->minutes();
+        $this->stock($this->centre, $this->prbc, 2);
+        $this->stock($this->centre, $this->ffp, 2);
+        $this->allocateAndRelease($allocation);
+        $releasedAt = now()->toIso8601String();
+
+        $this->travel(30)->minutes();
+        $this->actingAs($this->requester)
+            ->postJson("/api/hospital/blood-requests/{$allocation->id}/confirm-receipt")
+            ->assertOk();
+
+        $times = $row()['step_times'];
+
+        $this->assertSame($releasedAt, $times['approved']);
+        $this->assertSame($releasedAt, $times['released']);
+        $this->assertSame(now()->toIso8601String(), $times['received']);
+    }
+
     public function test_the_snapshot_keeps_the_figures_as_they_stood_at_the_time(): void
     {
         $request = $this->scenarioRequest();

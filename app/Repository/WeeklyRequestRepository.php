@@ -2,6 +2,7 @@
 
 namespace App\Repository;
 
+use App\Enums\RequestEventType;
 use App\Models\ReplenishmentSchedule;
 use App\Models\WeeklyRequest;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
@@ -123,11 +124,32 @@ class WeeklyRequestRepository
                 ...self::HEADER_RELATIONS,
                 ...$this->bloodRequestRepository->projectionRelationsUnder('bloodRequests'),
             ])
+            ->tap(function (Builder $query): void {
+                // When each step last happened (2026-11-26), one subquery each.
+                foreach (self::STEP_EVENTS as $alias => $event) {
+                    $query->withMax(
+                        ['events as '.$alias => fn (Builder $events): Builder => $events->where('blood_request_events.event', $event->value)],
+                        'blood_request_events.created_at'
+                    );
+                }
+            })
             ->orderByDesc('request_day')
             ->orderByDesc('id')
             ->paginate($perPage)
             ->withQueryString();
     }
+
+    /**
+     * The history event behind each step time of the list, keyed by the
+     * attribute it loads as. WeeklyRequestService shows them as `step_times`.
+     *
+     * @var array<string, RequestEventType>
+     */
+    public const STEP_EVENTS = [
+        'confirmed_step_at' => RequestEventType::SupplyPlanned,
+        'released_step_at' => RequestEventType::Released,
+        'received_step_at' => RequestEventType::ReceiptConfirmed,
+    ];
 
     /**
      * Find one of a hospital's weekly requests, with its blood requests and every bag dispatched for them.

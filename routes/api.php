@@ -1267,6 +1267,8 @@ Route::middleware(['auth:sanctum', 'role:blood_bank', 'facility.operational'])
                 ->middleware('can:hospital.inventory.view');
             Route::get('/activity', [HospitalInventoryController::class, 'activity'])
                 ->middleware('can:hospital.inventory.view');
+            Route::get('/days-of-cover', [HospitalInventoryController::class, 'daysOfCover'])
+                ->middleware('can:hospital.inventory.view');
 
             // Inventory Reports: the paper form, filled from the shelf, each
             // one kept as the PDF it was printed as (project owner, 2026-10-29).
