@@ -176,6 +176,41 @@ class ReferenceDataTest extends TestCase
             ->assertJsonPath('storage_locations', ['Cold Storage Z-9']);
     }
 
+    public function test_each_component_lists_only_the_shelves_of_its_storage_area(): void
+    {
+        $this->seed(BloodComponentSeeder::class);
+        BloodComponent::factory()->create(['name' => 'Centre Own Product']);
+
+        $staff = User::factory()->bloodCenterStaff()->create();
+
+        $components = collect($this->actingAs($staff)
+            ->getJson('/api/blood-center/reference-data')
+            ->assertOk()
+            ->json('components'))
+            ->keyBy('name');
+
+        $refrigerator = config('blood_center.storage_areas.refrigerator.locations');
+        $freezer = config('blood_center.storage_areas.freezer.locations');
+        $agitator = config('blood_center.storage_areas.platelet_agitator.locations');
+
+        $this->assertSame($refrigerator, $components['Packed RBC']['storage_locations']);
+        $this->assertSame($refrigerator, $components['Whole Blood']['storage_locations']);
+        $this->assertSame($freezer, $components['Fresh Frozen Plasma']['storage_locations']);
+        $this->assertSame($freezer, $components['Cryoprecipitate']['storage_locations']);
+        $this->assertSame($agitator, $components['Platelet Concentrate']['storage_locations']);
+
+        // No area names it, so it may go on any shelf.
+        $this->assertNull($components['Centre Own Product']['storage_locations']);
+    }
+
+    public function test_the_flat_location_list_is_every_storage_areas_shelves(): void
+    {
+        $this->assertSame(
+            array_merge(...array_column(config('blood_center.storage_areas'), 'locations')),
+            config('blood_center.storage_locations')
+        );
+    }
+
     public function test_it_rejects_a_donor(): void
     {
         $this->actingAs(User::factory()->donor()->create())

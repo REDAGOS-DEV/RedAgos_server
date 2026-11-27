@@ -12,6 +12,7 @@ use App\Models\User;
 use App\Repository\BloodCenterRepository;
 use App\Repository\BloodComponentRepository;
 use App\Support\StaffAvatar;
+use App\Support\StorageAreas;
 use App\Support\Uploads;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\UploadedFile;
@@ -181,6 +182,9 @@ class BloodCenterService
                         // Surfaced so the UI can disable stock entry outright rather
                         // than let someone record a unit with an invented expiry.
                         'shelf_life_configured' => $setting?->hasShelfLife() ?? false,
+                        // The shelves its bags have to go on (StorageAreas);
+                        // null when no area names it, meaning any location.
+                        'storage_locations' => StorageAreas::locationsFor($component->name),
                     ];
                 })->all(),
 
