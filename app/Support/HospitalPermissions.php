@@ -44,6 +44,10 @@ final class HospitalPermissions
             'hospital.inventory.discard',
             'hospital.inventory.thresholds',
 
+            // Send near-expiry bags to another hospital's Blood Request
+            // (project owner, 2026-11-28).
+            'hospital.inventory.supply',
+
             // Blood from outside RedAgos, booked in by hand.
             'hospital.receiving.direct',
         ],

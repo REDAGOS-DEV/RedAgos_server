@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Notifications\BloodRequestDecided;
 use App\Notifications\BloodRequestSubmitted;
 use App\Notifications\TransfusionShareTakenUp;
+use App\Notifications\TransfusionSuppliedByHospital;
 use App\Notifications\WalkInRequestRecorded;
 use App\Support\StaffNotificationTopics;
 use Illuminate\Support\Collection;
@@ -86,6 +87,14 @@ class BloodRequestNotifier
     public function shareTakenUp(BloodRequest $share): void
     {
         Notification::send($this->hospitalAccounts($share), new TransfusionShareTakenUp($share));
+    }
+
+    /**
+     * Tell the hospital that another hospital sent bags for its Blood Request (2026-11-28).
+     */
+    public function suppliedByHospital(BloodRequest $share): void
+    {
+        Notification::send($this->hospitalAccounts($share), new TransfusionSuppliedByHospital($share));
     }
 
     /**

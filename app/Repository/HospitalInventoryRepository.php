@@ -185,6 +185,7 @@ class HospitalInventoryRepository
         return HospitalUnit::query()
             ->forFacility($facilityId)
             ->where('hospital_units.unit_id', $unitId)
+            ->tap(fn (Builder $query): Builder => $this->heldFirst($query))
             ->with(self::LIST_RELATIONS)
             ->first();
     }
@@ -200,6 +201,7 @@ class HospitalInventoryRepository
         return HospitalUnit::query()
             ->forFacility($facilityId)
             ->where('hospital_units.unit_id', $unitId)
+            ->tap(fn (Builder $query): Builder => $this->heldFirst($query))
             ->lockForUpdate()
             ->first();
     }
@@ -375,6 +377,71 @@ class HospitalInventoryRepository
                 'units' => (int) $row->units,
             ])
             ->all();
+    }
+
+    /**
+     * The bag still on this hospital's shelf before a row it sent on.
+     *
+     * A bag sent to another hospital (2026-11-28) could one day come back:
+     * the hospital then holds two rows for it, and the held one is the bag.
+     *
+     * @param  Builder<HospitalUnit>  $query
+     * @return Builder<HospitalUnit>
+     */
+    private function heldFirst(Builder $query): Builder
+    {
+        return $query
+            ->orderByRaw('CASE WHEN hospital_units.status = ? THEN 1 ELSE 0 END', [HospitalUnitStatus::Transferred->value])
+            ->orderByDesc('hospital_units.id');
+    }
+
+    /**
+     * Bags this hospital may send to another hospital, counted by blood type and component.
+     *
+     * Available and expiring within the supply window, today included
+     * (project owner, 2026-11-28). Keyed "blood_type_id:component_id".
+     *
+     * @return array<string, int>
+     */
+    public function supplyCountsByTypeAndComponent(int $facilityId, string $operationalDate, int $days): array
+    {
+        return HospitalUnit::query()
+            ->forFacility($facilityId)
+            ->where('hospital_units.status', HospitalUnitStatus::Available->value)
+            ->join('blood_units', 'blood_units.id', '=', 'hospital_units.unit_id')
+            ->whereDate('blood_units.expiry_date', '>=', $operationalDate)
+            ->whereDate('blood_units.expiry_date', '<=', CarbonImmutable::parse($operationalDate)->addDays($days)->toDateString())
+            ->groupBy('blood_units.blood_type_id', 'blood_units.component_id')
+            ->selectRaw('blood_units.blood_type_id, blood_units.component_id, COUNT(*) as units')
+            ->get()
+            ->mapWithKeys(fn ($row): array => [((int) $row->blood_type_id).':'.((int) $row->component_id) => (int) $row->units])
+            ->all();
+    }
+
+    /**
+     * The bags this hospital may send for one blood type and some components, first-expiring first.
+     *
+     * The same bags supplyCountsByTypeAndComponent() counts.
+     *
+     * @param  array<int, int>  $componentIds
+     * @return Collection<int, HospitalUnit>
+     */
+    public function supplyCandidates(int $facilityId, int $bloodTypeId, array $componentIds, string $operationalDate, int $days): Collection
+    {
+        return HospitalUnit::query()
+            ->forFacility($facilityId)
+            ->where('hospital_units.status', HospitalUnitStatus::Available->value)
+            ->whereHas('bloodUnit', fn (Builder $bag): Builder => $bag
+                ->where('blood_type_id', $bloodTypeId)
+                ->whereIn('component_id', $componentIds)
+                ->whereDate('expiry_date', '>=', $operationalDate)
+                ->whereDate('expiry_date', '<=', CarbonImmutable::parse($operationalDate)->addDays($days)->toDateString()))
+            ->with([
+                'bloodUnit:id,blood_type_id,component_id,volume_ml,expiry_date,direct_distribution_id',
+                'bloodUnit.directDistribution:id,external_unit_number,quantity',
+            ])
+            ->fefo()
+            ->get();
     }
 
     /**

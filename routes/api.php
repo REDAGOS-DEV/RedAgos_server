@@ -73,6 +73,7 @@ use App\Http\Controllers\HospitalReferenceController;
 use App\Http\Controllers\HospitalReplenishmentScheduleController;
 use App\Http\Controllers\HospitalStaffController;
 use App\Http\Controllers\HospitalStockSheetController;
+use App\Http\Controllers\HospitalSupplyController;
 use App\Http\Controllers\HospitalTransfusionRequestController;
 use App\Http\Controllers\HospitalWeeklyRequestController;
 use App\Http\Controllers\MyActivityController;
@@ -1323,6 +1324,20 @@ Route::middleware(['auth:sanctum', 'role:blood_bank', 'facility.operational'])
             Route::post('/{unit}/discard', [HospitalInventoryController::class, 'discard'])
                 ->where('unit', '[A-Za-z0-9\-]+')
                 ->middleware('can:hospital.inventory.discard');
+        });
+
+        // Other hospitals' open Blood Requests, which this blood bank may
+        // supply from its own near-expiry stock (project owner, 2026-11-28).
+        // No patient names; nothing is billed.
+        Route::prefix('supply-requests')->group(function (): void {
+            Route::get('/', [HospitalSupplyController::class, 'index'])
+                ->middleware('can:hospital.inventory.view');
+            Route::get('/{transfusionRequest}/units', [HospitalSupplyController::class, 'candidates'])
+                ->middleware('can:hospital.inventory.supply')
+                ->whereNumber('transfusionRequest');
+            Route::post('/{transfusionRequest}/supply', [HospitalSupplyController::class, 'supply'])
+                ->middleware(['can:hospital.inventory.supply', 'throttle:30,1'])
+                ->whereNumber('transfusionRequest');
         });
 
         // A patient's need, split across the centres asked to supply it. Each

@@ -90,6 +90,7 @@ class HospitalInventoryService
         'hospital_inventory.partner_released' => 'unreserved',
         'hospital_inventory.returned' => 'returned',
         'hospital_inventory.discarded' => 'discarded',
+        'hospital_inventory.transferred' => 'transferred',
         'hospital_inventory.expired' => 'expired',
     ];
 

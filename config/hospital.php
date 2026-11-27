@@ -24,4 +24,19 @@ return [
         'revision' => 'Rev. 0',
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Supplying Another Hospital
+    |--------------------------------------------------------------------------
+    |
+    | A hospital blood bank may send bags from its own stock to another
+    | hospital's Blood Request, but only near-expiry ones, so it keeps its
+    | fresher stock for its own patients (project owner, 2026-11-28). A bag
+    | qualifies while it is Available and expires within this many days,
+    | today included: the longer of the inventory's two expiry windows.
+    |
+    */
+
+    'supply_expiry_days' => (int) env('HOSPITAL_SUPPLY_EXPIRY_DAYS', 7),
+
 ];

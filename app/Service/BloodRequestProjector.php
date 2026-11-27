@@ -3,11 +3,13 @@
 namespace App\Service;
 
 use App\Enums\FacilityStatus;
+use App\Enums\FacilityTypeName;
 use App\Enums\LineFulfilmentStatus;
 use App\Models\BloodRequest;
 use App\Models\BloodRequestItem;
 use App\Models\BloodRequestWalkIn;
 use App\Models\Facility;
+use App\Models\FacilityType;
 use App\Models\RequestAllocation;
 use App\Models\SupplyPlan;
 use App\Models\TransfusionRequest;
@@ -60,6 +62,8 @@ class BloodRequestProjector
             'reference_number' => $request->reference_number,
             'requesting_facility' => $this->facilityStub($request->requestingFacility),
             'target_facility' => $this->facilityStub($request->targetFacility),
+            // Sent by another hospital from its own near-expiry stock (2026-11-28), not a centre.
+            'supplied_by_hospital' => $this->isHospital($request->targetFacility),
             'request_purpose' => $request->request_purpose->value,
             'purpose_label' => $request->request_purpose->label(),
             'request_source' => $request->request_source->value,
@@ -426,6 +430,22 @@ class BloodRequestProjector
      *
      * @return array<string, mixed>|null
      */
+    /**
+     * Whether a facility is a hospital blood bank rather than a blood centre.
+     *
+     * Read off the type id, so a list of shares costs one lookup, not one per row.
+     */
+    public function isHospital(?Facility $facility): bool
+    {
+        if ($facility === null) {
+            return false;
+        }
+
+        $bankType = once(fn (): ?int => FacilityType::query()->where('name', FacilityTypeName::BloodBank->value)->value('id'));
+
+        return $bankType !== null && (int) $facility->facility_type_id === (int) $bankType;
+    }
+
     public function facilityStub(?Facility $facility): ?array
     {
         return $facility ? [

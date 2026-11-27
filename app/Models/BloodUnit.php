@@ -138,11 +138,12 @@ class BloodUnit extends Model
      *
      * At most one can exist: a partial unique index over unit_id restricted to
      * the claiming statuses enforces it in the database, so this is a hasOne
-     * rather than "the latest of several".
+     * rather than "the latest of several". A hold whose bag a hospital passed
+     * on to another hospital's request (2026-11-28) claims it no longer.
      */
     public function activeAllocation(): HasOne
     {
-        return $this->hasOne(RequestAllocation::class, 'unit_id')->claiming();
+        return $this->hasOne(RequestAllocation::class, 'unit_id')->claiming()->whereNull('passed_on_at');
     }
 
     /**
@@ -153,7 +154,9 @@ class BloodUnit extends Model
      */
     public function hospitalUnit(): HasOne
     {
-        return $this->hasOne(HospitalUnit::class, 'unit_id');
+        // The first custody: a bag one hospital sent on to another
+        // (2026-11-28) has a second row, at the second hospital.
+        return $this->hasOne(HospitalUnit::class, 'unit_id')->orderBy('id');
     }
 
     /**

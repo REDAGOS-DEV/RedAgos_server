@@ -54,6 +54,7 @@ class HospitalUnit extends Model
             'expired_at' => 'immutable_datetime',
             'discarded_at' => 'immutable_datetime',
             'partner_reserved_at' => 'immutable_datetime',
+            'transferred_at' => 'immutable_datetime',
         ];
     }
 
@@ -90,6 +91,23 @@ class HospitalUnit extends Model
     public function requestAllocation(): BelongsTo
     {
         return $this->belongsTo(RequestAllocation::class);
+    }
+
+    /**
+     * The dispatched hold that carried the bag on to another hospital's Blood
+     * Request (project owner, 2026-11-28). Null unless the bag was sent on.
+     */
+    public function transferAllocation(): BelongsTo
+    {
+        return $this->belongsTo(RequestAllocation::class, 'transfer_allocation_id');
+    }
+
+    /**
+     * Who sent the bag on to another hospital.
+     */
+    public function transferredBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'transferred_by');
     }
 
     /**

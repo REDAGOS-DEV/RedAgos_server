@@ -23,6 +23,11 @@ namespace App\Enums;
  * blood donor partner program. It stays in storage but is not issuable: it
  * cannot be tagged to a patient and counts in no available figure, until
  * staff release it back to Available. It still expires and may be discarded.
+ *
+ * Transferred (project owner, 2026-11-28) is a near-expiry bag this hospital
+ * sent to another hospital's Blood Request from its own stock. It has left
+ * the shelf for good; the other hospital receives it as a bag of its own, on
+ * a custody row of its own.
  */
 enum HospitalUnitStatus: string
 {
@@ -43,6 +48,7 @@ enum HospitalUnitStatus: string
     case Expired = 'expired';
 
     case Discarded = 'discarded';
+    case Transferred = 'transferred';
 
     /**
      * Get every accepted status value, in the order the column declares them.
@@ -69,6 +75,7 @@ enum HospitalUnitStatus: string
             self::Transfused => 'Transfused',
             self::Expired => 'Expired',
             self::Discarded => 'Discarded',
+            self::Transferred => 'Sent to Another Hospital',
         };
     }
 
@@ -86,14 +93,14 @@ enum HospitalUnitStatus: string
         return match ($this) {
             // Damaged on arrival is discarded before it is ever stocked.
             self::Received => [self::Available, self::Expired, self::Discarded],
-            self::Available => [self::TagAssigned, self::PartnerReserved, self::Expired, self::Discarded],
+            self::Available => [self::TagAssigned, self::PartnerReserved, self::Expired, self::Discarded, self::Transferred],
             // Released back to the shelf, or lost to it like any stored bag.
             self::PartnerReserved => [self::Available, self::Expired, self::Discarded],
             self::TagAssigned => [self::TagCrossmatched, self::Available],
             self::TagCrossmatched => [self::Transfused, self::PendingReturn],
             self::PendingReturn => [self::Available, self::Discarded],
             self::Expired => [self::Discarded],
-            self::Transfused, self::Discarded => [],
+            self::Transfused, self::Discarded, self::Transferred => [],
         };
     }
 

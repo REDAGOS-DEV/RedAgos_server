@@ -2979,3 +2979,21 @@ Opened from View, the dialog offers Edit or Review when the row allows it. Every
 - Request Fulfillment's Issue with Deferred Payment is unchanged.
 
 **TESTS:** `SubsidyTest` (Issuance and Dispatch may apply it; IT, Collection, Testing and Processing may not), and in the client `tests/incomingRequestsPage.spec.ts`.
+
+## A hospital may supply another hospital's Blood Request
+
+**SOURCE:** the project owner, 2026-11-28: "why centers only? the blood bank should also can see and supply that request let say for example there is near expiry units in blood bank but they still not use, they can provide to a request that need that also". The owner then ruled on four points: no patient name for hospitals; the supplying hospital picks bags and sends them in one step; nothing is charged in RedAgos; only near-expiry bags may go.
+
+**DECISION:**
+- `GET /hospital/supply-requests` (`hospital.inventory.view`) lists other hospitals' open Blood Requests (never the reader's own, never a hospital not on RedAgos), emergencies first, then newest. `search` matches the PTR and the requesting hospital's name, never the patient. Each row has the hospital, blood type, urgency, status, dates and per component needed/released/unallocated, plus `near_expiry_here` (this shelf's qualifying bags) and `sendable` (the lesser of the two). No patient field at all. The suppliers holding shares are named.
+- Near-expiry = Available and expiring within `config('hospital.supply_expiry_days')` days, today included (7 by default, `HOSPITAL_SUPPLY_EXPIRY_DAYS`: the longer of the inventory's two expiry windows).
+- `GET /hospital/supply-requests/{id}/units` and `POST …/{id}/supply` `{unit_ids}` need the new ability `hospital.inventory.supply` (Inventory Staff and the Head). Each bag must be on this shelf, Available, near expiry, of the request's blood type and of a component still unallocated, and no line may get more than it has unallocated (409 `unit_not_available`, `unit_not_near_expiry`, `unit_wrong_type`, `unit_wrong_component`, `too_many_units`). Own request: 404.
+- The bags go as a share of the request through `TransfusionAllocationWriter::create`, addressed to the supplying hospital (`request_source` blood_bank_portal, `recorded_by` the sender, reviewed at once), with one `released` hold per bag, so the share is Fulfilled at once and the request's figures count it as a centre's. Locks: the requesting hospital's facility, then the requirement, then the bags in custody-row order.
+- The requesting hospital receives them with its own Receive (confirm-receipt) and Stock Intake, unchanged. Nothing is billed: no bill is raised for the share.
+- Schema: `hospital_units` gains status `transferred` ("Sent to Another Hospital", terminal, from Available only), `transferred_at`, `transferred_by`, `transfer_allocation_id`. `unit_id` is unique only among rows not transferred (`hospital_units_held_unit_unique`). `request_allocations.passed_on_at` marks the hold that brought a bag to a hospital that sent it on; the claimed-unit index skips it, so the onward hold can claim the bag. That hold still counts as released for its own request.
+- `BloodUnit::activeAllocation()` skips passed-on holds; `BloodUnit::hospitalUnit()` is the first custody. A hospital's own bag lookups prefer a held row over a transferred one.
+- History: the share's "Submitted" and "Released" ("Sent from <hospital>'s own stock"), and the request's "allocations added". Audit `request.hospital_supplied` and `hospital_inventory.transferred` per bag. The requesting hospital's accounts are told (`TransfusionSuppliedByHospital`, in-app).
+
+**Client:** the hospital portal's "Other Hospitals' Requests" page (`/hospital/supply-requests`, under Stock and Supply): plain rows with an eye view and "Send Bags", which opens a picker of this shelf's near-expiry bags per component, first-expiring ticked up to what is unallocated. The inventory shows the new status. The centres' All Blood Requests view says "Suppliers", since one may be a hospital.
+
+**TESTS:** `HospitalSupplyTest`.

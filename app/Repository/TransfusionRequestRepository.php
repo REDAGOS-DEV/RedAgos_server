@@ -3,6 +3,7 @@
 namespace App\Repository;
 
 use App\Enums\BloodRequestStatus;
+use App\Enums\FacilityStatus;
 use App\Enums\RequestEventType;
 use App\Enums\UrgencyLevel;
 use App\Models\BloodRequest;
@@ -177,6 +178,46 @@ class TransfusionRequestRepository
             ->with(self::NETWORK_RELATIONS)
             ->orderByRaw("CASE WHEN {$isOpen} THEN 0 ELSE 1 END", $open)
             ->orderByRaw("CASE WHEN {$isOpen} AND urgency_level = ? THEN 0 ELSE 1 END", [...$open, UrgencyLevel::Emergency->value])
+            ->orderByDesc('request_date')
+            ->orderByDesc('id')
+            ->paginate($perPage)
+            ->withQueryString();
+    }
+
+    /**
+     * Other hospitals' open requirements, for a hospital blood bank that may supply them (2026-11-28).
+     *
+     * Open only, from hospitals on RedAgos (one that is not has nobody to
+     * receive a delivery), never the reader's own. Emergencies first, then
+     * newest. The search matches the PTR reference and the requesting
+     * hospital's name, never the patient's: a hospital is not shown another
+     * hospital's patient (project owner).
+     *
+     * @param  array<string, mixed>  $filters
+     * @return LengthAwarePaginator<int, TransfusionRequest>
+     */
+    public function paginateForHospitals(int $hospitalId, array $filters, int $perPage): LengthAwarePaginator
+    {
+        $open = [
+            BloodRequestStatus::Pending->value,
+            BloodRequestStatus::Processing->value,
+            BloodRequestStatus::Partial->value,
+        ];
+
+        return TransfusionRequest::query()
+            ->where('facility_id', '!=', $hospitalId)
+            ->whereIn('status', $open)
+            ->whereNull('closed_at')
+            ->whereHas('hospital', fn (Builder $hospital): Builder => $hospital->where('status', '!=', FacilityStatus::Unregistered->value))
+            ->when(filled($filters['search'] ?? null), function (Builder $query) use ($filters): Builder {
+                $like = '%'.mb_strtolower(trim((string) $filters['search'])).'%';
+
+                return $query->where(fn (Builder $inner): Builder => $inner
+                    ->whereRaw('LOWER(reference_number) LIKE ?', [$like])
+                    ->orWhereHas('hospital', fn (Builder $hospital): Builder => $hospital->whereRaw('LOWER(name) LIKE ?', [$like])));
+            })
+            ->with(self::NETWORK_RELATIONS)
+            ->orderByRaw('CASE WHEN urgency_level = ? THEN 0 ELSE 1 END', [UrgencyLevel::Emergency->value])
             ->orderByDesc('request_date')
             ->orderByDesc('id')
             ->paginate($perPage)

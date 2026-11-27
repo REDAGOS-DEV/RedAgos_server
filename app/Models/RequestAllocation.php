@@ -50,6 +50,7 @@ class RequestAllocation extends Model
             'allocated_at' => 'immutable_datetime',
             'released_at' => 'immutable_datetime',
             'received_at' => 'immutable_datetime',
+            'passed_on_at' => 'immutable_datetime',
             'cancelled_at' => 'immutable_datetime',
         ];
     }

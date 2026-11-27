@@ -39,6 +39,7 @@ class HospitalDashboardService
         'untagged' => 'untagged',
         'returned' => 'returned to storage',
         'discarded' => 'discarded',
+        'transferred' => 'sent to another hospital',
         'expired' => 'expired',
     ];
 
