@@ -136,7 +136,7 @@ class SerologyResultRepository
         return $query->where(function (Builder $inner) use ($barcode, $sticker, $like, $donationId, $donorId, $searchIdentity): void {
             $inner->whereHas('donation.collection', fn (Builder $c) => $c
                 ->whereRaw('UPPER(donation_barcode) LIKE ?', [$barcode])
-                ->when($sticker !== null, fn (Builder $q) => $q->orWhere('donation_barcode', $sticker)))
+                ->when($sticker !== null, fn (Builder $q) => $q->orWhere(fn (Builder $s) => BagNumbers::whereSticker($s, $sticker))))
                 ->when($donationId !== null, fn (Builder $q) => $q->orWhere('donation_serology.donation_id', $donationId))
                 ->when($searchIdentity, fn (Builder $q) => $q->orWhereHas('donation.donorProfile.donor', fn (Builder $donor) => $donor
                     ->whereRaw('LOWER(first_name) LIKE ?', [$like])

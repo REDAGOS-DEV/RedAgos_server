@@ -76,8 +76,8 @@ class DonationRecordRepository
         $phone = preg_replace('/[\s-]+/', '', $term) ?? $term;
         $localPhone = preg_match('/^0(9\d*)$/', $phone, $p) === 1 ? '%+63'.$p[1].'%' : null;
         $barcode = AccountIdentity::normalizeValidIdNumber($term);
-        // A scanned sticker or a bag number typed in full
-        // (SNBC-21627990-PRBC) finds the donation the bag came from.
+        // A scanned sticker, its last six digits, or a bag number typed in
+        // full (SNBC-21627990-PRBC) finds the donation the bag came from.
         $sticker = BagNumbers::barcodeFrom($term, BagNumbers::centreOf($facilityId));
 
         return $query->where(function (Builder $inner) use ($like, $donationId, $donorId, $phone, $localPhone, $term, $barcode, $sticker): void {
@@ -91,7 +91,7 @@ class DonationRecordRepository
                 ->orWhereHas('collection', fn (Builder $c) => $c
                     ->where('donation_barcode', $term)
                     ->when($barcode !== null && $barcode !== $term, fn (Builder $q) => $q->orWhere('donation_barcode', $barcode))
-                    ->when($sticker !== null && $sticker !== $term, fn (Builder $q) => $q->orWhere('donation_barcode', $sticker)))
+                    ->when($sticker !== null, fn (Builder $q) => $q->orWhere(fn (Builder $s) => BagNumbers::whereSticker($s, $sticker))))
                 ->when($donationId !== null, fn (Builder $q) => $q->orWhere('donations.id', $donationId));
         });
     }

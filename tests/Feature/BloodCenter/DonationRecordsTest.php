@@ -111,6 +111,9 @@ class DonationRecordsTest extends TestCase
         $this->assertSame([$drawn->id], $ids(['search' => 'SNBC-21627990-PRBC']));
         $this->assertSame([$drawn->id], $ids(['search' => 'snbc-21627990-ffp-2']));
 
+        // The last six digits of the sticker are enough.
+        $this->assertSame([$drawn->id], $ids(['search' => '627990']));
+
         // Another centre's bag is not this centre's donation.
         $this->assertSame([], $ids(['search' => 'PRC-21627990-PRBC']));
     }

@@ -281,6 +281,10 @@ class TwoPhaseLabelingTest extends TestCase
         $this->assertSame([$this->donation->id], $find('1234567'));
         $this->assertSame([$this->donation->id], $find('snbc-1234567-prbc-2'));
         $this->assertSame([], $find('PRC-1234567-PRBC'));
+
+        // The sticker's last six digits find it too; fewer must be all of it.
+        $this->assertSame([$this->donation->id], $find('234567'));
+        $this->assertSame([], $find('34567'));
     }
 
     // --- Booking in ----------------------------------------------------------
@@ -378,6 +382,21 @@ class TwoPhaseLabelingTest extends TestCase
 
         // Another centre's bag names none of this centre's donations.
         $this->assertSame([], $find('PRC-1234567-PRBC'));
+    }
+
+    public function test_the_intake_queue_finds_a_donation_by_the_last_six_digits_of_its_sticker(): void
+    {
+        $this->declareBags();
+
+        $find = fn (string $code): array => array_column($this->actingAs($this->officer)
+            ->getJson('/api/blood-center/inventory/intake-queue?barcode='.urlencode($code))
+            ->assertOk()
+            ->json('data'), 'donation_id');
+
+        $this->assertSame([$this->donation->id], $find('234567'));
+        $this->assertSame([$this->donation->id], $find(' 234567 '));
+        $this->assertSame([], $find('34567'));
+        $this->assertSame([], $find('234568'));
     }
 
     // --- Processing's final label (project owner, 2026-10-22) --------------------

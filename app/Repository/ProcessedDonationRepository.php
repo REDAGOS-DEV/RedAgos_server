@@ -133,7 +133,7 @@ class ProcessedDonationRepository
             // donation it came from.
             $inner->whereHas('collection', fn (Builder $c) => $c
                 ->whereRaw('UPPER(donation_barcode) LIKE ?', [$barcode])
-                ->when($sticker !== null, fn (Builder $q) => $q->orWhere('donation_barcode', $sticker)))
+                ->when($sticker !== null, fn (Builder $q) => $q->orWhere(fn (Builder $s) => BagNumbers::whereSticker($s, $sticker))))
                 ->when($donationId !== null, fn (Builder $q) => $q->orWhere('donations.id', $donationId))
                 ->when($searchIdentity, fn (Builder $q) => $q->orWhereHas('donorProfile.donor', fn (Builder $donor) => $donor
                     ->whereRaw('LOWER(first_name) LIKE ?', [$like])

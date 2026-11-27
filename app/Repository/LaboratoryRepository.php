@@ -11,6 +11,7 @@ use App\Models\DonationComponent;
 use App\Models\DonationImmunohematology;
 use App\Models\DonationSerology;
 use App\Models\DonationTestResult;
+use App\Support\BagNumbers;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
@@ -65,7 +66,7 @@ class LaboratoryRepository
                 isset($filters['barcode']),
                 fn (Builder $q): Builder => $q->whereHas(
                     'collection',
-                    fn (Builder $c): Builder => $c->where('donation_barcode', $filters['barcode'])
+                    fn (Builder $c): Builder => BagNumbers::whereSticker($c, $filters['barcode'])
                 )
             )
             ->when(

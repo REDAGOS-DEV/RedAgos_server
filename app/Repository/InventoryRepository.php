@@ -10,6 +10,7 @@ use App\Models\AuditLog;
 use App\Models\BloodUnit;
 use App\Models\Donation;
 use App\Models\RequestAllocation;
+use App\Support\BagNumbers;
 use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
@@ -208,7 +209,7 @@ class InventoryRepository
                 $barcode !== null,
                 fn (Builder $q): Builder => $q->whereHas(
                     'collection',
-                    fn (Builder $c): Builder => $c->where('donation_barcode', $barcode)
+                    fn (Builder $c): Builder => BagNumbers::whereSticker($c, $barcode)
                 )
             )
             ->whereRaw(

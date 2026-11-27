@@ -5,6 +5,7 @@ namespace App\Support;
 use App\Models\Donation;
 use App\Models\DonationComponent;
 use App\Models\Facility;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
 
 /**
@@ -35,6 +36,13 @@ final class BagNumbers
      * donation.
      */
     private const PATTERN = '/^(?:([A-Z]{2,6})-)?(\d+)-([A-Z][A-Z0-9]*)(?:-(\d+))?$/';
+
+    /**
+     * The last this many digits of a sticker find it on their own (project
+     * owner, 2026-11-28): 627990 finds 21627990. Fewer must be the whole
+     * sticker, so a stray digit or two does not list half the centre.
+     */
+    public const SHORT_STICKER_DIGITS = 6;
 
     /**
      * Each declared bag, in declaration order, grouped by component.
@@ -189,6 +197,29 @@ final class BagNumbers
         }
 
         return $parts['barcode'];
+    }
+
+    /**
+     * Narrow a query on donation collections to the stickers a code names.
+     *
+     * The whole sticker always matches. A code of at least
+     * SHORT_STICKER_DIGITS digits also matches every sticker that ends in
+     * them, so typing the last six digits finds the donation. Anything else
+     * (another centre's bag number kept as typed) matches only itself, which
+     * is nothing. A sticker is digits only, so the pattern needs no escaping.
+     *
+     * @template TModel of \Illuminate\Database\Eloquent\Model
+     *
+     * @param  Builder<TModel>  $query
+     * @return Builder<TModel>
+     */
+    public static function whereSticker(Builder $query, string $code, string $column = 'donation_barcode'): Builder
+    {
+        if (ctype_digit($code) && strlen($code) >= self::SHORT_STICKER_DIGITS) {
+            return $query->where($column, 'like', '%'.$code);
+        }
+
+        return $query->where($column, $code);
     }
 
     /**
