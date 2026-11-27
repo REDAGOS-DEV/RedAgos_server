@@ -646,6 +646,10 @@ class InventoryRepository
      * The units staff may pick for a request line: the same set the walk
      * above takes from, first-expiring first, unlocked. Reading holds nothing.
      *
+     * First-expiring is only suggested, so newer bags must be on the list too
+     * (project owner, 2026-11-27); the bound is a guard on the payload, set
+     * well above a centre's shelf of one blood type and component.
+     *
      * @return Collection<int, BloodUnit>
      */
     public function candidateUnits(
@@ -653,7 +657,7 @@ class InventoryRepository
         int $bloodTypeId,
         int $componentId,
         string $operationalDate,
-        int $limit = 100
+        int $limit = 500
     ): Collection {
         return $this->issuableUnits($facilityId, $bloodTypeId, $componentId, $operationalDate)
             ->limit($limit)

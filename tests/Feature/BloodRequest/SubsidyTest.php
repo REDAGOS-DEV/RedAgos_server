@@ -313,24 +313,45 @@ class SubsidyTest extends TestCase
         $this->assertSame('0.00', $latest->amount_due);
     }
 
-    public function test_issuance_and_dispatch_cannot_apply_a_billing_subsidy(): void
+    // --- Issue Directly (project owner, 2026-11-27) -----------------------------
+
+    public function test_issuance_issues_directly_under_the_subsidy_and_dispatches_unpaid(): void
     {
         $request = $this->reservedRequest();
 
         $this->actingAs($this->inventoryStaff)
-            ->postJson("/api/blood-center/billings/{$request->id}/subsidy")
-            ->assertForbidden();
+            ->postJson("/api/blood-center/billings/{$request->id}/subsidy", ['reason' => 'Issued directly at Issuance.'])
+            ->assertOk()
+            ->assertJsonPath('billing.status', BillingStatus::Subsidised->value)
+            ->assertJsonPath('billing.total_amount', 0)
+            ->assertJsonPath('billing.clears_release', true)
+            ->assertJsonPath('statement.amount_due', '0.00')
+            ->assertJsonPath('statement.bill_to.facility', $this->hospital->name);
 
-        $this->actingAs(User::factory()->bloodCenterStaff($this->centre, StaffRole::DispatchCoordinator)->create())
-            ->postJson("/api/blood-center/billings/{$request->id}/subsidy")
-            ->assertForbidden();
+        $this->assertDatabaseHas('audit_logs', ['action' => 'billing.subsidised', 'actor_id' => $this->inventoryStaff->id]);
+
+        $this->actingAs($this->inventoryStaff)
+            ->postJson("/api/blood-center/blood-requests/{$request->id}/release")
+            ->assertOk();
+
+        $this->assertDatabaseCount('payments', 0);
     }
 
-    public function test_only_billing_staff_may_apply_it(): void
+    public function test_the_dispatch_coordinator_may_issue_directly_too(): void
     {
         $request = $this->reservedRequest();
 
-        foreach ([StaffRole::ItDataClerk, StaffRole::InventoryControlOfficer, StaffRole::DispatchCoordinator, Department::Collection, Department::Testing] as $post) {
+        $this->actingAs(User::factory()->bloodCenterStaff($this->centre, StaffRole::DispatchCoordinator)->create())
+            ->postJson("/api/blood-center/billings/{$request->id}/subsidy")
+            ->assertOk()
+            ->assertJsonPath('billing.is_subsidised', true);
+    }
+
+    public function test_only_billing_and_issuance_may_apply_it(): void
+    {
+        $request = $this->reservedRequest();
+
+        foreach ([StaffRole::ItDataClerk, Department::Collection, Department::Testing, Department::Processing] as $post) {
             $this->actingAs(User::factory()->bloodCenterStaff($this->centre, $post)->create())
                 ->postJson("/api/blood-center/billings/{$request->id}/subsidy")
                 ->assertForbidden();

@@ -2954,3 +2954,18 @@ Opened from View, the dialog offers Edit or Review when the row allows it. Every
 - Saving Component Prices says "Bills already raised keep their prices."
 
 **TESTS:** `BillingPriceLockTest`, `BilledPriceBackfillTest`, `ComponentPricesTest` (message).
+
+## Issue asks how a patient's request is paid
+
+**SOURCE:** The project owner, 2026-11-27: when Issuance clicks Issue, a dialog asks "Pay at billing (a watcher settle the bill at billing section) or Issue directly (no payable amount but record as government subsidized)". This reverses "Billing owns the subsidy" (2026-10-25) for Issuance at the point of issue.
+
+**DECISION:**
+- `billing.subsidise` is held again by the Inventory Control Officer and the Dispatch Coordinator, beside Billing. Issuance still cannot take money (`billing.record_payment` stays Billing's).
+- Issue on Incoming Requests (the row and the review) reads the bill first. A bill already cleared (paid, subsidised, deferred or not charged) asks nothing and opens For Dispatch.
+- Otherwise the dialog offers Pay at Billing (the outstanding amount) and Issue Directly (₱0.00, Government Subsidised), nothing chosen at first.
+  - Pay at Billing records nothing: the bill has been on the Billing Counter since its units were tagged. The request opens on Request Fulfillment (Awaiting Payment) and moves to For Dispatch once it is paid.
+  - Issue Directly calls the existing `POST /billings/{id}/subsidy` with the reason "Issued directly at Issuance.": status Government Subsidised, nothing payable, a Subsidy journal row, the hospital's invoice revision and the `billing.subsidised` audit row. The request opens on For Dispatch, where its units are dispatched as usual. The subsidy can be removed before a unit leaves, from the invoice.
+  - A bill carrying one of the centre's discounts cannot be subsidised (unchanged rule), so Issue Directly is shown disabled with the discount named.
+- Request Fulfillment's Issue with Deferred Payment is unchanged.
+
+**TESTS:** `SubsidyTest` (Issuance and Dispatch may apply it; IT, Collection, Testing and Processing may not), and in the client `tests/incomingRequestsPage.spec.ts`.

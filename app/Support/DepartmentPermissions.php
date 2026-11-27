@@ -84,9 +84,9 @@ final class DepartmentPermissions
         'billing.create',
         'billing.record_payment',
 
-        // Meet a statement from the government subsidy. It is Billing's
-        // decision and is checked against the Billing Supervisor's dated
-        // programme register in BillingService.
+        // Meet a statement from the government subsidy: one of the counter's
+        // discount choices (project owner, 2026-11-10). Issuance holds it too,
+        // for Issue Directly (2026-11-27).
         'billing.subsidise',
 
         // Read-only: billing is raised against a fulfilled request, so it
@@ -318,6 +318,12 @@ final class DepartmentPermissions
             // requests.release's, not a billing write.
             'billing.view',
 
+            // Issue asks how the request is paid (project owner, 2026-11-27):
+            // at the Billing Counter, or Issue Directly, nothing payable and
+            // the request recorded as government subsidised. Still no money:
+            // billing.record_payment stays Billing's.
+            'billing.subsidise',
+
             // Issuance's correction approver. Edits a unit directly (above),
             // and their own dispatch corrections apply when filed.
             'corrections.request',
@@ -337,6 +343,9 @@ final class DepartmentPermissions
             'requests.record',
 
             'billing.view',
+
+            // Issue Directly, as the Inventory Control Officer (2026-11-27).
+            'billing.subsidise',
 
             // Correct a dispatch record, on the Inventory Control Officer's
             // approval.
