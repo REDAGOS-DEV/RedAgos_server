@@ -176,6 +176,9 @@ class DonationRecordService
                 // only for the clinical record's holder.
                 'deferral_code' => $screening->deferral_code,
                 'deferral_reason' => $clinical ? $screening->deferral_reason : null,
+                // Why a donor was accepted over a reading out of range, for
+                // the same eyes as a deferral's reason.
+                'out_of_range_reason' => $clinical ? $screening->out_of_range_reason : null,
             ],
             'collection' => $donation->collection === null ? null : [
                 'collected_at' => $donation->collection->collection_datetime?->toISOString(),

@@ -4,6 +4,7 @@ namespace Tests\Feature\BloodCenter;
 
 use App\Enums\DonationStatus;
 use App\Enums\StaffRole;
+use App\Models\AuditLog;
 use App\Models\Donation;
 use App\Models\DonationScreening;
 use App\Models\Facility;
@@ -117,6 +118,82 @@ class CounterVitalsTest extends TestCase
         $this->screen($this->visitOf('male'), $low)->assertCreated();
         $this->screen($this->visitOf('female'), $low)->assertUnprocessable()->assertJsonValidationErrors('deferral_code');
         $this->screen($this->visitOf('prefer_not_to_say'), $low)->assertCreated();
+    }
+
+    public function test_accepting_over_a_reading_out_of_range_takes_the_physicians_reason(): void
+    {
+        $visit = $this->visitOf('female');
+        $high = $this->withVitals(['outcome' => 'accepted', 'systolic_bp' => 170, 'haemoglobin_g_dl' => 11.9]);
+
+        $this->screen($visit, $high)
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['out_of_range_reason' => 'Give the reason for accepting with Systolic BP above range, Haemoglobin below range.']);
+
+        $this->screen($visit, [...$high, 'out_of_range_reason' => '   '])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('out_of_range_reason');
+
+        $this->screen($visit, [...$high, 'out_of_range_reason' => '  White-coat reading; 150/90 on recheck.  '])
+            ->assertCreated()
+            ->assertJsonPath('data.status', 'screening')
+            ->assertJsonPath('data.screening.out_of_range_reason', 'White-coat reading; 150/90 on recheck.');
+
+        $this->assertDatabaseHas('audit_logs', ['action' => 'collection.screening_recorded', 'auditable_id' => $visit->id]);
+        $context = AuditLog::query()->where('action', 'collection.screening_recorded')->where('auditable_id', $visit->id)->value('context');
+        $this->assertSame(['systolic_bp', 'haemoglobin_g_dl'], $context['out_of_range']);
+        $this->assertSame('White-coat reading; 150/90 on recheck.', $context['out_of_range_reason']);
+    }
+
+    public function test_the_reason_is_judged_by_this_donors_ranges(): void
+    {
+        // 13.0 is low for a man (13.5) but normal for a woman (12.5).
+        $payload = $this->withVitals(['outcome' => 'accepted', 'haemoglobin_g_dl' => 13.0]);
+
+        $this->screen($this->visitOf('male'), $payload)->assertUnprocessable()->assertJsonValidationErrors('out_of_range_reason');
+        $this->screen($this->visitOf('female'), $payload)->assertCreated();
+    }
+
+    public function test_the_reason_is_kept_only_for_an_acceptance_over_a_reading_out_of_range(): void
+    {
+        $normal = $this->visitOf('female');
+        $this->screen($normal, $this->withVitals(['outcome' => 'accepted', 'out_of_range_reason' => 'Not needed']))->assertCreated();
+        $this->assertNull(DonationScreening::where('donation_id', $normal->id)->value('out_of_range_reason'));
+
+        $deferred = $this->visitOf('female');
+        $this->screen($deferred, $this->withVitals([
+            'outcome' => 'temporarily_deferred',
+            'deferral_code' => 'R7',
+            'systolic_bp' => 170,
+            'out_of_range_reason' => 'Not needed',
+        ]))->assertCreated();
+        $this->assertNull(DonationScreening::where('donation_id', $deferred->id)->value('out_of_range_reason'));
+    }
+
+    public function test_a_screening_correction_to_accepted_out_of_range_takes_the_reason_too(): void
+    {
+        $visit = $this->visitOf('female');
+        $this->screen($visit, $this->withVitals(['outcome' => 'accepted']))->assertCreated();
+
+        $changes = $this->withVitals(['outcome' => 'accepted', 'pulse_bpm' => 52]);
+
+        $this->actingAs($this->physician)
+            ->postJson("/api/blood-center/donations/{$visit->id}/corrections", [
+                'subject' => 'screening',
+                'reason' => 'Pulse typed wrongly.',
+                'changes' => $changes,
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['changes.out_of_range_reason' => 'Give the reason for accepting with Pulse below range.']);
+
+        $this->actingAs($this->physician)
+            ->postJson("/api/blood-center/donations/{$visit->id}/corrections", [
+                'subject' => 'screening',
+                'reason' => 'Pulse typed wrongly.',
+                'changes' => [...$changes, 'out_of_range_reason' => 'Trained runner; resting pulse.'],
+            ])
+            ->assertCreated();
+
+        $this->assertSame('Trained runner; resting pulse.', DonationScreening::where('donation_id', $visit->id)->value('out_of_range_reason'));
     }
 
     public function test_the_counter_is_sent_the_ranges_for_this_donor(): void

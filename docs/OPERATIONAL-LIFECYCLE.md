@@ -173,7 +173,7 @@ A visit that cannot go ahead can be closed by the Receptionist, the Physician or
 | **Log in as** | **Donor Screening Physician** (`donations.screen`) |
 | **Actions** | Records the vitals: blood pressure (systolic/diastolic), pulse, temperature, weight, **haemoglobin**, and an optional **fingerprick blood type** (preliminary; it never fills the donor profile and never pre-fills the lab's typing). Records Section I-D as observed: **general appearance, skin, HEENT, heart and lungs**, plus free-text notes. |
 | **Status changes** | Saved together with Step 5 as **one screening record**. The physician is recorded as the screening officer (`recorded_by`, taken from the login, never typed). |
-| **Approvals** | No vital or haemoglobin value defers anyone automatically; the ranges are typing guards, not clinical thresholds. |
+| **Approvals** | No vital or haemoglobin value defers anyone automatically. A reading out of its range is marked; accepting the donor over it needs the physician's reason, which stays on the screening. |
 | **Hands off to** | Step 5 (same screen, same physician). |
 
 ### Step 5. Accept or defer

@@ -1,5 +1,28 @@
 <?php
 
+// Where each kind of bag has to be kept: see Storage Areas below.
+$storageAreas = [
+    'refrigerator' => [
+        'locations' => [
+            'Cold Storage A-1',
+            'Cold Storage A-2',
+            'Cold Storage A-3',
+            'Cold Storage B-1',
+            'Cold Storage B-2',
+            'Cold Storage C-1',
+        ],
+        'components' => ['Whole Blood', 'Packed RBC', 'Washed RBC'],
+    ],
+    'freezer' => [
+        'locations' => ['Freezer A', 'Freezer B'],
+        'components' => ['Fresh Frozen Plasma', 'Cryoprecipitate', 'Cryosupernate'],
+    ],
+    'platelet_agitator' => [
+        'locations' => ['Platelet Agitator 1'],
+        'components' => ['Platelet Concentrate'],
+    ],
+];
+
 return [
 
     /*
@@ -24,30 +47,38 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Storage Areas
+    |--------------------------------------------------------------------------
+    |
+    | Where each kind of bag has to be kept, and the shelves in each place.
+    | Stock Intake offers a bag only the shelves of its component's area
+    | (project owner, 2026-11-27): red cells in a blood bank refrigerator at
+    | 2-6 C, plasma products in a freezer at -18 C or colder, platelets on an
+    | agitator at 20-24 C.
+    |
+    | `components` are catalogue names, matched without regard to case. A
+    | component no area names (a centre's own) is offered every location.
+    |
+    */
+
+    'storage_areas' => $storageAreas,
+
+    /*
+    |--------------------------------------------------------------------------
     | Storage Locations
     |--------------------------------------------------------------------------
     |
     | The physical locations a blood unit may be stored in, served to the
     | inventory filters as reference data.
     |
-    | These are display values only and constrain nothing. The defaults are the
-    | labels the frontend already hardcoded. Module 2 will union this list with
+    | These are display values only and constrain nothing: every Storage Area's
+    | shelves, in order. The inventory screens union this list with
     | the distinct storage_location values actually recorded against units, so a
     | centre that uses its own labels is never forced onto these.
     |
     */
 
-    'storage_locations' => [
-        'Cold Storage A-1',
-        'Cold Storage A-2',
-        'Cold Storage A-3',
-        'Cold Storage B-1',
-        'Cold Storage B-2',
-        'Cold Storage C-1',
-        'Freezer A',
-        'Freezer B',
-        'Platelet Agitator 1',
-    ],
+    'storage_locations' => array_merge(...array_column($storageAreas, 'locations')),
 
     /*
     |--------------------------------------------------------------------------

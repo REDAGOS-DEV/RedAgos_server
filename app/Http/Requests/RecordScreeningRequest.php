@@ -3,13 +3,21 @@
 namespace App\Http\Requests;
 
 use App\Enums\ScreeningOutcome;
+use App\Models\Donation;
 use App\Support\OperationalDay;
 use App\Support\ScreeningVitals;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\Validator;
 
 class RecordScreeningRequest extends FormRequest
 {
+    /**
+     * The visit a correction is filed against (CorrectionService), which has
+     * no route to read it from.
+     */
+    public ?int $correctingDonationId = null;
+
     public function authorize(): bool
     {
         return true;
@@ -42,6 +50,16 @@ class RecordScreeningRequest extends FormRequest
                 'date_format:Y-m-d',
                 'after_or_equal:'.OperationalDay::todayAsDate(),
             ],
+
+            // Why the physician accepted over a reading out of range (project
+            // owner, 2026-11-27). Required then by after(); dropped for a
+            // deferral, and by the service when every reading is in range.
+            'out_of_range_reason' => [
+                'exclude_unless:outcome,'.ScreeningOutcome::Accepted->value,
+                'nullable',
+                'string',
+                'max:255',
+            ],
         ];
 
         // The counter records all six vital signs before accepting or
@@ -53,6 +71,47 @@ class RecordScreeningRequest extends FormRequest
         }
 
         return $rules;
+    }
+
+    /**
+     * Accepting a donor with a reading out of range takes the physician's
+     * reason (project owner, 2026-11-27), at the counter and when a
+     * correction is filed. The ranges are this donor's, so the visit is read
+     * here; CollectionService::recordScreening() asks again as it saves.
+     *
+     * @return array<int, callable>
+     */
+    public function after(): array
+    {
+        return [
+            function (Validator $validator): void {
+                if ($validator->errors()->isNotEmpty()
+                    || $this->input('outcome') !== ScreeningOutcome::Accepted->value
+                    || filled($this->input('out_of_range_reason'))) {
+                    return;
+                }
+
+                $id = $this->correctingDonationId ?? $this->route('donation');
+
+                // Not found here is the service's 404, not a form error.
+                $donation = is_numeric($id)
+                    ? Donation::query()->with('donorProfile')
+                        ->where('facility_id', $this->user()?->facility_id)
+                        ->find((int) $id)
+                    : null;
+
+                if ($donation === null) {
+                    return;
+                }
+
+                $sex = ScreeningVitals::sexOf($donation);
+                $findings = ScreeningVitals::findings($this->all(), $sex);
+
+                if ($findings !== []) {
+                    $validator->errors()->add('out_of_range_reason', ScreeningVitals::reasonPrompt($findings, $sex));
+                }
+            },
+        ];
     }
 
     /**

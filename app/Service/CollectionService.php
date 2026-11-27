@@ -398,17 +398,31 @@ class CollectionService
             ? null
             : $this->deferralCodes->chosen($facility, $payload);
 
+        // The ranges are this donor's. Not found is the transaction's 404.
+        $found = ($deferral['code'] ?? null) !== null || $outcome->permitsCollection()
+            ? $this->collectionRepository->findDonation($donationId, $facility->id)
+            : null;
+        $sex = $found !== null ? $this->sexOf($found) : null;
+
         // A vital-sign code (R2-Low, R7...) only when a reading is out of its
         // range (project owner, 2026-10-24); history codes and Other always.
-        if ($deferral['code'] ?? null) {
-            $found = $this->collectionRepository->findDonation($donationId, $facility->id);
-
-            if ($found !== null && ! ScreeningVitals::allows($deferral['code'], $payload, $this->sexOf($found))) {
-                throw ValidationException::withMessages([
-                    'deferral_code' => "{$deferral['code']} is for a vital sign out of range, and this donor's readings are within range.",
-                ]);
-            }
+        if (($deferral['code'] ?? null) !== null && $found !== null && ! ScreeningVitals::allows($deferral['code'], $payload, $sex)) {
+            throw ValidationException::withMessages([
+                'deferral_code' => "{$deferral['code']} is for a vital sign out of range, and this donor's readings are within range.",
+            ]);
         }
+
+        // Accepted over a reading out of range: the physician's reason is
+        // required (project owner, 2026-11-27), and kept only then.
+        $outOfRange = $outcome->permitsCollection() && $found !== null ? ScreeningVitals::findings($payload, $sex) : [];
+
+        if ($outOfRange !== [] && blank($payload['out_of_range_reason'] ?? null)) {
+            throw ValidationException::withMessages([
+                'out_of_range_reason' => ScreeningVitals::reasonPrompt($outOfRange, $sex),
+            ]);
+        }
+
+        $payload['out_of_range_reason'] = $outOfRange === [] ? null : trim((string) $payload['out_of_range_reason']);
 
         $donation = DB::transaction(function () use ($staff, $facility, $donationId, $payload, $outcome, $deferral, $correcting): Donation {
             $locked = $this->collectionRepository->lockDonation($donationId, $facility->id)
@@ -470,6 +484,12 @@ class CollectionService
             'facility_id' => $facility->id,
             'outcome' => $outcome->value,
             'correction' => $correcting,
+            // On the trail, like the outcome; the Audit Log page's Details
+            // show neither (AuditLogService: no outcomes, results or reasons).
+            ...($outOfRange === [] ? [] : [
+                'out_of_range' => array_column($outOfRange, 'field'),
+                'out_of_range_reason' => $payload['out_of_range_reason'],
+            ]),
         ]);
 
         if (! $outcome->permitsCollection()) {
@@ -553,6 +573,10 @@ class CollectionService
             'heart_and_lungs' => $this->trimmedOrNull($payload['heart_and_lungs'] ?? null),
 
             'notes' => isset($payload['notes']) ? trim((string) $payload['notes']) : null,
+
+            // Only the counter sends it (recordScreening() keeps it only over
+            // a reading out of range); a paper record never does.
+            'out_of_range_reason' => $outcome->permitsCollection() ? $this->trimmedOrNull($payload['out_of_range_reason'] ?? null) : null,
         ];
     }
 
@@ -1089,6 +1113,7 @@ class CollectionService
                     'heent' => $screening->heent,
                     'heart_and_lungs' => $screening->heart_and_lungs,
                     'notes' => $screening->notes,
+                    'out_of_range_reason' => $screening->out_of_range_reason,
                     'dhq_on_paper' => (bool) $screening->dhq_on_paper,
                     'screened_at' => $screening->screened_at?->toISOString(),
                     // The screening officer, resolved from the authenticated user
@@ -1118,9 +1143,7 @@ class CollectionService
      */
     private function sexOf(Donation $donation): ?string
     {
-        $gender = $donation->donorProfile?->gender;
-
-        return in_array($gender, ['male', 'female'], true) ? $gender : null;
+        return ScreeningVitals::sexOf($donation);
     }
 
     /**

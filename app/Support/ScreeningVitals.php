@@ -2,6 +2,8 @@
 
 namespace App\Support;
 
+use App\Models\Donation;
+
 /**
  * The counter's six vital signs and the range each is normal within (project
  * owner, 2026-10-24; config `donation.vitals`).
@@ -9,7 +11,8 @@ namespace App\Support;
  * This supersedes, for the counter, the rule that RedAgos never judges the
  * vitals: the physician must now record all six, and a reading outside its
  * range is what unlocks (and suggests) the vital-sign deferral codes. The
- * physician still decides; nothing here accepts or defers anyone.
+ * physician still decides; nothing here accepts or defers anyone. Accepting
+ * over a reading out of range takes the physician's reason (2026-11-27).
  *
  * The client reads the same table (ranges()) so the form can warn as the
  * physician types; the server checks again when the screening is saved.
@@ -117,6 +120,36 @@ final class ScreeningVitals
         }
 
         return false;
+    }
+
+    /**
+     * What the physician is asked when accepting a donor with readings out of
+     * range (project owner, 2026-11-27): they may accept, but say why.
+     *
+     * @param  array<int, array{field: string, direction: string, code: string|null}>  $findings
+     */
+    public static function reasonPrompt(array $findings, ?string $sex): string
+    {
+        $ranges = self::ranges($sex);
+
+        $named = array_map(
+            fn (array $finding): string => ($ranges[$finding['field']]['label'] ?? $finding['field'])
+                .($finding['direction'] === 'low' ? ' below range' : ' above range'),
+            $findings
+        );
+
+        return 'Give the reason for accepting with '.implode(', ', $named).'.';
+    }
+
+    /**
+     * The donor's sex as the ranges read it: male, female, or null for any
+     * other answer, which takes the stricter bound.
+     */
+    public static function sexOf(Donation $donation): ?string
+    {
+        $gender = $donation->donorProfile?->gender;
+
+        return in_array($gender, ['male', 'female'], true) ? $gender : null;
     }
 
     /**
