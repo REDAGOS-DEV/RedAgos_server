@@ -7,6 +7,8 @@ use App\Enums\HospitalUnitStatus;
 use App\Enums\UnitTagStatus;
 use App\Enums\UntagReason;
 use App\Models\AuditLog;
+use App\Models\BloodComponent;
+use App\Models\BloodType;
 use App\Models\BloodUnit;
 use App\Models\DirectDistribution;
 use App\Models\Donation;
@@ -91,6 +93,11 @@ class HospitalInventoryService
         'hospital_inventory.expired' => 'expired',
     ];
 
+    /**
+     * The days of use days of cover is averaged over: four weeks, so each weekday counts four times.
+     */
+    public const COVER_WINDOW_DAYS = 28;
+
     public function __construct(
         private readonly HospitalInventoryRepository $repository,
         private readonly AuditLogger $auditLogger,
@@ -138,6 +145,62 @@ class HospitalInventoryService
             // For the stock-in form: the configured fridges and freezers, and
             // any place this blood bank has already stocked a bag into.
             'storage_locations' => $this->storageLocations($facilityId),
+            'as_of' => $now->toIso8601String(),
+        ];
+    }
+
+    /**
+     * How many days each blood type and component would last at the recent rate of use.
+     *
+     * Projected from the blood bank's own history, with no model behind it
+     * (project owner, 2026-11-27; the capstone rules out predictive or AI
+     * forecasting): the bags transfused over the last COVER_WINDOW_DAYS give a
+     * daily rate, and the bags on the shelf divided by it give the days left.
+     * A pair with no use in the window has no rate, so its days are null, not
+     * infinite. Pairs with neither stock nor use are left out.
+     *
+     * @return array<string, mixed>
+     */
+    public function daysOfCover(User $user): array
+    {
+        $facilityId = $this->requireFacilityId($user);
+        $now = now()->toImmutable();
+        $today = OperationalDay::todayAsDate();
+
+        $cells = [];
+        foreach ($this->repository->issuableCountsByTypeAndComponent($facilityId, $today) as $row) {
+            $cells[$row['blood_type_id'].':'.$row['component_id']] = ['available' => $row['units'], 'used' => 0] + $row;
+        }
+        foreach ($this->repository->transfusedCountsByTypeAndComponentSince($facilityId, $now->subDays(self::COVER_WINDOW_DAYS)) as $row) {
+            $key = $row['blood_type_id'].':'.$row['component_id'];
+            $cells[$key] = ($cells[$key] ?? ['available' => 0] + $row);
+            $cells[$key]['used'] = $row['units'];
+        }
+
+        $types = BloodType::query()->whereIn('id', array_column($cells, 'blood_type_id'))->pluck('code', 'id');
+        $components = BloodComponent::query()->whereIn('id', array_column($cells, 'component_id'))->get(['id', 'code', 'name'])->keyBy('id');
+
+        $rows = array_map(function (array $cell) use ($types, $components): array {
+            $perDay = $cell['used'] / self::COVER_WINDOW_DAYS;
+            $component = $components->get($cell['component_id']);
+
+            return [
+                'blood_type' => ['id' => $cell['blood_type_id'], 'code' => $types->get($cell['blood_type_id'])],
+                'component' => ['id' => $cell['component_id'], 'code' => $component?->code, 'name' => $component?->name],
+                'available' => $cell['available'],
+                'used' => $cell['used'],
+                'per_day' => round($perDay, 2),
+                'days_left' => $perDay > 0 ? round($cell['available'] / $perDay, 1) : null,
+            ];
+        }, array_values($cells));
+
+        // Shortest cover first; a pair with no recent use last.
+        usort($rows, fn (array $a, array $b): int => [$a['days_left'] === null, $a['days_left'] ?? 0, $a['blood_type']['id'], $a['component']['id']]
+            <=> [$b['days_left'] === null, $b['days_left'] ?? 0, $b['blood_type']['id'], $b['component']['id']]);
+
+        return [
+            'window_days' => self::COVER_WINDOW_DAYS,
+            'rows' => $rows,
             'as_of' => $now->toIso8601String(),
         ];
     }

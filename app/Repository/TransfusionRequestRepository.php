@@ -3,6 +3,7 @@
 namespace App\Repository;
 
 use App\Enums\BloodRequestStatus;
+use App\Enums\RequestEventType;
 use App\Enums\UrgencyLevel;
 use App\Models\BloodRequest;
 use App\Models\TransfusionRequest;
@@ -99,11 +100,41 @@ class TransfusionRequestRepository
                     ->orWhere('patient_first_name', 'like', $search));
             })
             ->with(self::LIST_RELATIONS)
+            ->tap(fn (Builder $query): Builder => $this->withStepTimes($query))
             ->orderByDesc('request_date')
             ->orderByDesc('id')
             ->paginate($perPage)
             ->withQueryString();
     }
+
+    /**
+     * When each step of the hospital's list last happened (2026-11-26): units
+     * tagged, units released, receipt confirmed. Read off the request's own
+     * history as one subquery each, so a page of rows costs no extra queries.
+     * TransfusionRequestProjector shows them as `step_times`.
+     */
+    private function withStepTimes(Builder $query): Builder
+    {
+        foreach (self::STEP_EVENTS as $alias => $event) {
+            $query->withMax(
+                ['events as '.$alias => fn (Builder $events): Builder => $events->where('event', $event->value)],
+                'created_at'
+            );
+        }
+
+        return $query;
+    }
+
+    /**
+     * The history event behind each step time, keyed by the attribute it loads as.
+     *
+     * @var array<string, RequestEventType>
+     */
+    public const STEP_EVENTS = [
+        'approved_step_at' => RequestEventType::Allocated,
+        'released_step_at' => RequestEventType::Released,
+        'received_step_at' => RequestEventType::ReceiptConfirmed,
+    ];
 
     /**
      * Every hospital's requirements, for any blood centre to read (project owner, 2026-11-19).

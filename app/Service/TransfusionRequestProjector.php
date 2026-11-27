@@ -9,6 +9,8 @@ use App\Enums\TransfusionLineStatus;
 use App\Models\BloodRequest;
 use App\Models\TransfusionRequest;
 use App\Models\TransfusionRequestItem;
+use App\Repository\TransfusionRequestRepository;
+use Carbon\CarbonImmutable;
 
 /**
  * The shape a Patient Transfusion Request takes when it leaves the API.
@@ -86,6 +88,18 @@ class TransfusionRequestProjector
             'cancellation_reason' => $request->cancellation_reason,
         ];
 
+        // The listing's step times, when its query loaded them.
+        if (array_key_exists('approved_step_at', $request->getAttributes())) {
+            $projection['step_times'] = [
+                'submitted' => $projection['request_date'],
+                ...collect(array_keys(TransfusionRequestRepository::STEP_EVENTS))
+                    ->mapWithKeys(fn (string $alias): array => [
+                        str_replace('_step_at', '', $alias) => $this->iso($request->getAttribute($alias)),
+                    ])
+                    ->all(),
+            ];
+        }
+
         if ($withAllocations) {
             $projection['allocations'] = $request->facilityAllocations
                 ->map(fn (BloodRequest $allocation): array => [
@@ -139,6 +153,14 @@ class TransfusionRequestProjector
             'line_status' => $status?->value,
             'line_status_label' => $status?->label(),
         ];
+    }
+
+    /**
+     * An aggregate comes back as the database's own text, not a cast date.
+     */
+    private function iso(mixed $value): ?string
+    {
+        return $value === null ? null : CarbonImmutable::parse($value)->toIso8601String();
     }
 
     public function allocationStatusLabel(BloodRequest $allocation): string
