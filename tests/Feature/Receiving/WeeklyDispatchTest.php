@@ -212,6 +212,41 @@ class WeeklyDispatchTest extends TestCase
             ->assertJsonPath('data.0.source.weekly_request_id', $request->weekly_request_id);
     }
 
+    public function test_the_list_says_when_each_step_of_a_weekly_request_last_happened(): void
+    {
+        $this->freezeSecond();
+        $weekly = $this->sentWeekly([[$this->bloodType, $this->prbc, 2]]);
+
+        $times = fn (): array => collect($this->actingAs($this->requester)
+            ->getJson('/api/hospital/weekly-requests')
+            ->assertOk()
+            ->json('data'))->firstWhere('id', $weekly->id)['step_times'];
+
+        $this->assertSame(
+            ['submitted' => $weekly->created_at->toIso8601String(), 'confirmed' => null, 'released' => null, 'received' => null],
+            $times()
+        );
+
+        $this->travel(5)->minutes();
+        $request = $this->requestOf($weekly);
+        $confirmedAt = now()->toIso8601String();
+
+        $this->travel(10)->minutes();
+        $this->stock($this->centre, $this->prbc, 2);
+        $this->sendDispatch($request, $this->issuance)->assertOk();
+        $releasedAt = now()->toIso8601String();
+
+        $this->travel(30)->minutes();
+        $this->actingAs($this->requester)
+            ->postJson("/api/hospital/blood-requests/{$request->id}/confirm-receipt")
+            ->assertOk();
+
+        $this->assertSame(
+            ['confirmed' => $confirmedAt, 'released' => $releasedAt, 'received' => now()->toIso8601String()],
+            array_intersect_key($times(), array_flip(['confirmed', 'released', 'received']))
+        );
+    }
+
     /**
      * The weekly request's only blood request, confirmed in full by the centre.
      */
