@@ -20,7 +20,7 @@ enum DonationType: string
     public function label(): string
     {
         return match ($this) {
-            self::WalkIn => 'Walk-in',
+            self::WalkIn => 'Volunteer',
             self::TypeSpecific => 'TS',
             self::NonTypeSpecific => 'NTS',
         };
